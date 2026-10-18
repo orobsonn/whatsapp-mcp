@@ -1,0 +1,283 @@
+{
+  "date": "2026-10-18",
+  "source_repository": "https://github.com/orobsonn/elo",
+  "source_commit": "ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7",
+  "deployed_runtime_commit": "f9285065271617ece67739ea95022d3b641cf0f8",
+  "scope": "Documentation handoff only; source files are references, not copied implementation or production data.",
+  "files": [
+    {
+      "path": "src/auth.ts",
+      "sha256": "8980a0bd5ac205003a7349361c33ad5483d198e00ed687b68a514bac1cf44f16",
+      "lines": 913,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/auth.ts"
+    },
+    {
+      "path": "src/zapi.ts",
+      "sha256": "444ceff9a57e0dc634f4fc0e9415dbfc987f0594a85800412219ebadfbb03e71",
+      "lines": 150,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/zapi.ts"
+    },
+    {
+      "path": "src/capture.ts",
+      "sha256": "98d7654978ffc8dfb8c68e5eea2bbf5367f8abb1e1c852f379227a1606b25eaa",
+      "lines": 468,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/capture.ts"
+    },
+    {
+      "path": "src/actions.ts",
+      "sha256": "032b0656853a5507df5206b6607c3157df1971b0b0275af2b81507d5ec23e16c",
+      "lines": 198,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/actions.ts"
+    },
+    {
+      "path": "src/directory.ts",
+      "sha256": "9920ead4143327ae703a10cd83b29aa67355ad44ef2a9b2987e7bcb94c104cca",
+      "lines": 186,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/directory.ts"
+    },
+    {
+      "path": "src/core.ts",
+      "sha256": "323899cb754fdebba8518dd70e09db59149f3a31075f51550ba3a0f62117bd8b",
+      "lines": 133,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/core.ts"
+    },
+    {
+      "path": "src/index.ts",
+      "sha256": "72f0cd78972660d5e3f21a17e6db933b400a7370c03d3a0e8b03efa4def527a4",
+      "lines": 101,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/index.ts"
+    },
+    {
+      "path": "src/identity.ts",
+      "sha256": "6b905531c3e86839108d7c9aa918026c390331ee4e87ca780955616bde8a83f2",
+      "lines": 155,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/identity.ts"
+    },
+    {
+      "path": "src/mcp.ts",
+      "sha256": "8a4728d538433675d416b0c8cd19f979a477717f013842da14ac4aece472508d",
+      "lines": 288,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/mcp.ts"
+    },
+    {
+      "path": "src/extraction.ts",
+      "sha256": "47af77a7865faf4b42bd9273179c214486dca3b4892885120670acdb6d96fb4c",
+      "lines": 506,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/extraction.ts"
+    },
+    {
+      "path": "src/memory.ts",
+      "sha256": "3c6e1777073f9c0533147fdf9a83604f535d6d9658c3d6d6f92844b640514c48",
+      "lines": 1225,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/memory.ts"
+    },
+    {
+      "path": "src/operations.ts",
+      "sha256": "2397938131742416e868021d1128940dd93f4e0873cf738d34b022775b075d0e",
+      "lines": 173,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/operations.ts"
+    },
+    {
+      "path": "src/setup.ts",
+      "sha256": "f940e015298b375ff895b77651031420108960828b58f8c1dfd7900626592978",
+      "lines": 100,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/setup.ts"
+    },
+    {
+      "path": "src/env.ts",
+      "sha256": "aa9b5ae1e635fabe7977afb98d5c3db4f3d33ccbf372ddd4131df30e59c7e59a",
+      "lines": 12,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/src/env.ts"
+    },
+    {
+      "path": "scripts/provision-access.mjs",
+      "sha256": "c3a3064b5e36296c240f3adb96288898fdf561d8a4419174dbbbeb0155b33b75",
+      "lines": 358,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/scripts/provision-access.mjs"
+    },
+    {
+      "path": "scripts/restore-database.mjs",
+      "sha256": "b9a947964535305acf58ec0e957c6f1e20185444295d56f861e95131243c4859",
+      "lines": 18,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/scripts/restore-database.mjs"
+    },
+    {
+      "path": "scripts/smoke.mjs",
+      "sha256": "23b82c61c49426f5a8f322d6bd3fb20767bba933bce16e00d2700e200eb3c0f5",
+      "lines": 54,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/scripts/smoke.mjs"
+    },
+    {
+      "path": "tests/actions.test.ts",
+      "sha256": "d9479369e0cc416a41cb5468ac7c5dd1619dab9056d54df44239174c8575de80",
+      "lines": 175,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/actions.test.ts"
+    },
+    {
+      "path": "tests/auth.test.ts",
+      "sha256": "24348433774270c8bea9a931ecf3fff359123299ce13bdd4e8a9289c83cdfd34",
+      "lines": 900,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/auth.test.ts"
+    },
+    {
+      "path": "tests/capture.test.ts",
+      "sha256": "8e47d0bfba250a4e50d6db1ee0a4a0d3ab731a85f4e6e2945a8e502699290bef",
+      "lines": 375,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/capture.test.ts"
+    },
+    {
+      "path": "tests/directory.test.ts",
+      "sha256": "6bf1da4a8e7523ec3849bb002de6b50180f40a052a68532fd4231f65d2a99a86",
+      "lines": 288,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/directory.test.ts"
+    },
+    {
+      "path": "tests/zapi.test.ts",
+      "sha256": "6b81687c19aafd8a90f992b6d8c0fb8b400d163ba630b6716013858065bf93b3",
+      "lines": 58,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/zapi.test.ts"
+    },
+    {
+      "path": "tests/identity.test.ts",
+      "sha256": "19cc7c889a27cdfaff9768f95e69e60076875b06f0634cd8796db9b2f02daa4e",
+      "lines": 579,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/identity.test.ts"
+    },
+    {
+      "path": "tests/isolation.test.ts",
+      "sha256": "d240e0857f6d4aa1edbc611e92e3cceb0fe97d952c65bb0451d3e830b3e9b19e",
+      "lines": 31,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/isolation.test.ts"
+    },
+    {
+      "path": "tests/http.test.ts",
+      "sha256": "98d60d6acb94af20187ca5c327b8d4554bfe0780a910ea48cf2815d6b5859067",
+      "lines": 87,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/http.test.ts"
+    },
+    {
+      "path": "tests/operations.test.ts",
+      "sha256": "a949eb3be9d774f8d96da3f2c290163516f395095ebd73b52b1791cae977d1b3",
+      "lines": 32,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/operations.test.ts"
+    },
+    {
+      "path": "tests/extraction-blocks.test.ts",
+      "sha256": "213a826f0baa3fa63d6eaacd3e7d35b8a9d78716b1fee3a646f06716fc8c2f39",
+      "lines": 539,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/extraction-blocks.test.ts"
+    },
+    {
+      "path": "migrations/0001_initial.sql",
+      "sha256": "ef94a7d9d6604f1c7dda7cd8989548dbc422bebeafb94db0c93b4b12c3920d03",
+      "lines": 25,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/migrations/0001_initial.sql"
+    },
+    {
+      "path": "migrations/0007_conversation_blocks.sql",
+      "sha256": "da1a0b2e74123f44fbd12a74583112c53d59b7ffee38e3ba12f65d4cc34fe716",
+      "lines": 27,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/migrations/0007_conversation_blocks.sql"
+    },
+    {
+      "path": "migrations/0008_contact_directory.sql",
+      "sha256": "4bbb957fa6623da114bda7676cb17f72bfdd4259a769f849f27d3634a62de7d1",
+      "lines": 5,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/migrations/0008_contact_directory.sql"
+    },
+    {
+      "path": "docs/implementacao/auth.md",
+      "sha256": "dd707fb2797054f5c8423931875966f362f84193eb561dcbf6426494c08a6c18",
+      "lines": 39,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/auth.md"
+    },
+    {
+      "path": "docs/implementacao/recebimento-e-memoria.md",
+      "sha256": "10f0b713f42356e91407e3f8a88e600a4ab1870b8963015ed1501c700ccd104b",
+      "lines": 110,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/recebimento-e-memoria.md"
+    },
+    {
+      "path": "docs/implementacao/agenda-whatsapp.md",
+      "sha256": "0ede5a2b1b69803f2c3aa652ded19b6f7f945a0fd23d16116a9aac2ff0138227",
+      "lines": 39,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/agenda-whatsapp.md"
+    },
+    {
+      "path": "docs/implementacao/agenda-whatsapp-prova-1810.json",
+      "sha256": "f4995e9e5d052614c89a49f748cf12b6999fb65b1e66427fe5964bebd0b77350",
+      "lines": 47,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/agenda-whatsapp-prova-1810.json"
+    },
+    {
+      "path": "docs/implementacao/blocos-extracao-1810.md",
+      "sha256": "48e95d634e5200edcb8889ea4cda066c2422e4f7a18f0b2f3e68a42ac86845f7",
+      "lines": 26,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/blocos-extracao-1810.md"
+    },
+    {
+      "path": "docs/implementacao/fontes-indisponiveis-1710.md",
+      "sha256": "ee05d60d13ff671c9a1fa103ec6e7e0aeae2f05d1bfbe3707d4a8df344ec94b3",
+      "lines": 51,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/fontes-indisponiveis-1710.md"
+    },
+    {
+      "path": "docs/implementacao/homologacao-chatgpt.md",
+      "sha256": "6d30ed8c1d6ea1400fe31217cd6606f3e18d67610e3686f13ed79a846ed2bd88",
+      "lines": 84,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/homologacao-chatgpt.md"
+    },
+    {
+      "path": "docs/implementacao/homologacao-skills-claude.md",
+      "sha256": "d912c204d8127850f5fd8c23daa3313afb0ae8eb6427903d03e86ae20b7e0a94",
+      "lines": 63,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/implementacao/homologacao-skills-claude.md"
+    },
+    {
+      "path": "docs/demonstracoes/evidencias/verificacao-1810.json",
+      "sha256": "82289d16b934f2650a57f66107c521d91c9274a0fbfca32d72c40611653bd84b",
+      "lines": 196,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/demonstracoes/evidencias/verificacao-1810.json"
+    },
+    {
+      "path": "skills/approve/SKILL.md",
+      "sha256": "e61cf80fc03104fc94c4d0ca41b24bf974cd4107f6272ed47ccafc8571751c08",
+      "lines": 40,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/skills/approve/SKILL.md"
+    },
+    {
+      "path": "skills/configurar-elo/SKILL.md",
+      "sha256": "1c7be52d2efc0b40338186046eef868f49dcaa84db327d3755e3f4b7a7b9a6fc",
+      "lines": 19,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/skills/configurar-elo/SKILL.md"
+    },
+    {
+      "path": "docs/operacao/recuperacao.md",
+      "sha256": "b203b499c1e1170d05f5b425876ee4cd228f60d9784741a721218f959cd0e5a3",
+      "lines": 23,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/docs/operacao/recuperacao.md"
+    },
+    {
+      "path": "tests/review-load.test.ts",
+      "sha256": "30bb99fecf2d0b3585d1c153ee191a492893b2c4d997cbb52a6a202422b3a8db",
+      "lines": 60,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/review-load.test.ts"
+    },
+    {
+      "path": "tests/restore-database.test.mjs",
+      "sha256": "4618d62fd3979030a534af2c8f0d585177121aa6d79809f9fab2a5ba1f6cb3da",
+      "lines": 105,
+      "permalink": "https://github.com/orobsonn/elo/blob/ac2111ed8a89e50dcb1f995ebea5a9dd22992cd7/tests/restore-database.test.mjs"
+    }
+  ],
+  "observed_in_elo": {
+    "tests_reported_worker_d1": 189,
+    "tests_reported_node": 22,
+    "directory_provider_records": 936,
+    "directory_mapped_contacts": 935,
+    "directory_pages": 10,
+    "authenticated_chatgpt_setup_skill": true,
+    "individual_approved_text_delivered": true,
+    "group_media_audio_not_validated": true
+  }
+}

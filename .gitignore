@@ -1,0 +1,28 @@
+# Segredos e configuração privada
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+node_modules/
+.DS_Store
+# Dados pessoais e estado operacional
+/local/
+/private/
+/sessions/
+/credentials/
+/media/
+/uploads/
+/downloads/
+/exports/
+/backups/
+/logs/
+/fixtures/reais/
+/fontes/privadas/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+__pycache__/
+*.pyc
