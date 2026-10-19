@@ -38,13 +38,14 @@ function provider(
   options: {
     foreign?: boolean;
     missing?: boolean;
+    nullCallbacks?: boolean;
     timeout?: boolean;
     badReadback?: boolean;
     phoneChanged?: boolean;
   } = {},
 ) {
   let me: Record<string, unknown> = Object.fromEntries(
-    callbacks.map((k) => [k, ""]),
+    callbacks.map((k) => [k, options.nullCallbacks ? null : ""]),
   );
   me.receiveCallbackSentByMe = false;
   if (options.foreign) me.connectedCallbackUrl = "https://elo.example/webhook";
@@ -254,4 +255,25 @@ it("calls the transport without binding it to the provider instance", async () =
   await expect(
     connectConnection(settings(), credentials, transport),
   ).resolves.toMatchObject({ state: "active" });
+});
+
+it("accepts explicit null callbacks but requires configured URLs in readback", async () => {
+  const p = provider({ nullCallbacks: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).resolves.toMatchObject({ state: "active" });
+});
+it("still protects foreign callbacks among explicit nulls", async () => {
+  const p = provider({ nullCallbacks: true, foreign: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).rejects.toThrow("instance_in_use");
+  expect(p.puts()).toHaveLength(0);
+});
+it("identifies a missing field without including its value", async () => {
+  const p = provider({ missing: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).rejects.toThrow("callback_contract_deliveryCallbackUrl_missing");
+  expect(p.puts()).toHaveLength(0);
 });

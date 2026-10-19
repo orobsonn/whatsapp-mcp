@@ -268,12 +268,21 @@ function webhook(env: Env, p: ConnectionPayload): string {
 function validateCallbacks(me: Record<string, unknown>, url: string): void {
   for (const field of CALLBACKS) {
     const value = me[field];
-    if (typeof value !== "string" || value.length > 2048)
-      fail("callback_contract_unavailable");
+    if (value === null) continue;
+    if (typeof value !== "string" || value.length > 2048) {
+      const type = !Object.hasOwn(me, field)
+        ? "missing"
+        : typeof value === "string"
+          ? "long_string"
+          : "invalid_type";
+      fail(`callback_contract_${field}_${type}`);
+    }
     if (value !== "" && value !== url) fail("instance_in_use");
   }
   if (typeof me.receiveCallbackSentByMe !== "boolean")
-    fail("callback_contract_unavailable");
+    fail(
+      `callback_contract_receiveCallbackSentByMe_${Object.hasOwn(me, "receiveCallbackSentByMe") ? "invalid_type" : "missing"}`,
+    );
 }
 async function runAttempt(
   env: Env,

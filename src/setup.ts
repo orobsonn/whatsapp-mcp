@@ -142,10 +142,17 @@ export async function setupFetch(
     const providerNotice = diagnostic
       ? `${providerNotices[diagnostic[1]!]} Código: ${providerCode}.`
       : undefined;
+    const contractDiagnostic =
+      /^callback_contract_(receivedCallbackUrl|messageStatusCallbackUrl|connectedCallbackUrl|deliveryCallbackUrl|disconnectedCallbackUrl|presenceChatCallbackUrl|initialDataCallbackUrl|receiveCallbackSentByMe)_(missing|long_string|invalid_type)$/.test(
+        providerCode,
+      )
+        ? `A resposta da Z-API está incompatível no campo indicado. Nenhum dado desse campo é exibido. Código: ${providerCode}.`
+        : undefined;
     const message =
       status === 403
         ? "Acesso ou confirmação recusados."
-        : (providerNotice ??
+        : (contractDiagnostic ??
+          providerNotice ??
           notices[error instanceof AppError ? error.code : ""] ??
           (status === 409
             ? "A conexão mudou. Confira o estado atual abaixo."
