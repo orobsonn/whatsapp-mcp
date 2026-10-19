@@ -36,7 +36,7 @@ export async function upsertDirectoryPage(env: Env, fence: Fence, page: {
     }
     return { items, nextCursor: page.complete ? undefined : page.cursor, complete: page.complete };
 }
-export async function setCapture(env: Env, chatId: string, enabled: boolean, fence: Fence): Promise<void> { assertActive(env); assertFence(env, fence); await getChat(env, chatId, fence); await env.DB.prepare('UPDATE chats SET capture_enabled=?,capture_since=CASE WHEN capture_since IS NULL AND ?=1 THEN ? ELSE capture_since END,updated_at=? WHERE id=? AND epoch=? AND generation=?').bind(enabled ? 1 : 0, enabled ? 1 : 0, Date.now(), Date.now(), chatId, fence.epoch, fence.generation).run(); }
+export async function setCapture(env: Env, chatId: string, enabled: boolean, fence: Fence): Promise<void> { assertActive(env); assertFence(env, fence); await getChat(env, chatId, fence); await env.DB.prepare('UPDATE chats SET capture_discontinuous=CASE WHEN capture_enabled=1 AND ?=0 THEN 1 ELSE capture_discontinuous END,capture_enabled=?,capture_since=CASE WHEN capture_since IS NULL AND ?=1 THEN ? ELSE capture_since END,updated_at=? WHERE id=? AND epoch=? AND generation=?').bind(enabled ? 1 : 0, enabled ? 1 : 0, enabled ? 1 : 0, Date.now(), Date.now(), chatId, fence.epoch, fence.generation).run(); }
 export async function listChats(env: Env, input: {
     term?: string;
     kind?: 'individual' | 'group';
