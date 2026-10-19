@@ -13,9 +13,9 @@ import {
   assertFence,
   LIMITS,
 } from "./core";
-import { listChats, upsertDirectoryPage } from "./directory";
+import { searchDirectory, syncDirectory } from "./directory";
 import { queryMessages } from "./capture";
-import { ZapiClient } from "./zapi";
+import { ZapiClient, ZapiError } from "./zapi";
 import {
   prepareAction,
   executeAction,
@@ -71,7 +71,9 @@ function safeToolError(error: unknown): CallToolResult {
               ? error.code
               : error instanceof z.ZodError
                 ? "invalid_input"
-                : "operation_failed",
+                : error instanceof ZapiError
+                  ? error.code
+                  : "operation_failed",
         }),
       },
     ],
@@ -131,17 +133,21 @@ export function createMcpServer(env: Env): McpServer {
   );
   tool(
     "buscar_conversas",
-    "Localiza pessoas/grupos por nome. Homônimos mantêm IDs distintos; não libera captura.",
+    "Contatos individuais por padrão; use kind=group para grupos. Busca por nome e/ou phoneSuffix (4–15 dígitos finais), sincronizando agenda automaticamente. Nome+final filtram juntos. Se directory.complete=false, repita a busca até completar antes de afirmar ausência/unicidade. Se nome+final não encontrar, busque só o final e depois só o nome antes de pedir telefone completo. Nunca escolha o primeiro homônimo automaticamente. Não libera captura.",
     z
       .object({
         term: z.string().max(256).optional(),
+        phoneSuffix: z
+          .string()
+          .regex(/^\d{4,15}$/)
+          .optional(),
         kind: z.enum(["individual", "group"]).optional(),
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().max(2048).optional(),
       })
       .strict(),
     true,
-    (input) => listChats(env, input),
+    (input) => searchDirectory(env, input),
   );
   tool(
     "sincronizar_diretorio",
@@ -154,38 +160,7 @@ export function createMcpServer(env: Env): McpServer {
       })
       .strict(),
     false,
-    async (input) => {
-      const f = currentFence(env),
-        provider = new ZapiClient(env),
-        before = await provider.status();
-      if (
-        !before.connected ||
-        !env.CONNECTED_PHONE ||
-        before.phone !== env.CONNECTED_PHONE
-      )
-        throw new AppError("device_changed", 409);
-      const items =
-        input.kind === "group"
-          ? await provider.listGroups(input.page, input.pageSize)
-          : await provider.listContacts(input.page, input.pageSize);
-      const after = await provider.status();
-      assertFence(env, f);
-      if (!after.connected || after.phone !== before.phone)
-        throw new AppError("device_changed", 409);
-      const complete = items.length < input.pageSize;
-      return upsertDirectoryPage(env, f, {
-        items: items.map((item) => ({
-          externalId: item.phone,
-          kind: input.kind,
-          name:
-            item.name ||
-            ("short" in item ? item.short : undefined) ||
-            "Sem nome",
-        })),
-        complete,
-        cursor: complete ? undefined : String(input.page + 1),
-      });
-    },
+    (input) => syncDirectory(env, input),
   );
   tool(
     "consultar_mensagens",

@@ -259,3 +259,10 @@ it("does not bind the platform transport to ZapiClient", async () => {
     connected: false,
   });
 });
+it("classifies provider errors without exposing arbitrary messages", () => {
+  expect(new ZapiError("Falha Z-API HTTP 429.").code).toBe("provider_http_429");
+  expect(new ZapiError("Contrato de grupo inválido.").code).toBe(
+    "provider_contract",
+  );
+  expect(new ZapiError("synthetic-secret").code).toBe("provider_failed");
+});

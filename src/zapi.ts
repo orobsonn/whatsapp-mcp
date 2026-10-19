@@ -36,9 +36,22 @@ export interface ZapiGroup {
 }
 
 export class ZapiError extends Error {
+  readonly code: string;
   constructor(message: string) {
     super(message);
     this.name = "ZapiError";
+    const status = /^Falha Z-API HTTP ([345]\d{2})\.$/.exec(message)?.[1];
+    this.code = status
+      ? `provider_http_${status}`
+      : message === "Contrato de grupo inválido."
+        ? "provider_contract"
+        : message === "Falha de rede Z-API."
+          ? "provider_network"
+          : message === "Resposta Z-API excede limite."
+            ? "provider_response_limit"
+            : message === "Resposta Z-API inválida."
+              ? "provider_invalid_response"
+              : "provider_failed";
   }
 }
 

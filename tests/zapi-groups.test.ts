@@ -348,17 +348,15 @@ describe("group provider contract", () => {
   });
 
   it("bounds and normalizes metadata without fabricating permissions", async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        json({
-          phone: "g@g.us",
-          subject: "G",
-          participants: [{ phone: "1", isAdmin: true }],
-          invitationLink: null,
-          communityId: null,
-        }),
-      );
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      json({
+        phone: "g@g.us",
+        subject: "G",
+        participants: [{ phone: "1", isAdmin: true }],
+        invitationLink: null,
+        communityId: null,
+      }),
+    );
     expect(await client(fetcher).metadata("g@g.us")).toEqual({
       phone: "g@g.us",
       subject: "G",
@@ -530,4 +528,34 @@ describe("group provider contract", () => {
         }),
       ).toThrow(ZapiError);
   });
+});
+it("directory chat projection ignores message state and accepts unnamed entries", async () => {
+  const p = client(async () =>
+    json([
+      {
+        phone: "5511988888985",
+        name: null,
+        isGroup: false,
+        unread: null,
+        lastMessageTime: { unexpected: "irrelevant" },
+      },
+      { phone: "123456@g.us", name: "Grupo", isGroup: true },
+    ]),
+  );
+  expect(await p.listDirectoryChats(1, 50)).toEqual([
+    { phone: "5511988888985", isGroup: false },
+    { phone: "123456@g.us", name: "Grupo", isGroup: true },
+  ]);
+});
+it("keeps raw pagination when a chat entry has no usable address", async () => {
+  const p = client(async () =>
+    json([
+      { phone: null, name: "Unsupported entry" },
+      { phone: "5511988888985", name: "Renata", isGroup: false },
+    ]),
+  );
+  const result = await p.listDirectoryChats(1, 50);
+  expect(result).toHaveLength(2);
+  expect(result[0]).toEqual({ unavailable: true });
+  expect(result[1]).toMatchObject({ phone: "5511988888985", name: "Renata" });
 });
