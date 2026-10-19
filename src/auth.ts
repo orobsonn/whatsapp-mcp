@@ -6,7 +6,7 @@ import OAuthProvider, {
   type OAuthResourceContext,
 } from "@cloudflare/workers-oauth-provider";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { confirmationPage } from "./pages";
+import { confirmationPage, humanErrorPage } from "./pages";
 
 export interface AuthEnv {
   DB: D1Database;
@@ -574,16 +574,9 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
                   : /illegal invocation|this reference/i.test(message)
                     ? "receiver"
                     : "unavailable";
-    return new Response(
-      `A autorização não foi concluída. Reabra a conexão pelo ChatGPT; não reenvie esta página. Código: oauth_${stage}_${reason}.`,
-      {
-        status: 403,
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "no-store",
-        },
-      },
-    );
+    return humanErrorPage("oauth_failed", 403, {
+      headers: { "X-Zap-Error-Code": `oauth_${stage}_${reason}` },
+    });
   }
 }
 

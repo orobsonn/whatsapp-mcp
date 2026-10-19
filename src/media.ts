@@ -735,3 +735,18 @@ export async function transcribeMedia(
     controller.abort();
   }
 }
+
+/** Only browser uploads from the current chat/install, never captured message attachments. */
+export async function listUploadedMedia(env: Env, chatId: string) {
+  assertActive(env);
+  const fence = currentFence(env);
+  await getChat(env, chatId, fence);
+  const rows = await env.DB.prepare(
+    `SELECT * FROM media WHERE chat_id=? AND epoch=? AND generation=? AND message_id IS NULL AND state='ready' AND ${visible()} ORDER BY created_at DESC,id DESC LIMIT 10`,
+  )
+    .bind(chatId, fence.epoch, fence.generation)
+    .all<MediaRow & { created_at: number }>();
+  assertFence(env, fence);
+  assertActive(env);
+  return rows.results.map((r) => ({ ...view(r), createdAt: r.created_at }));
+}

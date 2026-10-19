@@ -4,6 +4,14 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-19
+
+### Changed
+
+- Upload, resultado, consentimento, confirmações, convites e erros seguem o padrão visual da configuração privada.
+- Páginas humanas mostram nomes, ações e próximos passos sem JSON, hashes ou identificadores internos.
+- O cliente pode consultar os dez uploads recentes da conversa sem pedir códigos ao dono; isolamento e compatibilidade JSON preservados.
+
 ## [0.4.0] - 2026-10-19
 
 ### Changed

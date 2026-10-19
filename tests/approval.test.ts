@@ -83,7 +83,7 @@ it("binds client chat attestation to the frozen hash and rejects critical action
     assertChatConfirmation({ confirmed: true, hash }, hash, "page"),
   ).toThrow("browser_confirmation_required");
 });
-it("renders human names and consequences, with technical data collapsed and escaped", async () => {
+it("renders human names and consequences, without internal references and with escaped content", async () => {
   const envelope = {
     operation: { operation: "remove_participants", chatId: "internal-id" },
     targets: [
@@ -106,6 +106,7 @@ it("renders human names and consequences, with technical data collapsed and esca
   expect(html).toContain("Equipe");
   expect(html).toContain("&lt;script&gt;Ana&lt;/script&gt;");
   expect(html).not.toContain("<script>Ana</script>");
-  expect(html.indexOf("<details>")).toBeLessThan(html.indexOf("internal-id"));
-  expect(html).toContain("Detalhes técnicos");
+  expect(html).not.toContain("internal-id");
+  expect(html).not.toContain("<pre>");
+  expect(html).not.toContain("Detalhes técnicos");
 });

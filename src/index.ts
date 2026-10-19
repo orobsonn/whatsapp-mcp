@@ -22,7 +22,15 @@ import { mcpFetch } from "./mcp";
 import { getChat } from "./store";
 import { readMedia, uploadMedia, processMediaJobs } from "./media";
 import { getPolicyProposal, applyPolicyProposal, cleanup } from "./operations";
-import { escapeHtml, confirmationResultPage } from "./pages";
+import {
+  uploadPage,
+  uploadResultPage,
+  invitePage,
+  humanErrorPage,
+  isHumanPagePath,
+  isProtocolPath,
+  confirmationResultPage,
+} from "./pages";
 import { getGroupAction, approveGroupAction, getGroupInvite } from "./groups";
 import pkg from "../package.json";
 import { resolveRuntimeEnv } from "./connection";
@@ -103,7 +111,7 @@ async function webhook(
   );
   return json({ accepted: true, captured: result.captured });
 }
-async function browser(request: Request, env: Env): Promise<Response> {
+async function browserRoute(request: Request, env: Env): Promise<Response> {
   const u = new URL(request.url),
     parts = u.pathname.split("/");
   if (u.pathname === "/health")
@@ -113,9 +121,9 @@ async function browser(request: Request, env: Env): Promise<Response> {
       maintenance: env.MAINTENANCE !== "false",
       connectionConfigured: Boolean(
         env.ZAPI_INSTANCE_ID &&
-          env.ZAPI_TOKEN &&
-          env.ZAPI_CLIENT_TOKEN &&
-          env.MAINTENANCE === "false",
+        env.ZAPI_TOKEN &&
+        env.ZAPI_CLIENT_TOKEN &&
+        env.MAINTENANCE === "false",
       ),
     });
   if (parts[1] === "webhook") return webhook(request, env, parts);
@@ -182,20 +190,7 @@ async function browser(request: Request, env: Env): Promise<Response> {
     await requireOwner(request, env);
     const chat = await getChat(env, parts[2]!);
     const invite = await getGroupInvite(env, chat.id);
-    return new Response(
-      `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Convite do grupo</title><h1>Convite de ${escapeHtml(chat.name)}</h1><p>Quem receber este link poderá solicitar entrada. Compartilhe conscientemente.</p><p><a rel="noreferrer noopener" href="${escapeHtml(invite)}">${escapeHtml(invite)}</a></p></html>`,
-      {
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "cache-control": "no-store",
-          "content-security-policy":
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-          "x-frame-options": "DENY",
-          "x-content-type-options": "nosniff",
-          "referrer-policy": "no-referrer",
-        },
-      },
-    );
+    return invitePage(chat.name, invite);
   }
   if (parts[1] === "confirm" && parts[2] === "policy" && parts.length === 4) {
     await requireOwner(request, env);
@@ -245,18 +240,7 @@ async function browser(request: Request, env: Env): Promise<Response> {
     await requireOwner(request, env);
     const chat = await getChat(env, parts[2]!);
     if (request.method === "GET")
-      return new Response(
-        `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Adicionar arquivo</title><h1>Arquivo para ${escapeHtml(chat.name)}</h1><p>Até 2 MiB. Arquivo privado; enviar exige confirmação posterior.</p><form method="post" enctype="multipart/form-data"><input type="file" name="file" required><button>Guardar arquivo</button></form></html>`,
-        {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "content-security-policy":
-              "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-            "cache-control": "no-store",
-            "referrer-policy": "same-origin",
-          },
-        },
-      );
+      return uploadPage({ chatName: chat.name, chatId: chat.id });
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405);
     if (request.headers.get("origin") !== publicOrigin(env))
@@ -270,13 +254,21 @@ async function browser(request: Request, env: Env): Promise<Response> {
     const file = form.get("file");
     if (!(file instanceof File) || form.getAll("file").length !== 1)
       throw new AppError("invalid_file");
-    return json(
-      await uploadMedia(env, chat.id, {
-        bytes: new Uint8Array(await file.arrayBuffer()),
-        mime: file.type,
-        filename: file.name,
-      }),
-    );
+    const media = await uploadMedia(env, chat.id, {
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      mime: file.type,
+      filename: file.name,
+    });
+    const accept = request.headers.get("accept") ?? "";
+    if (accept.includes("application/json") && !accept.includes("text/html"))
+      return json(media);
+    return uploadResultPage({
+      chatName: chat.name,
+      chatId: chat.id,
+      filename: media.filename ?? "Arquivo",
+      size: media.size ?? 0,
+      kind: media.kind,
+    });
   }
   if (u.pathname === "/")
     return new Response(null, {
@@ -284,6 +276,55 @@ async function browser(request: Request, env: Env): Promise<Response> {
       headers: { location: "/setup", "cache-control": "no-store" },
     });
   return json({ error: "not_found" }, 404);
+}
+function jsonUpload(request: Request): boolean {
+  const accept = request.headers.get("accept") ?? "";
+  return (
+    /^\/upload\/[^/]+$/.test(new URL(request.url).pathname) &&
+    accept.includes("application/json") &&
+    !accept.includes("text/html")
+  );
+}
+async function browser(request: Request, env: Env): Promise<Response> {
+  try {
+    return await browserRoute(request, env);
+  } catch (error) {
+    if (jsonUpload(request))
+      return error instanceof AuthError
+        ? json({ error: "access_denied" }, 403)
+        : errorResponse(error);
+    if (isHumanPagePath(new URL(request.url).pathname))
+      return humanErrorPage(
+        error instanceof AppError ? error.code : "access_denied",
+        error instanceof AppError
+          ? error.status
+          : error instanceof AuthError
+            ? 403
+            : 500,
+        { retryPath: new URL(request.url).pathname },
+      );
+    throw error;
+  }
+}
+function presentBrowserError(request: Request, response: Response): Response {
+  const path = new URL(request.url).pathname;
+  if (
+    response.status < 400 ||
+    response.headers.get("content-type")?.includes("text/html") ||
+    isProtocolPath(path) ||
+    jsonUpload(request)
+  )
+    return response;
+  if (
+    isHumanPagePath(path) ||
+    (request.headers.get("accept")?.includes("text/html") &&
+      !isProtocolPath(path))
+  )
+    return humanErrorPage("", response.status, {
+      headers: response.headers,
+      retryPath: path,
+    });
+  return response;
 }
 const oauth = createOAuthProvider<Env>(
   { fetch: (request, env, ctx) => mcpFetch(request, env, ctx.props) },
@@ -298,18 +339,21 @@ export default {
     try {
       const path = new URL(request.url).pathname;
       if (path === "/setup" || path.startsWith("/setup/"))
-        return await setupFetch(request, rawEnv);
+        return presentBrowserError(request, await setupFetch(request, rawEnv));
       const env = await resolveRuntimeEnv(rawEnv);
       if (
         new URL(request.url).pathname.startsWith("/webhook/") ||
         new URL(request.url).pathname === "/health"
       )
         return await browser(request, env);
-      return await oauth.fetch(request, env, ctx);
+      return presentBrowserError(request, await oauth.fetch(request, env, ctx));
     } catch (error) {
-      return error instanceof AuthError
-        ? json({ error: "access_denied" }, 403)
-        : errorResponse(error);
+      return presentBrowserError(
+        request,
+        error instanceof AuthError
+          ? json({ error: "access_denied" }, 403)
+          : errorResponse(error),
+      );
     }
   },
   async scheduled(

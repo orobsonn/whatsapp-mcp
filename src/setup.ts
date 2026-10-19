@@ -12,6 +12,7 @@ import {
   getConnectionStatus,
   retryConnection,
 } from "./connection";
+import { humanErrorPage } from "./pages";
 import { renderSetupPage } from "./setup-pages";
 
 /** Human setup is deliberately routed with raw bindings, before runtime connection gates. */
@@ -106,6 +107,18 @@ export async function setupFetch(
         : error instanceof AppError
           ? error.status
           : 503;
+    if (new URL(request.url).pathname === "/setup/status")
+      return json(
+        {
+          error:
+            error instanceof AuthError
+              ? "access_denied"
+              : error instanceof AppError
+                ? error.code
+                : "unavailable",
+        },
+        status,
+      );
     // Fixed local messages only. Neither provider body nor submitted form is rendered.
     const notices: Record<string, string> = {
       provider_instance_mismatch:
@@ -148,13 +161,13 @@ export async function setupFetch(
         "Não foi possível obter uma resposta válida da Z-API. Pode haver indisponibilidade ou demora do fornecedor.",
     };
     const providerNotice = diagnostic
-      ? `${providerNotices[diagnostic[1]!]} Código: ${providerCode}.`
+      ? providerNotices[diagnostic[1]!]
       : undefined;
     const contractDiagnostic =
       /^callback_contract_(receivedCallbackUrl|messageStatusCallbackUrl|connectedCallbackUrl|deliveryCallbackUrl|disconnectedCallbackUrl|presenceChatCallbackUrl|initialDataCallbackUrl|receiveCallbackSentByMe)_(missing|long_string|invalid_type)$/.test(
         providerCode,
       )
-        ? `A resposta da Z-API está incompatível no campo indicado. Nenhum dado desse campo é exibido. Código: ${providerCode}.`
+        ? "A Z-API retornou informações que ainda não conseguimos verificar. A conexão não foi alterada. Tente novamente mais tarde ou peça ajuda pelo chat."
         : undefined;
     const message =
       status === 403
@@ -189,14 +202,9 @@ export async function setupFetch(
         /* Storage/auth failures cannot safely issue a fresh form. */
       }
     }
-    return new Response(message, {
+    return humanErrorPage(
+      error instanceof AppError ? error.code : "access_denied",
       status,
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "same-origin",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+    );
   }
 }
