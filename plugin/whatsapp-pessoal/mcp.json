@@ -1,0 +1,4 @@
+{
+ "$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+ "mcpServers":{"whatsapp-pessoal":{"type":"streamable-http","url":"https://whatsapp.robsonlins.com/mcp","extensions":{"com.openai":{"auth":{"type":"oauth","client":{"mode":"dcr"},"baseScopes":["mcp"],"defaultScopes":["mcp","offline_access"]}}}}}
+}

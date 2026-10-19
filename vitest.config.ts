@@ -13,6 +13,8 @@ export default defineConfig({
         kvNamespaces: ["OAUTH_KV"],
         bindings: {
           TEST_MIGRATIONS: migrations,
+          RUNTIME_CONFIG: "static",
+          DEVELOPMENT: "true",
           PUBLIC_ORIGIN: "http://localhost:8787",
           ACCESS_ISSUER: "",
           ACCESS_AUD: "",

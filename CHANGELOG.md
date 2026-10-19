@@ -4,6 +4,21 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+### Added
+
+- Página privada de primeira configuração da instância Z-API, com três campos, login Access do dono, nonce próprio e verificação antes da ativação.
+- Credenciais cifradas com chave exclusiva do Worker, tentativa imutável e retomada após falhas, sem exibir segredos ao navegador/MCP/logs.
+- Configuração de callbacks com recusa de integração estrangeira e readback; runtime em modo database fechado até conexão ativa.
+- Plugin privado WhatsApp pessoal para GPT, OAuth/DCR e botão de conexão após configuração.
+- Recursos Cloudflare exclusivos e publicação em whatsapp.robsonlins.com; testes de segurança/recuperação/roteamento e verificação visual mobile/desktop.
+
+### Notes
+
+- Primeira conexão apenas; alteração de conexão ativa exige fluxo específico futuro. Captura continua desabilitada até autorização por chat.
+- Login, submissão da instância e consentimento no GPT pertencem ao dono. Homologação Z-API/GPT e download real de anexos recebidos dependem dessas etapas.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added

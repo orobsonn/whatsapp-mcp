@@ -158,6 +158,95 @@ export async function requireOwner(
   }
 }
 
+/** Setup authenticates the same fixed Access owner before a connection exists.
+ * This narrowly scoped override never applies to MCP or action confirmations. */
+export async function requireSetupOwner(
+  request: Request,
+  env: AuthEnv,
+): Promise<OwnerIdentity> {
+  if (new URL(request.url).origin !== publicOrigin(env)) throw new AuthError();
+  return requireOwner(request, { ...env, MAINTENANCE: "false" });
+}
+
+export async function issueSetupNonce(
+  env: AuthEnv,
+  request: Request,
+  resourceId = "connection",
+  revision = "",
+): Promise<string> {
+  const owner = await requireSetupOwner(request, env);
+  if (
+    !resourceId ||
+    resourceId.length > 200 ||
+    !revision ||
+    revision.length > 256
+  )
+    throw new AuthError();
+  return issueNonce(
+    env,
+    owner,
+    "setup",
+    resourceId,
+    await hashEnvelope({ revision }),
+  );
+}
+
+/** Setup is an 8 KiB form; the 512-byte human-confirmation parser stays unchanged. */
+export async function consumeSetupNonce(
+  env: AuthEnv,
+  request: Request,
+  resourceId = "connection",
+  revision = "",
+): Promise<URLSearchParams> {
+  const owner = await requireSetupOwner(request, env);
+  if (
+    request.method !== "POST" ||
+    request.headers.get("Origin") !== publicOrigin(env) ||
+    request.headers.get("Content-Type")?.split(";")[0]?.trim() !==
+      "application/x-www-form-urlencoded"
+  )
+    throw new AuthError();
+  const reader = request.body?.getReader();
+  if (!reader) throw new AuthError();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > 8192) {
+        await reader.cancel();
+        throw new AuthError();
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const params = new URLSearchParams(
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+  );
+  const nonce = params.get("nonce") ?? "";
+  if (params.getAll("nonce").length !== 1 || !/^[a-f0-9]{64}$/.test(nonce))
+    throw new AuthError();
+  await consumeNonce(
+    env,
+    nonce,
+    owner,
+    "setup",
+    resourceId,
+    await hashEnvelope({ revision }),
+  );
+  return params;
+}
+
 function canonical(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean")
     return JSON.stringify(value);

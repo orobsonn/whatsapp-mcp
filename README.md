@@ -2,7 +2,9 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Estado em 19/10/2026:** software implementado e validado localmente com fixtures sintéticas. Ainda não há instância Z-API própria nem deploy/homologação real. Robson autorizou continuar sem essa conexão. O Elo e sua demonstração continuam separados.
+**Estado em 19/10/2026:** v0.3.0 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Homologação da instância e do cliente depende do preenchimento pelo dono. Elo permanece separado.
+
+[Fluxo de configuração e segurança](docs/26-setup.md). Login é necessário; nenhuma conversa é capturada automaticamente.
 
 ## Rodar e conferir
 

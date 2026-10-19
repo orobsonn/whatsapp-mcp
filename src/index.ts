@@ -25,6 +25,8 @@ import { getPolicyProposal, applyPolicyProposal, cleanup } from "./operations";
 import { escapeHtml } from "./pages";
 import { getGroupAction, approveGroupAction, getGroupInvite } from "./groups";
 import pkg from "../package.json";
+import { resolveRuntimeEnv } from "./connection";
+import { setupFetch } from "./setup";
 
 async function webhook(
   request: Request,
@@ -109,6 +111,12 @@ async function browser(request: Request, env: Env): Promise<Response> {
       service: "whatsapp-mcp",
       version: pkg.version,
       maintenance: env.MAINTENANCE !== "false",
+      connectionConfigured: Boolean(
+        env.ZAPI_INSTANCE_ID &&
+          env.ZAPI_TOKEN &&
+          env.ZAPI_CLIENT_TOKEN &&
+          env.MAINTENANCE === "false",
+      ),
     });
   if (parts[1] === "webhook") return webhook(request, env, parts);
   if (parts[1] === "confirm" && parts[2] === "send" && parts.length === 4) {
@@ -270,15 +278,10 @@ async function browser(request: Request, env: Env): Promise<Response> {
     );
   }
   if (u.pathname === "/")
-    return new Response(
-      "WhatsApp MCP pessoal. Conecte /mcp no seu cliente. Leia o manual de instalação.",
-      {
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-          "cache-control": "no-store",
-        },
-      },
-    );
+    return new Response(null, {
+      status: 302,
+      headers: { location: "/setup", "cache-control": "no-store" },
+    });
   return json({ error: "not_found" }, 404);
 }
 const oauth = createOAuthProvider<Env>(
@@ -288,10 +291,14 @@ const oauth = createOAuthProvider<Env>(
 export default {
   async fetch(
     request: Request,
-    env: Env,
+    rawEnv: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const path = new URL(request.url).pathname;
+      if (path === "/setup" || path.startsWith("/setup/"))
+        return await setupFetch(request, rawEnv);
+      const env = await resolveRuntimeEnv(rawEnv);
       if (
         new URL(request.url).pathname.startsWith("/webhook/") ||
         new URL(request.url).pathname === "/health"
@@ -306,9 +313,10 @@ export default {
   },
   async scheduled(
     _event: ScheduledController,
-    env: Env,
+    rawEnv: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
+    const env = await resolveRuntimeEnv(rawEnv);
     if (env.MAINTENANCE !== "false") return;
     await processMediaJobs(env);
     await cleanup(env);
