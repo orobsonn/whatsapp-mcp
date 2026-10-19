@@ -35,6 +35,17 @@ Gerenciar pelo chat conversas individuais e grupos: localizar destinos, consulta
 - CI, typecheck, testes relevantes no runtime real local e build passam no HEAD entregue. Cada issue registra evidência e revisão; sem inventar ensaio com provedor ou cliente externo.
 - Código completo e instalação preparada são distintos de ativação real: pareamento, credenciais, novo processador e envios de ensaio reais dependem da configuração/autorização específica do dono. Essas pendências ficam abertas até resultado observado.
 
+## Contratos fechados após revisão adversarial
+
+- Aprovar envio, ampliar captura, alterar política persistente e excluir arquivo: GET apenas apresenta; POST exige JWT Access do dono, origem exata e nonce curto de uso único vinculado a subject, epoch e envelope. Bearer MCP não autoriza confirmação. HTML externo sempre escapado; CSP e frame-ancestors restritos.
+- Epoch externo da instalação cobre tokens/grants MCP, confirmação, ações e trabalhos; geração externa da conexão cobre destino/aparelho e callbacks. Restore requer rotação do epoch antes de liberar acesso. Access logout isolado não promete revogação imediata MCP; tokens têm validade limitada e epoch atual é revalidado em toda ferramenta/objeto.
+- D1 é autoridade de visibilidade. Mídia usa chave imutável, claim durável e publicação condicional por versão/epoch/geração/tombstone após gravar R2. Fence perdido remove resultado; exclusão bloqueia leitura antes de remover bytes/derivados. Sem transação aberta durante rede/IA. Bytes já transmitidos não são recuperáveis.
+- Webhook dá sucesso somente após persistir mensagem e trabalho de mídia de chat liberado. Cron retoma tabela D1 com lease/retry limitado; waitUntil sozinho não é durabilidade. Atrasos/falhas aparecem na cobertura.
+- Envio de mídia usa Base64 limitado do objeto privado imutável (2 MiB máximo); não há bucket público/capacidade pública. Abrir mídia autenticada pelo navegador e obter conteúdo no MCP são caminhos distintos: MCP devolve conteúdo pequeno em bloco suportado, maior via navegador do dono com limitação explícita.
+- Namespace de captura: geração + conversa externa exata + ID externo. Identificadores de retorno Z-API permanecem distintos. Status sem conversa e com correlação ambígua fica pendente, nunca altera o primeiro registro encontrado. Entrega/progressão e falha/incerteza são campos separados.
+- Limites iniciais: evento JSON 256 KiB, arquivo 2 MiB, texto 8 mil caracteres, página 50 mensagens/32 mil caracteres, diretório 100 itens por página, até 5 trabalhos de mídia por tick, lease 120s, 3 tentativas com backoff. Áudio somente formatos suportados; duração declarada acima de 120s é recusada e não é tratada como medição confiável. Limite de bytes e deadline protegem o processador; não se promete aferir duração real sem decoder. Valores operacionais conservadores, não capacidade comercial.
+- Escopo de conclusão confirmado pelo dono: continuar sem instância Z-API; entregar software verificado e manual, mantendo ativação/homologação real pendentes.
+
 ## Entrega por issues
 
 1. Fundação e arquivo: schema, ingestão, diretório, consulta/cobertura, isolamento e testes D1.
