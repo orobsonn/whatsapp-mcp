@@ -278,3 +278,36 @@ it("preserves the saved contact name when chat metadata has no name", async () =
     (await listChats(e, { phoneSuffix: "8985" })).items.map((x) => x.name),
   ).toEqual(["Renata Copy"]);
 });
+
+it("continua páginas de grupos com entradas não-grupo sem classificá-las como grupos", async () => {
+  const pages: number[] = [];
+  const transport: typeof fetch = async (input) => {
+    const u = new URL(String(input));
+    if (u.pathname.endsWith("/status"))
+      return Response.json({ connected: true });
+    if (u.pathname.endsWith("/device"))
+      return Response.json({ phone: e.CONNECTED_PHONE });
+    const p = Number(u.searchParams.get("page"));
+    pages.push(p);
+    return Response.json(
+      p === 1
+        ? [
+            { phone: "5511999999999", name: "Pessoa", isGroup: false },
+            { phone: "100-group", name: "Equipe", isGroup: true },
+          ]
+        : [{ phone: "200-group", name: "Equipe 2", isGroup: true }],
+    );
+  };
+  const result = await syncDirectory(
+    e,
+    { kind: "group", pageSize: 2 },
+    new ZapiClient(e, transport),
+    3,
+  );
+  expect(pages).toEqual([1, 2]);
+  expect(result.complete).toBe(true);
+  expect(result.unsupportedEntriesInBatch).toBe(1);
+  expect(
+    (await listChats(e, { kind: "group" })).items.map((x) => x.name).sort(),
+  ).toEqual(["Equipe", "Equipe 2"]);
+});

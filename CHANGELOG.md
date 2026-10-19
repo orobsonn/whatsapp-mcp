@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-19
+
+### Fixed
+
+- Catálogo MCP publica os campos de preparar_envio em um objeto válido, preservando validação estrita por tipo e envio de imagem com legenda.
+- Registros explicitamente marcados como não-grupo na resposta da Z-API deixam de bloquear a busca; paginação bruta, contagem de exclusões e limites preservados.
+- Recusas HTTP explícitas mantêm o código sanitizado e encerram a ação como rejeitada; timeout, rede, 408 e resultado desconhecido continuam incertos, sem repetição automática.
+- Instruções do Zap explicam localização automática de uploads e proíbem substituir silenciosamente imagem por texto.
+
 ## [0.4.1] - 2026-10-19
 
 ### Changed

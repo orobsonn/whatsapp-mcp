@@ -266,3 +266,16 @@ it("classifies provider errors without exposing arbitrary messages", () => {
   );
   expect(new ZapiError("synthetic-secret").code).toBe("provider_failed");
 });
+
+it("does not let an explicitly non-group row break the groups page or alter raw pagination", async () => {
+  const c = client(async () =>
+    json([
+      { phone: "5511999999999", name: "Individual", isGroup: false },
+      { phone: "123456-group", name: "Equipe", isGroup: true },
+    ]),
+  );
+  expect(await c.listGroups(1, 2)).toEqual([
+    { unavailable: true },
+    { phone: "123456-group", name: "Equipe", isGroup: true },
+  ]);
+});
