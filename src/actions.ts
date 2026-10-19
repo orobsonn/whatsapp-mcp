@@ -323,30 +323,11 @@ export async function executeAction(
       externalId: ids.messageId,
       status: "accepted",
     });
-    // A callback can precede the response even when this chat is not archived.
-    const m = await env.DB.prepare(
-      "SELECT MAX(status_rank) status_rank FROM (SELECT status_rank FROM messages WHERE chat_id=? AND external_id=? AND epoch=? AND generation=? UNION ALL SELECT status_rank FROM pending_statuses WHERE chat_external_id=? AND external_id=? AND epoch=? AND generation=?)",
-    )
-      .bind(
-        chat.id,
-        ids.messageId,
-        a.epoch,
-        a.generation,
-        chat.external_id,
-        ids.messageId,
-        a.epoch,
-        a.generation,
-      )
-      .first<{ status_rank: number }>();
-    if (m && m.status_rank > 0)
-      await reconcileActions(env, {
-        externalId: ids.messageId,
-        chatExternalId: chat.external_id,
-        status:
-          (["accepted", "sent", "delivered", "read"] as const)[
-            m.status_rank - 1
-          ] ?? "accepted",
-      });
+    await reconcileActions(env, {
+      externalId: ids.messageId,
+      chatExternalId: chat.external_id,
+      status: "accepted",
+    });
   }
   return getAction(env, id);
 }
@@ -418,21 +399,48 @@ export async function reconcileActions(
   const rank =
     ["accepted", "sent", "delivered", "read"].indexOf(input.status) + 1;
   if (rank < 1) throw new AppError("invalid_status");
-  // Correlation uniqueness and monotonic rank are evaluated in the same atomic write.
+  // Correlation, durable evidence and monotonic rank share one atomic snapshot.
+  // A status without a chat is usable only if every currently known record agrees on one chat.
   await env.DB.prepare(
-    `WITH candidates AS (SELECT a.id FROM actions a JOIN chats c ON c.id=a.chat_id WHERE a.epoch=? AND a.generation=? AND a.provider_message_id=? AND (? IS NULL OR c.external_id=?))
-     UPDATE actions SET status=?,last_error=NULL WHERE id IN (SELECT id FROM candidates) AND (SELECT COUNT(*) FROM candidates)=1
+    `WITH related_chats AS (
+       SELECT chat_id FROM messages WHERE epoch=? AND generation=? AND external_id=?
+       UNION SELECT chat_id FROM actions WHERE epoch=? AND generation=? AND provider_message_id=?
+     ), candidates AS (
+       SELECT a.id,a.chat_id,c.external_id chat_external_id FROM actions a JOIN chats c ON c.id=a.chat_id
+       WHERE a.epoch=? AND a.generation=? AND a.provider_message_id=? AND (? IS NULL OR c.external_id=?)
+     ), evidence AS (
+       SELECT MAX(rank) rank FROM (
+         SELECT ? rank
+         UNION ALL SELECT m.status_rank FROM messages m JOIN candidates c ON m.chat_id=c.chat_id WHERE m.epoch=? AND m.generation=? AND m.external_id=?
+         UNION ALL SELECT p.status_rank FROM pending_statuses p JOIN candidates c ON (p.chat_external_id=c.chat_external_id OR (p.chat_external_id='' AND (SELECT COUNT(*) FROM related_chats)=1)) WHERE p.epoch=? AND p.generation=? AND p.external_id=?
+       )
+     )
+     UPDATE actions SET status=CASE (SELECT rank FROM evidence) WHEN 1 THEN 'accepted' WHEN 2 THEN 'sent' WHEN 3 THEN 'delivered' WHEN 4 THEN 'read' END,last_error=NULL
+     WHERE id IN (SELECT id FROM candidates) AND (SELECT COUNT(*) FROM candidates)=1
+     AND (? IS NOT NULL OR (SELECT COUNT(*) FROM related_chats)=1)
      AND status IN ('attempting','uncertain','accepted','sent','delivered','read')
-     AND CASE status WHEN 'accepted' THEN 1 WHEN 'sent' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END < ?`,
+     AND CASE status WHEN 'accepted' THEN 1 WHEN 'sent' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END < (SELECT rank FROM evidence)`,
   )
     .bind(
       f.epoch,
       f.generation,
       input.externalId,
+      f.epoch,
+      f.generation,
+      input.externalId,
+      f.epoch,
+      f.generation,
+      input.externalId,
       input.chatExternalId ?? null,
       input.chatExternalId ?? null,
-      input.status,
       rank,
+      f.epoch,
+      f.generation,
+      input.externalId,
+      f.epoch,
+      f.generation,
+      input.externalId,
+      input.chatExternalId ?? null,
     )
     .run();
 }

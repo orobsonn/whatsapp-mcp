@@ -365,29 +365,81 @@ describe("ações D1 com uma tentativa e autorização vinculada", () => {
       expect((await getAction(e, a.id)).status).toBe("read");
     },
   );
-  it("concilia callback anterior ao retorno mesmo sem liberar arquivo do chat", async () => {
+  it.each([true, false])(
+    "concilia callback anterior ao retorno sem captura, com conversa=%s",
+    async (withChat) => {
+      const a = await approved();
+      await setCapture(e, a.chat.id, false, f);
+      const result = await executeAction(e, a.id, {
+        status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+        send: async () => {
+          await ingestStatus(e, f, {
+            externalId: "early-without-capture",
+            chatExternalId: withChat ? "group-actions" : undefined,
+            status: "read",
+          });
+          await reconcileActions(e, {
+            externalId: "early-without-capture",
+            chatExternalId: withChat ? "group-actions" : undefined,
+            status: "read",
+          });
+          return { messageId: "early-without-capture" };
+        },
+      });
+      expect(result.status).toBe("read");
+      expect(
+        (await queryMessages(e, { chatId: a.chat.id })).items,
+      ).toHaveLength(0);
+    },
+  );
+  it("status sem conversa permanece pendente quando o mesmo ID pertence a dois chats", async () => {
     const a = await approved();
-    await setCapture(e, a.chat.id, false, f);
-    const result = await executeAction(e, a.id, {
+    await executeAction(e, a.id, {
       status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
-      send: async () => {
-        await ingestStatus(e, f, {
-          externalId: "early-without-capture",
-          chatExternalId: "group-actions",
-          status: "read",
-        });
-        await reconcileActions(e, {
-          externalId: "early-without-capture",
-          chatExternalId: "group-actions",
-          status: "read",
-        });
-        return { messageId: "early-without-capture" };
-      },
+      send: async () => ({ messageId: "ambiguous" }),
     });
-    expect(result.status).toBe("read");
-    expect((await queryMessages(e, { chatId: a.chat.id })).items).toHaveLength(
-      0,
-    );
+    const chat = (
+      await upsertDirectoryPage(e, f, {
+        items: [
+          {
+            externalId: "other-action-chat",
+            kind: "individual",
+            name: "Outro destino",
+          },
+        ],
+        complete: true,
+      })
+    ).items[0]!;
+    const b = await prepareAction(e, {
+      chatId: chat.id,
+      kind: "text",
+      text: "Outro",
+    });
+    await approveAction(e, b.id, {
+      sub: e.OWNER_SUB,
+      epoch: f.epoch,
+      purpose: "send",
+      resourceId: b.id,
+      envelopeHash: b.hash,
+    });
+    await executeAction(e, b.id, {
+      status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+      send: async () => ({ messageId: "ambiguous" }),
+    });
+    await ingestStatus(e, f, { externalId: "ambiguous", status: "read" });
+    await reconcileActions(e, { externalId: "ambiguous", status: "read" });
+    await reconcileActions(e, {
+      externalId: "ambiguous",
+      chatExternalId: "group-actions",
+      status: "accepted",
+    });
+    expect((await getAction(e, a.id)).status).toBe("accepted");
+    expect((await getAction(e, b.id)).status).toBe("accepted");
+    expect(
+      await env.DB.prepare(
+        "SELECT status_rank FROM pending_statuses WHERE external_id='ambiguous' AND chat_external_id=''",
+      ).first(),
+    ).toMatchObject({ status_rank: 4 });
   });
   it("WAV permanece arquivável mas não cria proposta enviável nem consome tentativa", async () => {
     const a = await prepared();
