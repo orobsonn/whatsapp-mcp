@@ -53,6 +53,55 @@ beforeEach(async () => {
   );
 });
 describe("operação local", () => {
+  it("diagnóstico conta jobs em processamento e retry como pendentes", async () => {
+    const c = await chat();
+    await setCapture(e, c.id, true, fence);
+    await ingestEvent(e, fence, {
+      chatExternalId: "synthetic-group",
+      externalId: "media-job",
+      fromMe: false,
+      kind: "pdf",
+      timestamp: 1,
+      media: {
+        url: "https://media.example.test/a.pdf",
+        mime: "application/pdf",
+      },
+    });
+    await env.DB.prepare("UPDATE media_jobs SET status='processing'").run();
+    expect((await diagnostics(e)).counts.pendingJobs).toBe(1);
+    await env.DB.prepare("UPDATE media_jobs SET status='retry'").run();
+    expect((await diagnostics(e)).counts.pendingJobs).toBe(1);
+  });
+  it("backlog de retenção não impede limpeza de bytes nem expiração de nonces", async () => {
+    const c = await chat();
+    await setCapture(e, c.id, true, fence);
+    for (let i = 0; i < 51; i++)
+      await ingestEvent(e, fence, {
+        chatExternalId: "synthetic-group",
+        externalId: `old-${i}`,
+        fromMe: false,
+        kind: "text",
+        text: "antigo",
+        timestamp: 1,
+      });
+    await env.DB.prepare(
+      "INSERT INTO media(id,chat_id,epoch,generation,kind,state,object_key,deleted_at,created_at) VALUES('orphan',?,?,?,'pdf','deleted','old-object',1,1)",
+    )
+      .bind(c.id, fence.epoch, fence.generation)
+      .run();
+    await e.MEDIA.put("old-object", "bytes");
+    await env.DB.prepare(
+      "INSERT INTO auth_nonces(nonce_hash,sub,epoch,purpose,resource_id,envelope_hash,expires_at) VALUES('expired','owner',?,'send','a','hash',0)",
+    )
+      .bind(fence.epoch)
+      .run();
+    const p = await proposalPolicy(e, { kind: "retention", days: 1 });
+    await applyPolicyProposal(e, p.id, await proof(p));
+    const cleaned = await cleanup(e);
+    expect(cleaned.objectsDeleted).toBeGreaterThan(0);
+    expect(cleaned.noncesDeleted).toBeGreaterThan(0);
+    expect(await e.MEDIA.get("old-object")).toBeNull();
+  });
   it("proposta de captura exige proof exato e é consumida uma vez", async () => {
     const c = await chat();
     const p = await proposalPolicy(e, {

@@ -55,6 +55,17 @@ export class ProviderUncertainError extends ZapiError {
 const MAX_RESPONSE = 256 * 1024;
 const MAX_MEDIA = 2 * 1024 * 1024;
 const TIMEOUT_MS = 15_000;
+const SEND_MIMES = {
+  image: ["image/png", "image/jpeg", "image/webp"],
+  pdf: ["application/pdf"],
+  audio: ["audio/mpeg", "audio/ogg", "audio/mp4"],
+} as const;
+export function supportsSendMedia(
+  kind: "image" | "pdf" | "audio",
+  mime: string,
+): boolean {
+  return (SEND_MIMES[kind] as readonly string[]).includes(mime);
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -148,11 +159,7 @@ function sendBody(envelope: ZapiSendEnvelope): {
     body.caption = envelope.caption;
   }
   if (envelope.kind === "image") {
-    body.image = media(envelope.bytes, envelope.mime, [
-      "image/png",
-      "image/jpeg",
-      "image/webp",
-    ]);
+    body.image = media(envelope.bytes, envelope.mime, SEND_MIMES.image);
     return { endpoint: "send-image", body };
   }
   if (envelope.kind === "pdf") {
@@ -162,16 +169,12 @@ function sendBody(envelope: ZapiSendEnvelope): {
       envelope.fileName === "..pdf"
     )
       throw new ZapiError("Nome de arquivo inválido.");
-    body.document = media(envelope.bytes, envelope.mime, ["application/pdf"]);
+    body.document = media(envelope.bytes, envelope.mime, SEND_MIMES.pdf);
     body.fileName = envelope.fileName;
     return { endpoint: "send-document/pdf", body };
   }
   if (envelope.kind === "audio") {
-    body.audio = media(envelope.bytes, envelope.mime, [
-      "audio/mpeg",
-      "audio/ogg",
-      "audio/mp4",
-    ]);
+    body.audio = media(envelope.bytes, envelope.mime, SEND_MIMES.audio);
     return { endpoint: "send-audio", body };
   }
   throw new ZapiError("Tipo de envio inválido.");

@@ -3,6 +3,7 @@ import type { Env } from "./env";
 import { AppError, assertActive, currentFence, sha256, LIMITS } from "./core";
 import { getChat } from "./store";
 import type { ZapiSendEnvelope, ZapiSendIds } from "./zapi";
+import { supportsSendMedia } from "./zapi";
 import { ingestEvent, ingestStatus } from "./capture";
 
 const ref = z.string().min(1).max(200);
@@ -117,6 +118,8 @@ async function resolveMedia(
     m.size > LIMITS.mediaBytes
   )
     throw new AppError("media_unavailable", 409);
+  if (!supportsSendMedia(envelope.kind, m.mime))
+    throw new AppError("unsupported_send_media", 415);
   return m;
 }
 export async function prepareAction(env: Env, input: unknown) {
@@ -320,11 +323,20 @@ export async function executeAction(
       externalId: ids.messageId,
       status: "accepted",
     });
-    // Re-read pending status through the same namespace when the callback preceded API response.
+    // A callback can precede the response even when this chat is not archived.
     const m = await env.DB.prepare(
-      "SELECT status_rank FROM messages WHERE chat_id=? AND external_id=? AND epoch=? AND generation=?",
+      "SELECT MAX(status_rank) status_rank FROM (SELECT status_rank FROM messages WHERE chat_id=? AND external_id=? AND epoch=? AND generation=? UNION ALL SELECT status_rank FROM pending_statuses WHERE chat_external_id=? AND external_id=? AND epoch=? AND generation=?)",
     )
-      .bind(chat.id, ids.messageId, a.epoch, a.generation)
+      .bind(
+        chat.id,
+        ids.messageId,
+        a.epoch,
+        a.generation,
+        chat.external_id,
+        ids.messageId,
+        a.epoch,
+        a.generation,
+      )
       .first<{ status_rank: number }>();
     if (m && m.status_rank > 0)
       await reconcileActions(env, {
@@ -402,8 +414,16 @@ export async function reconcileActions(
   },
 ) {
   const f = currentFence(env);
-  const rows = await env.DB.prepare(
-    "SELECT a.id,a.status FROM actions a JOIN chats c ON c.id=a.chat_id WHERE a.epoch=? AND a.generation=? AND a.provider_message_id=? AND (? IS NULL OR c.external_id=?)",
+  assertActive(env);
+  const rank =
+    ["accepted", "sent", "delivered", "read"].indexOf(input.status) + 1;
+  if (rank < 1) throw new AppError("invalid_status");
+  // Correlation uniqueness and monotonic rank are evaluated in the same atomic write.
+  await env.DB.prepare(
+    `WITH candidates AS (SELECT a.id FROM actions a JOIN chats c ON c.id=a.chat_id WHERE a.epoch=? AND a.generation=? AND a.provider_message_id=? AND (? IS NULL OR c.external_id=?))
+     UPDATE actions SET status=?,last_error=NULL WHERE id IN (SELECT id FROM candidates) AND (SELECT COUNT(*) FROM candidates)=1
+     AND status IN ('attempting','uncertain','accepted','sent','delivered','read')
+     AND CASE status WHEN 'accepted' THEN 1 WHEN 'sent' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END < ?`,
   )
     .bind(
       f.epoch,
@@ -411,18 +431,8 @@ export async function reconcileActions(
       input.externalId,
       input.chatExternalId ?? null,
       input.chatExternalId ?? null,
+      input.status,
+      rank,
     )
-    .all<{ id: string; status: string }>();
-  if (rows.results.length !== 1) return;
-  const a = rows.results[0]!,
-    rank = ["accepted", "sent", "delivered", "read"];
-  if (
-    rank.indexOf(input.status) > rank.indexOf(a.status) &&
-    !["cancelled", "proposed", "approved"].includes(a.status)
-  )
-    await env.DB.prepare(
-      "UPDATE actions SET status=?,last_error=NULL WHERE id=? AND status=?",
-    )
-      .bind(input.status, a.id, a.status)
-      .run();
+    .run();
 }

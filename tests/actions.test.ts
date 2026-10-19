@@ -8,6 +8,7 @@ import {
   executeAction,
   getAction,
   cancelAction,
+  reconcileActions,
 } from "../src/actions";
 import { upsertDirectoryPage, setCapture } from "../src/directory";
 import { queryMessages, ingestStatus } from "../src/capture";
@@ -79,7 +80,9 @@ const e: Env = {
 };
 const f = { epoch: "e1", generation: "g1" };
 beforeEach(async () => {
-  await env.DB.prepare("DELETE FROM actions").run();
+  await env.DB.exec(
+    "DELETE FROM actions; DELETE FROM media_jobs; DELETE FROM media_derivatives; DELETE FROM media; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM participants; DELETE FROM directory_syncs; DELETE FROM chats;",
+  );
 });
 async function prepared() {
   const { items } = await upsertDirectoryPage(e, f, {
@@ -296,5 +299,127 @@ describe("ações D1 com uma tentativa e autorização vinculada", () => {
     });
     await executeAction(e, a.id, provider);
     expect(sends).toBe(0);
+  });
+  it.each([
+    ["delivered", "read"],
+    ["read", "delivered"],
+  ] as const)(
+    "preserva READ com callbacks concorrentes %s/%s",
+    async (firstStatus, secondStatus) => {
+      const a = await approved();
+      await executeAction(e, a.id, {
+        status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+        send: async () => ({ messageId: "concurrent-status" }),
+      });
+      let arrived = 0;
+      let release: () => void = () => {};
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const wrap = (
+        statement: D1PreparedStatement,
+        sql: string,
+      ): D1PreparedStatement =>
+        new Proxy(statement, {
+          get(target, key) {
+            if (key === "bind")
+              return (...values: unknown[]) =>
+                wrap(target.bind(...values), sql);
+            if (key === "all" && sql.startsWith("SELECT a.id,a.status"))
+              return async () => {
+                const found = await target.all();
+                if (++arrived === 2) release();
+                await barrier;
+                return found;
+              };
+            const value = Reflect.get(target, key);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      const db = new Proxy(e.DB, {
+        get(target, key) {
+          if (key === "prepare")
+            return (sql: string) => wrap(target.prepare(sql), sql);
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      await Promise.all([
+        reconcileActions(
+          { ...e, DB: db },
+          {
+            externalId: "concurrent-status",
+            chatExternalId: "group-actions",
+            status: firstStatus,
+          },
+        ),
+        reconcileActions(
+          { ...e, DB: db },
+          {
+            externalId: "concurrent-status",
+            chatExternalId: "group-actions",
+            status: secondStatus,
+          },
+        ),
+      ]);
+      expect((await getAction(e, a.id)).status).toBe("read");
+    },
+  );
+  it("concilia callback anterior ao retorno mesmo sem liberar arquivo do chat", async () => {
+    const a = await approved();
+    await setCapture(e, a.chat.id, false, f);
+    const result = await executeAction(e, a.id, {
+      status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+      send: async () => {
+        await ingestStatus(e, f, {
+          externalId: "early-without-capture",
+          chatExternalId: "group-actions",
+          status: "read",
+        });
+        await reconcileActions(e, {
+          externalId: "early-without-capture",
+          chatExternalId: "group-actions",
+          status: "read",
+        });
+        return { messageId: "early-without-capture" };
+      },
+    });
+    expect(result.status).toBe("read");
+    expect((await queryMessages(e, { chatId: a.chat.id })).items).toHaveLength(
+      0,
+    );
+  });
+  it("WAV permanece arquivável mas não cria proposta enviável nem consome tentativa", async () => {
+    const a = await prepared();
+    const bytes = new Uint8Array(46),
+      d = new DataView(bytes.buffer);
+    bytes.set(new TextEncoder().encode("RIFF"), 0);
+    d.setUint32(4, 38, true);
+    bytes.set(new TextEncoder().encode("WAVEfmt "), 8);
+    d.setUint32(16, 16, true);
+    const media = await uploadMedia(e, a.chat.id, {
+      bytes,
+      mime: "audio/wav",
+      filename: "ensaio.wav",
+    });
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) n FROM actions",
+    ).first<{ n: number }>();
+    await expect(
+      prepareAction(e, {
+        chatId: a.chat.id,
+        kind: "audio",
+        mediaId: media.id,
+        mediaHash: media.sha256,
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_send_media" });
+    expect(
+      (
+        await env.DB.prepare("SELECT COUNT(*) n FROM actions").first<{
+          n: number;
+        }>()
+      )?.n,
+    ).toBe(before?.n);
+    expect((await readMedia(e, media.id)).bytes).toEqual(bytes);
   });
 });

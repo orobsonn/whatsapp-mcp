@@ -400,9 +400,7 @@ async function redactMessages(
     ).bind(...ids),
   ]);
 }
-export async function cleanup(
-  env: Env,
-): Promise<{
+export async function cleanup(env: Env): Promise<{
   retainedMessages: number;
   objectsDeleted: number;
   noncesDeleted: number;
@@ -426,7 +424,12 @@ export async function cleanup(
     const expired = await env.DB.prepare(
       "SELECT id FROM messages WHERE epoch=? AND generation=? AND deleted_at IS NULL AND timestamp<? ORDER BY timestamp LIMIT ?",
     )
-      .bind(fence.epoch, fence.generation, time - days * 86_400_000, budget)
+      .bind(
+        fence.epoch,
+        fence.generation,
+        time - days * 86_400_000,
+        Math.min(budget, 25),
+      )
       .all<{ id: string }>();
     const ids = expired.results.map((x) => x.id);
     await redactMessages(env, ids, time);
@@ -438,7 +441,7 @@ export async function cleanup(
     ? await env.DB.prepare(
         `SELECT 'media' source,m.id,m.object_key FROM media m WHERE m.deleted_at IS NOT NULL AND m.object_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM media live WHERE live.object_key=m.object_key AND live.deleted_at IS NULL) AND NOT EXISTS(SELECT 1 FROM media_derivatives live WHERE live.object_key=m.object_key AND live.state<>'deleted') UNION ALL SELECT 'derivative' source,d.id,d.object_key FROM media_derivatives d JOIN media m ON m.id=d.media_id WHERE d.state='deleted' AND m.deleted_at IS NOT NULL AND d.object_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM media live WHERE live.object_key=d.object_key AND live.deleted_at IS NULL) AND NOT EXISTS(SELECT 1 FROM media_derivatives live WHERE live.object_key=d.object_key AND live.state<>'deleted') LIMIT ?`,
       )
-        .bind(budget)
+        .bind(Math.min(budget, 10))
         .all<{ source: string; id: string; object_key: string }>()
     : { results: [] };
   for (const item of objects.results) {
@@ -462,7 +465,7 @@ export async function cleanup(
     const r = await env.DB.prepare(
       "DELETE FROM auth_nonces WHERE nonce_hash IN(SELECT nonce_hash FROM auth_nonces WHERE expires_at<? ORDER BY expires_at LIMIT ?)",
     )
-      .bind(Math.floor(time / 1000), budget)
+      .bind(Math.floor(time / 1000), Math.min(budget, 5))
       .run();
     noncesDeleted = r.meta.changes;
     budget -= noncesDeleted;
@@ -471,7 +474,7 @@ export async function cleanup(
     const r = await env.DB.prepare(
       "DELETE FROM policy_proposals WHERE id IN(SELECT id FROM policy_proposals WHERE expires_at<? ORDER BY expires_at LIMIT ?)",
     )
-      .bind(time, budget)
+      .bind(time, Math.min(budget, 3))
       .run();
     proposalsDeleted = r.meta.changes;
     budget -= proposalsDeleted;
@@ -480,7 +483,7 @@ export async function cleanup(
     const r = await env.DB.prepare(
       "DELETE FROM media_jobs WHERE id IN(SELECT j.id FROM media_jobs j JOIN media m ON m.id=j.media_id WHERE (j.epoch<>? OR j.generation<>? OR (m.deleted_at IS NOT NULL AND j.status IN('cancelled','failed'))) LIMIT ?)",
     )
-      .bind(fence.epoch, fence.generation, budget)
+      .bind(fence.epoch, fence.generation, Math.min(budget, 3))
       .run();
     jobsDeleted = r.meta.changes;
     budget -= jobsDeleted;
@@ -489,7 +492,12 @@ export async function cleanup(
     const r = await env.DB.prepare(
       "DELETE FROM pending_statuses WHERE id IN(SELECT id FROM pending_statuses WHERE epoch<>? OR generation<>? OR created_at<? ORDER BY created_at LIMIT ?)",
     )
-      .bind(fence.epoch, fence.generation, time - 7 * 86_400_000, budget)
+      .bind(
+        fence.epoch,
+        fence.generation,
+        time - 7 * 86_400_000,
+        Math.min(budget, 2),
+      )
       .run();
     pendingStatusesDeleted = r.meta.changes;
     budget -= pendingStatusesDeleted;
@@ -498,7 +506,7 @@ export async function cleanup(
     const r = await env.DB.prepare(
       "UPDATE actions SET status=CASE WHEN status IN('proposed','approved') THEN 'expired' ELSE status END,envelope_json='{}',last_error=NULL WHERE id IN(SELECT id FROM actions WHERE expires_at<? AND envelope_json<>'{}' ORDER BY expires_at LIMIT ?)",
     )
-      .bind(time, budget)
+      .bind(time, Math.min(budget, 2))
       .run();
     actionPayloadsCleared = r.meta.changes;
   }
@@ -545,7 +553,7 @@ export async function diagnostics(env: Env) {
         "SELECT COUNT(*) n FROM media WHERE epoch=? AND generation=? AND deleted_at IS NULL AND state<>'ready'",
       ),
       pendingJobs: await count(
-        "SELECT COUNT(*) n FROM media_jobs WHERE epoch=? AND generation=? AND status IN('pending','leased')",
+        "SELECT COUNT(*) n FROM media_jobs WHERE epoch=? AND generation=? AND status IN('pending','retry','processing')",
       ),
       uncertainActions: await count(
         "SELECT COUNT(*) n FROM actions WHERE epoch=? AND generation=? AND status IN('uncertain','attempting')",
