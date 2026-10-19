@@ -55,15 +55,20 @@ function configured(env: Env): void {
   publicOrigin(env);
 }
 function credentialsValid(c: ConnectionCredentials): void {
-  for (const value of [c.instanceId, c.instanceToken, c.clientToken])
+  for (const field of ["instanceId", "instanceToken", "clientToken"] as const) {
+    const value = c[field];
+    const valid =
+      field === "clientToken" ? /^[\x21-\x7e]+$/ : /^[A-Za-z0-9_-]+$/;
     if (
       typeof value !== "string" ||
       !value ||
       value.length > 512 ||
-      !/^[A-Za-z0-9_-]+$/.test(value)
+      !valid.test(value)
     )
-      fail("invalid_credentials", 400);
+      fail(`invalid_credentials_${field}`, 400);
+  }
 }
+
 async function key(env: Env): Promise<CryptoKey> {
   try {
     if (!env.ENCRYPTION_KEY || !/^[A-Za-z0-9+/]{43}=$/.test(env.ENCRYPTION_KEY))
@@ -394,6 +399,11 @@ export async function connectConnection(
   fetcher: typeof fetch = fetch,
 ): Promise<ConnectionStatus> {
   configured(env);
+  c = {
+    instanceId: c.instanceId.trim(),
+    instanceToken: c.instanceToken.trim(),
+    clientToken: c.clientToken.trim(),
+  };
   credentialsValid(c);
   await key(env);
   if (await row(env)) return fail("connection_exists");

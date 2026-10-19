@@ -110,6 +110,12 @@ export async function setupFetch(
     const notices: Record<string, string> = {
       provider_instance_mismatch:
         "A Z-API retornou dados de uma instância diferente da informada. A conexão permanece bloqueada.",
+      invalid_credentials_instanceId:
+        "O ID da instância está vazio ou com formato inválido. Cole somente o ID, sem a URL da API.",
+      invalid_credentials_instanceToken:
+        "O token da instância está vazio ou com formato inválido. Cole somente o token, sem a URL da API.",
+      invalid_credentials_clientToken:
+        "O Client-Token está vazio ou contém espaços internos/quebras de linha. Copie o token da conta na área Segurança da Z-API.",
       invalid_credentials:
         "Confira as três credenciais no painel Z-API e tente novamente.",
       invalid_setup_form: "Confira os campos e tente novamente.",

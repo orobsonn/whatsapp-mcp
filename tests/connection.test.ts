@@ -299,3 +299,42 @@ it("does not activate when the readback omits required configured callbacks", as
   ).resolves.toMatchObject({ state: "pending" });
   expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
 });
+
+it("accepts surrounding clipboard whitespace without changing credential contents", async () => {
+  const p = provider();
+  await expect(
+    connectConnection(
+      settings(),
+      {
+        instanceId: "  synthetic-instance\n",
+        instanceToken: "\tsynthetic-token ",
+        clientToken: " synthetic-client\n",
+      },
+      p.fetcher,
+    ),
+  ).resolves.toMatchObject({ state: "active" });
+  expect(String(p.fetcher.mock.calls[0][0])).toContain(
+    "/synthetic-instance/token/synthetic-token/status",
+  );
+  expect(
+    new Headers(p.fetcher.mock.calls[0][1]?.headers).get("Client-Token"),
+  ).toBe("synthetic-client");
+});
+it("accepts visible header-token punctuation but blocks embedded whitespace", async () => {
+  const p = provider();
+  await expect(
+    connectConnection(
+      settings(),
+      { ...credentials, clientToken: "synthetic.client+token/=" },
+      p.fetcher,
+    ),
+  ).resolves.toMatchObject({ state: "active" });
+  await env.DB.prepare("DELETE FROM connection_state").run();
+  await expect(
+    connectConnection(
+      settings(),
+      { ...credentials, clientToken: "synthetic\nclient" },
+      p.fetcher,
+    ),
+  ).rejects.toThrow("invalid_credentials_clientToken");
+});
