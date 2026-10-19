@@ -4,7 +4,7 @@ Leia `README.md`, `BRIEF.md`, `CONTEXT.md` e `docs/08-proxima-sessao.md` antes d
 
 ## Escopo da pasta
 
-Atualização em 19/10/2026: Robson autorizou repositório público, PRD, issues e implementação contínua. Confirmou que ainda não existe instância Z-API separada e pediu continuar sem ela. O software pode ser desenvolvido/testado com dados sintéticos; ativação, pareamento, segredos e homologação real continuam pendentes. O dono pediu explicitamente usar apenas a lógica do claude-harness, sem instalá-lo aqui; esta instrução prevalece sobre onboarding automático de harness. Estado atual e decisões: `PRD.md`, `docs/09-plano-de-implementacao.md` e `docs/10-entrega.md`.
+Atualização em 19/10/2026: Robson autorizou repositório público, PRD, issues e implementação contínua. Confirmou que ainda não existe instância Z-API separada e pediu continuar sem ela. O software pode ser desenvolvido/testado com dados sintéticos; ativação, pareamento, segredos e homologação real continuam pendentes. O dono pediu explicitamente usar apenas a lógica do claude-harness, sem instalá-lo aqui; esta instrução prevalece sobre onboarding automático de harness. Estado atual e decisões: `PRD.md`, `docs/09-plano-de-implementacao.md` e `docs/10-entrega.md`. Depois da v0.1.0, o dono pediu toda a gestão de grupos oferecida pela API; escopo atual em `docs/20-grupos-prd.md` e contratos em `docs/21-grupos-contratos.md`, issues #8–10, marco v0.2.0.
 
 Esta pasta começou como handoff documental, por pedido de Robson. Criar código, dependências, instância, deploy ou operação real não foi autorizado nesta rodada. Quando houver um pedido posterior de implementação, seguir seu escopo e avançar sem pedir de novo permissões já dadas nessa sessão.
 

@@ -17,13 +17,15 @@ Gerenciar pelo chat conversas individuais e grupos: localizar destinos, consulta
 7. MCP remoto via SDK oficial, Streamable HTTP, OAuth com PKCE e login do dono via Cloudflare Access/JWT validado por issuer/audience/subject. Access não protege o callback Z-API. Leitura, upload, confirmação e objeto exigem autorização atual. Tokens, callback e payload bruto não entram em logs/respostas MCP.
 8. Diagnóstico sanitizado; modo manutenção que bloqueia novas ações; retenção configurável e desabilitada até escolha explícita, captura apenas dos chats liberados; exportação por conversa e exclusão local abrangendo derivados. Rotação/restore invalida ações antigas pelo epoch configurado fora do banco restaurado. Manual de instalação, operação e matriz de homologação real.
 
+9. Ampliação autorizada em 19/10: administração completa das 22 operações documentadas de Groups, 9 de Chats aplicáveis e 4 de Communities para associações. Criação/entrada, participantes/admins, permissões, convites, menções e organização do chat seguem proposta → confirmação humana → tentativa única. Inventário, restrições e revisão adversarial: [PRD de grupos](docs/20-grupos-prd.md).
+
 ## Padrões reversíveis escolhidos pela engenharia
 
 - Instalação de um dono, sem SaaS/multi-tenancy, motor genérico de provedores, embeddings, agendador de campanhas ou memória automática.
 - Nenhuma conversa é capturada até liberada pelo dono. Cadastro de destino/diretório não libera captura implicitamente. Temporárias/visualização única são registradas apenas como indisponíveis.
 - Arquivo não expira automaticamente antes de uma política explícita. Dados de ensaio são sintéticos. Ativação real requer nova instância/credenciais, lista de chats e política escolhidas pelo dono.
 - Nomes e conteúdo necessários podem aparecer nos resultados; endereços externos, URLs de mídia e segredos permanecem no backend. Saída sempre tratada como conteúdo não confiável, nunca autorização.
-- Recursos de organização/administração do WhatsApp (mute, pin, arquivar, participantes, criar grupo, apagar para todos), OCR, importação retroativa, canais e ligações ficam como horizonte documentado: nenhum contrato real ou prioridade foi definido para eles. Ações locais de arquivo e gestão dos chats autorizados estão incluídas.
+- OCR, importação retroativa, canais, ligações e apagar mensagens para todos continuam fora deste marco. Administração de grupos e organização de chats passam ao escopo da v0.2.0 por pedido posterior do dono. Não se amplia automaticamente para toda a administração de comunidades.
 
 ## Critérios de aceitação
 
@@ -54,6 +56,7 @@ Gerenciar pelo chat conversas individuais e grupos: localizar destinos, consulta
 4. Acesso e confirmação: OAuth MCP, login do dono e aprovação humana vinculada.
 5. Experiência MCP: catálogo fechado, integração das jornadas e teste de cliente completo.
 6. Operação e entrega: retenção, exclusão/export, recuperação, CI, documentação, release e homologação.
+7. Ampliação de grupos: issues #8–10, contratos oficiais completos, serviço recuperável, catálogo MCP e confirmação, revisão/CI/release 0.2.0.
 
 ## Política de execução
 

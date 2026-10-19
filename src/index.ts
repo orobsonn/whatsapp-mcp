@@ -23,6 +23,7 @@ import { getChat } from "./store";
 import { readMedia, uploadMedia, processMediaJobs } from "./media";
 import { getPolicyProposal, applyPolicyProposal, cleanup } from "./operations";
 import { escapeHtml } from "./pages";
+import { getGroupAction, approveGroupAction, getGroupInvite } from "./groups";
 import pkg from "../package.json";
 
 async function webhook(
@@ -135,6 +136,59 @@ async function browser(request: Request, env: Env): Promise<Response> {
           status: "approved",
           next: "Volte ao chat e execute a ação confirmada.",
         });
+      },
+    );
+  }
+  if (parts[1] === "confirm" && parts[2] === "group" && parts.length === 4) {
+    await requireOwner(request, env);
+    const action = await getGroupAction(env, parts[3]!);
+    if (
+      action.redacted ||
+      action.status !== "proposed" ||
+      action.expiresAt <= Date.now()
+    )
+      throw new AppError("action_not_proposed", 409);
+    return humanConfirmation(
+      request,
+      env,
+      {
+        purpose: "group",
+        resourceId: action.id,
+        envelope: action.envelope,
+        summary:
+          "Alteração no WhatsApp. Confira a operação, os alvos e os avisos abaixo. Limpar/excluir chat altera o WhatsApp; o arquivo local é separado. Menção a todos alcança os membros presentes na execução. autoInvite pode enviar convites privados.",
+      },
+      async (proof) => {
+        await approveGroupAction(env, action.id, proof);
+        return json({
+          id: action.id,
+          status: "approved",
+          next: "Volte ao chat e execute a ação confirmada.",
+        });
+      },
+    );
+  }
+  if (
+    parts[1] === "groups" &&
+    parts[3] === "invite" &&
+    parts.length === 4 &&
+    request.method === "GET"
+  ) {
+    await requireOwner(request, env);
+    const chat = await getChat(env, parts[2]!);
+    const invite = await getGroupInvite(env, chat.id);
+    return new Response(
+      `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Convite do grupo</title><h1>Convite de ${escapeHtml(chat.name)}</h1><p>Quem receber este link poderá solicitar entrada. Compartilhe conscientemente.</p><p><a rel="noreferrer noopener" href="${escapeHtml(invite)}">${escapeHtml(invite)}</a></p></html>`,
+      {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "content-security-policy":
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+          "x-frame-options": "DENY",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        },
       },
     );
   }

@@ -1,3 +1,7 @@
+import {
+  invalidateGroupActionsStatements,
+  cleanupGroupActions,
+} from "./groups";
 import type { Env } from "./env";
 import type { ConfirmationProof } from "./auth";
 import { hashEnvelope } from "./auth";
@@ -354,6 +358,12 @@ export async function applyPolicyProposal(
       ),
     );
     statements.push(
+      ...invalidateGroupActionsStatements(env, chat, {
+        sql: guard,
+        binds: [...bindGuard],
+      }),
+    );
+    statements.push(
       env.DB.prepare(
         `UPDATE policy_proposals SET status='applied',applied_at=? WHERE id<>? AND kind IN('capture','delete') AND status='proposed' AND epoch=? AND generation=? AND json_extract(envelope_json,'$.chatId')=? AND ${guard}`,
       ).bind(
@@ -408,6 +418,7 @@ export async function cleanup(env: Env): Promise<{
   jobsDeleted: number;
   pendingStatusesDeleted: number;
   actionPayloadsCleared: number;
+  groupPayloadsCleared: number;
 }> {
   const fence = currentFence(env),
     time = now();
@@ -419,7 +430,8 @@ export async function cleanup(env: Env): Promise<{
     proposalsDeleted = 0,
     jobsDeleted = 0,
     pendingStatusesDeleted = 0,
-    actionPayloadsCleared = 0;
+    actionPayloadsCleared = 0,
+    groupPayloadsCleared = 0;
   if (days !== null) {
     const expired = await env.DB.prepare(
       "SELECT id FROM messages WHERE epoch=? AND generation=? AND deleted_at IS NULL AND timestamp<? ORDER BY timestamp LIMIT ?",
@@ -509,7 +521,10 @@ export async function cleanup(env: Env): Promise<{
       .bind(time, Math.min(budget, 2))
       .run();
     actionPayloadsCleared = r.meta.changes;
+    budget -= actionPayloadsCleared;
   }
+  if (budget)
+    groupPayloadsCleared = await cleanupGroupActions(env, Math.min(budget, 2));
   return {
     retainedMessages,
     objectsDeleted,
@@ -518,6 +533,7 @@ export async function cleanup(env: Env): Promise<{
     jobsDeleted,
     pendingStatusesDeleted,
     actionPayloadsCleared,
+    groupPayloadsCleared,
   };
 }
 
@@ -554,6 +570,12 @@ export async function diagnostics(env: Env) {
       ),
       pendingJobs: await count(
         "SELECT COUNT(*) n FROM media_jobs WHERE epoch=? AND generation=? AND status IN('pending','retry','processing')",
+      ),
+      uncertainGroupActions: await count(
+        "SELECT COUNT(*) n FROM group_actions WHERE epoch=? AND generation=? AND status IN('uncertain','attempting')",
+      ),
+      pendingGroupActions: await count(
+        "SELECT COUNT(*) n FROM group_actions WHERE epoch=? AND generation=? AND status IN('proposed','approved')",
       ),
       uncertainActions: await count(
         "SELECT COUNT(*) n FROM actions WHERE epoch=? AND generation=? AND status IN('uncertain','attempting')",
