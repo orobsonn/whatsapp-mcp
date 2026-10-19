@@ -265,10 +265,16 @@ class SetupProvider {
 function webhook(env: Env, p: ConnectionPayload): string {
   return `${publicOrigin(env)}/webhook/${p.generation}/${p.webhookSecret}`;
 }
-function validateCallbacks(me: Record<string, unknown>, url: string): void {
+function validateCallbacks(
+  me: Record<string, unknown>,
+  url: string,
+  instanceId: string,
+): void {
+  if (me.id !== instanceId) fail("provider_instance_mismatch");
   for (const field of CALLBACKS) {
     const value = me[field];
-    if (value === null) continue;
+    // Z-API omits unconfigured optional callbacks in its live representation.
+    if (!Object.hasOwn(me, field) || value === null) continue;
     if (typeof value !== "string" || value.length > 2048) {
       const type = !Object.hasOwn(me, field)
         ? "missing"
@@ -279,7 +285,10 @@ function validateCallbacks(me: Record<string, unknown>, url: string): void {
     }
     if (value !== "" && value !== url) fail("instance_in_use");
   }
-  if (typeof me.receiveCallbackSentByMe !== "boolean")
+  if (
+    Object.hasOwn(me, "receiveCallbackSentByMe") &&
+    typeof me.receiveCallbackSentByMe !== "boolean"
+  )
     fail(
       `callback_contract_receiveCallbackSentByMe_${Object.hasOwn(me, "receiveCallbackSentByMe") ? "invalid_type" : "missing"}`,
     );
@@ -327,7 +336,7 @@ async function runAttempt(
   try {
     await checkpoint("preflight");
     if ((await provider.phone()) !== p.phone) fail("device_changed");
-    validateCallbacks(await provider.request("me"), url);
+    validateCallbacks(await provider.request("me"), url, p.instanceId);
     const updates = [
       ["update-webhook-received", { value: url }],
       ["update-webhook-received-delivery", { value: url }],
@@ -340,7 +349,7 @@ async function runAttempt(
     }
     await checkpoint("readback");
     const me = await provider.request("me");
-    validateCallbacks(me, url);
+    validateCallbacks(me, url, p.instanceId);
     if (
       me.receivedCallbackUrl !== url ||
       me.messageStatusCallbackUrl !== url ||
@@ -395,7 +404,11 @@ export async function connectConnection(
     generation: random(16),
     webhookSecret: random(32),
   };
-  validateCallbacks(await provider.request("me"), webhook(env, p));
+  validateCallbacks(
+    await provider.request("me"),
+    webhook(env, p),
+    p.instanceId,
+  );
   const cipher = await encrypt(env, p),
     attemptId = random(16),
     now = Date.now();

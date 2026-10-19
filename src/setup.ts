@@ -108,6 +108,8 @@ export async function setupFetch(
           : 503;
     // Fixed local messages only. Neither provider body nor submitted form is rendered.
     const notices: Record<string, string> = {
+      provider_instance_mismatch:
+        "A Z-API retornou dados de uma instância diferente da informada. A conexão permanece bloqueada.",
       invalid_credentials:
         "Confira as três credenciais no painel Z-API e tente novamente.",
       invalid_setup_form: "Confira os campos e tente novamente.",

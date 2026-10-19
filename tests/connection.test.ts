@@ -38,6 +38,10 @@ function provider(
   options: {
     foreign?: boolean;
     missing?: boolean;
+    omitEmpty?: boolean;
+    wrongInstance?: boolean;
+    omittedReadback?: boolean;
+    invalidCallback?: boolean;
     nullCallbacks?: boolean;
     timeout?: boolean;
     badReadback?: boolean;
@@ -47,7 +51,13 @@ function provider(
   let me: Record<string, unknown> = Object.fromEntries(
     callbacks.map((k) => [k, options.nullCallbacks ? null : ""]),
   );
+  me.id = options.wrongInstance ? "different-instance" : credentials.instanceId;
   me.receiveCallbackSentByMe = false;
+  if (options.omitEmpty) {
+    for (const k of callbacks) delete me[k];
+    delete me.receiveCallbackSentByMe;
+  }
+  if (options.invalidCallback) me.connectedCallbackUrl = false;
   if (options.foreign) me.connectedCallbackUrl = "https://elo.example/webhook";
   if (options.missing) delete me.deliveryCallbackUrl;
   let writes = 0,
@@ -79,9 +89,11 @@ function provider(
       });
     if (path === "me")
       return Response.json(
-        options.badReadback && writes
-          ? { ...me, receiveCallbackSentByMe: false }
-          : me,
+        options.omittedReadback && writes
+          ? { id: credentials.instanceId }
+          : options.badReadback && writes
+            ? { ...me, receiveCallbackSentByMe: false }
+            : me,
       );
     throw Error("unexpected endpoint");
   });
@@ -111,7 +123,11 @@ describe("first connection transaction", () => {
     ).rejects.toThrow("connection_exists");
     expect(p.puts()).toHaveLength(4);
   });
-  it.each([{ foreign: true }, { missing: true }])(
+  it.each([
+    { foreign: true },
+    { wrongInstance: true },
+    { invalidCallback: true },
+  ])(
     "refuses foreign or incomplete callbacks before any PUT %o",
     async (options) => {
       const p = provider(options);
@@ -270,10 +286,16 @@ it("still protects foreign callbacks among explicit nulls", async () => {
   ).rejects.toThrow("instance_in_use");
   expect(p.puts()).toHaveLength(0);
 });
-it("identifies a missing field without including its value", async () => {
-  const p = provider({ missing: true });
+it("accepts empty callbacks omitted by the real provider representation", async () => {
+  const p = provider({ omitEmpty: true });
   await expect(
     connectConnection(settings(), credentials, p.fetcher),
-  ).rejects.toThrow("callback_contract_deliveryCallbackUrl_missing");
-  expect(p.puts()).toHaveLength(0);
+  ).resolves.toMatchObject({ state: "active" });
+});
+it("does not activate when the readback omits required configured callbacks", async () => {
+  const p = provider({ omittedReadback: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).resolves.toMatchObject({ state: "pending" });
+  expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
 });
