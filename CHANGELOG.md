@@ -14,10 +14,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Plugin privado WhatsApp pessoal para GPT, OAuth/DCR e botão de conexão após configuração.
 - Recursos Cloudflare exclusivos e publicação em whatsapp.robsonlins.com; testes de segurança/recuperação/roteamento e verificação visual mobile/desktop.
 
+### Fixed
+
+- Consentimento OAuth permite o redirecionamento somente à origem validada do cliente; preserva nonce único e proteção de origem.
+- Transporte fetch no Workers, normalização de credenciais coladas e contratos opcionais de callbacks da Z-API.
+
 ### Notes
 
 - Primeira conexão apenas; alteração de conexão ativa exige fluxo específico futuro. Captura continua desabilitada até autorização por chat.
-- Login, submissão da instância e consentimento no GPT pertencem ao dono. Homologação Z-API/GPT e download real de anexos recebidos dependem dessas etapas.
+- Login, submissão da instância e consentimento no GPT pertencem ao dono. Zap autenticado no GPT e consulta paginada real à Z-API validados. Envios, alterações de grupos e download real de anexos recebidos não foram homologados.
 
 ## [0.2.0] - 2026-10-19
 

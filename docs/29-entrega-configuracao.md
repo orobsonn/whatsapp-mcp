@@ -23,3 +23,14 @@ Conta: Robson Lins. Worker whatsapp-mcp; D1 whatsapp-mcp-private; R2 whatsapp-mc
 Preencher ID/token/client-token na página e confirmar exclusividade; configuração valida status/device/me, aplica callbacks próprios e faz readback antes de active. O botão de GPT abre o plugin privado; instalação/login/consentimento precisam ocorrer na conta do dono. Só declarar conexão GPT concluída após ferramenta real autenticada. O download de mídia recebida depende da validação dos hosts reais e do primeiro teste; transcrição permanece opt-in.
 
 Não houve envio de mensagens ou leitura de conversas reais no provisionamento. Valores dos segredos não foram emitidos por ferramentas nem versionados. O pacote local está em plugin/whatsapp-pessoal e a issue de implementação é #12.
+
+## Validação final em 19/10/2026
+
+- 159 testes passaram em 13 arquivos; TypeScript e build dry-run passaram.
+- Zap instalado e autenticado via OAuth/DCR no GPT: https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64. Este é o destino atual do botão; o pacote anterior acima registra a primeira tentativa.
+- Cliente real executou diagnosticar, capacidades_grupos e listar_chats_grupo(page=1,pageSize=1): sucesso, rawCount=1, items=0, continuação disponível. Nenhum nome/conteúdo exibido, envio ou alteração de grupo realizado.
+- Ferramentas Zap disponíveis neste chat também executaram diagnóstico, capacidades e busca local autenticados. Arquivo vazio, zero chats com captura liberada.
+- Health ativo: versão 0.3.0, maintenance=false, connectionConfigured=true.
+- Causa do bloqueio OAuth: CSP form-action impedia o redirect após POST. Corrigido permitindo somente a origem do callback já validado; nonce único e proteção de origem preservados.
+- Homologação de envios, efeitos de grupos, mídia recebida e transcrição continua pendente de cenário controlado. Nenhum desses efeitos é declarado validado por mocks.
+- Automação de acompanhamento continua pausada conforme pedido do dono.
