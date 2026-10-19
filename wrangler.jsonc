@@ -27,7 +27,7 @@
   // Ativação explícita: "ai": { "binding": "AI" },
   "vars": {
     "RUNTIME_CONFIG": "database",
-    "GPT_PLUGIN_URL": "https://chatgpt.com/plugins/plugins_6ad6558a72448191b0e9b187af951d7f",
+    "GPT_PLUGIN_URL": "https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64",
     "PUBLIC_ORIGIN": "https://whatsapp.robsonlins.com",
     "ACCESS_ISSUER": "https://orobsonn.cloudflareaccess.com",
     "ACCESS_AUD": "059c5acda78277bb1525f1900a6765d75befb4c3525ad26a3c954c15477b75c6",

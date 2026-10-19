@@ -55,15 +55,20 @@ function configured(env: Env): void {
   publicOrigin(env);
 }
 function credentialsValid(c: ConnectionCredentials): void {
-  for (const value of [c.instanceId, c.instanceToken, c.clientToken])
+  for (const field of ["instanceId", "instanceToken", "clientToken"] as const) {
+    const value = c[field];
+    const valid =
+      field === "clientToken" ? /^[\x21-\x7e]+$/ : /^[A-Za-z0-9_-]+$/;
     if (
       typeof value !== "string" ||
       !value ||
       value.length > 512 ||
-      !/^[A-Za-z0-9_-]+$/.test(value)
+      !valid.test(value)
     )
-      fail("invalid_credentials", 400);
+      fail(`invalid_credentials_${field}`, 400);
+  }
 }
+
 async function key(env: Env): Promise<CryptoKey> {
   try {
     if (!env.ENCRYPTION_KEY || !/^[A-Za-z0-9+/]{43}=$/.test(env.ENCRYPTION_KEY))
@@ -212,7 +217,8 @@ class SetupProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {
-      const response = await this.fetcher(
+      const fetcher = this.fetcher;
+      const response = await fetcher(
         `https://api.z-api.io/instances/${encodeURIComponent(this.c.instanceId)}/token/${encodeURIComponent(this.c.instanceToken)}/${path}`,
         {
           method: body ? "PUT" : "GET",
@@ -225,7 +231,16 @@ class SetupProvider {
           ...(body ? { body: JSON.stringify(body) } : {}),
         },
       );
-      if (!response.ok) return fail("provider_unavailable", 502);
+      if (!response.ok) {
+        const reason = [401, 403].includes(response.status)
+          ? "auth"
+          : response.status === 404
+            ? "instance"
+            : response.status === 429
+              ? "rate"
+              : "http";
+        return fail(`provider_${reason}_${path}`, 502);
+      }
       const bytes = await readBounded(response, 65536);
       const data = JSON.parse(
         new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
@@ -235,8 +250,10 @@ class SetupProvider {
       if (!data || typeof data !== "object" || Array.isArray(data))
         throw Error();
       return data;
-    } catch {
-      return fail("provider_unavailable", 502);
+    } catch (error) {
+      if (error instanceof AppError && error.code.startsWith("provider_"))
+        throw error;
+      return fail(`provider_network_${path}`, 502);
     } finally {
       clearTimeout(timer);
     }
@@ -253,15 +270,33 @@ class SetupProvider {
 function webhook(env: Env, p: ConnectionPayload): string {
   return `${publicOrigin(env)}/webhook/${p.generation}/${p.webhookSecret}`;
 }
-function validateCallbacks(me: Record<string, unknown>, url: string): void {
+function validateCallbacks(
+  me: Record<string, unknown>,
+  url: string,
+  instanceId: string,
+): void {
+  if (me.id !== instanceId) fail("provider_instance_mismatch");
   for (const field of CALLBACKS) {
     const value = me[field];
-    if (typeof value !== "string" || value.length > 2048)
-      fail("callback_contract_unavailable");
+    // Z-API omits unconfigured optional callbacks in its live representation.
+    if (!Object.hasOwn(me, field) || value === null) continue;
+    if (typeof value !== "string" || value.length > 2048) {
+      const type = !Object.hasOwn(me, field)
+        ? "missing"
+        : typeof value === "string"
+          ? "long_string"
+          : "invalid_type";
+      fail(`callback_contract_${field}_${type}`);
+    }
     if (value !== "" && value !== url) fail("instance_in_use");
   }
-  if (typeof me.receiveCallbackSentByMe !== "boolean")
-    fail("callback_contract_unavailable");
+  if (
+    Object.hasOwn(me, "receiveCallbackSentByMe") &&
+    typeof me.receiveCallbackSentByMe !== "boolean"
+  )
+    fail(
+      `callback_contract_receiveCallbackSentByMe_${Object.hasOwn(me, "receiveCallbackSentByMe") ? "invalid_type" : "missing"}`,
+    );
 }
 async function runAttempt(
   env: Env,
@@ -306,7 +341,7 @@ async function runAttempt(
   try {
     await checkpoint("preflight");
     if ((await provider.phone()) !== p.phone) fail("device_changed");
-    validateCallbacks(await provider.request("me"), url);
+    validateCallbacks(await provider.request("me"), url, p.instanceId);
     const updates = [
       ["update-webhook-received", { value: url }],
       ["update-webhook-received-delivery", { value: url }],
@@ -319,7 +354,7 @@ async function runAttempt(
     }
     await checkpoint("readback");
     const me = await provider.request("me");
-    validateCallbacks(me, url);
+    validateCallbacks(me, url, p.instanceId);
     if (
       me.receivedCallbackUrl !== url ||
       me.messageStatusCallbackUrl !== url ||
@@ -364,6 +399,11 @@ export async function connectConnection(
   fetcher: typeof fetch = fetch,
 ): Promise<ConnectionStatus> {
   configured(env);
+  c = {
+    instanceId: c.instanceId.trim(),
+    instanceToken: c.instanceToken.trim(),
+    clientToken: c.clientToken.trim(),
+  };
   credentialsValid(c);
   await key(env);
   if (await row(env)) return fail("connection_exists");
@@ -374,7 +414,11 @@ export async function connectConnection(
     generation: random(16),
     webhookSecret: random(32),
   };
-  validateCallbacks(await provider.request("me"), webhook(env, p));
+  validateCallbacks(
+    await provider.request("me"),
+    webhook(env, p),
+    p.instanceId,
+  );
   const cipher = await encrypt(env, p),
     attemptId = random(16),
     now = Date.now();

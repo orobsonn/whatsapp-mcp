@@ -1,3 +1,4 @@
+import { confirmationPage } from "../src/pages";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { env, createExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -293,6 +294,9 @@ describe("actual OAuth provider protocol", () => {
       createExecutionContext(),
     );
     expect(consent.status).toBe(200);
+    expect(consent.headers.get("Content-Security-Policy")).toContain(
+      "form-action 'self' https://client.example;",
+    );
     const html = await consent.text();
     expect(html).toContain("&lt;img");
     const nonce = html.match(/name="nonce" value="([^"]+)"/)![1];
@@ -450,4 +454,44 @@ describe("bounded authentication requests", () => {
     );
     expect(response.status).toBe(413);
   });
+});
+
+it("confines OAuth form redirects to the current client's exact origin", () => {
+  const input = {
+    title: "Consent",
+    summary: "",
+    envelope: "{}",
+    hash: "hash",
+    nonce: "nonce",
+    action: "/authorize",
+  };
+  const one = confirmationPage({
+    ...input,
+    oauth: {
+      clientName: "Client",
+      redirectUri: "https://chatgpt.com/callback?private=value",
+      scopes: ["mcp"],
+    },
+  });
+  const two = confirmationPage({
+    ...input,
+    oauth: {
+      clientName: "Other",
+      redirectUri: "https://other.example/callback",
+      scopes: ["mcp"],
+    },
+  });
+  const action = confirmationPage(input);
+  expect(one.headers.get("Content-Security-Policy")).toContain(
+    "form-action 'self' https://chatgpt.com;",
+  );
+  expect(one.headers.get("Content-Security-Policy")).not.toMatch(
+    /other.example|callback|private|\*/,
+  );
+  expect(two.headers.get("Content-Security-Policy")).not.toContain(
+    "chatgpt.com",
+  );
+  expect(action.headers.get("Content-Security-Policy")).toContain(
+    "form-action 'self';",
+  );
 });

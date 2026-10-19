@@ -1,3 +1,4 @@
+import { AppError } from "./core";
 import {
   ProviderUncertainError,
   ZapiClient,
@@ -533,6 +534,42 @@ export class ZapiGroupsClient extends ZapiClient {
     const data = await this.request(`chats${page(p, size)}`);
     if (!Array.isArray(data) || data.length > size) throw invalid();
     return data.map(chat);
+  }
+  async listDirectoryChats(
+    p: number,
+    size: number,
+  ): Promise<
+    (Pick<GroupChat, "phone" | "name" | "isGroup"> | { unavailable: true })[]
+  > {
+    const data = await this.request(`chats${page(p, size)}`);
+    if (!Array.isArray(data))
+      throw new AppError("directory_chats_response_shape");
+    if (data.length > size) throw new AppError("directory_chats_page_overflow");
+    return data.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new AppError("directory_chats_row_shape");
+      const r = value as Record<string, unknown>;
+      if (
+        typeof r.phone !== "string" ||
+        !r.phone ||
+        r.phone.length > 256 ||
+        /[\x00-\x1f\x7f]/.test(r.phone)
+      )
+        return { unavailable: true as const };
+      if (
+        r.isGroup !== undefined &&
+        r.isGroup !== null &&
+        typeof r.isGroup !== "boolean"
+      )
+        throw new AppError("directory_chats_group_flag_contract");
+      return {
+        phone: address(r.phone),
+        ...(typeof r.name === "string" && r.name
+          ? { name: r.name.slice(0, 256) }
+          : {}),
+        ...(typeof r.isGroup === "boolean" ? { isGroup: r.isGroup } : {}),
+      };
+    });
   }
   async chatMetadata(group: string): Promise<GroupChat> {
     return chat(

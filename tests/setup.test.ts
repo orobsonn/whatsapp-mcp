@@ -211,7 +211,7 @@ describe("private setup owner and CSRF", () => {
     expect(response.status).toBe(400);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
-    expect(html).toContain("Confira as três credenciais");
+    expect(html).toContain("O ID da instância está vazio ou com formato inválido.");
     expect(html).toMatch(/name="nonce" value="[a-f0-9]{64}"/);
     expect(html).not.toMatch(/secret-token|secret-client|invalid value/);
   });

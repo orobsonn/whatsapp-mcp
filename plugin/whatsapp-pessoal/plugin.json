@@ -1,8 +1,24 @@
 {
-  "$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name":"whatsapp-pessoal",
-  "version":"0.3.0",
-  "description":"Consulte seu arquivo privado e gerencie grupos e mensagens do WhatsApp com confirmação humana.",
-  "author":{"name":"Robson Lins"},
-  "extensions":{"com.openai":{"interface":{"displayName":"WhatsApp pessoal","shortDescription":"Conversas e grupos pelo chat","longDescription":"Conecte sua instância Z-API pela página privada, escolha quais chats capturar e consulte mensagens e arquivos. Envios e administração de grupos exigem confirmação do dono no navegador.","developerName":"Robson Lins","category":"Productivity","capabilities":[],"logo":"./assets/icon.svg","composerIcon":"./assets/icon.svg","defaultPrompt":"Confira a conexão do meu WhatsApp e mostre os grupos disponíveis."}}}
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "whatsapp-pessoal",
+  "version": "0.3.1",
+  "description": "Consulte seu arquivo privado e gerencie grupos e mensagens do WhatsApp com confirmação humana.",
+  "author": {
+    "name": "Robson Lins"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "WhatsApp pessoal",
+        "shortDescription": "Conversas e grupos pelo chat",
+        "longDescription": "Conecte sua instância Z-API pela página privada, escolha quais chats capturar e consulte mensagens e arquivos. Envios e administração de grupos exigem confirmação do dono no navegador.",
+        "developerName": "Robson Lins",
+        "category": "Productivity",
+        "capabilities": [],
+        "logo": "./assets/icon.png",
+        "composerIcon": "./assets/icon.png",
+        "defaultPrompt": "Confira a conexão do meu WhatsApp e mostre os grupos disponíveis."
+      }
+    }
+  }
 }

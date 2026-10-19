@@ -38,15 +38,26 @@ function provider(
   options: {
     foreign?: boolean;
     missing?: boolean;
+    omitEmpty?: boolean;
+    wrongInstance?: boolean;
+    omittedReadback?: boolean;
+    invalidCallback?: boolean;
+    nullCallbacks?: boolean;
     timeout?: boolean;
     badReadback?: boolean;
     phoneChanged?: boolean;
   } = {},
 ) {
   let me: Record<string, unknown> = Object.fromEntries(
-    callbacks.map((k) => [k, ""]),
+    callbacks.map((k) => [k, options.nullCallbacks ? null : ""]),
   );
+  me.id = options.wrongInstance ? "different-instance" : credentials.instanceId;
   me.receiveCallbackSentByMe = false;
+  if (options.omitEmpty) {
+    for (const k of callbacks) delete me[k];
+    delete me.receiveCallbackSentByMe;
+  }
+  if (options.invalidCallback) me.connectedCallbackUrl = false;
   if (options.foreign) me.connectedCallbackUrl = "https://elo.example/webhook";
   if (options.missing) delete me.deliveryCallbackUrl;
   let writes = 0,
@@ -78,9 +89,11 @@ function provider(
       });
     if (path === "me")
       return Response.json(
-        options.badReadback && writes
-          ? { ...me, receiveCallbackSentByMe: false }
-          : me,
+        options.omittedReadback && writes
+          ? { id: credentials.instanceId }
+          : options.badReadback && writes
+            ? { ...me, receiveCallbackSentByMe: false }
+            : me,
       );
     throw Error("unexpected endpoint");
   });
@@ -110,7 +123,11 @@ describe("first connection transaction", () => {
     ).rejects.toThrow("connection_exists");
     expect(p.puts()).toHaveLength(4);
   });
-  it.each([{ foreign: true }, { missing: true }])(
+  it.each([
+    { foreign: true },
+    { wrongInstance: true },
+    { invalidCallback: true },
+  ])(
     "refuses foreign or incomplete callbacks before any PUT %o",
     async (options) => {
       const p = provider(options);
@@ -206,4 +223,118 @@ describe("first connection transaction", () => {
     ).run();
     expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
   });
+});
+
+describe("safe provider diagnostics", () => {
+  it.each([
+    [401, "provider_auth_status"],
+    [403, "provider_auth_status"],
+    [404, "provider_instance_status"],
+    [429, "provider_rate_status"],
+    [503, "provider_http_status"],
+  ])(
+    "identifies HTTP %s without exposing provider content",
+    async (status, code) => {
+      const fetcher = vi.fn<typeof fetch>(
+        async () => new Response("synthetic-secret", { status }),
+      );
+      await expect(
+        connectConnection(settings(), credentials, fetcher),
+      ).rejects.toMatchObject({ code });
+      expect((await getConnectionStatus(settings())).state).toBe(
+        "unconfigured",
+      );
+    },
+  );
+  it("identifies the failing read endpoint on network errors", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input).endsWith("/status"))
+        return Response.json({ connected: true });
+      throw Error("synthetic-secret");
+    });
+    await expect(
+      connectConnection(settings(), credentials, fetcher),
+    ).rejects.toMatchObject({ code: "provider_network_device" });
+  });
+});
+
+it("calls the transport without binding it to the provider instance", async () => {
+  const mock = provider();
+  const transport: typeof fetch = function (
+    this: unknown,
+    ...args: Parameters<typeof fetch>
+  ) {
+    if (this !== undefined && this !== globalThis)
+      throw new TypeError("Illegal invocation");
+    return mock.fetcher(...args);
+  };
+  await expect(
+    connectConnection(settings(), credentials, transport),
+  ).resolves.toMatchObject({ state: "active" });
+});
+
+it("accepts explicit null callbacks but requires configured URLs in readback", async () => {
+  const p = provider({ nullCallbacks: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).resolves.toMatchObject({ state: "active" });
+});
+it("still protects foreign callbacks among explicit nulls", async () => {
+  const p = provider({ nullCallbacks: true, foreign: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).rejects.toThrow("instance_in_use");
+  expect(p.puts()).toHaveLength(0);
+});
+it("accepts empty callbacks omitted by the real provider representation", async () => {
+  const p = provider({ omitEmpty: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).resolves.toMatchObject({ state: "active" });
+});
+it("does not activate when the readback omits required configured callbacks", async () => {
+  const p = provider({ omittedReadback: true });
+  await expect(
+    connectConnection(settings(), credentials, p.fetcher),
+  ).resolves.toMatchObject({ state: "pending" });
+  expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
+});
+
+it("accepts surrounding clipboard whitespace without changing credential contents", async () => {
+  const p = provider();
+  await expect(
+    connectConnection(
+      settings(),
+      {
+        instanceId: "  synthetic-instance\n",
+        instanceToken: "\tsynthetic-token ",
+        clientToken: " synthetic-client\n",
+      },
+      p.fetcher,
+    ),
+  ).resolves.toMatchObject({ state: "active" });
+  expect(String(p.fetcher.mock.calls[0][0])).toContain(
+    "/synthetic-instance/token/synthetic-token/status",
+  );
+  expect(
+    new Headers(p.fetcher.mock.calls[0][1]?.headers).get("Client-Token"),
+  ).toBe("synthetic-client");
+});
+it("accepts visible header-token punctuation but blocks embedded whitespace", async () => {
+  const p = provider();
+  await expect(
+    connectConnection(
+      settings(),
+      { ...credentials, clientToken: "synthetic.client+token/=" },
+      p.fetcher,
+    ),
+  ).resolves.toMatchObject({ state: "active" });
+  await env.DB.prepare("DELETE FROM connection_state").run();
+  await expect(
+    connectConnection(
+      settings(),
+      { ...credentials, clientToken: "synthetic\nclient" },
+      p.fetcher,
+    ),
+  ).rejects.toThrow("invalid_credentials_clientToken");
 });

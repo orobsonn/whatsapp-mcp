@@ -248,3 +248,21 @@ describe("Z-API transport", () => {
     }
   });
 });
+
+it("does not bind the platform transport to ZapiClient", async () => {
+  const transport: typeof fetch = function (this: unknown) {
+    if (this !== undefined && this !== globalThis)
+      throw new TypeError("Illegal invocation");
+    return Promise.resolve(json({ connected: false }));
+  };
+  await expect(client(transport).status()).resolves.toEqual({
+    connected: false,
+  });
+});
+it("classifies provider errors without exposing arbitrary messages", () => {
+  expect(new ZapiError("Falha Z-API HTTP 429.").code).toBe("provider_http_429");
+  expect(new ZapiError("Contrato de grupo inválido.").code).toBe(
+    "provider_contract",
+  );
+  expect(new ZapiError("synthetic-secret").code).toBe("provider_failed");
+});

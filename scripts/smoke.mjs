@@ -10,5 +10,11 @@ if (!health.ok) throw new Error(`Health respondeu ${health.status}`);
 const status = await health.json();
 if (status.service !== 'whatsapp-mcp' || status.version !== pkg.version) throw new Error('Serviço ou versão inesperada.');
 const privateFile = await fetch(new URL('/media/synthetic-smoke-no-real-file', target), { redirect: 'manual', signal: AbortSignal.timeout(10000) });
-if (privateFile.status !== 403) throw new Error(`Arquivo privado respondeu ${privateFile.status}; esperado acesso recusado.`);
+const login = privateFile.headers.get('location');
+const accessDenied = privateFile.status === 302 && login && (() => {
+  const url = new URL(login);
+  return url.protocol === 'https:' && url.hostname === 'orobsonn.cloudflareaccess.com' &&
+    url.pathname === `/cdn-cgi/access/login/${target.hostname}`;
+})();
+if (privateFile.status !== 403 && !accessDenied) throw new Error(`Arquivo privado respondeu ${privateFile.status}; esperado acesso recusado ou login Access conhecido.`);
 console.log(JSON.stringify({service: status.service, version: status.version, maintenance: status.maintenance, privateAccessDenied: true}));
