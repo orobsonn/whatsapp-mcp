@@ -42,11 +42,11 @@ export class ZapiError extends Error {
   }
 }
 
-/** A POST may have reached the provider. Never retry this exception automatically. */
+/** An effectful request may have reached the provider, including a GET mutation. */
 export class ProviderUncertainError extends ZapiError {
   constructor() {
     super(
-      "Resultado do envio incerto; concilie com o provedor antes de nova tentativa.",
+      "Resultado da operação incerto; concilie com o provedor antes de nova tentativa.",
     );
     this.name = "ProviderUncertainError";
   }
@@ -197,22 +197,26 @@ export class ZapiClient {
     return `https://api.z-api.io/instances/${encodeURIComponent(instance)}/token/${encodeURIComponent(token)}/${endpoint}`;
   }
 
-  private async request(
+  protected async request(
     endpoint: string,
-    body?: Record<string, string>,
+    body?: Record<string, unknown>,
+    options: { method: "GET" | "POST"; effect: boolean } = {
+      method: body === undefined ? "GET" : "POST",
+      effect: body !== undefined,
+    },
   ): Promise<unknown> {
     const url = this.url(endpoint);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const isSend = body !== undefined;
+    const isSend = options.effect;
     try {
       const response = await this.fetcher(url, {
-        method: isSend ? "POST" : "GET",
+        method: options.method,
         headers: {
           "Client-Token": this.env.ZAPI_CLIENT_TOKEN!,
-          ...(isSend ? { "Content-Type": "application/json" } : {}),
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
-        body: isSend ? JSON.stringify(body) : undefined,
+        body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "manual",
         signal: controller.signal,
       });

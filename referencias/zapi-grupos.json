@@ -1,0 +1,529 @@
+{
+  "date": "2026-10-19",
+  "basis": "Official Z-API documentation; contract-only, unverified on own instance",
+  "operations": [
+    {
+      "area": "group",
+      "title": "Buscar grupos",
+      "methodPath": "GET /groups",
+      "requestFields": [
+        "page",
+        "pageSize"
+      ],
+      "responseKeys": [
+        "array<isGroup,name,phone,unread,lastMessageTime,isMuted,isMarkedSpam,archived,pinned,muteEndTime,messagesUnread>"
+      ],
+      "source": "https://developer.z-api.io/group/get-groups.md"
+    },
+    {
+      "area": "group",
+      "title": "Criando grupos",
+      "methodPath": "POST /create-group",
+      "requestFields": [
+        "autoInvite",
+        "groupName",
+        "phones"
+      ],
+      "responseKeys": [
+        "phone",
+        "phonesNotAdded",
+        "invitationLink"
+      ],
+      "source": "https://developer.z-api.io/group/create-group.md"
+    },
+    {
+      "area": "group",
+      "title": "Atualizar nome do grupo",
+      "methodPath": "POST /update-group-name",
+      "requestFields": [
+        "groupId",
+        "groupName"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/update-group-name.md"
+    },
+    {
+      "area": "group",
+      "title": "Atualizar imagem do grupo",
+      "methodPath": "POST /update-group-photo",
+      "requestFields": [
+        "groupId",
+        "groupPhoto"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/update-group-photo.md"
+    },
+    {
+      "area": "group",
+      "title": "Adicionar participantes",
+      "methodPath": "POST /add-participant",
+      "requestFields": [
+        "autoInvite",
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/add-participant.md"
+    },
+    {
+      "area": "group",
+      "title": "Remover participantes",
+      "methodPath": "POST /remove-participant",
+      "requestFields": [
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/remove-participant.md"
+    },
+    {
+      "area": "group",
+      "title": "Aprovar participantes",
+      "methodPath": "POST /approve-participant",
+      "requestFields": [
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/approve-participant.md"
+    },
+    {
+      "area": "group",
+      "title": "Rejeitar participantes",
+      "methodPath": "POST /reject-participant",
+      "requestFields": [
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/reject-participant.md"
+    },
+    {
+      "area": "group",
+      "title": "Mencionar membro",
+      "methodPath": "POST /send-text",
+      "requestFields": [
+        "phone",
+        "message",
+        "mentioned",
+        "delayMessage"
+      ],
+      "responseKeys": [
+        "zaapId",
+        "messageId",
+        "id"
+      ],
+      "source": "https://developer.z-api.io/group/mention-participant.md"
+    },
+    {
+      "area": "group",
+      "title": "Mencionar grupo",
+      "methodPath": "POST /send-text",
+      "requestFields": [
+        "phone",
+        "message",
+        "groupMentioned",
+        "phone",
+        "subject",
+        "delayMessage"
+      ],
+      "responseKeys": [
+        "zaapId",
+        "messageId",
+        "id"
+      ],
+      "source": "https://developer.z-api.io/group/mention-group.md"
+    },
+    {
+      "area": "group",
+      "title": "Mencionar todos",
+      "methodPath": "POST /send-text",
+      "requestFields": [
+        "phone",
+        "message",
+        "mentionAll",
+        "delayMessage"
+      ],
+      "responseKeys": [
+        "zaapId",
+        "messageId",
+        "id"
+      ],
+      "source": "https://developer.z-api.io/group/mention-all.md"
+    },
+    {
+      "area": "group",
+      "title": "Promover admin do grupo",
+      "methodPath": "POST /add-admin",
+      "requestFields": [
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/add-admin.md"
+    },
+    {
+      "area": "group",
+      "title": "Remover admin do grupo",
+      "methodPath": "POST /remove-admin",
+      "requestFields": [
+        "groupId",
+        "phones"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/remove-admin.md"
+    },
+    {
+      "area": "group",
+      "title": "Sair do grupo",
+      "methodPath": "POST /leave-group",
+      "requestFields": [
+        "groupId"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/leave-group.md"
+    },
+    {
+      "area": "group",
+      "title": "Metadata do grupo",
+      "methodPath": "GET /group-metadata/{phone}",
+      "requestFields": [
+        "phone"
+      ],
+      "responseKeys": [
+        "phone",
+        "description",
+        "owner",
+        "subject",
+        "creation",
+        "invitationLink",
+        "communityId",
+        "adminOnlyMessage",
+        "adminOnlySettings",
+        "requireAdminApproval",
+        "isGroupAnnouncement",
+        "participants",
+        "subjectTime",
+        "subjectOwner",
+        "growthLocked",
+        "growthLockExpiration"
+      ],
+      "source": "https://developer.z-api.io/group/metadata-group.md"
+    },
+    {
+      "area": "group",
+      "title": "Metadata do grupo (leve)",
+      "methodPath": "GET /light-group-metadata/{phone}",
+      "requestFields": [
+        "phone"
+      ],
+      "responseKeys": [
+        "phone",
+        "description",
+        "owner",
+        "subject",
+        "creation",
+        "invitationLink",
+        "communityId",
+        "adminOnlyMessage",
+        "adminOnlySettings",
+        "requireAdminApproval",
+        "isGroupAnnouncement",
+        "participants",
+        "subjectTime",
+        "subjectOwner",
+        "growthLocked",
+        "growthLockExpiration"
+      ],
+      "source": "https://developer.z-api.io/group/light-group-metadata.md"
+    },
+    {
+      "area": "group",
+      "title": "Metadata do grupo por convite",
+      "methodPath": "GET /group-invitation-metadata",
+      "requestFields": [
+        "url"
+      ],
+      "responseKeys": [
+        "phone",
+        "owner",
+        "subject",
+        "description",
+        "creation",
+        "invitationLink",
+        "contactsCount",
+        "participantsCount",
+        "participants",
+        "subjectTime",
+        "subjectOwner",
+        "growthLocked",
+        "growthLockExpiration"
+      ],
+      "source": "https://developer.z-api.io/group/group-invitation-metadata.md"
+    },
+    {
+      "area": "group",
+      "title": "Configurações do grupo",
+      "methodPath": "POST /update-group-settings",
+      "requestFields": [
+        "phone",
+        "adminOnlyMessage",
+        "adminOnlySettings",
+        "requireAdminApproval",
+        "adminOnlyAddMember"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/update-group-settings.md"
+    },
+    {
+      "area": "group",
+      "title": "Alterar descrição",
+      "methodPath": "POST /update-group-description",
+      "requestFields": [
+        "groupId",
+        "groupDescription"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/group/update-group-description.md"
+    },
+    {
+      "area": "group",
+      "title": "Redefinir link de convite",
+      "methodPath": "POST /redefine-invitation-link/{groupId}",
+      "requestFields": [
+        "groupId"
+      ],
+      "responseKeys": [
+        "invitationLink"
+      ],
+      "source": "https://developer.z-api.io/group/redefine-invitation-link.md"
+    },
+    {
+      "area": "group",
+      "title": "Obter link de convite",
+      "methodPath": "GET /group-invitation-link/{groupId}",
+      "requestFields": [
+        "groupId"
+      ],
+      "responseKeys": [
+        "phone",
+        "invitationLink"
+      ],
+      "source": "https://developer.z-api.io/group/get-invitation-link.md"
+    },
+    {
+      "area": "group",
+      "title": "Aceitar convite do grupo",
+      "methodPath": "GET /accept-invite-group",
+      "requestFields": [
+        "url"
+      ],
+      "responseKeys": [
+        "success"
+      ],
+      "source": "https://developer.z-api.io/group/accept-group-invite.md"
+    },
+    {
+      "area": "chats",
+      "title": "Pegar chats",
+      "methodPath": "GET /chats",
+      "requestFields": [
+        "page",
+        "pageSize"
+      ],
+      "responseKeys": [
+        "array<archived,pinned,messagesUnread,phone,unread,name,lastMessageTime,isMuted,isMarkedSpam,isGroupAnnouncement,isGroup>"
+      ],
+      "source": "https://developer.z-api.io/chats/get-chats.md"
+    },
+    {
+      "area": "chats",
+      "title": "Pegar metadata do chat",
+      "methodPath": "GET /chats/{phone}",
+      "requestFields": [
+        "phone"
+      ],
+      "responseKeys": [
+        "phone",
+        "unread",
+        "lastMessageTime",
+        "isMuted",
+        "isMarkedSpam",
+        "profileThumbnail",
+        "messagesUnread",
+        "about",
+        "isGroupAnnouncement",
+        "isGroup",
+        "notes"
+      ],
+      "source": "https://developer.z-api.io/chats/get-metadata-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Ler chats",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/read-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Arquivar chats",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/archive-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Fixar chats",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/pin-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Mutar chats",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/mute-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Limpar chat",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/clear-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Deletar chats",
+      "methodPath": "POST /modify-chat",
+      "requestFields": [
+        "phone",
+        "action"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/delete-chat.md"
+    },
+    {
+      "area": "chats",
+      "title": "Expiração do chat",
+      "methodPath": "POST /send-chat-expiration",
+      "requestFields": [
+        "phone",
+        "chatExpiration"
+      ],
+      "responseKeys": [
+        "value"
+      ],
+      "source": "https://developer.z-api.io/chats/send-chat-expiration.md"
+    },
+    {
+      "area": "communities",
+      "title": "Listar comunidades",
+      "methodPath": "GET /communities",
+      "requestFields": [
+        "page",
+        "pageSize"
+      ],
+      "responseKeys": [
+        "array<name,id>"
+      ],
+      "source": "https://developer.z-api.io/communities/list-communities.md"
+    },
+    {
+      "area": "communities",
+      "title": "Vincular grupos",
+      "methodPath": "POST /communities/link",
+      "requestFields": [
+        "communityId",
+        "groupsPhones"
+      ],
+      "responseKeys": [
+        "success"
+      ],
+      "source": "https://developer.z-api.io/communities/link-groups.md"
+    },
+    {
+      "area": "communities",
+      "title": "Desvincular grupos",
+      "methodPath": "POST /communities/unlink",
+      "requestFields": [
+        "communityId",
+        "groupsPhones"
+      ],
+      "responseKeys": [
+        "success"
+      ],
+      "source": "https://developer.z-api.io/communities/unlink-groups.md"
+    },
+    {
+      "area": "communities",
+      "title": "Metadata da comunidade",
+      "methodPath": "GET /communities-metadata/{communityId}",
+      "requestFields": [
+        "communityId"
+      ],
+      "responseKeys": [
+        "name",
+        "id",
+        "description",
+        "subGroups"
+      ],
+      "source": "https://developer.z-api.io/communities/community-metadata.md"
+    }
+  ]
+}
