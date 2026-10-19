@@ -23,7 +23,11 @@ export interface OwnerIdentity {
   epoch: string;
 }
 export type ConfirmationPurpose =
-  "send" | "capture-policy" | "retention" | "delete";
+  | "send"
+  | "capture-policy"
+  | "retention"
+  | "delete"
+  | "group";
 export interface ConfirmationProposal {
   purpose: ConfirmationPurpose;
   resourceId: string;
@@ -51,6 +55,7 @@ const purposes = new Set<string>([
   "capture-policy",
   "retention",
   "delete",
+  "group",
 ]);
 const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const TTL = 600;

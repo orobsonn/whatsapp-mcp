@@ -67,6 +67,36 @@ function network() {
         return Response.json([
           { phone: "group-j", name: "Equipe", isGroup: true },
         ]);
+      if (u.pathname.endsWith("/group-invitation-metadata"))
+        return Response.json({
+          phone: "123456@g.us",
+          subject: "Grupo do convite",
+          participants: [],
+        });
+      if (u.pathname.endsWith("/accept-invite-group")) {
+        expect(init?.method).toBe("GET");
+        sends++;
+        return Response.json({ success: true });
+      }
+      if (u.pathname.includes("group-metadata/"))
+        return Response.json({
+          phone: "123456@g.us",
+          subject: "Equipe administração",
+          participants: [],
+        });
+      if (u.pathname.includes("group-invitation-link/"))
+        return Response.json({
+          phone: "123456@g.us",
+          invitationLink: "https://chat.whatsapp.com/PRIVATEinvite",
+        });
+      if (u.pathname.endsWith("/update-group-name")) {
+        sends++;
+        expect(JSON.parse(String(init?.body))).toEqual({
+          groupId: "123456@g.us",
+          groupName: "Equipe nova",
+        });
+        return Response.json({ value: true });
+      }
       if (u.pathname.endsWith("/send-text")) {
         sends++;
         return Response.json({
@@ -359,6 +389,170 @@ describe("jornada HTTP e SDK MCP reais em runtime local", () => {
         (c) => c.type === "resource",
       ),
     ).toBe(true);
+    await client.close();
+  });
+  it("administração exige confirmação Access exata; convite só aparece na página privada", async () => {
+    const effects = network();
+    const token = await bootstrap();
+    const client = new Client({
+      name: "synthetic-group-client",
+      version: "1.0.0",
+    });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${e.PUBLIC_ORIGIN}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        fetch: async (input, init) =>
+          app.fetch(new Request(input, init), e, createExecutionContext()),
+      }),
+    );
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    expect(tools).toContain("preparar_acao_grupo");
+    expect(tools).not.toContain("aprovar_acao_grupo");
+    const group = (
+      await upsertDirectoryPage(
+        e,
+        { epoch: e.INSTALLATION_EPOCH, generation: e.CONNECTION_GENERATION },
+        {
+          items: [
+            {
+              externalId: "123456@g.us",
+              kind: "group",
+              name: "Equipe administração",
+            },
+          ],
+          complete: true,
+        },
+      )
+    ).items[0]!;
+    const prepared = result(
+      await client.callTool({
+        name: "preparar_acao_grupo",
+        arguments: {
+          acao: { operation: "name", chatId: group.id, name: "Equipe nova" },
+        },
+      }),
+    );
+    expect(prepared.status).toBe("proposed");
+    expect(
+      (
+        await client.callTool({
+          name: "executar_acao_grupo",
+          arguments: { id: prepared.id },
+        })
+      ).isError,
+    ).toBe(true);
+    expect(
+      (
+        await call(`/confirm/group/${prepared.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).status,
+    ).toBe(403);
+    expect(effects()).toBe(0);
+    const owner = await ownerToken();
+    const page = await call(`/confirm/group/${prepared.id}`, {
+      headers: { "Cf-Access-Jwt-Assertion": owner },
+    });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Equipe nova");
+    expect(html).not.toContain("123456@g.us");
+    expect(effects()).toBe(0);
+    const nonce = html.match(/name="nonce" value="([^"]+)"/)![1]!;
+    const init = {
+      method: "POST",
+      headers: {
+        "Cf-Access-Jwt-Assertion": owner,
+        origin: e.PUBLIC_ORIGIN,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ nonce }),
+    };
+    expect((await call(`/confirm/group/${prepared.id}`, init)).status).toBe(
+      200,
+    );
+    expect([403, 409]).toContain(
+      (await call(`/confirm/group/${prepared.id}`, init)).status,
+    );
+    const executed = result(
+      await client.callTool({
+        name: "executar_acao_grupo",
+        arguments: { id: prepared.id },
+      }),
+    );
+    expect(executed.status).toBe("accepted");
+    await client.callTool({
+      name: "executar_acao_grupo",
+      arguments: { id: prepared.id },
+    });
+    expect(effects()).toBe(1);
+    const invite = result(
+      await client.callTool({
+        name: "obter_convite_grupo",
+        arguments: { chatId: group.id },
+      }),
+    );
+    expect(invite.browserUrl).toBe(
+      `${e.PUBLIC_ORIGIN}/groups/${group.id}/invite`,
+    );
+    expect(JSON.stringify(invite)).not.toContain("PRIVATEinvite");
+    expect(
+      (
+        await call(`/groups/${group.id}/invite`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).status,
+    ).toBe(403);
+    const privatePage = await call(`/groups/${group.id}/invite`, {
+      headers: { "Cf-Access-Jwt-Assertion": owner },
+    });
+    expect(privatePage.status).toBe(200);
+    expect(privatePage.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(await privatePage.text()).toContain(
+      "https://chat.whatsapp.com/PRIVATEinvite",
+    );
+    const joining = result(
+      await client.callTool({
+        name: "preparar_acao_grupo",
+        arguments: {
+          acao: {
+            operation: "accept_invite",
+            inviteURL: "https://chat.whatsapp.com/PRIVATEinvite",
+          },
+        },
+      }),
+    );
+    expect(joining.status).toBe("proposed");
+    expect(JSON.stringify(joining)).toContain("Grupo do convite");
+    expect(JSON.stringify(joining)).not.toContain("PRIVATEinvite");
+    const joinPage = await call(`/confirm/group/${joining.id}`, {
+      headers: { "Cf-Access-Jwt-Assertion": owner },
+    });
+    const joinHtml = await joinPage.text();
+    expect(joinHtml).toContain("Grupo do convite");
+    expect(effects()).toBe(1);
+    const joinNonce = joinHtml.match(/name="nonce" value="([^"]+)"/)![1]!;
+    expect(
+      (
+        await call(`/confirm/group/${joining.id}`, {
+          ...init,
+          body: new URLSearchParams({ nonce: joinNonce }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      result(
+        await client.callTool({
+          name: "executar_acao_grupo",
+          arguments: { id: joining.id },
+        }),
+      ).status,
+    ).toBe("accepted");
+    await client.callTool({
+      name: "executar_acao_grupo",
+      arguments: { id: joining.id },
+    });
+    expect(effects()).toBe(2);
     await client.close();
   });
 });

@@ -1,6 +1,6 @@
 # WhatsApp MCP pessoal
 
-MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado e enviar texto/imagem/PDF/áudio com confirmação humana.
+MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
 **Estado em 19/10/2026:** software implementado e validado localmente com fixtures sintéticas. Ainda não há instância Z-API própria nem deploy/homologação real. Robson autorizou continuar sem essa conexão. O Elo e sua demonstração continuam separados.
 
@@ -22,7 +22,7 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 ## Uso e documentação
 
 - [Instalação, ativação e uso diário](docs/18-instalacao.md).
-- [PRD e critérios de aceitação](PRD.md), [plano](docs/09-plano-de-implementacao.md) e [evidências da entrega](docs/10-entrega.md).
+- [PRD e critérios de aceitação](PRD.md), [plano](docs/09-plano-de-implementacao.md) e [evidências da entrega inicial](docs/10-entrega.md) e [entrega de grupos](docs/25-entrega-grupos.md).
 - [Autenticação e confirmação](docs/13-auth.md), [transporte](docs/14-zapi.md), [mídia/áudio](docs/15-media.md), [ações](docs/16-acoes.md) e [operação](docs/17-operacao.md).
 - [Issues](https://github.com/orobsonn/whatsapp-mcp/issues), [changelog](CHANGELOG.md) e [releases](https://github.com/orobsonn/whatsapp-mcp/releases).
 
@@ -30,7 +30,7 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 Arquivo desde ativação, sem promessa de importação retroativa. Arquivos até 2 MiB; até 128 KiB no conteúdo MCP, maiores via navegador autenticado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
 
-Administração de participantes/grupos, mute/pin/arquivamento no WhatsApp, OCR, campanhas e busca semântica são horizonte, conforme PRD. Nenhuma ferramenta genérica de API/SQL é exposta.
+Gestão de grupos na v0.2.0: [escopo e critérios](docs/20-grupos-prd.md), [contratos oficiais mapeados](docs/21-grupos-contratos.md), [manual de uso](docs/23-usar-grupos.md) e [matriz das 35 operações](docs/24-grupos-cobertura.md). Inclui participantes/admins, convites, permissões, menções, organização dos chats e associações com comunidades. OCR, campanhas e busca semântica continuam fora do escopo. Nenhuma ferramenta genérica de API/SQL é exposta.
 
 ## Histórico do projeto
 

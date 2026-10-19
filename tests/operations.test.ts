@@ -4,6 +4,11 @@ import type { Env } from "../src/env";
 import { upsertDirectoryPage, setCapture } from "../src/directory";
 import { ingestEvent } from "../src/capture";
 import {
+  prepareGroupAction,
+  getGroupAction,
+  type GroupProvider,
+} from "../src/groups";
+import {
   cleanup,
   diagnostics,
   exportConversation,
@@ -49,10 +54,59 @@ async function proof(p: Awaited<ReturnType<typeof proposalPolicy>>) {
 }
 beforeEach(async () => {
   await env.DB.exec(
-    "DELETE FROM policy_proposals; DELETE FROM auth_nonces; DELETE FROM actions; DELETE FROM media_jobs; DELETE FROM media_derivatives; DELETE FROM media; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM chats; DELETE FROM policies;",
+    "DELETE FROM group_action_targets; DELETE FROM group_actions; DELETE FROM group_member_refs; DELETE FROM group_community_refs; DELETE FROM policy_proposals; DELETE FROM auth_nonces; DELETE FROM actions; DELETE FROM media_jobs; DELETE FROM media_derivatives; DELETE FROM media; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM chats; DELETE FROM policies;",
   );
 });
 describe("operação local", () => {
+  it("exclusão de contato secundário também cancela proposta de criar grupo e redige dados", async () => {
+    const configured = { ...e, CONNECTED_PHONE: "5511777777777" };
+    const c = (
+      await upsertDirectoryPage(configured, fence, {
+        items: [
+          {
+            externalId: "5511999999999",
+            kind: "individual",
+            name: "Contato privado",
+          },
+        ],
+        complete: true,
+      })
+    ).items[0]!;
+    const provider = {
+      status: async () => ({
+        connected: true,
+        phone: configured.CONNECTED_PHONE,
+      }),
+    } as GroupProvider;
+    const action = await prepareGroupAction(
+      configured,
+      {
+        operation: "create",
+        name: "Grupo novo",
+        contactIds: [c.id],
+        autoInvite: false,
+      },
+      provider,
+    );
+    const p = await proposalPolicy(configured, {
+      kind: "delete",
+      chatId: c.id,
+    });
+    await applyPolicyProposal(configured, p.id, await proof(p));
+    expect(await getGroupAction(configured, action.id)).toMatchObject({
+      status: "cancelled",
+      redacted: true,
+      envelope: null,
+    });
+    const row = await env.DB.prepare(
+      "SELECT private_json,result_json FROM group_actions WHERE id=?",
+    )
+      .bind(action.id)
+      .first();
+    expect(JSON.stringify(row)).not.toMatch(
+      /5511999999999|Contato privado|Grupo novo/,
+    );
+  });
   it("diagnóstico conta jobs em processamento e retry como pendentes", async () => {
     const c = await chat();
     await setCapture(e, c.id, true, fence);

@@ -8,12 +8,12 @@ Usar o MCP para todas as operações documentadas na categoria Groups da Z-API, 
 
 Escopo encontrado no índice oficial: 22 operações de Groups (listar/criar, nome/foto/descrição, adicionar/remover/aprovar/rejeitar participantes, promover/rebaixar admin, sair, três metadatas, configurações, consultar/redefinir/aceitar convite e três tipos de menção); 9 de Chats aplicáveis; 4 de Communities necessárias para listar/consultar comunidade e vincular/desvincular grupos. A contagem e contratos serão conferidos contra as páginas atuais antes do código.
 
-## Decisões de engenharia propostas para revisão
+## Decisões de engenharia revisadas
 
 - Continuar TypeScript/Workers/D1/R2/OAuth existente. Adaptador fixo Z-API, sem ferramenta de endpoint/HTTP/SQL arbitrário. Métodos internos aceitam apenas operações tipadas e schemas fechados; nenhuma URL de download fornecida pelo modelo.
-- Leituras: metadados completos/leves, participantes e pedidos de entrada quando presentes, metadados por convite, link de convite sob pedido explícito, estado do chat, chats de grupo e comunidades/grupos associados. Paginação/projeção limitada, sem payload bruto ou credenciais. Metadados completos não divulgam link de convite por efeito colateral; ferramenta própria retorna somente o link solicitado e validado como convite WhatsApp.
+- Leituras: metadados completos/leves, participantes (sem endpoint documentado de fila de pedidos), metadados por convite, link de convite sob pedido explícito, estado do chat, chats de grupo e comunidades/grupos associados. Paginação/projeção limitada, sem payload bruto ou credenciais. Metadados completos não divulgam link de convite por efeito colateral; ferramenta própria abre a página Access do dono, onde o convite validado pode ser visto.
 - Efeitos: criar/alterar grupo, participantes/admin, aceitar/redefinir convite, sair, settings, menções (pessoa/grupo/todos), organização/leitura/limpeza/exclusão/temporárias no WhatsApp e associações com comunidade. Todos são propostas congeladas → confirmação Access humana independente → execução por claim D1 único → consulta/cancelamento. Nenhuma operação real nos testes.
-- `group_actions` separada das ações de mensagem existentes: permite criar/entrar sem chat previamente conhecido, sem inventar destino sentinela ou generalizar todo o motor. Estado proposed/approved/attempting/accepted/uncertain/cancelled/expired. Retorno do provedor aceito não vira prova de readback. Resultado sanitizado; timeout depois do claim nunca repete. Resultado conhecido e incerto são recuperáveis pela mesma referência.
+- `group_actions` separada das ações de mensagem existentes: permite criar/entrar sem chat previamente conhecido, sem inventar destino sentinela ou generalizar todo o motor. Estado proposed/approved/attempting/accepted/rejected/uncertain/cancelled/expired. Retorno do provedor aceito não vira prova de readback. Resultado sanitizado; timeout depois do claim nunca repete. Resultado conhecido e incerto são recuperáveis pela mesma referência.
 - Identidade: grupos existentes usam chatId tipo group; contatos novos usam IDs individuais do diretório; membros atuais usam referências internas vinculadas ao grupo/epoch/geração e endereço exato do fornecedor. Nunca fundir nomes ou converter LID em telefone. Comunidades têm referências próprias, distintas de chats/grupos. Criação/entrada retorna referência interna nova com captura desabilitada.
 - Envelope público contém operação, referências/opções exatas, nomes úteis congelados, hash dos bytes e compromisso/hash dos endereços resolvidos. Credenciais e endereços de transporte ficam no backend. Revalidar o compromisso e geração/aparelho antes de claim; alterar destino, participantes, texto/opções/arquivo invalida a aprovação. Foto usa upload privado existente e bytes/hash verificados, sem URL arbitrária.
 - Permissões: preflight confere conexão/aparelho; consultar metadata para contexto e papéis quando o contrato permitir. O fornecedor continua autoridade de permissão: não inventar que o dono é admin nem prometer sucesso por mock. A página humana mostra grupo e participantes/operação legíveis, especialmente remoção, rebaixamento, menção a todos, limpar/excluir/sair e temporárias.
@@ -43,9 +43,9 @@ Escopo encontrado no índice oficial: 22 operações de Groups (listar/criar, no
 - Base `9f1634823970ec5d577255733e3f834f7c867d20`, release 0.1.0, branch `codex/grupos-completos`.
 - Índice oficial atual consultado em 19/10/2026: https://developer.z-api.io/_llms/pt-br/api-reference.txt. O web reader falhou nessa URL; curl com TLS normal recuperou. Python local tem CA desatualizada; não foi desabilitada validação TLS.
 - Harness remoto continua no commit `7634e3284dbe402f9229b18a13c658ace3afe3fd`. Usar somente lógica, sem instalar.
-- [ ] Inventário fechado e revisão adversarial do desenho.
-- [ ] Issues e implementação das três áreas.
-- [ ] Revisão final, verificações, merge e release.
+- [x] Inventário fechado e revisão adversarial do desenho.
+- [x] Issues #8–10 e implementação das três áreas.
+- [x] Revisão final e verificações locais; evidências em [docs/25-entrega-grupos.md](25-entrega-grupos.md). Integração/CI/release verificáveis nos links GitHub da entrega.
 
 ## Revisão adversarial incorporada antes do código
 
