@@ -207,3 +207,36 @@ describe("first connection transaction", () => {
     expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
   });
 });
+
+describe("safe provider diagnostics", () => {
+  it.each([
+    [401, "provider_auth_status"],
+    [403, "provider_auth_status"],
+    [404, "provider_instance_status"],
+    [429, "provider_rate_status"],
+    [503, "provider_http_status"],
+  ])(
+    "identifies HTTP %s without exposing provider content",
+    async (status, code) => {
+      const fetcher = vi.fn<typeof fetch>(
+        async () => new Response("synthetic-secret", { status }),
+      );
+      await expect(
+        connectConnection(settings(), credentials, fetcher),
+      ).rejects.toMatchObject({ code });
+      expect((await getConnectionStatus(settings())).state).toBe(
+        "unconfigured",
+      );
+    },
+  );
+  it("identifies the failing read endpoint on network errors", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input).endsWith("/status"))
+        return Response.json({ connected: true });
+      throw Error("synthetic-secret");
+    });
+    await expect(
+      connectConnection(settings(), credentials, fetcher),
+    ).rejects.toMatchObject({ code: "provider_network_device" });
+  });
+});

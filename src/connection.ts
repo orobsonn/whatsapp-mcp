@@ -225,7 +225,16 @@ class SetupProvider {
           ...(body ? { body: JSON.stringify(body) } : {}),
         },
       );
-      if (!response.ok) return fail("provider_unavailable", 502);
+      if (!response.ok) {
+        const reason = [401, 403].includes(response.status)
+          ? "auth"
+          : response.status === 404
+            ? "instance"
+            : response.status === 429
+              ? "rate"
+              : "http";
+        return fail(`provider_${reason}_${path}`, 502);
+      }
       const bytes = await readBounded(response, 65536);
       const data = JSON.parse(
         new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
@@ -235,8 +244,10 @@ class SetupProvider {
       if (!data || typeof data !== "object" || Array.isArray(data))
         throw Error();
       return data;
-    } catch {
-      return fail("provider_unavailable", 502);
+    } catch (error) {
+      if (error instanceof AppError && error.code.startsWith("provider_"))
+        throw error;
+      return fail(`provider_network_${path}`, 502);
     } finally {
       clearTimeout(timer);
     }

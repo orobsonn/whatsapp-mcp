@@ -124,10 +124,29 @@ export async function setupFetch(
       provider_unavailable:
         "Não foi possível validar a instância na Z-API. Confira as três credenciais, a conexão do aparelho e tente novamente.",
     };
+    // Codes contain only closed endpoint names and local categories, never remote bodies.
+    const providerCode = error instanceof AppError ? error.code : "";
+    const diagnostic =
+      /^provider_(auth|instance|rate|http|network)_(status|device|me|update-webhook-received|update-webhook-received-delivery|update-webhook-message-status|update-notify-sent-by-me)$/.exec(
+        providerCode,
+      );
+    const providerNotices: Record<string, string> = {
+      auth: "A Z-API recusou a autenticação. Confira o token da instância e o Client-Token da conta no painel Z-API.",
+      instance:
+        "A Z-API não encontrou a instância. Confira o ID e o token da instância.",
+      rate: "A Z-API limitou as consultas. Aguarde um minuto antes de tentar novamente.",
+      http: "A Z-API recusou a consulta. Confira a situação da instância no painel Z-API.",
+      network:
+        "Não foi possível obter uma resposta válida da Z-API. Pode haver indisponibilidade ou demora do fornecedor.",
+    };
+    const providerNotice = diagnostic
+      ? `${providerNotices[diagnostic[1]!]} Código: ${providerCode}.`
+      : undefined;
     const message =
       status === 403
         ? "Acesso ou confirmação recusados."
-        : (notices[error instanceof AppError ? error.code : ""] ??
+        : (providerNotice ??
+          notices[error instanceof AppError ? error.code : ""] ??
           (status === 409
             ? "A conexão mudou. Confira o estado atual abaixo."
             : "Não foi possível concluir a conexão. Confira o estado atual abaixo e retome a mesma tentativa se estiver pendente."));
