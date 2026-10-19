@@ -1,0 +1,31 @@
+import { defineConfig } from "vitest/config";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
+const migrations = await readD1Migrations("./migrations");
+export default defineConfig({
+  plugins: [
+    cloudflareTest({
+      main: "./src/index.ts",
+      miniflare: {
+        compatibilityDate: "2026-10-19",
+        compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+        d1Databases: ["DB"],
+        r2Buckets: ["MEDIA"],
+        kvNamespaces: ["OAUTH_KV"],
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          PUBLIC_ORIGIN: "http://localhost:8787",
+          ACCESS_ISSUER: "",
+          ACCESS_AUD: "",
+          OWNER_SUB: "",
+          INSTALLATION_EPOCH: "unconfigured",
+          CONNECTION_GENERATION: "unconfigured",
+          CONNECTED_PHONE: "",
+          MEDIA_HOSTS: "",
+          TRANSCRIPTION_ENABLED: "false",
+          MAINTENANCE: "true",
+        },
+      },
+    }),
+  ],
+  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false },
+});

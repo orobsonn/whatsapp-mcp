@@ -1,10 +1,12 @@
 {
   "name": "whatsapp-mcp",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Arquivo privado e MCP pessoal de WhatsApp",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "vitest run",
     "check": "tsc --noEmit",
