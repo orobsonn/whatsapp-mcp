@@ -19,3 +19,5 @@ Uma nova captura requer proposta e confirmação do dono. A exclusão aqui é ap
 ## Evidência local
 
 `npm test -- tests/operations.test.ts`: 4 testes passando em workerd/D1/R2 local, incluindo confirmação vinculada, proposta concorrente obsoleta, exclusão D1 antes do R2, limpeza e retenção opt-in. Isto não comprova comportamento em cliente MCP ou fornecedor real.
+
+A auditoria final corrigiu a contagem de jobs para os estados reais pending/retry/processing e reservou orçamento por categoria: 25 mensagens, 10 objetos, 5 nonces, 3 propostas, 3 jobs, 2 pendências de status e 2 payloads por tick. Uploads sem message_id permanecem até exclusão local do chat; a retenção de mensagens não os expira por idade. Essas fronteiras estão no manual de instalação.

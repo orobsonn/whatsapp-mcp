@@ -27,7 +27,8 @@ Arquitetura: um Worker, um dono, banco D1, bucket privado R2 e KV exclusivo para
 - [x] Ler todo o handoff e criar repositório público.
 - [x] Consultar lógica do harness remoto sem instalar.
 - [x] Escrever PRD e plano.
-- [ ] Revisão adversarial do desenho e incorporar correções.
-- [ ] Criar issues com critérios e dependências.
-- [ ] Implementar e verificar issues 1–6.
-- [ ] Auditoria final, CI no HEAD, release e evidências.
+- [x] Revisão adversarial do desenho e incorporar correções.
+- [x] Criar issues com critérios e dependências.
+- [x] Implementar e verificar issues 1–6 localmente; revisão final/CI ainda em andamento.
+- [x] Auditoria final sem bloqueadores e evidências locais.
+- [ ] CI remoto no HEAD final, merge e release por marco.

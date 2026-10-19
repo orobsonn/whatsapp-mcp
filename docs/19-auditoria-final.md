@@ -25,3 +25,5 @@ Sem instância separada, login Access real, callback real de exclusão comprovad
 Revisão da wave, CI no HEAD e release serão registrados em `10-entrega.md` antes de encerrar o marco.
 
 Re-review da primeira wave considerou todos os outros achados corrigidos e exigiu a complementação acima; não foi apresentado como aprovação. A complementação observou RED no callback sem conversa, seguido de GREEN15 ações +2 jornada e typecheck, antes de nova revisão focada.
+
+Veredito final independente sobre `fd127ec..40ce77f`: **ADDRESSED; sem bloqueadores remanescentes para merge no escopo revisado**. O revisor confirmou correlação, evidência e progressão no mesmo UPDATE, incluindo status sem conversa e recusa de ambiguidade. Não repetiu testes; os comandos de validação foram executados pelo coordenador. A decisão não estende a prova à homologação externa.
