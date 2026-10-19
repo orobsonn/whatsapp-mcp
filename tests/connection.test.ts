@@ -240,3 +240,18 @@ describe("safe provider diagnostics", () => {
     ).rejects.toMatchObject({ code: "provider_network_device" });
   });
 });
+
+it("calls the transport without binding it to the provider instance", async () => {
+  const mock = provider();
+  const transport: typeof fetch = function (
+    this: unknown,
+    ...args: Parameters<typeof fetch>
+  ) {
+    if (this !== undefined && this !== globalThis)
+      throw new TypeError("Illegal invocation");
+    return mock.fetcher(...args);
+  };
+  await expect(
+    connectConnection(settings(), credentials, transport),
+  ).resolves.toMatchObject({ state: "active" });
+});

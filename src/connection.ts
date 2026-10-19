@@ -212,7 +212,8 @@ class SetupProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {
-      const response = await this.fetcher(
+      const fetcher = this.fetcher;
+      const response = await fetcher(
         `https://api.z-api.io/instances/${encodeURIComponent(this.c.instanceId)}/token/${encodeURIComponent(this.c.instanceToken)}/${path}`,
         {
           method: body ? "PUT" : "GET",

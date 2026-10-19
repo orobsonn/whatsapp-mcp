@@ -248,3 +248,14 @@ describe("Z-API transport", () => {
     }
   });
 });
+
+it("does not bind the platform transport to ZapiClient", async () => {
+  const transport: typeof fetch = function (this: unknown) {
+    if (this !== undefined && this !== globalThis)
+      throw new TypeError("Illegal invocation");
+    return Promise.resolve(json({ connected: false }));
+  };
+  await expect(client(transport).status()).resolves.toEqual({
+    connected: false,
+  });
+});

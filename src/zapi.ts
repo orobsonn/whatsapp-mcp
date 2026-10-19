@@ -210,7 +210,8 @@ export class ZapiClient {
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     const isSend = options.effect;
     try {
-      const response = await this.fetcher(url, {
+      const fetcher = this.fetcher;
+      const response = await fetcher(url, {
         method: options.method,
         headers: {
           "Client-Token": this.env.ZAPI_CLIENT_TOKEN!,
