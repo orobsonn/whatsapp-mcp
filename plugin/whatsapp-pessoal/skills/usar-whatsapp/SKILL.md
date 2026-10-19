@@ -17,3 +17,5 @@ Use apenas as ferramentas tipadas do MCP WhatsApp pessoal.
 ## Arquivos enviados pelo navegador
 
 Depois que o dono guardar um arquivo na página privada, chame `adicionar_arquivo` novamente para o mesmo chat e confira `recentUploads`. Identifique pelo nome e horário; se houver ambiguidade, pergunte. Não peça IDs ou hashes ao dono e não escolha silenciosamente o último arquivo. Guardar o arquivo não envia nada ao WhatsApp.
+
+Para imagem com mensagem, prepare um único envio `kind=image` com `mediaId`, `mediaHash` e `caption`. `kind=text` envia somente texto. Se o upload falhar ou o arquivo não estiver disponível, explique a pendência e não substitua silenciosamente por texto. Um anexo colocado apenas no chat do GPT não foi automaticamente guardado no MCP; use o upload privado. Não execute envios num teste solicitado apenas para guardar/localizar arquivos.

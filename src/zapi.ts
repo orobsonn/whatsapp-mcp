@@ -37,21 +37,34 @@ export interface ZapiGroup {
 
 export class ZapiError extends Error {
   readonly code: string;
-  constructor(message: string) {
+  constructor(
+    message: string,
+    diagnostic?:
+      | "provider_groups_shape"
+      | "provider_groups_overflow"
+      | "provider_groups_row"
+      | "provider_groups_phone"
+      | "provider_groups_flag"
+      | "provider_groups_flag_null"
+      | "provider_groups_flag_false"
+      | "provider_groups_name",
+  ) {
     super(message);
     this.name = "ZapiError";
     const status = /^Falha Z-API HTTP ([345]\d{2})\.$/.exec(message)?.[1];
-    this.code = status
-      ? `provider_http_${status}`
-      : message === "Contrato de grupo inválido."
-        ? "provider_contract"
-        : message === "Falha de rede Z-API."
-          ? "provider_network"
-          : message === "Resposta Z-API excede limite."
-            ? "provider_response_limit"
-            : message === "Resposta Z-API inválida."
-              ? "provider_invalid_response"
-              : "provider_failed";
+    this.code =
+      diagnostic ??
+      (status
+        ? `provider_http_${status}`
+        : message === "Contrato de grupo inválido."
+          ? "provider_contract"
+          : message === "Falha de rede Z-API."
+            ? "provider_network"
+            : message === "Resposta Z-API excede limite."
+              ? "provider_response_limit"
+              : message === "Resposta Z-API inválida."
+                ? "provider_invalid_response"
+                : "provider_failed");
   }
 }
 
@@ -323,18 +336,41 @@ export class ZapiClient {
     });
   }
 
-  async listGroups(page: number, pageSize: number): Promise<ZapiGroup[]> {
+  async listGroups(
+    page: number,
+    pageSize: number,
+  ): Promise<(ZapiGroup | { unavailable: true })[]> {
     const suffix = pageArgs(page, pageSize);
     const data = await this.request(`groups${suffix}`);
-    if (!Array.isArray(data) || data.length > pageSize)
-      throw new ZapiError("Resposta Z-API inválida.");
+    if (!Array.isArray(data))
+      throw new ZapiError("Resposta Z-API inválida.", "provider_groups_shape");
+    if (data.length > pageSize)
+      throw new ZapiError(
+        "Resposta Z-API inválida.",
+        "provider_groups_overflow",
+      );
     return data.map((item) => {
-      const row = object(item);
-      if (
-        !nonempty(row.phone) ||
-        (row.isGroup !== undefined && row.isGroup !== true)
-      )
-        throw new ZapiError("Resposta Z-API inválida.");
+      if (!item || typeof item !== "object" || Array.isArray(item))
+        throw new ZapiError("Resposta Z-API inválida.", "provider_groups_row");
+      const row = item as Record<string, unknown>;
+      // The provider can mix non-group rows into this endpoint. Keep their slot for pagination.
+      if (row.isGroup === false) return { unavailable: true as const };
+      if (!nonempty(row.phone))
+        throw new ZapiError(
+          "Resposta Z-API inválida.",
+          "provider_groups_phone",
+        );
+      if (row.isGroup !== undefined && row.isGroup !== true)
+        throw new ZapiError(
+          "Resposta Z-API inválida.",
+          row.isGroup === null
+            ? "provider_groups_flag_null"
+            : row.isGroup === false
+              ? "provider_groups_flag_false"
+              : "provider_groups_flag",
+        );
+      if (row.name != null && (typeof row.name !== "string" || row.name === ""))
+        throw new ZapiError("Resposta Z-API inválida.", "provider_groups_name");
       const name = optionalString(row, "name");
       return {
         phone: row.phone,

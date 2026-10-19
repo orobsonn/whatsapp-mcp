@@ -2,7 +2,7 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Estado em 19/10/2026:** v0.4.1 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Instância configurada e plugin **Zap** autenticado no GPT: diagnóstico, capacidades de grupos e uma página da Z-API executados no cliente real. Captura segue desabilitada até escolha dos chats. Elo permanece separado.
+**Estado em 19/10/2026:** v0.4.2 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Instância configurada e plugin **Zap** autenticado no GPT: diagnóstico, capacidades de grupos e uma página da Z-API executados no cliente real. Captura segue desabilitada até escolha dos chats. Elo permanece separado.
 
 [Fluxo de configuração e segurança](docs/26-setup.md). Login é necessário; nenhuma conversa é capturada automaticamente.
 

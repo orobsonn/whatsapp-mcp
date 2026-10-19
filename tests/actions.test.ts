@@ -13,6 +13,7 @@ import {
 import { upsertDirectoryPage, setCapture } from "../src/directory";
 import { queryMessages, ingestStatus } from "../src/capture";
 import { uploadMedia, readMedia } from "../src/media";
+import { ZapiError } from "../src/zapi";
 import type { Env } from "../src/env";
 
 describe("envelope de envio", () => {
@@ -159,6 +160,39 @@ describe("ações D1 com uma tentativa e autorização vinculada", () => {
     expect(result.status).toBe("accepted");
     expect(JSON.stringify(result)).not.toContain("group-actions");
     expect(JSON.stringify(result)).not.toContain("zaap-distinct");
+  });
+  it.each([400, 401, 415, 429])(
+    "preserva rejeição HTTP %s sem repetir a ação",
+    async (code) => {
+      const a = await approved();
+      let calls = 0;
+      const p = {
+        status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+        send: async () => {
+          calls++;
+          throw new ZapiError(`Falha Z-API HTTP ${code}.`);
+        },
+      };
+      const outcome = await executeAction(e, a.id, p);
+      expect(outcome.status).toBe("rejected");
+      expect(outcome.error).toBe(`provider_http_${code}`);
+      await executeAction(e, a.id, p);
+      expect(calls).toBe(1);
+    },
+  );
+  it("HTTP 408 continua incerto e não repete", async () => {
+    const a = await approved();
+    let calls = 0;
+    const p = {
+      status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+      send: async () => {
+        calls++;
+        throw new ZapiError("Falha Z-API HTTP 408.");
+      },
+    };
+    expect((await executeAction(e, a.id, p)).status).toBe("uncertain");
+    await executeAction(e, a.id, p);
+    expect(calls).toBe(1);
   });
   it("timeout após claim fica incerto; a mesma ação nunca repete", async () => {
     const a = await approved();

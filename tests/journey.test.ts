@@ -97,6 +97,18 @@ function network() {
         });
         return Response.json({ value: true });
       }
+      if (u.pathname.endsWith("/send-image")) {
+        const body = JSON.parse(String(init?.body));
+        expect(body.phone).toBe("human-upload");
+        expect(body.image).toMatch(/^data:image\/png;base64,/);
+        expect(body.caption).toBe("Legenda de teste");
+        expect(body).not.toHaveProperty("message");
+        sends++;
+        return Response.json({
+          messageId: "image-upload-j",
+          zaapId: "image-ack",
+        });
+      }
       if (u.pathname.endsWith("/send-text")) {
         sends++;
         return Response.json({
@@ -220,6 +232,16 @@ describe("jornada HTTP e SDK MCP reais em runtime local", () => {
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("consultar_mensagens");
     expect(names).toContain("preparar_envio");
+    const sendSchema = tools.tools.find(
+      (t) => t.name === "preparar_envio",
+    )!.inputSchema;
+    expect(sendSchema.required).toEqual(
+      expect.arrayContaining(["chatId", "kind"]),
+    );
+    expect(sendSchema.properties).toHaveProperty("mediaId");
+    expect(sendSchema.properties).toHaveProperty("mediaHash");
+    expect(sendSchema.properties).toHaveProperty("caption");
+    expect(sendSchema.properties).toHaveProperty("text");
     expect(names).not.toContain("aprovar_envio");
     expect(names).not.toContain("executar_sql");
     const directory = result(
@@ -621,7 +643,7 @@ it("MCP chat confirmation sends a frozen proposal without visiting the browser p
   await client.close();
 });
 it("human upload returns a readable page and GPT retrieves metadata without asking for codes", async () => {
-  network();
+  const sends = network();
   const token = await bootstrap(),
     owner = await ownerToken();
   const page = await upsertDirectoryPage(
@@ -647,9 +669,16 @@ it("human upload returns a readable page and GPT retrieves metadata without aski
   form.set(
     "file",
     new File(
-      [new TextEncoder().encode("%PDF-1.4\nSynthetic\n%%EOF")],
-      "ensaio.pdf",
-      { type: "application/pdf" },
+      [
+        Uint8Array.from(
+          atob(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j6xkAAAAASUVORK5CYII=",
+          ),
+          (c) => c.charCodeAt(0),
+        ),
+      ],
+      "ensaio.png",
+      { type: "image/png" },
     ),
   );
   const upload = await call(`/upload/${chat.id}`, {
@@ -677,9 +706,60 @@ it("human upload returns a readable page and GPT retrieves metadata without aski
     }),
   );
   expect(files.recentUploads).toHaveLength(1);
-  expect(files.recentUploads[0].filename).toBe("ensaio.pdf");
+  expect(files.recentUploads[0].filename).toBe("ensaio.png");
   expect(files.recentUploads[0].sha256).toMatch(/^[a-f0-9]{64}$/);
   expect(JSON.stringify(files)).not.toContain("original/");
+  for (const args of [
+    { chatId: chat.id, kind: "image" },
+    {
+      chatId: chat.id,
+      kind: "text",
+      text: "Olá",
+      mediaId: files.recentUploads[0].id,
+    },
+    {
+      chatId: chat.id,
+      kind: "image",
+      text: "Legenda errada",
+      mediaId: files.recentUploads[0].id,
+      mediaHash: files.recentUploads[0].sha256,
+    },
+  ])
+    expect(
+      (await client.callTool({ name: "preparar_envio", arguments: args }))
+        .isError,
+    ).toBe(true);
+  const proposal = result(
+    await client.callTool({
+      name: "preparar_envio",
+      arguments: {
+        chatId: chat.id,
+        kind: "image",
+        caption: "Legenda de teste",
+        mediaId: files.recentUploads[0].id,
+        mediaHash: files.recentUploads[0].sha256,
+      },
+    }),
+  );
+  expect(proposal.envelope.kind).toBe("image");
+  const sent = result(
+    await client.callTool({
+      name: "executar_envio",
+      arguments: {
+        id: proposal.id,
+        confirmation: { confirmed: true, hash: proposal.hash },
+      },
+    }),
+  );
+  expect(sent.status).toBe("accepted");
+  await client.callTool({
+    name: "executar_envio",
+    arguments: {
+      id: proposal.id,
+      confirmation: { confirmed: true, hash: proposal.hash },
+    },
+  });
+  expect(sends()).toBe(1);
   const missing = await call("/media/missing", { headers });
   expect(missing.status).toBe(404);
   expect(missing.headers.get("Content-Type")).toContain("text/html");

@@ -350,9 +350,13 @@ export async function searchDirectory(
   }
   return {
     ...found,
-    directory: {...directory, coverage:"available_identifiers_only", completeMeaning:"available_pages_scanned_not_all_account_identities"},
+    directory: {
+      ...directory,
+      coverage: "available_identifiers_only",
+      completeMeaning: "available_pages_scanned_not_all_account_identities",
+    },
     instruction: directory.complete
-      ? "Preserve homônimos; confirme identidade se houver ambiguidade. Cadastro não libera captura."
+      ? "Preserve homônimos; confirme identidade se houver ambiguidade. Páginas disponíveis percorridas não provam todos os grupos/contatos: entradas sem identificação confiável podem ter sido omitidas. Cadastro não libera captura."
       : "Agenda parcial: repita a mesma busca até directory.complete=true antes de concluir ausência ou identidade única.",
   };
 }
