@@ -13,6 +13,7 @@ const settings = () =>
   ({
     ...env,
     PUBLIC_ORIGIN: "https://personal.example",
+    DEVELOPMENT: "false",
     ACCESS_ISSUER: "https://owner.cloudflareaccess.com",
     ACCESS_AUD: "app-audience",
     OWNER_SUB: "owner-subject",

@@ -29,3 +29,6 @@ __pycache__/
 dist/
 coverage/
 .vite/
+
+# Artefatos locais de verificacao visual
+/.playwright-mcp/

@@ -2,6 +2,8 @@
 
 Leia `README.md`, `BRIEF.md`, `CONTEXT.md` e `docs/08-proxima-sessao.md` antes de agir. O dono é gestor/produto: não trate sua concordância como validação técnica.
 
+Atualização de ativação em 19/10/2026: dono informou que já tem instância e pediu página privada + conexão GPT. Publicação/recursos próprios autorizados por esse pedido. Setup em /setup, primeira conexão apenas, chaves do Worker fora D1/Git, nenhum segredo no chat. Backend, limites e recuperação em docs/26-setup.md. Recursos em whatsapp.robsonlins.com; não alterar a aplicação Access ou recursos do Elo.
+
 ## Escopo da pasta
 
 Atualização em 19/10/2026: Robson autorizou repositório público, PRD, issues e implementação contínua. Confirmou que ainda não existe instância Z-API separada e pediu continuar sem ela. O software pode ser desenvolvido/testado com dados sintéticos; ativação, pareamento, segredos e homologação real continuam pendentes. O dono pediu explicitamente usar apenas a lógica do claude-harness, sem instalá-lo aqui; esta instrução prevalece sobre onboarding automático de harness. Estado atual e decisões: `PRD.md`, `docs/09-plano-de-implementacao.md` e `docs/10-entrega.md`. Depois da v0.1.0, o dono pediu toda a gestão de grupos oferecida pela API; escopo atual em `docs/20-grupos-prd.md` e contratos em `docs/21-grupos-contratos.md`, issues #8–10, marco v0.2.0.

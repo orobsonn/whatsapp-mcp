@@ -3,6 +3,10 @@ export interface Env {
   MEDIA: R2Bucket;
   OAUTH_KV: KVNamespace;
   AI: Ai;
+  ENCRYPTION_KEY?: string;
+  RUNTIME_CONFIG?: "database" | "static";
+  GPT_PLUGIN_URL?: string;
+  DEVELOPMENT?: string;
   PUBLIC_ORIGIN: string;
   ACCESS_ISSUER: string;
   ACCESS_AUD: string;
