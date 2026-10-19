@@ -23,11 +23,7 @@ export interface OwnerIdentity {
   epoch: string;
 }
 export type ConfirmationPurpose =
-  | "send"
-  | "capture-policy"
-  | "retention"
-  | "delete"
-  | "group";
+  "send" | "capture-policy" | "retention" | "delete" | "group";
 export interface ConfirmationProposal {
   purpose: ConfirmationPurpose;
   resourceId: string;
@@ -462,6 +458,7 @@ function validateAuthRequest(auth: AuthRequest, env: AuthEnv): void {
     throw new AuthError();
 }
 async function authorize(request: Request, env: AuthEnv): Promise<Response> {
+  let stage = "request";
   try {
     const oauth = (env as AuthEnv & { OAUTH_PROVIDER: OAuthHelpers })
       .OAUTH_PROVIDER;
@@ -482,7 +479,12 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
         JSON.stringify(auth),
       );
       return confirmationPage({
-        title: "Autorizar MCP pessoal",
+        title: "Conectar ao WhatsApp pessoal",
+        oauth: {
+          clientName: client.clientName || "Aplicativo solicitado",
+          redirectUri: auth.redirectUri,
+          scopes: auth.scope,
+        },
         summary: `Aplicativo: ${client.clientName || auth.clientId}. Destino: ${auth.redirectUri}. Permissões: ${auth.scope.join(", ")}`,
         envelope,
         hash,
@@ -495,8 +497,11 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
         status: 405,
         headers: { Allow: "GET, POST" },
       });
+    stage = "owner";
     const owner = await requireOwner(request, env);
+    stage = "form";
     const nonce = await postNonce(request, env);
+    stage = "confirmation";
     const row = await env.DB.prepare(
       "SELECT resource_id,envelope_hash,payload_json FROM auth_nonces WHERE nonce_hash=? AND purpose=?",
     )
@@ -522,6 +527,7 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
       row.resource_id,
       row.envelope_hash,
     );
+    stage = "finalize";
     const { redirectTo } = await oauth.completeAuthorization({
       request: auth,
       userId: encodeURIComponent(owner.sub),
@@ -529,7 +535,7 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
       scope: auth.scope,
       props: owner,
     });
-    // Redirect sent as an HTTP response, not form navigation. No wildcard CSP for clients.
+    // The consent page permits this registered client's exact callback origin in form-action.
     return new Response(null, {
       status: 302,
       headers: {
@@ -538,8 +544,35 @@ async function authorize(request: Request, env: AuthEnv): Promise<Response> {
         "Referrer-Policy": "no-referrer",
       },
     });
-  } catch {
-    return denied();
+  } catch (error) {
+    // Closed diagnostic categories only. Never return exception text, URLs, or OAuth payloads.
+    const message = error instanceof Error ? error.message : "";
+    const reason =
+      error instanceof AuthError
+        ? "refused"
+        : /redirect/i.test(message)
+          ? "redirect"
+          : /resource|audience/i.test(message)
+            ? "resource"
+            : /pkce|challenge/i.test(message)
+              ? "pkce"
+              : /userId/i.test(message)
+                ? "identity"
+                : /kv|namespace|storage/i.test(message)
+                  ? "storage"
+                  : /illegal invocation|this reference/i.test(message)
+                    ? "receiver"
+                    : "unavailable";
+    return new Response(
+      `A autorização não foi concluída. Reabra a conexão pelo ChatGPT; não reenvie esta página. Código: oauth_${stage}_${reason}.`,
+      {
+        status: 403,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
   }
 }
 
