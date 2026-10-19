@@ -4,12 +4,6 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
-### Fixed
-
-- Busca de contatos sincroniza automaticamente a agenda em lotes limitados, com continuação explícita e cache de 15 minutos separado por tipo; busca vazia consulta também cadastro de conversas, sem ler mensagens.
-- Filtro combinado por nome e final do telefone (4–15 dígitos), sem tratar LID/grupo como telefone nem expor número completo.
-- Sincronização manual não contamina a cobertura automática; conferir aparelho antes/depois do lote e preservar captura desabilitada.
-
 ## [0.3.0] - 2026-10-19
 
 ### Added
@@ -21,6 +15,10 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Recursos Cloudflare exclusivos e publicação em whatsapp.robsonlins.com; testes de segurança/recuperação/roteamento e verificação visual mobile/desktop.
 
 ### Fixed
+
+- Busca de contatos sincroniza automaticamente a agenda em lotes limitados, com continuação explícita e cache de 15 minutos separado por tipo; busca vazia consulta também cadastro de conversas, sem ler mensagens.
+- Filtro combinado por nome e final do telefone (4–15 dígitos), sem tratar LID/grupo como telefone nem expor número completo.
+- Sincronização manual não contamina a cobertura automática; conferir aparelho antes/depois do lote e preservar captura desabilitada.
 
 - Consentimento OAuth permite o redirecionamento somente à origem validada do cliente; preserva nonce único e proteção de origem.
 - Transporte fetch no Workers, normalização de credenciais coladas e contratos opcionais de callbacks da Z-API.
