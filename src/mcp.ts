@@ -24,7 +24,12 @@ import {
   cancelAction,
   sendEnvelopeSchema,
 } from "./actions";
-import { getMedia, readMedia, transcribeMedia } from "./media";
+import {
+  getMedia,
+  readMedia,
+  transcribeMedia,
+  listUploadedMedia,
+} from "./media";
 import {
   diagnostics,
   proposalPolicy,
@@ -191,7 +196,7 @@ export function createMcpServer(env: Env): McpServer {
   );
   tool(
     "adicionar_arquivo",
-    "Abre o upload privado no navegador do dono. Guarde o arquivo e use a referência/hash retornados para preparar envio.",
+    "Abre upload privado e lista recentUploads desta conversa. Após o dono guardar o arquivo, chame novamente para obter referência/hash sem pedir códigos ao humano. Identifique pelo nome e horário; se houver ambiguidade pergunte, nunca escolha silenciosamente o último. Guardar não envia.",
     z.object({ chatId: id }).strict(),
     true,
     async (input) => {
@@ -200,6 +205,7 @@ export function createMcpServer(env: Env): McpServer {
         chat: { id: chat.id, name: chat.name, kind: chat.kind },
         uploadUrl: `${env.PUBLIC_ORIGIN}/upload/${encodeURIComponent(chat.id)}`,
         maxBytes: LIMITS.mediaBytes,
+        recentUploads: await listUploadedMedia(env, chat.id),
       };
     },
   );

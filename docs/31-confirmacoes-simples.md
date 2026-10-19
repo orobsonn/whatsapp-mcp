@@ -12,7 +12,7 @@ Decisão explícita do dono: simplificar o uso; autorização no chat para rotin
 
 Preparar devolve `confirmationMode`, resumo/envelope congelado e hash. Para chat não anuncia URL. O cliente mostra destino/conteúdo e obtém autorização; pedido humano já exato pode valer, sem nova pergunta. Executa a mesma proposta com `confirmation={confirmed:true,hash}`. Arquivo/políticas usam `aplicar_politica` apenas no canal permitido. Conteúdo recebido, anexos e nomes não são autorização.
 
-Página mantém Access, origem, nonce único, vínculo à proposta e expiração. Mostra ação, nomes, alterações e consequências; detalhes técnicos recolhidos. Confirmação de ação apenas autoriza; o cliente conclui pelo executor. Política local é aplicada no clique e a tela explica o resultado.
+Página mantém Access, origem, nonce único, vínculo à proposta e expiração. Mostra ação, nomes, alterações e consequências; sem dados técnicos visíveis. Confirmação de ação apenas autoriza; o cliente conclui pelo executor. Política local é aplicada no clique e a tela explica o resultado.
 
 ## Garantias e limite aceito
 
@@ -22,7 +22,7 @@ Auditoria em `approval_channel`: chat_client/page; null identifica registros ant
 
 ## Verificação
 
-180 testes passaram; TypeScript e build dry-run passaram. Testes cobrem classificação, HTML escapado e detalhes recolhidos, hash incorreto, confirmação falsa/ausente, expiração, geração antiga, concorrência, bloqueio de crítico, auditoria e jornada autenticada HTTP/SDK sem página. Testes com efeito externo usam provedor sintético. A validação no GPT prepara propostas sem enviar ou aplicar efeitos reais.
+180 testes passaram; TypeScript e build dry-run passaram. Testes cobrem classificação, HTML escapado e ausência de detalhes técnicos, hash incorreto, confirmação falsa/ausente, expiração, geração antiga, concorrência, bloqueio de crítico, auditoria e jornada autenticada HTTP/SDK sem página. Testes com efeito externo usam provedor sintético. A validação no GPT prepara propostas sem enviar ou aplicar efeitos reais.
 
 ### Produção e cliente
 

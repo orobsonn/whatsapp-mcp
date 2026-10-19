@@ -362,7 +362,11 @@ describe("jornada HTTP e SDK MCP reais em runtime local", () => {
     );
     const upload = await call(`/upload/${chat.id}`, {
       method: "POST",
-      headers: { "Cf-Access-Jwt-Assertion": owner, origin: e.PUBLIC_ORIGIN },
+      headers: {
+        "Cf-Access-Jwt-Assertion": owner,
+        origin: e.PUBLIC_ORIGIN,
+        Accept: "application/json",
+      },
       body: form,
     });
     expect(upload.status).toBe(200);
@@ -614,5 +618,101 @@ it("MCP chat confirmation sends a frozen proposal without visiting the browser p
     arguments: { id: a.id, confirmation: { confirmed: true, hash: a.hash } },
   });
   expect(effects()).toBe(1);
+  await client.close();
+});
+it("human upload returns a readable page and GPT retrieves metadata without asking for codes", async () => {
+  network();
+  const token = await bootstrap(),
+    owner = await ownerToken();
+  const page = await upsertDirectoryPage(
+    e,
+    { epoch: e.INSTALLATION_EPOCH, generation: e.CONNECTION_GENERATION },
+    {
+      items: [
+        { externalId: "human-upload", kind: "group", name: "Equipe <x>" },
+      ],
+      complete: true,
+    },
+  );
+  const chat = page.items[0]!;
+  const headers = {
+    "Cf-Access-Jwt-Assertion": owner,
+    origin: e.PUBLIC_ORIGIN,
+    Accept: "text/html",
+  };
+  const get = await call(`/upload/${chat.id}`, { headers });
+  expect(get.headers.get("Content-Type")).toContain("text/html");
+  expect(await get.text()).toContain("2 MB");
+  const form = new FormData();
+  form.set(
+    "file",
+    new File(
+      [new TextEncoder().encode("%PDF-1.4\nSynthetic\n%%EOF")],
+      "ensaio.pdf",
+      { type: "application/pdf" },
+    ),
+  );
+  const upload = await call(`/upload/${chat.id}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  expect(upload.status).toBe(200);
+  expect(upload.headers.get("Content-Type")).toContain("text/html");
+  const html = await upload.text();
+  expect(html).toContain("Arquivo guardado");
+  expect(html).not.toContain("sha256");
+  const client = new Client({ name: "synthetic-human-upload", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${e.PUBLIC_ORIGIN}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: async (input, init) =>
+        app.fetch(new Request(input, init), e, createExecutionContext()),
+    }),
+  );
+  const files = result(
+    await client.callTool({
+      name: "adicionar_arquivo",
+      arguments: { chatId: chat.id },
+    }),
+  );
+  expect(files.recentUploads).toHaveLength(1);
+  expect(files.recentUploads[0].filename).toBe("ensaio.pdf");
+  expect(files.recentUploads[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(JSON.stringify(files)).not.toContain("original/");
+  const missing = await call("/media/missing", { headers });
+  expect(missing.status).toBe(404);
+  expect(missing.headers.get("Content-Type")).toContain("text/html");
+  const mcp = await call("/mcp", { headers: { Accept: "text/html" } });
+  expect(mcp.status).toBe(401);
+  expect(mcp.headers.get("WWW-Authenticate")).toContain("Bearer");
+  const oauth = await call("/oauth/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "text/html",
+    },
+    body: "grant_type=authorization_code&code=invalid",
+  });
+  expect(oauth.headers.get("Content-Type")).toContain("application/json");
+  const statusError = await call("/setup/status", {
+    headers: { Accept: "text/html" },
+  });
+  expect(statusError.status).toBe(403);
+  expect(statusError.headers.get("Content-Type")).toContain("application/json");
+  const uploadError = await call(`/upload/${chat.id}`, {
+    method: "POST",
+    headers: { ...headers, Accept: "application/json" },
+    body: new FormData(),
+  });
+  expect(uploadError.status).toBe(400);
+  expect(uploadError.headers.get("Content-Type")).toContain("application/json");
+  const deniedUpload = await call(`/upload/${chat.id}`, {
+    headers: { Accept: "application/json" },
+  });
+  expect(deniedUpload.status).toBe(403);
+  expect(deniedUpload.headers.get("Content-Type")).toContain(
+    "application/json",
+  );
   await client.close();
 });

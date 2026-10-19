@@ -1,15 +1,46 @@
+import { pageCss } from "./page-style";
 import type { ConfirmationDisplay } from "./approval";
-/** Client metadata, message text and names are untrusted even on an owner's page. */
 export function escapeHtml(value: unknown): string {
   return String(value).replace(
     /[&<>"']/g,
-    (ch) =>
+    (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        ch
+        c
       ]!,
   );
 }
-
+const css =
+  pageCss +
+  `
+p{line-height:1.65;overflow-wrap:anywhere}.lead{margin:0 0 24px;color:var(--secondary)}.context,.permissions{padding:16px;margin:20px 0;background:var(--soft);border:1px solid var(--line);border-radius:8px}.context p{margin:6px 0 0;font-weight:650}.label{font-size:13px;color:var(--muted)}.review-field{padding:13px 0;border-bottom:1px solid var(--line)}.review-field strong{font-size:13px;color:var(--muted);font-weight:550}.review-field p{white-space:pre-wrap;margin:6px 0}.success{display:inline-block;padding:7px 10px;background:var(--soft);color:var(--green);border-radius:7px;font-size:13px;font-weight:650;margin:0 0 18px}.panel-body .button{margin-top:22px}.fine{border-top:1px solid var(--line);padding-top:18px;margin-top:24px;font-size:12px;color:var(--muted)}.invite{overflow-wrap:anywhere}input[type=file]{display:block;width:100%;min-width:0;max-width:100%;padding:10px;border:1px solid #cbd7cd;border-radius:8px;background:#fff;font:inherit;font-size:14px;color:var(--secondary)}input::file-selector-button{border:0;border-radius:6px;padding:10px 12px;background:var(--soft);color:var(--green);font:inherit;font-weight:600;margin-right:12px;cursor:pointer}h1{overflow-wrap:anywhere}.permissions p{margin-bottom:0}
+`;
+function humanPage(input: {
+  title: string;
+  content: string;
+  status?: number;
+  formOrigin?: string;
+  headers?: HeadersInit;
+}): Response {
+  const headers = new Headers(input.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  for (const [k, v] of Object.entries({
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${input.formOrigin ? " " + input.formOrigin : ""}; frame-ancestors 'none'; base-uri 'none'`,
+  }))
+    headers.set(k, v);
+  return new Response(
+    `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)} · Zap</title><style>${css}</style></head><body><div class="shell"><header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">W</span><span>WhatsApp MCP</span></div><span class="top-note">Conexão privada</span></header><main class="content"><p class="eyebrow">Seu WhatsApp</p><h1>${escapeHtml(input.title)}</h1><section class="panel" style="margin-top:32px"><div class="panel-body">${input.content}</div></section></main></div></body></html>`,
+    { status: input.status ?? 200, headers },
+  );
+}
+const context = (name: string) =>
+  `<div class="context"><span class="label">Conversa</span><p>${escapeHtml(name)}</p></div>`;
 export function confirmationPage(input: {
   title: string;
   summary: string;
@@ -20,42 +51,168 @@ export function confirmationPage(input: {
   display?: ConfirmationDisplay;
   oauth?: { clientName: string; redirectUri: string; scopes: string[] };
 }): Response {
-  const css = `:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#18241e;background:#f6f8f5}*{box-sizing:border-box}body{margin:0;padding:32px 20px}main{max-width:620px;margin:6vh auto}.brand{font-size:15px;font-weight:700;color:#17623d;margin:0 0 28px}.card{padding:32px;background:#fff;border:1px solid #dfe6df;border-radius:14px}h1{font-size:30px;line-height:1.2;letter-spacing:-.04em;margin:0 0 16px}p{line-height:1.6;color:#4c5a50}.app{font-size:20px;font-weight:650;color:#18241e}.permissions{padding:16px;background:#eaf3ec;border-radius:8px}button{width:100%;min-height:48px;background:#17623d;color:#fff;border:0;border-radius:8px;font:inherit;font-weight:650;cursor:pointer;margin-top:20px}button:focus-visible,summary:focus-visible{outline:3px solid #17623d;outline-offset:4px}.hint{font-size:13px;color:#6c796f}details{margin-top:24px;font-size:13px}summary{cursor:pointer;color:#4c5a50}.field{padding:12px 0;border-bottom:1px solid #edf1ed}.field p{white-space:pre-wrap;margin:6px 0}.notice{padding:14px;background:#fff5df;border-radius:8px}pre,code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-size:12px}pre{padding:14px;background:#f6f8f5;border-radius:8px}@media(max-width:480px){body{padding:24px 16px}main{margin:24px auto}.card{padding:24px}h1{font-size:27px}}`;
-  const technical = `<pre>${escapeHtml(input.envelope)}</pre><p class="hint">Identificação desta autorização: <code>${escapeHtml(input.hash)}</code></p>`;
+  const d = input.display,
+    title = d?.title ?? input.title;
   const content = input.oauth
-    ? `<p class="app">${escapeHtml(input.oauth.clientName)}</p><p>Você está conectando este aplicativo ao seu WhatsApp pessoal.</p><div class="permissions"><strong>O que será autorizado</strong><p>Acesso às ferramentas do MCP para consultar seus dados autorizados e preparar ações. Envios e alterações em grupos exigem sua confirmação.</p></div><p class="hint">Após autorizar, você voltará para <strong>${escapeHtml(new URL(input.oauth.redirectUri).hostname)}</strong>.</p><details><summary>Detalhes técnicos da autorização</summary><p>Permissões: ${escapeHtml(input.oauth.scopes.join(", "))}</p>${technical}</details>`
-    : input.display
-      ? `<div class="review">${input.display.fields.map((f) => `<div class="field"><strong>${escapeHtml(f.label)}</strong><p>${escapeHtml(f.value)}</p></div>`).join("")}</div>${input.display.warnings.map((w) => `<p class="notice">${escapeHtml(w)}</p>`).join("")}<details><summary>Detalhes técnicos</summary>${technical}</details>`
-      : `<p>${escapeHtml(input.summary)}</p><details><summary>Detalhes técnicos</summary>${technical}</details>`;
-  const body = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.display?.title ?? input.title)}</title><style>${css}</style></head><body><main><p class="brand">WhatsApp pessoal · Conexão privada</p><section class="card"><h1>${escapeHtml(input.display?.title ?? input.title)}</h1>${content}<form method="post" action="${escapeHtml(input.action)}"><input type="hidden" name="nonce" value="${escapeHtml(input.nonce)}"><button type="submit">${input.oauth ? "Autorizar conexão" : escapeHtml(input.display?.button ?? "Confirmar")}</button></form><p class="hint">Confirmação válida por dez minutos e usada uma única vez. Se não quiser continuar, feche esta página.</p></section></main></body></html>`;
-  return new Response(body, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      // Chrome also checks form-action against redirects after a form POST.
-      // OAuth caller validates this URI against the registered client's allowlist first.
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${input.oauth ? ` ${new URL(input.oauth.redirectUri).origin}` : ""}; frame-ancestors 'none'; base-uri 'none'`,
-      "X-Frame-Options": "DENY",
-      "X-Content-Type-Options": "nosniff",
-      // no-referrer causes Origin:null on some real form submissions. same-origin
-      // suppresses cross-origin referrers while preserving same-origin form CSRF checks.
-      "Referrer-Policy": "same-origin",
-      "Cache-Control": "no-store",
-      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    },
+    ? `<p class="lead"><strong>${escapeHtml(input.oauth.clientName)}</strong> quer se conectar ao seu WhatsApp pessoal.</p><div class="permissions"><strong>O que você está autorizando</strong><p>Consultar seus dados autorizados e realizar ações conforme seus pedidos. Ações críticas continuam exigindo sua confirmação nesta página.</p></div><p class="hint">Após autorizar, você voltará para ${escapeHtml(new URL(input.oauth.redirectUri).hostname)}.</p>`
+    : d
+      ? `${d.fields.map((f) => `<div class="review-field"><strong>${escapeHtml(f.label)}</strong><p>${escapeHtml(f.value)}</p></div>`).join("")}${d.warnings.map((w) => `<p class="notice">${escapeHtml(w)}</p>`).join("")}`
+      : `<p class="lead">${escapeHtml(input.summary)}</p>`;
+  return humanPage({
+    title,
+    formOrigin: input.oauth
+      ? new URL(input.oauth.redirectUri).origin
+      : undefined,
+    content: `${content}<form method="post" action="${escapeHtml(input.action)}"><input type="hidden" name="nonce" value="${escapeHtml(input.nonce)}"><button class="button" type="submit">${input.oauth ? "Autorizar conexão" : escapeHtml(d?.button ?? "Confirmar")}</button></form><p class="fine">Esta autorização vale por 10 minutos e pode ser usada uma vez. Se não quiser continuar, basta fechar a página.</p>`,
   });
 }
-
 export function confirmationResultPage(message: string): Response {
-  return new Response(
-    `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confirmação registrada</title><style>body{font-family:system-ui;background:#f6f8f5;color:#18241e;padding:24px}main{max-width:560px;margin:10vh auto;background:white;padding:32px;border:1px solid #dfe6df;border-radius:14px}h1{font-size:26px}p{line-height:1.6}</style><main><h1>Confirmação registrada</h1><p>${escapeHtml(message)}</p><p>Você pode fechar esta página.</p></main></html>`,
-    {
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
-        "content-security-policy":
-          "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
-        "referrer-policy": "same-origin",
-      },
-    },
+  return humanPage({
+    title: "Confirmação registrada",
+    content: `<span class="success">Tudo certo</span><p>${escapeHtml(message)}</p><p class="fine">Você já pode fechar esta página.</p>`,
+  });
+}
+export function uploadPage(input: {
+  chatName: string;
+  chatId: string;
+}): Response {
+  return humanPage({
+    title: "Adicionar arquivo",
+    content: `<p class="lead">Guarde um arquivo para usar nesta conversa. O envio será feito depois, pelo chat.</p>${context(input.chatName)}<form method="post" enctype="multipart/form-data" action="/upload/${encodeURIComponent(input.chatId)}"><label for="file">Escolha o arquivo</label><input id="file" type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/x-m4a" required><p class="hint">Imagem, PDF ou áudio · até 2 MB</p><button class="button" type="submit">Guardar arquivo</button></form><p class="fine">Seu arquivo fica privado. Nada será enviado ao WhatsApp ao clicar neste botão.</p>`,
+  });
+}
+export function uploadResultPage(input: {
+  chatName: string;
+  chatId: string;
+  filename: string;
+  kind: string;
+  size: number;
+}): Response {
+  const type =
+    ({ image: "Imagem", pdf: "PDF", audio: "Áudio" } as Record<string, string>)[
+      input.kind
+    ] ?? "Arquivo";
+  const size =
+    input.size < 1048576
+      ? `${Math.max(1, Math.round(input.size / 1024))} KB`
+      : `${(input.size / 1048576).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MB`;
+  return humanPage({
+    title: "Arquivo guardado",
+    content: `<span class="success">Pronto para usar</span><p class="lead">Nada foi enviado ao WhatsApp. Volte ao chat e diga o que deseja fazer com este arquivo.</p>${context(input.chatName)}<div class="review-field"><strong>Arquivo</strong><p>${escapeHtml(input.filename)}</p><span class="hint">${escapeHtml(type)} · ${escapeHtml(size)}</span></div><a class="button secondary" href="/upload/${encodeURIComponent(input.chatId)}">Adicionar outro arquivo</a><p class="fine">Não precisa copiar nenhum código. O GPT pode localizar o arquivo nesta conversa.</p>`,
+  });
+}
+export function invitePage(name: string, invite: string): Response {
+  const u = new URL(invite);
+  if (
+    u.protocol !== "https:" ||
+    u.hostname !== "chat.whatsapp.com" ||
+    u.username ||
+    u.password ||
+    u.port ||
+    u.search ||
+    u.hash ||
+    !/^\/[A-Za-z0-9]+$/.test(u.pathname)
+  )
+    throw new Error("invalid_invite");
+  const response = humanPage({
+    title: "Convite do grupo",
+    content: `<p class="lead">Abra o convite no WhatsApp ou copie o link abaixo para compartilhar.</p>${context(name)}<a class="button" href="${escapeHtml(invite)}" rel="noreferrer noopener">Abrir convite no WhatsApp</a><p><a class="invite" href="${escapeHtml(invite)}" rel="noreferrer noopener">${escapeHtml(invite)}</a></p><p class="notice">Quem receber este link poderá entrar ou solicitar entrada, conforme as regras do grupo. Compartilhe somente com quem você deseja convidar.</p>`,
+  });
+  response.headers.set("Referrer-Policy", "no-referrer");
+  return response;
+}
+export function isHumanPagePath(path: string): boolean {
+  return (
+    path === "/setup" ||
+    path === "/authorize" ||
+    /^\/(upload|media)\/[^/]+$/.test(path) ||
+    /^\/confirm\/(send|group|policy)\/[^/]+$/.test(path) ||
+    /^\/groups\/[^/]+\/invite$/.test(path)
   );
+}
+export function isProtocolPath(path: string): boolean {
+  return (
+    path === "/mcp" ||
+    path.startsWith("/mcp/") ||
+    path.startsWith("/oauth/") ||
+    path.startsWith("/.well-known/") ||
+    path === "/health" ||
+    path.startsWith("/webhook/") ||
+    path === "/setup/status"
+  );
+}
+export function humanErrorPage(
+  code: string,
+  status: number,
+  options: { headers?: HeadersInit; retryPath?: string } = {},
+): Response {
+  let title = "Não foi possível concluir",
+    message =
+      "Tente novamente em alguns instantes. Se o problema continuar, volte ao chat e peça para retomar a operação.";
+  if (status === 403 || status === 401) {
+    title = "Não foi possível autorizar";
+    message =
+      "Seu acesso ou a confirmação não são mais válidos. Volte ao chat e peça uma nova confirmação. Se necessário, entre novamente com sua conta.";
+  }
+  if (status === 404) {
+    title = "Não encontramos esta página";
+    message =
+      "O link pode ter expirado ou o arquivo não está mais disponível. Volte ao chat para pedir um novo acesso.";
+  }
+  if (
+    code === "action_expired" ||
+    code === "proposal_expired" ||
+    code === "action_not_proposed" ||
+    code === "confirmation_required"
+  ) {
+    title = "Esta confirmação expirou";
+    message =
+      "Ela já foi usada, cancelada ou passou do prazo. Volte ao chat e peça uma nova confirmação para continuar.";
+  }
+  if (status === 413) {
+    title = "O arquivo é grande demais";
+    message =
+      "Escolha um arquivo de até 2 MB e tente novamente. Você pode reduzir a imagem ou comprimir o arquivo antes.";
+  }
+  if (
+    [
+      "invalid_file",
+      "invalid_media",
+      "unsupported_media",
+      "media_mime_mismatch",
+      "media_kind_mismatch",
+      "invalid_media_filename",
+      "media_filename_mismatch",
+    ].includes(code) ||
+    status === 415
+  ) {
+    title = "Não conseguimos guardar este arquivo";
+    message =
+      "Escolha uma imagem PNG, JPG ou WebP, um PDF ou um áudio compatível de até 2 MB. Confira se o arquivo abre normalmente e tente outra vez.";
+  }
+  if (status === 405) {
+    title = "Abra o link novamente";
+    message =
+      "Esta página não pode ser usada dessa forma. Volte ao chat e abra o link da operação para continuar.";
+  }
+  if (status === 503) {
+    title = "Estamos temporariamente indisponíveis";
+    message =
+      "Não conseguimos concluir agora. Aguarde um pouco e tente novamente, sem repetir envios que já estejam em andamento.";
+  }
+  if (code === "oauth_failed") {
+    title = "Não foi possível conectar o GPT";
+    message =
+      "Volte ao GPT e abra a conexão novamente. Se esta página já foi usada ou ficou aberta por muito tempo, ela precisa ser substituída por uma nova autorização.";
+  }
+  const retry =
+    options.retryPath && /^\/upload\/[A-Za-z0-9_-]+$/.test(options.retryPath)
+      ? options.retryPath
+      : undefined;
+  return humanPage({
+    title,
+    status,
+    headers: options.headers,
+    content: `<p class="lead">${escapeHtml(message)}</p>${retry ? `<a class="button" href="${escapeHtml(retry)}">Escolher outro arquivo</a>` : '<a class="button secondary" href="/setup">Verificar minha conexão</a>'}<p class="fine">Se um envio já foi iniciado, consulte o resultado no chat antes de tentar novamente.</p>`,
+  });
 }

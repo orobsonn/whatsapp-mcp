@@ -6,6 +6,7 @@ import { upsertDirectoryPage, setCapture } from "../src/directory";
 import { ingestEvent } from "../src/capture";
 import {
   getMedia,
+  listUploadedMedia,
   processMediaJobs,
   readMedia,
   transcribeMedia,
@@ -135,6 +136,37 @@ describe("mídia privada D1/R2", () => {
       filename: "foto.png",
     });
     expect(next.id).not.toBe(media.id);
+  });
+  it("lista apenas uploads recentes visíveis do chat, com limite e sem transporte privado", async () => {
+    const c = await chat();
+    const ids: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const m = await uploadMedia(e, c.id, {
+        bytes: png,
+        mime: "image/png",
+        filename: `foto-${i}.png`,
+      });
+      ids.push(m.id);
+      await env.DB.prepare("UPDATE media SET created_at=? WHERE id=?")
+        .bind(i + 1, m.id)
+        .run();
+    }
+    const recent = await listUploadedMedia(e, c.id);
+    expect(recent).toHaveLength(10);
+    expect(recent[0]!.filename).toBe("foto-11.png");
+    expect(JSON.stringify(recent)).not.toMatch(/object_key|source_url/);
+    await env.DB.prepare("UPDATE media SET generation='old' WHERE id=?")
+      .bind(ids[11])
+      .run();
+    await env.DB.prepare("UPDATE media SET state='pending' WHERE id=?")
+      .bind(ids[10])
+      .run();
+    const filtered = await listUploadedMedia(e, c.id);
+    expect(filtered.map((x) => x.id)).not.toContain(ids[11]);
+    expect(filtered.map((x) => x.id)).not.toContain(ids[10]);
+    await expect(listUploadedMedia(e, "other-chat")).rejects.toHaveProperty(
+      "code",
+    );
   });
   it.each(encodedFixtures)(
     "reconhece bytes codificados de $mime sem depender do nome",

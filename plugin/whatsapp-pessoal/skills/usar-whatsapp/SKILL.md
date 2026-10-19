@@ -13,3 +13,7 @@ Use apenas as ferramentas tipadas do MCP WhatsApp pessoal.
 6. Resultado incerto não autoriza repetir envio/ação. Consulte a mesma referência. Aceito não prova entrega/leitura de todos no grupo.
 7. Menções a membros/grupos usam marcadores @{ID_INTERNO} no texto e referências do catálogo; menção a todos usa @all e audiência no momento da execução.
 8. Não prometa histórico completo, importação retroativa ou acesso a arquivo ainda não capturado. Não devolva tokens, URLs de transporte ou convites privados ao chat.
+
+## Arquivos enviados pelo navegador
+
+Depois que o dono guardar um arquivo na página privada, chame `adicionar_arquivo` novamente para o mesmo chat e confira `recentUploads`. Identifique pelo nome e horário; se houver ambiguidade, pergunte. Não peça IDs ou hashes ao dono e não escolha silenciosamente o último arquivo. Guardar o arquivo não envia nada ao WhatsApp.
