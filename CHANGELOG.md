@@ -4,6 +4,16 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-19
+
+### Changed
+
+- Autorização no chat para envios, criação de grupos e operações comuns; proposta retorna o canal exigido pelo servidor. Pedido humano com destino/conteúdo exatos pode autorizar sem pergunta repetida.
+- Página Access reservada para exclusão/limpeza, redução de retenção, temporárias ativadas, remoção de pessoas/saída, administradores/permissões e vínculos com comunidades.
+- Confirmações críticas mostram nomes, mudanças e consequências; IDs/JSON/hash ficam em detalhes recolhidos. Resultado da página também é legível.
+- Auditoria registra `chat_client` ou `page`. Confirmação no chat é declaração do cliente autenticado, não prova humana independente. Integridade, expiração, isolamento e tentativa única preservados.
+
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

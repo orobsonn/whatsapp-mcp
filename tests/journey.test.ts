@@ -556,3 +556,63 @@ describe("jornada HTTP e SDK MCP reais em runtime local", () => {
     await client.close();
   });
 });
+it("MCP chat confirmation sends a frozen proposal without visiting the browser page", async () => {
+  const effects = network(),
+    token = await bootstrap();
+  const client = new Client({ name: "synthetic-chat-client", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${e.PUBLIC_ORIGIN}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: async (input, init) =>
+        app.fetch(new Request(input, init), e, createExecutionContext()),
+    }),
+  );
+  const page = await upsertDirectoryPage(
+    e,
+    { epoch: e.INSTALLATION_EPOCH, generation: e.CONNECTION_GENERATION },
+    {
+      items: [
+        { externalId: "group-j", kind: "group", name: "Equipe sintética" },
+      ],
+      complete: true,
+    },
+  );
+  const a = result(
+    await client.callTool({
+      name: "preparar_envio",
+      arguments: {
+        chatId: page.items[0]!.id,
+        kind: "text",
+        text: "Ensaio sintético autorizado",
+      },
+    }),
+  );
+  expect(a.confirmationMode).toBe("chat");
+  expect(a.confirmationUrl).toBeUndefined();
+  expect(effects()).toBe(0);
+  const denied = result(
+    await client.callTool({
+      name: "executar_envio",
+      arguments: {
+        id: a.id,
+        confirmation: { confirmed: true, hash: "b".repeat(64) },
+      },
+    }),
+  );
+  expect(denied.error).toBe("confirmation_mismatch");
+  expect(effects()).toBe(0);
+  const sent = result(
+    await client.callTool({
+      name: "executar_envio",
+      arguments: { id: a.id, confirmation: { confirmed: true, hash: a.hash } },
+    }),
+  );
+  expect(sent.status).toBe("accepted");
+  expect(effects()).toBe(1);
+  await client.callTool({
+    name: "executar_envio",
+    arguments: { id: a.id, confirmation: { confirmed: true, hash: a.hash } },
+  });
+  expect(effects()).toBe(1);
+  await client.close();
+});

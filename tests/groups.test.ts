@@ -646,3 +646,36 @@ it("cleanup remove ack já redigido de geração antiga e libera o próximo lote
   ).toBeNull();
   expect(await cleanupGroupActions(rotated, 1)).toBe(0);
 });
+it("uses chat for creating a group but never for clearing a chat", async () => {
+  const create = await prepareGroupAction(
+    e,
+    {
+      operation: "create",
+      name: "Equipe sintética",
+      contactIds: [contact],
+      autoInvite: false,
+    },
+    provider,
+  );
+  expect(create.confirmationMode).toBe("chat");
+  expect(create.confirmationUrl).toBeUndefined();
+  await executeGroupAction(e, create.id, provider, {
+    confirmed: true,
+    hash: create.hash,
+  });
+  expect(calls).toBe(1);
+  const clear = await prepareGroupAction(
+    e,
+    { operation: "chat_clear", chatId: group },
+    provider,
+  );
+  expect(clear.confirmationMode).toBe("page");
+  expect(clear.confirmationUrl).toContain("/confirm/group/");
+  await expect(
+    executeGroupAction(e, clear.id, provider, {
+      confirmed: true,
+      hash: clear.hash,
+    }),
+  ).rejects.toThrow("browser_confirmation_required");
+  expect(calls).toBe(1);
+});

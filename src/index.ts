@@ -22,7 +22,7 @@ import { mcpFetch } from "./mcp";
 import { getChat } from "./store";
 import { readMedia, uploadMedia, processMediaJobs } from "./media";
 import { getPolicyProposal, applyPolicyProposal, cleanup } from "./operations";
-import { escapeHtml } from "./pages";
+import { escapeHtml, confirmationResultPage } from "./pages";
 import { getGroupAction, approveGroupAction, getGroupInvite } from "./groups";
 import pkg from "../package.json";
 import { resolveRuntimeEnv } from "./connection";
@@ -133,17 +133,16 @@ async function browser(request: Request, env: Env): Promise<Response> {
       env,
       {
         purpose: "send",
+        context: action.chat.name,
         resourceId: action.id,
         envelope: action.envelope,
         summary: `Enviar para ${action.chat.name} (${action.chat.kind}). Confira o conteúdo e o hash.`,
       },
       async (proof) => {
         await approveAction(env, action.id, proof);
-        return json({
-          id: action.id,
-          status: "approved",
-          next: "Volte ao chat e execute a ação confirmada.",
-        });
+        return confirmationResultPage(
+          "A ação foi autorizada. Volte ao chat para concluir a execução.",
+        );
       },
     );
   }
@@ -168,11 +167,9 @@ async function browser(request: Request, env: Env): Promise<Response> {
       },
       async (proof) => {
         await approveGroupAction(env, action.id, proof);
-        return json({
-          id: action.id,
-          status: "approved",
-          next: "Volte ao chat e execute a ação confirmada.",
-        });
+        return confirmationResultPage(
+          "A ação foi autorizada. Volte ao chat para concluir a execução.",
+        );
       },
     );
   }
@@ -218,11 +215,15 @@ async function browser(request: Request, env: Env): Promise<Response> {
       env,
       {
         purpose,
+        context: scope,
         resourceId: p.id,
         envelope: p.envelope,
         summary: `Alteração de ${scope}. Confira o escopo; exclusões locais não podem ser desfeitas.`,
       },
-      async (proof) => json(await applyPolicyProposal(env, p.id, proof)),
+      async (proof) => {
+        await applyPolicyProposal(env, p.id, proof);
+        return confirmationResultPage("A alteração do arquivo foi aplicada.");
+      },
     );
   }
   if (parts[1] === "media" && parts.length === 3 && request.method === "GET") {

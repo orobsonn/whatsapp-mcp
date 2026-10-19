@@ -475,3 +475,57 @@ describe("ações D1 com uma tentativa e autorização vinculada", () => {
     expect((await readMedia(e, media.id)).bytes).toEqual(bytes);
   });
 });
+it("sends with exact chat authorization once, without browser approval", async () => {
+  const a = await prepared();
+  let sends = 0;
+  const provider = {
+    status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+    send: async () => {
+      sends++;
+      return { messageId: "synthetic-chat-send" };
+    },
+  };
+  expect(a.confirmationMode).toBe("chat");
+  expect(a.confirmationUrl).toBeUndefined();
+  await expect(
+    executeAction(e, a.id, provider, { confirmed: true, hash: "b".repeat(64) }),
+  ).rejects.toThrow("confirmation_mismatch");
+  const confirmation = { confirmed: true as const, hash: a.hash };
+  const results = await Promise.all([
+    executeAction(e, a.id, provider, confirmation),
+    executeAction(e, a.id, provider, confirmation),
+  ]);
+  expect(sends).toBe(1);
+  expect(results.some((x) => x.status === "accepted")).toBe(true);
+});
+
+it("does not accept expired, false or old-generation chat authorization", async () => {
+  const a = await prepared();
+  let sends = 0;
+  const provider = {
+    status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+    send: async () => {
+      sends++;
+      return { messageId: "synthetic" };
+    },
+  };
+  await expect(
+    executeAction(e, a.id, provider, {
+      confirmed: false,
+      hash: a.hash,
+    } as never),
+  ).rejects.toThrow("chat_confirmation_required");
+  await expect(
+    executeAction({ ...e, CONNECTION_GENERATION: "old" }, a.id, provider, {
+      confirmed: true,
+      hash: a.hash,
+    }),
+  ).rejects.toThrow("action_not_found");
+  await env.DB.prepare("UPDATE actions SET expires_at=0 WHERE id=?")
+    .bind(a.id)
+    .run();
+  await expect(
+    executeAction(e, a.id, provider, { confirmed: true, hash: a.hash }),
+  ).rejects.toThrow("action_expired");
+  expect(sends).toBe(0);
+});

@@ -1,3 +1,9 @@
+import {
+  assertChatConfirmation,
+  groupConfirmationMode,
+  readableConfirmation,
+  type ChatConfirmation,
+} from "./approval";
 import { z } from "zod";
 import type { Env } from "./env";
 import {
@@ -448,7 +454,19 @@ export async function getGroupAction(env: Env, id: string) {
           unmappedNotAdded?: number;
         })
       : null,
-    confirmationUrl: `${env.PUBLIC_ORIGIN}/confirm/group/${encodeURIComponent(a.id)}`,
+    confirmationMode: groupConfirmationMode(
+      a.envelope_json === "{}" ? {} : JSON.parse(a.envelope_json).operation,
+    ),
+    confirmationUrl:
+      groupConfirmationMode(
+        a.envelope_json === "{}" ? {} : JSON.parse(a.envelope_json).operation,
+      ) === "page"
+        ? `${env.PUBLIC_ORIGIN}/confirm/group/${encodeURIComponent(a.id)}`
+        : undefined,
+    preview: readableConfirmation(
+      "group",
+      a.envelope_json === "{}" ? {} : JSON.parse(a.envelope_json),
+    ),
   };
 }
 export async function approveGroupAction(
@@ -474,7 +492,7 @@ export async function approveGroupAction(
   if (a.expires_at <= Date.now() || a.envelope_json === "{}")
     throw new AppError("action_expired", 409);
   const r = await env.DB.prepare(
-    "UPDATE group_actions SET status='approved',approved_at=?,version=version+1 WHERE id=? AND status='proposed' AND version=? AND hash=? AND envelope_json=? AND private_json=? AND epoch=? AND generation=? AND expires_at>?",
+    "UPDATE group_actions SET status='approved',approval_channel='page',approved_at=?,version=version+1 WHERE id=? AND status='proposed' AND version=? AND hash=? AND envelope_json=? AND private_json=? AND epoch=? AND generation=? AND expires_at>?",
   )
     .bind(
       Date.now(),
@@ -624,8 +642,36 @@ export async function executeGroupAction(
   env: Env,
   id: string,
   provider: GroupProvider = defaultProvider(env),
+  confirmation?: ChatConfirmation,
 ) {
-  const a = await actionRow(env, id);
+  let a = await actionRow(env, id);
+  if (confirmation !== undefined) {
+    if (confirmation.hash !== a.hash)
+      throw new AppError("confirmation_mismatch", 403);
+    if (["proposed", "approved"].includes(a.status))
+      assertChatConfirmation(
+        confirmation,
+        a.hash,
+        groupConfirmationMode(JSON.parse(a.envelope_json).operation),
+      );
+  }
+  if (a.status === "proposed" && confirmation !== undefined) {
+    if (a.expires_at <= Date.now()) throw new AppError("action_expired", 409);
+    await env.DB.prepare(
+      "UPDATE group_actions SET status='approved',approval_channel='chat_client',approved_at=?,version=version+1 WHERE id=? AND epoch=? AND generation=? AND status='proposed' AND hash=? AND version=? AND expires_at>?",
+    )
+      .bind(
+        Date.now(),
+        id,
+        a.epoch,
+        a.generation,
+        a.hash,
+        a.version,
+        Date.now(),
+      )
+      .run();
+    a = await actionRow(env, id);
+  }
   if (a.status === "accepted" && a.ack_json) {
     await materialize(env, a);
     return getGroupAction(env, id);
@@ -1289,7 +1335,8 @@ export function getGroupCapabilities(_env?: Env) {
       "link_groups",
       "unlink_groups",
     ],
-    confirmation: "Access owner, purpose group, immutable envelope",
+    confirmation:
+      "server risk policy: chat client attestation for routine actions; Access owner page for critical actions; immutable envelope",
     limits: {
       page: 50,
       outputBytes: 32768,
