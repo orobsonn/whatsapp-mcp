@@ -1,0 +1,29 @@
+{
+  "name": "whatsapp-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Arquivo privado e MCP pessoal de WhatsApp",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "vitest run",
+    "check": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 migrations apply DB --local"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "jose": "6.2.12",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.5",
+    "@cloudflare/workers-types": "5.20261019.1",
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.2"
+  }
+}
