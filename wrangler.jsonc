@@ -6,10 +6,33 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": false,
   "preview_urls": false,
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false },
-  "d1_databases": [{ "binding": "DB", "database_name": "whatsapp-mcp-private", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "whatsapp-mcp-private-media" }],
-  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "whatsapp-mcp-private",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "whatsapp-mcp-private-media" },
+  ],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" },
+  ],
   // Ativação explícita: "ai": { "binding": "AI" },
-  "vars": { "PUBLIC_ORIGIN": "http://localhost:8787", "ACCESS_ISSUER": "", "ACCESS_AUD": "", "OWNER_SUB": "", "INSTALLATION_EPOCH": "unconfigured", "CONNECTION_GENERATION": "unconfigured", "CONNECTED_PHONE": "", "MEDIA_HOSTS": "", "TRANSCRIPTION_ENABLED": "false", "MAINTENANCE": "true" }
+  "vars": {
+    "PUBLIC_ORIGIN": "http://localhost:8787",
+    "ACCESS_ISSUER": "",
+    "ACCESS_AUD": "",
+    "OWNER_SUB": "",
+    "INSTALLATION_EPOCH": "unconfigured",
+    "CONNECTION_GENERATION": "unconfigured",
+    "CONNECTED_PHONE": "",
+    "MEDIA_HOSTS": "",
+    "TRANSCRIPTION_ENABLED": "false",
+    "MAINTENANCE": "true",
+  },
 }
