@@ -2,7 +2,7 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Estado em 19/10/2026:** v0.3.0 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Instância configurada e plugin **Zap** autenticado no GPT: diagnóstico, capacidades de grupos e uma página da Z-API executados no cliente real. Captura segue desabilitada até escolha dos chats. Elo permanece separado.
+**Estado em 19/10/2026:** v0.4.0 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Instância configurada e plugin **Zap** autenticado no GPT: diagnóstico, capacidades de grupos e uma página da Z-API executados no cliente real. Captura segue desabilitada até escolha dos chats. Elo permanece separado.
 
 [Fluxo de configuração e segurança](docs/26-setup.md). Login é necessário; nenhuma conversa é capturada automaticamente.
 
@@ -27,6 +27,10 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 - [PRD e critérios de aceitação](PRD.md), [plano](docs/09-plano-de-implementacao.md) e [evidências da entrega inicial](docs/10-entrega.md) e [entrega de grupos](docs/25-entrega-grupos.md).
 - [Autenticação e confirmação](docs/13-auth.md), [transporte](docs/14-zapi.md), [mídia/áudio](docs/15-media.md), [ações](docs/16-acoes.md) e [operação](docs/17-operacao.md).
 - [Issues](https://github.com/orobsonn/whatsapp-mcp/issues), [changelog](CHANGELOG.md) e [releases](https://github.com/orobsonn/whatsapp-mcp/releases).
+
+## Confirmações
+
+Envios e ações comuns são autorizados no chat, sem abrir página. O pedido exato do dono já pode autorizar; alvos ou conteúdo ambíguos precisam de esclarecimento. A página fica para ações críticas, com nomes e consequências legíveis. A decisão de risco é do servidor, não do modelo. [Política e limites](docs/31-confirmacoes-simples.md).
 
 ## Limites explícitos
 

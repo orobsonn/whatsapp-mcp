@@ -1,3 +1,4 @@
+import { readableConfirmation } from "./approval";
 import OAuthProvider, {
   OAuthError,
   type AuthRequest,
@@ -23,12 +24,17 @@ export interface OwnerIdentity {
   epoch: string;
 }
 export type ConfirmationPurpose =
-  "send" | "capture-policy" | "retention" | "delete" | "group";
+  | "send"
+  | "capture-policy"
+  | "retention"
+  | "delete"
+  | "group";
 export interface ConfirmationProposal {
   purpose: ConfirmationPurpose;
   resourceId: string;
   envelope: unknown;
   summary: string;
+  context?: string;
 }
 export interface ConfirmationProof extends OwnerIdentity {
   purpose: ConfirmationPurpose;
@@ -398,6 +404,11 @@ export async function humanConfirmation(
       return confirmationPage({
         title: "Confirmar operação",
         summary: proposal.summary,
+        display: readableConfirmation(
+          proposal.purpose,
+          proposal.envelope,
+          proposal.context,
+        ),
         envelope,
         hash,
         nonce,

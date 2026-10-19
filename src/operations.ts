@@ -1,4 +1,9 @@
 import {
+  assertChatConfirmation,
+  policyConfirmationMode,
+  type ChatConfirmation,
+} from "./approval";
+import {
   invalidateGroupActionsStatements,
   cleanupGroupActions,
 } from "./groups";
@@ -36,7 +41,8 @@ export type PolicyProposal = {
   hash: string;
   status: "proposed" | "applied";
   expiresAt: number;
-  confirmationUrl: string;
+  confirmationMode: "chat" | "page";
+  confirmationUrl?: string;
 };
 const now = () => Date.now();
 const ttl = 600_000;
@@ -49,7 +55,11 @@ function proposalView(env: Env, row: ProposalRow): PolicyProposal {
     hash: row.hash,
     status: row.status,
     expiresAt: row.expires_at,
-    confirmationUrl: `${new URL(env.PUBLIC_ORIGIN).origin}/confirm/policy/${encodeURIComponent(row.id)}`,
+    confirmationMode: policyConfirmationMode(JSON.parse(row.envelope_json)),
+    confirmationUrl:
+      policyConfirmationMode(JSON.parse(row.envelope_json)) === "page"
+        ? `${new URL(env.PUBLIC_ORIGIN).origin}/confirm/policy/${encodeURIComponent(row.id)}`
+        : undefined,
   };
 }
 async function retentionValue(env: Env, fence: Fence): Promise<number | null> {
@@ -155,11 +165,30 @@ export async function getPolicyProposal(
   if (!row) throw new AppError("proposal_not_found", 404);
   return proposalView(env, row);
 }
+type ChatPolicyAuthorization = {
+  channel: "chat_client";
+  confirmation: ChatConfirmation;
+};
 function checkedProof(
   env: Env,
   row: ProposalRow,
-  proof: ConfirmationProof,
+  proof: ConfirmationProof | ChatPolicyAuthorization,
 ): void {
+  if ("channel" in proof) {
+    assertChatConfirmation(
+      proof.confirmation,
+      row.hash,
+      policyConfirmationMode(JSON.parse(row.envelope_json)),
+    );
+    if (
+      row.status !== "proposed" ||
+      row.expires_at <= now() ||
+      row.epoch !== env.INSTALLATION_EPOCH ||
+      row.generation !== env.CONNECTION_GENERATION
+    )
+      throw new AppError("confirmation_required", 403);
+    return;
+  }
   if (
     env.MAINTENANCE !== "false" ||
     !env.OWNER_SUB ||
@@ -176,7 +205,7 @@ function checkedProof(
 export async function applyPolicyProposal(
   env: Env,
   id: string,
-  proof: ConfirmationProof,
+  proof: ConfirmationProof | ChatPolicyAuthorization,
 ): Promise<{ id: string; kind: PolicyInput["kind"]; status: "applied" }> {
   assertActive(env);
   const row = await env.DB.prepare(
@@ -236,8 +265,9 @@ export async function applyPolicyProposal(
   }
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
-      `UPDATE policy_proposals SET status='applied',applied_at=? WHERE id=? AND status='proposed' AND hash=? AND epoch=? AND generation=? AND expires_at>? ${stateGuard}`,
+      `UPDATE policy_proposals SET status='applied',approval_channel=?,applied_at=? WHERE id=? AND status='proposed' AND hash=? AND epoch=? AND generation=? AND expires_at>? ${stateGuard}`,
     ).bind(
+      "channel" in proof ? "chat_client" : "page",
       time,
       id,
       row.hash,
@@ -582,4 +612,12 @@ export async function diagnostics(env: Env) {
       ),
     },
   };
+}
+
+export async function applyPolicyFromChat(
+  env: Env,
+  id: string,
+  confirmation: ChatConfirmation,
+) {
+  return applyPolicyProposal(env, id, { channel: "chat_client", confirmation });
 }

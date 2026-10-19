@@ -14,6 +14,7 @@ import {
   exportConversation,
   getPolicyProposal,
   applyPolicyProposal,
+  applyPolicyFromChat,
   proposalPolicy,
 } from "../src/operations";
 
@@ -163,7 +164,8 @@ describe("operação local", () => {
       chatId: c.id,
       enabled: true,
     });
-    expect(p.confirmationUrl).toContain(p.id);
+    expect(p.confirmationMode).toBe("chat");
+    expect(p.confirmationUrl).toBeUndefined();
     await expect(
       applyPolicyProposal(e, p.id, {
         ...(await proof(p)),
@@ -327,4 +329,38 @@ describe("operação local", () => {
       /Equipe privada|synthetic-group|antigo/,
     );
   });
+});
+
+it("applies capture in chat but refuses deletion and retention reduction there", async () => {
+  const c = await chat();
+  const capture = await proposalPolicy(e, {
+    kind: "capture",
+    chatId: c.id,
+    enabled: true,
+  });
+  expect(
+    (
+      await applyPolicyFromChat(e, capture.id, {
+        confirmed: true,
+        hash: capture.hash,
+      })
+    ).status,
+  ).toBe("applied");
+  expect(
+    await env.DB.prepare(
+      "SELECT approval_channel FROM policy_proposals WHERE id=?",
+    )
+      .bind(capture.id)
+      .first("approval_channel"),
+  ).toBe("chat_client");
+  for (const input of [
+    { kind: "delete", chatId: c.id },
+    { kind: "retention", days: 30 },
+  ] as const) {
+    const p = await proposalPolicy(e, input);
+    expect(p.confirmationMode).toBe("page");
+    await expect(
+      applyPolicyFromChat(e, p.id, { confirmed: true, hash: p.hash }),
+    ).rejects.toThrow("browser_confirmation_required");
+  }
 });
