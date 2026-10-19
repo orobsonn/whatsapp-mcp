@@ -27,3 +27,5 @@ Revisão da wave, CI no HEAD e release serão registrados em `10-entrega.md` ant
 Re-review da primeira wave considerou todos os outros achados corrigidos e exigiu a complementação acima; não foi apresentado como aprovação. A complementação observou RED no callback sem conversa, seguido de GREEN15 ações +2 jornada e typecheck, antes de nova revisão focada.
 
 Veredito final independente sobre `fd127ec..40ce77f`: **ADDRESSED; sem bloqueadores remanescentes para merge no escopo revisado**. O revisor confirmou correlação, evidência e progressão no mesmo UPDATE, incluindo status sem conversa e recusa de ambiguidade. Não repetiu testes; os comandos de validação foram executados pelo coordenador. A decisão não estende a prova à homologação externa.
+
+Validação integrada após a complementação e bump 0.1.0: `npm run check`, suíte **91/91**, build dry-run e audit de produção (zero vulnerabilidades) com exit 0. Smoke local da versão 0.1.0 em manutenção recusou download sem login. CI do HEAD da PR aprovado; merge fechou as seis issues. O registro GitHub em `10-entrega.md` é a referência de integração.

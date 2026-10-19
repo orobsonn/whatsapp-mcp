@@ -43,3 +43,7 @@ Validação final em 19/10/2026:
 Fundação/auth/mídia e revisão de desenho: gpt-6.1-sol/high. Transporte Z-API e operação delimitada: gpt-6-sol/medium. Revisão final: gpt-6-astra/high. Coordenação, integração e correções de ações nesta sessão principal. O harness foi consultado por API GitHub; não instalado. RED/GREEN em riscos de dados/efeitos/contratos, sem testes artificiais de texto/configuração.
 
 CI remoto e fechamento das seis issues devem apontar ao HEAD final da PR; esses resultados permanecem verificáveis no GitHub, sem introduzir conteúdo privado como prova. A release por marco sincroniza package.json, lockfile, CHANGELOG e tag v0.1.0. O milestone é software validado localmente; não é ativação da conta.
+
+## Integração GitHub
+
+[PR #7](https://github.com/orobsonn/whatsapp-mcp/pull/7) merged em 19/10/2026, commit `ae91f41257cea5603dd0ae3e3a1d692b3bcddd73`. As seis issues foram fechadas automaticamente pelo merge. CI do HEAD `3f241b6` aprovado em ambos os gatilhos: [push](https://github.com/orobsonn/whatsapp-mcp/actions/runs/39259994952) e [PR](https://github.com/orobsonn/whatsapp-mcp/actions/runs/39260037442). O [histórico CI da main](https://github.com/orobsonn/whatsapp-mcp/actions/workflows/ci.yml?query=branch%3Amain) registra a verificação da árvore integrada. A [release v0.1.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.1.0) identifica o marco de software, sem ativação real.

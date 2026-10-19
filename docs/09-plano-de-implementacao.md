@@ -31,4 +31,5 @@ Arquitetura: um Worker, um dono, banco D1, bucket privado R2 e KV exclusivo para
 - [x] Criar issues com critérios e dependências.
 - [x] Implementar e verificar issues 1–6 localmente; revisão final/CI ainda em andamento.
 - [x] Auditoria final sem bloqueadores e evidências locais.
-- [ ] CI remoto no HEAD final, merge e release por marco.
+- [x] CI remoto no HEAD do software aprovado; merge e seis issues fechadas.
+- Publicação por marco: [v0.1.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.1.0); o GitHub registra tag, CI e estado da release.
