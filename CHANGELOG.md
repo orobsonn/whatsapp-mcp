@@ -4,6 +4,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-20
+
+### Fixed
+
+- Botões de atualização do Client-Token e conexão no GPT têm espaçamento próprio; conexão no GPT recebe estilo secundário, preservando o formulário e o comportamento móvel.
+
 ## [0.5.1] - 2026-10-20
 
 ### Fixed
