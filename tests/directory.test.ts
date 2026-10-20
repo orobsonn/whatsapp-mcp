@@ -46,7 +46,7 @@ it("combines name and phone suffix without matching LIDs or groups or exposing n
     "invalid_phone_suffix",
   );
 });
-it("search synchronizes missing contacts, caches complete agenda separately from groups and never enables capture", async () => {
+it("search synchronizes missing contacts, caches complete agenda separately from groups and uses opt-out defaults", async () => {
   const transport = vi.fn<typeof fetch>(async (input) => {
     const u = new URL(String(input));
     if (u.pathname.endsWith("/status"))
@@ -68,7 +68,7 @@ it("search synchronizes missing contacts, caches complete agenda separately from
   );
   expect(result.items).toHaveLength(1);
   expect(result.directory.complete).toBe(true);
-  expect(result.items[0]?.captureEnabled).toBe(false);
+  expect(result.items[0]?.captureEnabled).toBe(true);
   const cached = await searchDirectory(
     e,
     { term: "Renata" },
@@ -216,7 +216,7 @@ it("finds an unsaved person in chat metadata when the contacts agenda has no mat
   expect(result.items.map((x) => x.name)).toEqual(["Renata Copy"]);
   expect(result.directory.complete).toBe(true);
   expect(result.directory.source).toBe("contacts_and_chats");
-  expect(result.items[0]?.captureEnabled).toBe(false);
+  expect(result.items[0]?.captureEnabled).toBe(true);
 });
 it("continues raw chat pages full of groups and excludes LIDs and numeric groups", async () => {
   const transport: typeof fetch = async (input) => {

@@ -1,3 +1,4 @@
+import { captureDiagnostics } from "./capture-policy";
 import { chatConfirmationSchema } from "./approval";
 import {
   McpServer,
@@ -135,6 +136,13 @@ export function createMcpServer(env: Env): McpServer {
       callback as ToolCallback<T>,
     );
   }
+  tool(
+    "diagnosticar_captura",
+    "Política global, contagens por tipo/exceção, lacunas e métricas agregadas; não mostra mensagens nem altera captura. Legado ambíguo continua bloqueado.",
+    z.object({}).strict(),
+    true,
+    () => captureDiagnostics(env),
+  );
   tool(
     "diagnosticar",
     "Estado e contagens sem dados pessoais. Configuração não prova conexão atual.",
@@ -295,7 +303,7 @@ export function createMcpServer(env: Env): McpServer {
   );
   tool(
     "propor_captura",
-    "Propõe guardar/parar mensagens deste chat no arquivo privado. Informe que mensagens serão armazenadas; autorização no chat e aplicar_politica. Não importa histórico.",
+    "Propõe exceção explícita para guardar/parar mensagens deste chat; padrão global ligado. Desativação persiste e sincronização não a reativa. Informe o armazenamento e obtenha autorização no chat antes de aplicar_politica. Não importa histórico.",
     z.object({ chatId: id, enabled: z.boolean() }).strict(),
     false,
     (input) => proposalPolicy(env, { kind: "capture", ...input }),

@@ -159,6 +159,7 @@ describe("operação local", () => {
   });
   it("proposta de captura exige proof exato e é consumida uma vez", async () => {
     const c = await chat();
+    await setCapture(e, c.id, false, fence);
     const p = await proposalPolicy(e, {
       kind: "capture",
       chatId: c.id,

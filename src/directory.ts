@@ -104,14 +104,12 @@ export async function setCapture(
   assertFence(env, fence);
   await getChat(env, chatId, fence);
   await env.DB.prepare(
-    "UPDATE chats SET capture_discontinuous=CASE WHEN capture_enabled=1 AND ?=0 THEN 1 ELSE capture_discontinuous END,capture_enabled=?,capture_since=CASE WHEN capture_since IS NULL AND ?=1 THEN ? ELSE capture_since END,updated_at=? WHERE id=? AND epoch=? AND generation=?",
+    "UPDATE capture_settings SET mode=?,revision=revision+1,updated_at=? WHERE chat_id=? AND EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=?)",
   )
     .bind(
-      enabled ? 1 : 0,
-      enabled ? 1 : 0,
-      enabled ? 1 : 0,
+      enabled ? "enabled" : "disabled",
       Date.now(),
-      Date.now(),
+      chatId,
       chatId,
       fence.epoch,
       fence.generation,
@@ -356,7 +354,7 @@ export async function searchDirectory(
       completeMeaning: "available_pages_scanned_not_all_account_identities",
     },
     instruction: directory.complete
-      ? "Preserve homônimos; confirme identidade se houver ambiguidade. Páginas disponíveis percorridas não provam todos os grupos/contatos: entradas sem identificação confiável podem ter sido omitidas. Cadastro não libera captura."
+      ? "Preserve homônimos; confirme identidade se houver ambiguidade. Páginas disponíveis percorridas não provam todos os grupos/contatos: entradas sem identificação confiável podem ter sido omitidas. Novos chats seguem o padrão global de captura, sem alterar exceções existentes."
       : "Agenda parcial: repita a mesma busca até directory.complete=true antes de concluir ausência ou identidade única.",
   };
 }

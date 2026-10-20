@@ -57,8 +57,9 @@ describe("arquivo D1 com isolamento e fences", () => {
     expect(qa.items[0]!.authorName).toBe("Pessoa Sintética");
     expect((await listChats(e, { term: "Homônimo" })).items).toHaveLength(2);
   });
-  it("não captura sem liberação e recusa trabalho de geração/epoch antigo", async () => {
+  it("respeita opt-out e recusa trabalho de geração/epoch antigo", async () => {
     const a = await chat("group-a");
+    await setCapture(e, a.id, false, fence);
     expect((await event("group-a")).captured).toBe(false);
     await setCapture(e, a.id, true, fence);
     await expect(

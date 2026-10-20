@@ -409,7 +409,7 @@ async function archiveSentMedia(
       a.generation,
     ),
     env.DB.prepare(
-      "INSERT INTO media(id,chat_id,message_id,version,message_version,epoch,generation,kind,mime,size,sha256,object_key,state,filename,created_at) SELECT ?,?,?,1,1,?,?,?,?,?,?,?,'ready',?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND version=1 AND deleted_at IS NULL AND privacy_locked=0 AND unavailable_reason IS NULL) AND EXISTS(SELECT 1 FROM media WHERE id=? AND state='ready' AND deleted_at IS NULL AND sha256=?) ON CONFLICT(message_id,message_version) DO UPDATE SET mime=excluded.mime,size=excluded.size,sha256=excluded.sha256,object_key=excluded.object_key,state='ready',source_url=NULL WHERE media.deleted_at IS NULL",
+      "INSERT INTO media(id,chat_id,message_id,version,message_version,epoch,generation,kind,mime,size,sha256,object_key,state,filename,created_at) SELECT ?,?,?,1,1,?,?,?,?,?,?,?,'ready',?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND version=1 AND deleted_at IS NULL AND privacy_locked=0 AND unavailable_reason IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=messages.chat_id AND c.capture_enabled=1)) AND EXISTS(SELECT 1 FROM media WHERE id=? AND state='ready' AND deleted_at IS NULL AND sha256=?) ON CONFLICT(message_id,message_version) DO UPDATE SET mime=excluded.mime,size=excluded.size,sha256=excluded.sha256,object_key=excluded.object_key,state='ready',source_url=NULL WHERE media.deleted_at IS NULL",
     ).bind(
       mediaId,
       a.chat_id,

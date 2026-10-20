@@ -12,10 +12,13 @@ import {
   sha256,
   type Fence,
 } from "./core";
+import { captureSetting, captureGaps, metricStatement } from "./capture-policy";
 import { getChat, getChatExternal } from "./store";
 export type MessageKind = "text" | "image" | "pdf" | "audio" | "unavailable";
 export interface NormalizedEvent {
   chatExternalId: string;
+  chatKind?: "individual" | "group";
+  chatName?: string;
   externalId: string;
   authorExternalId?: string;
   authorName?: string;
@@ -87,6 +90,7 @@ export async function ingestEvent(
   env: Env,
   fence: Fence,
   event: NormalizedEvent,
+  observe = false,
 ): Promise<{
   captured: boolean;
   messageId?: string;
@@ -109,8 +113,45 @@ export async function ingestEvent(
   const version = event.revision ?? 1;
   if (!Number.isSafeInteger(version) || version < 1)
     throw new AppError("invalid_revision");
-  const chat = await getChatExternal(env, event.chatExternalId, fence);
-  if (!chat?.capture_enabled) return { captured: false };
+  let chat = await getChatExternal(env, event.chatExternalId, fence);
+  if (!chat && event.chatKind) {
+    if (!["individual", "group"].includes(event.chatKind))
+      throw new AppError("invalid_chat_kind");
+    const id = await sha256(
+      JSON.stringify([
+        fence.epoch,
+        fence.generation,
+        "chat",
+        event.chatExternalId,
+      ]),
+    );
+    const time = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO chats(id,epoch,generation,external_id,kind,name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(epoch,generation,external_id) DO NOTHING",
+    )
+      .bind(
+        id,
+        fence.epoch,
+        fence.generation,
+        event.chatExternalId,
+        event.chatKind,
+        event.chatName?.slice(0, 256) || "Sem nome",
+        time,
+        time,
+      )
+      .run();
+    chat = await getChatExternal(env, event.chatExternalId, fence);
+  }
+  if (chat && event.chatKind && chat.kind !== event.chatKind)
+    throw new AppError("chat_kind_mismatch", 409);
+  if (!chat?.capture_enabled) {
+    if (observe)
+      await env.DB.batch([
+        metricStatement(env, "received"),
+        metricStatement(env, "skipped"),
+      ]);
+    return { captured: false };
+  }
   const id = await sha256(
     JSON.stringify([
       fence.epoch,
@@ -140,16 +181,34 @@ export async function ingestEvent(
   const text = event.deleted || privacyLocked ? null : (event.text ?? null);
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
+  if (observe) {
+    statements.push(metricStatement(env, "received"));
+    statements.push(
+      env.DB.prepare(
+        "INSERT INTO capture_metrics(epoch,generation,day,stored,duplicates,skipped) SELECT ?,?,?,CASE WHEN c.capture_enabled=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE id=?) THEN 1 ELSE 0 END,CASE WHEN c.capture_enabled=1 AND EXISTS(SELECT 1 FROM messages WHERE id=?) THEN 1 ELSE 0 END,CASE c.capture_enabled WHEN 0 THEN 1 ELSE 0 END FROM chats c WHERE c.id=? ON CONFLICT(epoch,generation,day) DO UPDATE SET stored=stored+excluded.stored,duplicates=duplicates+excluded.duplicates,skipped=skipped+excluded.skipped",
+      ).bind(
+        fence.epoch,
+        fence.generation,
+        new Date(now).toISOString().slice(0, 10),
+        id,
+        id,
+        chat.id,
+      ),
+    );
+  }
   if (author)
     statements.push(
       env.DB.prepare(
-        "INSERT INTO participants(id,epoch,generation,external_id,name) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=COALESCE(participants.name,excluded.name)",
+        "INSERT INTO participants(id,epoch,generation,external_id,name) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM chats WHERE id=? AND capture_enabled=1 AND epoch=? AND generation=?) ON CONFLICT(id) DO UPDATE SET name=COALESCE(participants.name,excluded.name)",
       ).bind(
         author,
         fence.epoch,
         fence.generation,
         event.authorExternalId!,
         event.authorName?.slice(0, 256) ?? null,
+        chat.id,
+        fence.epoch,
+        fence.generation,
       ),
     );
   statements.push(
@@ -187,7 +246,7 @@ export async function ingestEvent(
   );
   statements.push(
     env.DB.prepare(
-      "INSERT INTO message_versions(message_id,version,text,kind,created_at) SELECT id,version,text,kind,? FROM messages WHERE id=? AND deleted_at IS NULL AND privacy_locked=0 ON CONFLICT DO NOTHING",
+      "INSERT INTO message_versions(message_id,version,text,kind,created_at) SELECT id,version,text,kind,? FROM messages WHERE id=? AND deleted_at IS NULL AND privacy_locked=0 AND EXISTS(SELECT 1 FROM chats c WHERE c.id=messages.chat_id AND c.capture_enabled=1) ON CONFLICT DO NOTHING",
     ).bind(now, id),
   );
   // Invalidate old derivatives and jobs atomically with the visible message version.
@@ -217,7 +276,7 @@ export async function ingestEvent(
     statements.push(
       env.DB.prepare(
         `INSERT INTO media(id,chat_id,message_id,version,message_version,epoch,generation,kind,mime,state,source_url,filename,duration_seconds,created_at)
- SELECT ?,?,?,1,?,?,?,?,?,'pending',?,?,?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND version=? AND deleted_at IS NULL AND privacy_locked=0 AND unavailable_reason IS NULL) ON CONFLICT(message_id,message_version) DO NOTHING`,
+ SELECT ?,?,?,1,?,?,?,?,?,'pending',?,?,?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND version=? AND deleted_at IS NULL AND privacy_locked=0 AND unavailable_reason IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=messages.chat_id AND c.capture_enabled=1)) ON CONFLICT(message_id,message_version) DO NOTHING`,
       ).bind(
         mediaId,
         chat.id,
@@ -237,7 +296,7 @@ export async function ingestEvent(
     );
     statements.push(
       env.DB.prepare(
-        "INSERT INTO media_jobs(id,media_id,message_version,epoch,generation,kind,status) SELECT ?,id,message_version,epoch,generation,'download','pending' FROM media WHERE id=? AND deleted_at IS NULL ON CONFLICT DO NOTHING",
+        "INSERT INTO media_jobs(id,media_id,message_version,epoch,generation,kind,status) SELECT ?,id,message_version,epoch,generation,'download','pending' FROM media WHERE id=? AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=media.chat_id AND c.capture_enabled=1) ON CONFLICT DO NOTHING",
       ).bind(crypto.randomUUID(), mediaId),
     );
   }
@@ -296,9 +355,19 @@ export async function ingestEvent(
       event.externalId,
     ),
   );
-  await env.DB.batch(statements);
+  const guarded = statements;
+  // Final state is read within the same transaction; an opt-out queued before it wins.
+  guarded.push(
+    env.DB.prepare(
+      "SELECT capture_enabled FROM chats WHERE id=? AND epoch=? AND generation=?",
+    ).bind(chat.id, fence.epoch, fence.generation),
+  );
+  const result = await env.DB.batch(guarded);
   assertFence(env, fence);
-  return { captured: true, messageId: id };
+  const captured = !!(
+    result.at(-1)?.results[0] as { capture_enabled?: number } | undefined
+  )?.capture_enabled;
+  return captured ? { captured: true, messageId: id } : { captured: false };
 }
 export async function ingestStatus(
   env: Env,
@@ -371,6 +440,8 @@ export async function queryMessages(
   nextCursor?: string;
   coverage: {
     captureEnabled: boolean;
+    captureMode: string;
+    gaps: Awaited<ReturnType<typeof captureGaps>>;
     captureSince: number | null;
     discontinuous: boolean;
     historicalImport: false;
@@ -458,6 +529,8 @@ export async function queryMessages(
     }>();
   const coverage = {
     captureEnabled: !!chat.capture_enabled,
+    captureMode: (await captureSetting(env, chat.id)).mode,
+    gaps: await captureGaps(env, chat.id),
     captureSince: chat.capture_since,
     discontinuous: !!gap?.capture_discontinuous,
     historicalImport: false as const,
@@ -565,6 +638,16 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
   const deleted = p.isDeleted === true || p.type === "DeletedCallback";
   return {
     chatExternalId,
+    chatKind:
+      typeof p.isGroup === "boolean"
+        ? p.isGroup
+          ? "group"
+          : "individual"
+        : undefined,
+    chatName:
+      str(p.chatName) ||
+      (p.fromMe === false && p.isGroup === false ? str(p.senderName) : "") ||
+      undefined,
     externalId,
     authorExternalId:
       p.fromMe === true

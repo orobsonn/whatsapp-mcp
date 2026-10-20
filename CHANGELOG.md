@@ -4,6 +4,17 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-20
+
+### Added
+
+- Captura automática opt-out: padrão global ligado para conversas novas, descoberta autenticada pelo webhook e exceções persistentes por conversa.
+- Migração estrutural idempotente mantém desativados antigos em revisão; métricas agregadas, lacunas e ferramenta de diagnóstico de captura.
+
+### Fixed
+
+- Guards transacionais impedem gravação de autor/mídia e conclusão de download após opt-out concorrente; propostas incluem revisão de captura.
+
 ## [0.4.2] - 2026-10-19
 
 ### Fixed

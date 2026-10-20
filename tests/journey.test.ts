@@ -796,3 +796,90 @@ it("human upload returns a readable page and GPT retrieves metadata without aski
   );
   await client.close();
 });
+
+it("callback autenticado descobre chat antes da agenda, contabiliza e respeita opt-out pelo MCP", async () => {
+  network();
+  const token = await bootstrap();
+  const client = new Client({ name: "optout-http", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${e.PUBLIC_ORIGIN}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: async (input, init) =>
+        app.fetch(new Request(input, init), e, createExecutionContext()),
+    }),
+  );
+  const baseline = result(
+    await client.callTool({ name: "diagnosticar_captura", arguments: {} }),
+  ).metrics[0] ?? {
+    received: 0,
+    stored: 0,
+    duplicates: 0,
+    skipped: 0,
+    failed: 0,
+  };
+  const body = {
+    instanceId: e.ZAPI_INSTANCE_ID,
+    connectedPhone: e.CONNECTED_PHONE,
+    type: "ReceivedCallback",
+    phone: "new-before-sync",
+    isGroup: true,
+    participantLid: "new-author",
+    senderName: "Pessoa teste",
+    messageId: "first-auto",
+    fromMe: false,
+    momment: 123,
+    text: { message: "Captura automática teste" },
+  };
+  const send = async (data = body) =>
+    call(`/webhook/gen-j/${e.WEBHOOK_SECRET}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+  expect((await send()).status).toBe(200);
+  expect((await send()).status).toBe(200);
+  const chat = await env.DB.prepare(
+    "SELECT id FROM chats WHERE external_id='new-before-sync'",
+  ).first<{ id: string }>();
+  expect(chat).toBeTruthy();
+  const history = result(
+    await client.callTool({
+      name: "consultar_mensagens",
+      arguments: { chatId: chat!.id },
+    }),
+  );
+  expect(history.items).toHaveLength(1);
+  expect(history.coverage.captureMode).toBe("default");
+  const stop = result(
+    await client.callTool({
+      name: "propor_captura",
+      arguments: { chatId: chat!.id, enabled: false },
+    }),
+  );
+  expect(
+    (
+      await client.callTool({
+        name: "aplicar_politica",
+        arguments: {
+          id: stop.id,
+          confirmation: { confirmed: true, hash: stop.hash },
+        },
+      })
+    ).isError,
+  ).not.toBe(true);
+  expect((await send()).status).toBe(200);
+  expect((await send({ ...body, momment: -1 })).status).toBe(400);
+  const d = result(
+    await client.callTool({ name: "diagnosticar_captura", arguments: {} }),
+  );
+  expect(d.captureDefaultEnabled).toBe(true);
+  expect(d.metrics[0]).toMatchObject({
+    received: baseline.received + 4,
+    stored: baseline.stored + 1,
+    duplicates: baseline.duplicates + 1,
+    skipped: baseline.skipped + 1,
+    failed: baseline.failed + 1,
+  });
+  expect(JSON.stringify(d)).not.toContain("Captura automática teste");
+  await client.close();
+});

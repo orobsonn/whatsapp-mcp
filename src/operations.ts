@@ -1,4 +1,9 @@
 import {
+  captureDiagnostics,
+  captureSetting,
+  type CaptureMode,
+} from "./capture-policy";
+import {
   assertChatConfirmation,
   policyConfirmationMode,
   type ChatConfirmation,
@@ -23,6 +28,8 @@ type Envelope = PolicyInput & {
   epoch: string;
   generation: string;
   previous?: number | null;
+  previousCaptureMode?: CaptureMode;
+  previousCaptureRevision?: number;
 };
 type ProposalRow = {
   id: string;
@@ -92,6 +99,7 @@ export async function proposalPolicy(
     if (typeof input.enabled !== "boolean")
       throw new AppError("invalid_policy");
     const chat = await getChat(env, input.chatId, fence);
+    const setting = await captureSetting(env, chat.id, fence);
     envelope = {
       kind: input.kind,
       chatId: chat.id,
@@ -99,6 +107,8 @@ export async function proposalPolicy(
       epoch: fence.epoch,
       generation: fence.generation,
       previous: chat.capture_enabled,
+      previousCaptureMode: setting.mode,
+      previousCaptureRevision: setting.revision,
     };
   } else if (input.kind === "delete") {
     const chat = await getChat(env, input.chatId, fence);
@@ -238,12 +248,14 @@ export async function applyPolicyProposal(
   let stateArgs: (string | number | null)[] = [];
   if (envelope.kind === "capture") {
     stateGuard =
-      "AND EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=? AND capture_enabled=?)";
+      "AND EXISTS(SELECT 1 FROM chats c JOIN capture_settings s ON s.chat_id=c.id WHERE c.id=? AND c.epoch=? AND c.generation=? AND c.capture_enabled=? AND s.mode=? AND s.revision=?)";
     stateArgs = [
       envelope.chatId,
       env.INSTALLATION_EPOCH,
       env.CONNECTION_GENERATION,
       envelope.previous ?? 0,
+      envelope.previousCaptureMode ?? null,
+      envelope.previousCaptureRevision ?? null,
     ];
   } else if (envelope.kind === "retention") {
     stateGuard =
@@ -279,21 +291,22 @@ export async function applyPolicyProposal(
   ];
   if (envelope.kind === "capture") {
     const chat = await getChat(env, envelope.chatId, currentFence(env));
-    if (chat.capture_enabled !== envelope.previous)
+    const setting = await captureSetting(env, chat.id);
+    if (
+      chat.capture_enabled !== envelope.previous ||
+      setting.mode !== envelope.previousCaptureMode ||
+      setting.revision !== envelope.previousCaptureRevision
+    )
       throw new AppError("proposal_stale", 409);
     statements.push(
       env.DB.prepare(
-        `UPDATE chats SET capture_discontinuous=CASE WHEN capture_enabled=1 AND ?=0 THEN 1 ELSE capture_discontinuous END,capture_enabled=?,capture_since=CASE WHEN capture_since IS NULL AND ?=1 THEN ? ELSE capture_since END,updated_at=? WHERE id=? AND epoch=? AND generation=? AND capture_enabled=? AND ${guard}`,
+        `UPDATE capture_settings SET mode=?,revision=revision+1,updated_at=? WHERE chat_id=? AND mode=? AND revision=? AND ${guard}`,
       ).bind(
-        envelope.enabled ? 1 : 0,
-        envelope.enabled ? 1 : 0,
-        envelope.enabled ? 1 : 0,
-        time,
+        envelope.enabled ? "enabled" : "disabled",
         time,
         envelope.chatId,
-        env.INSTALLATION_EPOCH,
-        env.CONNECTION_GENERATION,
-        envelope.previous,
+        envelope.previousCaptureMode,
+        envelope.previousCaptureRevision,
         ...bindGuard,
       ),
     );
@@ -314,6 +327,11 @@ export async function applyPolicyProposal(
   } else if (envelope.kind === "delete") {
     await getChat(env, envelope.chatId, currentFence(env));
     const chat = envelope.chatId;
+    statements.push(
+      env.DB.prepare(
+        `UPDATE capture_settings SET mode='disabled',revision=revision+1,updated_at=? WHERE chat_id=? AND ${guard}`,
+      ).bind(time, chat, ...bindGuard),
+    );
     statements.push(
       env.DB.prepare(
         `UPDATE chats SET capture_discontinuous=CASE WHEN capture_enabled=1 THEN 1 ELSE capture_discontinuous END,capture_enabled=0,capture_since=NULL,updated_at=? WHERE id=? AND epoch=? AND generation=? AND ${guard}`,
@@ -577,6 +595,7 @@ export async function diagnostics(env: Env) {
     )?.n ?? 0;
   return {
     version: packageJson.version,
+    capture: await captureDiagnostics(env),
     epochConfigured: !!fence.epoch && fence.epoch !== "unconfigured",
     generationConfigured:
       !!fence.generation && fence.generation !== "unconfigured",
