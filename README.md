@@ -6,6 +6,10 @@ MCP para localizar conversas individuais e grupos, arquivar mensagens com autori
 
 [Fluxo de configuração e segurança](docs/26-setup.md). Login é necessário; nenhuma conversa é capturada automaticamente.
 
+## Em revisão: captura automática opt-out
+
+A implementação preparada em [captura opt-out](docs/33-captura-opt-out.md) ainda **não está publicada nem ativada**. Ela habilita novas conversas por padrão, preserva exceções e mantém legados desativados em revisão. A v0.4.2 descrita acima continua sendo a produção. Deploy e migração remota aguardam aprovação explícita.
+
 ## Rodar e conferir
 
 Node 22+:

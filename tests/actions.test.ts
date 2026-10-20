@@ -11,7 +11,7 @@ import {
   reconcileActions,
 } from "../src/actions";
 import { upsertDirectoryPage, setCapture } from "../src/directory";
-import { queryMessages, ingestStatus } from "../src/capture";
+import { queryMessages, ingestStatus, ingestEvent } from "../src/capture";
 import { uploadMedia, readMedia } from "../src/media";
 import { ZapiError } from "../src/zapi";
 import type { Env } from "../src/env";
@@ -562,4 +562,50 @@ it("does not accept expired, false or old-generation chat authorization", async 
     executeAction(e, a.id, provider, { confirmed: true, hash: a.hash }),
   ).rejects.toThrow("action_expired");
   expect(sends).toBe(0);
+});
+
+it("opt-out durante envio não anexa bytes a eco já recebido", async () => {
+  const a = await prepared();
+  const bytes = new TextEncoder().encode("%PDF-1.4\nEnsaio\n%%EOF");
+  const media = await uploadMedia(e, a.chat.id, {
+    bytes,
+    mime: "application/pdf",
+    filename: "ensaio.pdf",
+  });
+  const action = await prepareAction(e, {
+    chatId: a.chat.id,
+    kind: "pdf",
+    mediaId: media.id,
+    mediaHash: media.sha256,
+  });
+  const result = await executeAction(
+    e,
+    action.id,
+    {
+      status: async () => ({ connected: true, phone: e.CONNECTED_PHONE }),
+      send: async () => {
+        await ingestEvent(e, f, {
+          chatExternalId: "group-actions",
+          externalId: "echo-stop",
+          kind: "pdf",
+          fromMe: true,
+          timestamp: Date.now(),
+          media: {
+            url: "https://media.example/echo.pdf",
+            mime: "application/pdf",
+          },
+        });
+        await setCapture(e, a.chat.id, false, f);
+        return { messageId: "echo-stop" };
+      },
+    },
+    { confirmed: true, hash: action.hash },
+  );
+  expect(result.status).toBe("accepted");
+  expect(
+    await env.DB.prepare(
+      "SELECT state FROM media WHERE message_id IN(SELECT id FROM messages WHERE external_id='echo-stop')",
+    ).first("state"),
+  ).toBe("failed");
+  expect((await readMedia(e, media.id)).bytes).toEqual(bytes);
 });

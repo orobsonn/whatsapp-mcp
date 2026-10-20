@@ -210,7 +210,7 @@ describe("gestão de grupos com confirmação e uma tentativa", () => {
     ).rejects.toMatchObject({ code: "group_binding_changed" });
     expect(calls).toBe(0);
   });
-  it("convite fica privado; criação parcial materializa referência sem captura", async () => {
+  it("convite fica privado; criação parcial materializa referência com captura padrão", async () => {
     const a = await approve({
       operation: "accept_invite",
       inviteURL: "https://chat.whatsapp.com/SECRETinvite",
@@ -245,7 +245,7 @@ describe("gestão de grupos com confirmação e uma tentativa", () => {
     expect(out.result).toMatchObject({ partial: true, notAddedCount: 1 });
     expect(out.result?.chat).toMatchObject({
       name: "Novo",
-      captureEnabled: false,
+      captureEnabled: true,
     });
     expect(JSON.stringify(out)).not.toContain("5511999999999");
     expect(JSON.stringify(out)).not.toContain("SECRETinvite");
@@ -455,7 +455,7 @@ describe("fences de privacidade e recuperação local", () => {
     ).toMatchObject({ localReferencePending: true });
     expect((await executeGroupAction(e, a.id, p)).result?.chat).toMatchObject({
       name: "Novo",
-      captureEnabled: false,
+      captureEnabled: true,
     });
     expect(calls).toBe(1);
   });

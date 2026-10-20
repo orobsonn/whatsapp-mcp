@@ -1,3 +1,4 @@
+import { metricStatement } from "./capture-policy";
 import type { Env } from "./env";
 import {
   AppError,
@@ -104,12 +105,24 @@ async function webhook(
   if (body.type !== "ReceivedCallback") return json({ ignored: true });
   if (body.connectedPhone !== env.CONNECTED_PHONE || !env.CONNECTED_PHONE)
     throw new AppError("device_changed", 403);
-  const result = await ingestEvent(
-    env,
-    currentFence(env),
-    normalizeZapiEvent(body),
-  );
-  return json({ accepted: true, captured: result.captured });
+  try {
+    const result = await ingestEvent(
+      env,
+      currentFence(env),
+      normalizeZapiEvent(body),
+      true,
+    );
+    return json({ accepted: true, captured: result.captured });
+  } catch (error) {
+    // No payload, names, addresses or exception messages in metrics. DB outages may also prevent this counter.
+    try {
+      await env.DB.batch([
+        metricStatement(env, "received"),
+        metricStatement(env, "failed"),
+      ]);
+    } catch {}
+    throw error;
+  }
 }
 async function browserRoute(request: Request, env: Env): Promise<Response> {
   const u = new URL(request.url),
