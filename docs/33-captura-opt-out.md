@@ -69,3 +69,17 @@ Desativar cancela downloads recebidos ainda pendentes/em andamento. Não apaga m
 ## Publicação autorizada em 20/10/2026
 
 Preflight remoto recuperado: 112 grupos (2 ativos) e 1.314 conversas individuais (0 ativas), total 1.426; 271 registros de mensagens. Nenhuma política global anterior. A aprovação posterior autoriza liberar somente `legacy_hold`, com instalação/geração e revisão conferidas; não sobrescrever `disabled`. Procedimento anterior acima registra o limite da etapa de preparação, já superado pela aprovação explícita.
+
+## Resultado da ativação aprovada
+
+- PR #23 integrado em `1b977d3`, CI aprovado no HEAD da entrega; versão 0.5.0.
+- Recuperação D1 registrada privadamente antes da migration; `0009_capture_optout.sql` aplicada em manutenção e confirmada pelo controle de migrations.
+- Manifesto privado conferiu exatamente 1.424 registros `legacy_hold`, mesma instalação/geração e revisão 0. Ativação limitada a esses registros; nenhuma escolha `disabled` sobrescrita. Política global explicitamente `true`.
+- Antes: 112 grupos (2 ativos), 1.314 individuais (0 ativos). Depois: 112 grupos e 1.314 individuais ativos; 1.424 herdando padrão e 2 habilitados explicitamente; zero legados e zero desativações explícitas no momento da ativação.
+- 273 registros de mensagens antes e depois da alteração; nenhuma exclusão. As 1.424 lacunas antigas foram encerradas, mantendo início desconhecido e ausência de recuperação retroativa.
+- Worker ativo `39e385f3-cdf6-4d12-98b4-d246f8a29eb8`; `/health` versão 0.5.0, manutenção false, conexão configurada true. Smoke confirmou acesso privado protegido.
+- `diagnosticar` autenticado pelo Zap retornou padrão ligado e todas as 1.426 conversas ativas. Sem envios ou leitura de conteúdo neste procedimento.
+- Plugin Zap atualizado para 1.0.2 (`pluginrel_6ad7605a4db48191ace9a525d64d2336`); instruções relidas e vínculo App/OAuth preservado.
+- Testes locais: 207 em 17 arquivos, TypeScript e build aprovados. Testes de opt-out/reinício/sync/concorrência executados com fixtures; nenhuma conversa real foi desligada para teste.
+
+A configuração ativa não prova retroativamente callbacks que não chegaram. As métricas passam a contar somente callbacks autenticados recebidos pela versão instrumentada.
