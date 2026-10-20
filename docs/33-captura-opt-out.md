@@ -83,3 +83,9 @@ Preflight remoto recuperado: 112 grupos (2 ativos) e 1.314 conversas individuais
 - Testes locais: 207 em 17 arquivos, TypeScript e build aprovados. Testes de opt-out/reinício/sync/concorrência executados com fixtures; nenhuma conversa real foi desligada para teste.
 
 A configuração ativa não prova retroativamente callbacks que não chegaram. As métricas passam a contar somente callbacks autenticados recebidos pela versão instrumentada.
+
+### Verificação após atualização do catálogo
+
+`diagnosticar_captura` tornou-se disponível no conector instalado e executou autenticado: padrão true, 1.314 individuais e 112 grupos ativos, zero exceções desligadas e zero legados. Catálogo atualizado sem reconexão nem ampliação de permissões. CI também passou no commit documental da release.
+
+Na interface web do GPT, duas tentativas do diagnóstico terminaram com “This response couldn’t load”; não foi possível validar a resposta legível nessa interface. O diagnóstico direto pelo conector passou. Nenhum callback novo havia chegado às métricas durante a janela de conferência; isso limita a prova a configuração/diagnóstico produtivos e aos testes controlados, sem afirmar recebimento real novo após o deploy.
