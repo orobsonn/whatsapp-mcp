@@ -35,6 +35,7 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(23,98,61,.1);out
 .button:hover{background:var(--green-dark)}
 .button.secondary{background:#fff;color:var(--green)}.button.secondary:hover{background:var(--soft)}
 .button-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.setup-connect{margin-top:16px}
 .state-copy{margin:0 0 24px;color:var(--secondary);font-size:14px;line-height:1.6}
 .notice{margin:0 0 20px;padding:12px 16px;border:1px solid #bdd6c1;border-radius:8px;background:var(--soft);color:#174c31;font-size:13px;line-height:1.5}
 .next{margin-top:24px;padding:24px 28px;border:1px solid var(--line);border-radius:12px;background:#fff}

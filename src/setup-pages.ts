@@ -125,7 +125,7 @@ export function renderSetupPage(input: SetupPageInput): Response {
         <div class="field"><label for="new-client-token">Novo Client-Token</label><input id="new-client-token" name="client_token" type="password" required autocomplete="new-password" autocapitalize="none" spellcheck="false" maxlength="512" placeholder="Cole o novo Client-Token"><span class="hint">Copie da área Segurança da sua conta Z-API. A chave será verificada antes de substituir a atual. Instância, webhooks e histórico permanecem os mesmos.</span></div>
         <button class="button" type="submit">Atualizar Client-Token</button>
       </form>
-      ${gptUrl ? `<div class="button-row"><a class="button" href="${escapeHtml(gptUrl)}" rel="noopener noreferrer">Conectar no GPT</a></div>` : ""}
+      ${gptUrl ? `<div class="button-row setup-connect"><a class="button secondary" href="${escapeHtml(gptUrl)}" rel="noopener noreferrer">Conectar no GPT</a></div>` : ""}
       ${mcpUrl ? `<label class="mcp-label" for="mcp-url">Endereço do MCP para conexão manual</label><input class="mcp-url" id="mcp-url" type="url" readonly value="${escapeHtml(mcpUrl)}" aria-describedby="mcp-help"><span class="hint" id="mcp-help">Use este endereço se o botão de conexão não estiver disponível no seu ChatGPT.</span>` : ""}`;
   } else {
     panelContent = `${notice}<p class="state-copy">${details.body}</p>`;
