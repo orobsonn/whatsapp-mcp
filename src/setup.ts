@@ -11,6 +11,7 @@ import {
   connectConnection,
   getConnectionStatus,
   retryConnection,
+  updateConnectionClientToken,
 } from "./connection";
 import { humanErrorPage } from "./pages";
 import { renderSetupPage } from "./setup-pages";
@@ -39,11 +40,16 @@ export async function setupFetch(
       return renderSetupPage({
         status: before,
         nonce:
-          before.state === "unconfigured" || before.state === "pending"
+          before.state !== "unavailable"
             ? await issueSetupNonce(env, request, "connection", before.revision)
             : "",
         gptUrl: env.GPT_PLUGIN_URL ?? "",
         origin: publicOrigin(env),
+        notice:
+          before.state === "active" &&
+          url.searchParams.get("updated") === "client-token"
+            ? "Client-Token atualizado e verificado na Z-API."
+            : undefined,
       });
     const params = await consumeSetupNonce(
       env,
@@ -63,9 +69,11 @@ export async function setupFetch(
               "client_token",
               "exclusive_instance",
             ]
-          : action === "retry"
-            ? ["nonce", "revision", "action", "attempt_id"]
-            : [];
+          : action === "update_client_token"
+            ? ["nonce", "revision", "action", "client_token"]
+            : action === "retry"
+              ? ["nonce", "revision", "action", "attempt_id"]
+              : [];
     if (
       !keys.length ||
       [...params.keys()].some((k) => !keys.includes(k)) ||
@@ -83,6 +91,12 @@ export async function setupFetch(
         instanceToken: params.get("instance_token")!,
         clientToken: params.get("client_token")!,
       });
+    } else if (action === "update_client_token") {
+      await updateConnectionClientToken(
+        env,
+        params.get("client_token")!,
+        before.revision,
+      );
     } else {
       if (
         before.state !== "pending" ||
@@ -95,7 +109,7 @@ export async function setupFetch(
     return new Response(null, {
       status: 303,
       headers: {
-        Location: `${publicOrigin(env)}/setup`,
+        Location: `${publicOrigin(env)}/setup${action === "update_client_token" ? "?updated=client-token" : ""}`,
         "Cache-Control": "no-store",
         "Referrer-Policy": "same-origin",
       },
@@ -131,6 +145,10 @@ export async function setupFetch(
         "O Client-Token está vazio ou contém espaços internos/quebras de linha. Copie o token da conta na área Segurança da Z-API.",
       invalid_credentials:
         "Confira as três credenciais no painel Z-API e tente novamente.",
+      provider_device_mismatch:
+        "A Z-API retornou outro aparelho. O Client-Token salvo não foi alterado.",
+      connection_changed:
+        "A configuração mudou durante a atualização. Reabra esta página antes de tentar novamente.",
       invalid_setup_form: "Confira os campos e tente novamente.",
       exclusive_instance_required:
         "Confirme que esta instância é exclusiva deste projeto.",
@@ -182,7 +200,7 @@ export async function setupFetch(
       try {
         const current = await getConnectionStatus(env);
         const nonce =
-          current.state === "unconfigured" || current.state === "pending"
+          current.state !== "unavailable"
             ? await issueSetupNonce(
                 env,
                 request,

@@ -16,6 +16,11 @@ import {
   requireOwner,
   requireMcpOwner,
 } from "../src/auth";
+import {
+  connectConnection,
+  getConnectionStatus,
+  resolveRuntimeEnv,
+} from "../src/connection";
 import { setupFetch } from "../src/setup";
 const settings = () =>
   ({
@@ -211,7 +216,9 @@ describe("private setup owner and CSRF", () => {
     expect(response.status).toBe(400);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
-    expect(html).toContain("O ID da instância está vazio ou com formato inválido.");
+    expect(html).toContain(
+      "O ID da instância está vazio ou com formato inválido.",
+    );
     expect(html).toMatch(/name="nonce" value="[a-f0-9]{64}"/);
     expect(html).not.toMatch(/secret-token|secret-client|invalid value/);
   });
@@ -237,5 +244,137 @@ describe("private setup owner and CSRF", () => {
     expect(await post.text()).not.toMatch(
       /secret-instance|secret-token|secret-client/,
     );
+  });
+});
+
+describe("private Client-Token update form", () => {
+  async function activeForm() {
+    const credentials = {
+      instanceId: "synthetic-instance",
+      instanceToken: "synthetic-instance-token",
+      clientToken: "old-client-token",
+    };
+    const callbacks: Record<string, unknown> = {
+      id: credentials.instanceId,
+      receiveCallbackSentByMe: false,
+    };
+    const provider: typeof fetch = async (input, init) => {
+      const path = String(input).split("/").at(-1);
+      if (init?.method === "PUT") {
+        const b = JSON.parse(String(init.body));
+        if (
+          path === "update-webhook-received" ||
+          path === "update-webhook-received-delivery"
+        )
+          callbacks.receivedCallbackUrl = b.value;
+        if (path === "update-webhook-message-status")
+          callbacks.messageStatusCallbackUrl = b.value;
+        if (path === "update-notify-sent-by-me")
+          callbacks.receiveCallbackSentByMe = b.notifySentByMe;
+        return Response.json({ value: true });
+      }
+      if (path === "status") return Response.json({ connected: true });
+      if (path === "device") return Response.json({ phone: "5511999999999" });
+      return Response.json(callbacks);
+    };
+    await connectConnection(settings(), credentials, provider);
+    const html = await (await setupFetch(await request(), settings())).text();
+    return {
+      html,
+      nonce: html.match(/name="nonce" value="([^"]+)"/)?.[1] ?? "",
+      revision: (await getConnectionStatus(settings())).revision,
+    };
+  }
+  it("shows an empty password form on an active connection and never displays saved secrets", async () => {
+    const { html, nonce } = await activeForm();
+    expect(html).toContain("Atualizar Client-Token");
+    expect(html).toContain('name="action" value="update_client_token"');
+    expect(html).toMatch(/name="client_token" type="password"/);
+    expect(nonce).toMatch(/^[a-f0-9]{64}$/);
+    expect(html).not.toMatch(/old-client-token|synthetic-instance-token/);
+  });
+  it("accepts one authenticated update, redirects and rejects replay", async () => {
+    const form = await activeForm();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input) => {
+        if (String(input).endsWith("/certs"))
+          return Response.json({ keys: [jwk] });
+        if (String(input).endsWith("/status"))
+          return Response.json({ connected: true });
+        if (String(input).endsWith("/device"))
+          return Response.json({ phone: "5511999999999" });
+        throw Error("unexpected endpoint");
+      }),
+    );
+    const body = {
+      nonce: form.nonce,
+      revision: form.revision,
+      action: "update_client_token",
+      client_token: "new-private-client-token",
+    };
+    const result = await setupFetch(await request(body), settings());
+    expect(result.status).toBe(303);
+    expect((await resolveRuntimeEnv(settings())).ZAPI_CLIENT_TOKEN).toBe(
+      "new-private-client-token",
+    );
+    const replay = await setupFetch(await request(body), settings());
+    expect(replay.status).toBe(403);
+  });
+  it("rejects token replacement through a foreign origin or extra instance field", async () => {
+    for (const mode of ["origin", "extra"]) {
+      await env.DB.prepare("DELETE FROM connection_state").run();
+      const form = await activeForm(),
+        before = await env.DB.prepare(
+          "SELECT cipher FROM connection_state",
+        ).first();
+      const body = {
+        nonce: form.nonce,
+        revision: form.revision,
+        action: "update_client_token",
+        client_token: "new-private-client-token",
+        ...(mode === "extra" ? { instance_id: "other" } : {}),
+      };
+      const res = await setupFetch(
+        await request(
+          body,
+          mode === "origin" ? { origin: "https://other.example" } : {},
+        ),
+        settings(),
+      );
+      expect(res.status).toBe(mode === "origin" ? 403 : 400);
+      const html = await res.text();
+      expect(html).not.toContain("new-private-client-token");
+      expect(
+        await env.DB.prepare("SELECT cipher FROM connection_state").first(),
+      ).toEqual(before);
+    }
+  });
+  it("keeps the form empty with a fresh nonce after provider rejection", async () => {
+    const form = await activeForm();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input) =>
+        String(input).endsWith("/certs")
+          ? Response.json({ keys: [jwk] })
+          : new Response("new-private-client-token", { status: 401 }),
+      ),
+    );
+    const result = await setupFetch(
+      await request({
+        nonce: form.nonce,
+        revision: form.revision,
+        action: "update_client_token",
+        client_token: "new-private-client-token",
+      }),
+      settings(),
+    );
+    expect(result.status).toBe(502);
+    const html = await result.text();
+    expect(html).not.toContain("new-private-client-token");
+    expect(html).toContain("Atualizar Client-Token");
+    const nonce = html.match(/name="nonce" value="([^"]+)"/)?.[1];
+    expect(nonce).toMatch(/^[a-f0-9]{64}$/);
+    expect(nonce).not.toBe(form.nonce);
   });
 });

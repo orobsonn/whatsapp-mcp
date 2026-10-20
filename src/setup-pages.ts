@@ -58,9 +58,9 @@ function statusDetails(status: ConnectionStatus): {
   switch (status.state) {
     case "active":
       return {
-        label: "Conectado",
+        label: "Configurado",
         badgeClass: "active",
-        body: "A conexão foi verificada. Agora você pode adicionar este MCP ao ChatGPT e escolher quais conversas terão acesso.",
+        body: "Os dados da sua instância estão salvos. Se você trocou o Client-Token na Z-API, atualize-o abaixo para continuar usando a mesma conexão.",
       };
     case "pending":
       return {
@@ -118,6 +118,13 @@ export function renderSetupPage(input: SetupPageInput): Response {
       </form>`;
   } else if (input.status.state === "active") {
     panelContent = `${notice}<p class="state-copy">${details.body}</p>
+      <form method="post" action="/setup" autocomplete="off">
+        <input type="hidden" name="nonce" value="${nonce}">
+        <input type="hidden" name="revision" value="${revision}">
+        <input type="hidden" name="action" value="update_client_token">
+        <div class="field"><label for="new-client-token">Novo Client-Token</label><input id="new-client-token" name="client_token" type="password" required autocomplete="new-password" autocapitalize="none" spellcheck="false" maxlength="512" placeholder="Cole o novo Client-Token"><span class="hint">Copie da área Segurança da sua conta Z-API. A chave será verificada antes de substituir a atual. Instância, webhooks e histórico permanecem os mesmos.</span></div>
+        <button class="button" type="submit">Atualizar Client-Token</button>
+      </form>
       ${gptUrl ? `<div class="button-row"><a class="button" href="${escapeHtml(gptUrl)}" rel="noopener noreferrer">Conectar no GPT</a></div>` : ""}
       ${mcpUrl ? `<label class="mcp-label" for="mcp-url">Endereço do MCP para conexão manual</label><input class="mcp-url" id="mcp-url" type="url" readonly value="${escapeHtml(mcpUrl)}" aria-describedby="mcp-help"><span class="hint" id="mcp-help">Use este endereço se o botão de conexão não estiver disponível no seu ChatGPT.</span>` : ""}`;
   } else {

@@ -24,7 +24,7 @@ O segredo protege credenciais, telefone, geração e segredo do webhook por AES-
 
 A migração `0007_connection_setup.sql` cria `connection_state`, uma única linha por instalação. O INSERT condicional impede substituir conexão ativa ou pendente com outra proposta. O payload cifrado permanece idêntico durante retomadas. Tentativas usam claim condicional, versão e lease de 120 segundos, com pausa de 30 segundos após falha antes de permitir outra retomada humana. O lease é maior que a soma dos timeouts de rede de uma execução; cada chamada tem timeout de oito segundos e cada etapa revalida o claim antes de alterar o fornecedor.
 
-Estado pendente nunca libera o runtime. Em timeout de um PUT, a página conserva a mesma tentativa e só repete os mesmos PUTs de configuração. Essas operações não enviam mensagens; são atualizações idempotentes dos mesmos valores. Não há retry automático. Diante de callback/telefone divergente, é necessária investigação operacional; esta versão não oferece troca de credenciais nem reset destrutivo.
+Estado pendente nunca libera o runtime. Em timeout de um PUT, a página conserva a mesma tentativa e só repete os mesmos PUTs de configuração. Essas operações não enviam mensagens; são atualizações idempotentes dos mesmos valores. Não há retry automático. Diante de callback/telefone divergente, é necessária investigação operacional; a rotação limitada do Client-Token em conexão ativa está descrita abaixo; troca de instância e reset destrutivo não são oferecidos.
 
 Se D1 falhar, o ciphertext for inválido, a chave estiver ausente ou o epoch divergir, o runtime limpa os campos de conexão e permanece em manutenção. Os retornos públicos da página/status não incluem telefone, credenciais, URLs de webhook nem conteúdo do fornecedor. Nenhuma entrada real deve ser usada em testes ou registrada no Git.
 
@@ -51,3 +51,14 @@ Transporte usa apenas host fixo `api.z-api.io`, paths fechados, redirect manual 
 `GET /setup` e `GET /setup/status` exigem Access do dono. POST exige mesma origem literal, formulário URL-encoded de até 8 KiB, campos fechados e sem duplicatas, nonce de uso único e revisão atual da conexão. O nonce é vinculado a dono, epoch, recurso e purpose `setup`; não guarda credenciais nem conteúdo do formulário. A migração preserva os nonces anteriores ao ampliar o CHECK de purpose. O limite de 512 bytes das confirmações humanas existentes permanece intacto.
 
 O sucesso do POST devolve 303 para `/setup`, evitando reenvio de formulário ao atualizar a página. Erros só usam mensagens locais fixas. A página não inclui scripts de terceiros, analytics ou campos de senha preenchidos pelo servidor.
+
+
+## Atualizar Client-Token (v0.5.1)
+
+Pedido do dono em 20/10/2026: trocar o Client-Token já alterado na Z-API usando a configuração privada. Em `/setup`, com conexão ativa, preencher somente **Novo Client-Token** e clicar **Atualizar Client-Token**. O campo nunca é preenchido pelo servidor. Não enviar a chave pelo chat.
+
+A ação humana exige Access do dono, mesma origem, nonce de uso único vinculado a revisão e campos estritos. A validação usa as credenciais de instância já cifradas e o novo Client-Token somente em GET `/status` e `/device`, com os timeouts/limites existentes. O aparelho deve estar conectado e seu telefone deve ser o mesmo da instalação. Não há chamadas de configuração de webhook.
+
+O servidor cifra novamente o payload atual alterando apenas `clientToken`. Um UPDATE condicional exige epoch, estado ativo, tentativa, versão e cipher originais; sem retorno, informa conflito. Telefone, geração, segredo do webhook, OAuth e dados de chats não mudam. A configuração continua ativa durante a validação. Token rejeitado, redirecionamento, rede, resposta inválida, aparelho diferente ou concorrência não substituem a chave salva. Chamadas já em voo podem ainda usar a chave anterior; a troca não as reinicia.
+
+Teste RED: 12 falhas comportamentais antes do campo e função existirem; GREEN: 43 testes em conexão/setup. Inclui validação sem PUT, preservação de cipher em falhas, concorrência, formulário vencido, origem, replay, campo extra e ausência de segredo no HTML/banco de nonces. Revisão adversarial exigiu CAS e preservação do namespace; implementados.

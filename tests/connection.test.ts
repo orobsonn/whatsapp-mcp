@@ -6,6 +6,7 @@ import {
   retryConnection,
   getConnectionStatus,
   resolveRuntimeEnv,
+  updateConnectionClientToken,
 } from "../src/connection";
 const settings = () =>
   ({
@@ -337,4 +338,137 @@ it("accepts visible header-token punctuation but blocks embedded whitespace", as
       p.fetcher,
     ),
   ).rejects.toThrow("invalid_credentials_clientToken");
+});
+
+describe("active Client-Token renewal", () => {
+  async function active() {
+    await connectConnection(settings(), credentials, provider().fetcher);
+    return getConnectionStatus(settings());
+  }
+  const snapshot = () =>
+    env.DB.prepare(
+      "SELECT cipher,version,state,attempt_id FROM connection_state WHERE id=1",
+    ).first();
+  it("validates read-only and changes only the encrypted Client-Token", async () => {
+    const before = await active(),
+      old = await resolveRuntimeEnv(settings()),
+      saved = await snapshot();
+    const p = provider();
+    const result = await updateConnectionClientToken(
+      settings(),
+      " new-client-token ",
+      before.revision,
+      p.fetcher,
+    );
+    expect(result.state).toBe("active");
+    expect(result.revision).not.toBe(before.revision);
+    expect(await resolveRuntimeEnv(settings())).toEqual({
+      ...old,
+      ZAPI_CLIENT_TOKEN: "new-client-token",
+    });
+    expect(
+      p.fetcher.mock.calls.map(([u]) => String(u).split("/").at(-1)),
+    ).toEqual(["status", "device"]);
+    expect(p.puts()).toHaveLength(0);
+    for (const [, init] of p.fetcher.mock.calls)
+      expect(new Headers(init?.headers).get("Client-Token")).toBe(
+        "new-client-token",
+      );
+    const updated = await snapshot();
+    expect(updated).not.toEqual(saved);
+    expect(JSON.stringify(updated)).not.toMatch(
+      /new-client-token|synthetic-client/,
+    );
+  });
+  it.each(["auth", "phone", "network", "redirect", "invalid"])(
+    "preserves saved connection on %s failure",
+    async (failure) => {
+      const status = await active(),
+        before = await snapshot();
+      const fetcher = vi.fn<typeof fetch>(async (input) => {
+        if (failure === "auth")
+          return new Response("private-provider-body", { status: 401 });
+        if (failure === "network") throw Error("new-client-token");
+        if (failure === "redirect")
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://other.example" },
+          });
+        if (failure === "invalid") return Response.json([]);
+        return Response.json(
+          String(input).endsWith("/status")
+            ? { connected: true }
+            : { phone: "5599999999999" },
+        );
+      });
+      await expect(
+        updateConnectionClientToken(
+          settings(),
+          "new-client-token",
+          status.revision,
+          fetcher,
+        ),
+      ).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+      expect((await resolveRuntimeEnv(settings())).ZAPI_CLIENT_TOKEN).toBe(
+        credentials.clientToken,
+      );
+    },
+  );
+  it("rejects a stale form and malformed token before contacting the provider", async () => {
+    const status = await active(),
+      p = provider();
+    await expect(
+      updateConnectionClientToken(
+        settings(),
+        "new-client-token",
+        "old-revision",
+        p.fetcher,
+      ),
+    ).rejects.toMatchObject({ code: "connection_changed" });
+    await expect(
+      updateConnectionClientToken(
+        settings(),
+        "bad\ntoken",
+        status.revision,
+        p.fetcher,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_credentials_clientToken" });
+    expect(p.fetcher).not.toHaveBeenCalled();
+  });
+  it("allows only one concurrent renewal to replace the same revision", async () => {
+    const status = await active();
+    let started = 0,
+      release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input).endsWith("/status")) {
+        if (++started === 2) release();
+        await barrier;
+        return Response.json({ connected: true });
+      }
+      return Response.json({ phone: "5511999999999" });
+    });
+    const results = await Promise.allSettled([
+      updateConnectionClientToken(
+        settings(),
+        "new-token-one",
+        status.revision,
+        fetcher,
+      ),
+      updateConnectionClientToken(
+        settings(),
+        "new-token-two",
+        status.revision,
+        fetcher,
+      ),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(
+      (r) => r.status === "rejected",
+    ) as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "connection_changed" });
+  });
 });

@@ -446,3 +446,42 @@ export async function retryConnection(
     return fail("connection_not_pending");
   return runAttempt(env, r, await decrypt(env, r.cipher), fetcher);
 }
+
+/** Renew only the account header token; never reprovision the installation. */
+export async function updateConnectionClientToken(
+  env: Env,
+  clientToken: string,
+  expectedRevision: string,
+  fetcher: typeof fetch = fetch,
+): Promise<ConnectionStatus> {
+  configured(env);
+  const saved = await row(env);
+  if (
+    !saved ||
+    saved.state !== "active" ||
+    saved.epoch !== env.INSTALLATION_EPOCH ||
+    statusOf(env, saved).revision !== expectedRevision
+  )
+    return fail("connection_changed");
+  const previous = await decrypt(env, saved.cipher);
+  const next = { ...previous, clientToken: clientToken.trim() };
+  credentialsValid(next);
+  const provider = new SetupProvider(next, fetcher);
+  if ((await provider.phone()) !== previous.phone)
+    return fail("provider_device_mismatch");
+  const cipher = await encrypt(env, next);
+  const updated = await env.DB.prepare(
+    "UPDATE connection_state SET cipher=?,version=version+1,updated_at=? WHERE id=1 AND epoch=? AND state='active' AND attempt_id=? AND version=? AND cipher=? RETURNING id",
+  )
+    .bind(
+      cipher,
+      Date.now(),
+      saved.epoch,
+      saved.attempt_id,
+      saved.version,
+      saved.cipher,
+    )
+    .first();
+  if (!updated) return fail("connection_changed");
+  return getConnectionStatus(env);
+}
