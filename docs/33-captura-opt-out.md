@@ -1,6 +1,6 @@
 # Captura opt-out — plano e limites
 
-Pedido de 20/10/2026: implementar e testar; nenhuma migração remota, ativação em massa ou publicação está autorizada nesta etapa.
+Pedido inicial de 20/10/2026: implementar e testar sem publicação. Aprovação posterior do dono: merge, deploy e ativação dos 1.424 legados; novas conversas capturam por padrão e desativações posteriores devem persistir.
 
 ## Decisões
 
@@ -65,3 +65,7 @@ Desativar cancela downloads recebidos ainda pendentes/em andamento. Não apaga m
 | Orientação ao dono | `src/setup-pages.ts`, `plugin/whatsapp-pessoal/skills/usar-whatsapp/SKILL.md` |
 | Testes | `tests/capture-policy.test.ts`, `tests/actions.test.ts`, `tests/archive.test.ts`, `tests/directory.test.ts`, `tests/groups.test.ts`, `tests/journey.test.ts`, `tests/operations.test.ts` |
 | Preflight e documentação | `scripts/capture-preflight.sql`, `README.md`, `CHANGELOG.md`, este documento |
+
+## Publicação autorizada em 20/10/2026
+
+Preflight remoto recuperado: 112 grupos (2 ativos) e 1.314 conversas individuais (0 ativas), total 1.426; 271 registros de mensagens. Nenhuma política global anterior. A aprovação posterior autoriza liberar somente `legacy_hold`, com instalação/geração e revisão conferidas; não sobrescrever `disabled`. Procedimento anterior acima registra o limite da etapa de preparação, já superado pela aprovação explícita.

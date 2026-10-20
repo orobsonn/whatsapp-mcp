@@ -4,9 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-20
+
 ### Added
 
-- Captura opt-out preparada, sem publicação: padrão global ligado para conversas novas, descoberta autenticada pelo webhook e exceções persistentes por conversa.
+- Captura automática opt-out: padrão global ligado para conversas novas, descoberta autenticada pelo webhook e exceções persistentes por conversa.
 - Migração estrutural idempotente mantém desativados antigos em revisão; métricas agregadas, lacunas e ferramenta de diagnóstico de captura.
 
 ### Fixed

@@ -2,13 +2,11 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Estado em 19/10/2026:** v0.4.2 publicada em recursos exclusivos na Cloudflare. [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). Depois da verificação, o botão **Conectar no GPT** abre o plugin privado com login/consentimento. Credenciais nunca vão ao chat. Instância configurada e plugin **Zap** autenticado no GPT: diagnóstico, capacidades de grupos e uma página da Z-API executados no cliente real. Captura segue desabilitada até escolha dos chats. Elo permanece separado.
+**Versão 0.5.0:** captura automática de novas conversas individuais e grupos, com exceções persistentes. Publicação e ativação dos 1.424 legados autorizadas pelo dono em 20/10/2026; evidências operacionais em [captura opt-out](docs/33-captura-opt-out.md).
 
-[Fluxo de configuração e segurança](docs/26-setup.md). Login é necessário; nenhuma conversa é capturada automaticamente.
+[Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). O botão **Conectar no GPT** abre o plugin privado Zap com login e consentimento. Credenciais nunca vão ao chat; Elo permanece separado.
 
-## Em revisão: captura automática opt-out
-
-A implementação preparada em [captura opt-out](docs/33-captura-opt-out.md) ainda **não está publicada nem ativada**. Ela habilita novas conversas por padrão, preserva exceções e mantém legados desativados em revisão. A v0.4.2 descrita acima continua sendo a produção. Deploy e migração remota aguardam aprovação explícita.
+[Fluxo de configuração e segurança](docs/26-setup.md). Você pode desativar a captura de qualquer conversa pelo Zap. Reativar não recupera mensagens do período desligado nem importa histórico retroativo.
 
 ## Rodar e conferir
 
