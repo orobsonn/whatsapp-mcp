@@ -2,9 +2,9 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Versão 0.5.0:** captura automática de novas conversas individuais e grupos, com exceções persistentes. Publicação e ativação dos 1.424 legados autorizadas pelo dono em 20/10/2026; evidências operacionais em [captura opt-out](docs/33-captura-opt-out.md).
+**Versão 0.5.1:** captura automática de novas conversas individuais e grupos, com exceções persistentes. Publicação e ativação dos 1.424 legados autorizadas pelo dono em 20/10/2026; evidências operacionais em [captura opt-out](docs/33-captura-opt-out.md).
 
-[Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). O botão **Conectar no GPT** abre o plugin privado Zap com login e consentimento. Credenciais nunca vão ao chat; Elo permanece separado.
+[Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). O botão **Conectar no GPT** abre o plugin privado Zap com login e consentimento. Credenciais nunca vão ao chat; Elo permanece separado. Para trocar o Client-Token da Z-API, use **Atualizar Client-Token** nessa mesma página; a instância e o histórico são preservados.
 
 [Fluxo de configuração e segurança](docs/26-setup.md). Você pode desativar a captura de qualquer conversa pelo Zap. Reativar não recupera mensagens do período desligado nem importa histórico retroativo.
 

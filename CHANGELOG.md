@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-20
+
+### Fixed
+
+- Página privada permite atualizar somente o Client-Token da Z-API em uma conexão já configurada, validando o aparelho antes de salvar.
+- Token inválido ou formulário concorrente preserva a chave salva; instância, webhooks, OAuth, captura e histórico permanecem os mesmos.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added
