@@ -2,7 +2,7 @@
 
 MCP para localizar conversas individuais e grupos, arquivar mensagens com autoria, consultar recortes e arquivos privados, transcrever áudio selecionado, enviar texto/imagem/PDF/áudio e administrar grupos com confirmação humana.
 
-**Versão 0.5.1:** captura automática de novas conversas individuais e grupos, com exceções persistentes. Publicação e ativação dos 1.424 legados autorizadas pelo dono em 20/10/2026; evidências operacionais em [captura opt-out](docs/33-captura-opt-out.md).
+**Versão 0.6.0:** transcrição automática de novos áudios recebidos e captura automática de novas conversas individuais e grupos, com exceções persistentes. Publicação e ativação dos 1.424 legados autorizadas pelo dono em 20/10/2026; evidências operacionais em [captura opt-out](docs/33-captura-opt-out.md).
 
 [Configure sua instância na página privada](https://whatsapp.robsonlins.com/setup). O botão **Conectar no GPT** abre o plugin privado Zap com login e consentimento. Credenciais nunca vão ao chat; Elo permanece separado. Para trocar o Client-Token da Z-API, use **Atualizar Client-Token** nessa mesma página; a instância e o histórico são preservados.
 
@@ -30,13 +30,17 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 - [Autenticação e confirmação](docs/13-auth.md), [transporte](docs/14-zapi.md), [mídia/áudio](docs/15-media.md), [ações](docs/16-acoes.md) e [operação](docs/17-operacao.md).
 - [Issues](https://github.com/orobsonn/whatsapp-mcp/issues), [changelog](CHANGELOG.md) e [releases](https://github.com/orobsonn/whatsapp-mcp/releases).
 
+## Áudios
+
+Áudios novos recebidos em individuais e grupos entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).
+
 ## Confirmações
 
 Envios e ações comuns são autorizados no chat, sem abrir página. O pedido exato do dono já pode autorizar; alvos ou conteúdo ambíguos precisam de esclarecimento. A página fica para ações críticas, com nomes e consequências legíveis. A decisão de risco é do servidor, não do modelo. [Política e limites](docs/31-confirmacoes-simples.md).
 
 ## Limites explícitos
 
-Arquivo desde ativação, sem promessa de importação retroativa. Arquivos até 2 MiB; até 128 KiB no conteúdo MCP, maiores via navegador autenticado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
+Arquivo desde ativação, sem promessa de importação retroativa. Áudio recebido até 20 MiB/10 minutos; demais arquivos e uploads até 2 MiB; até 128 KiB no conteúdo MCP, maiores via navegador autenticado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
 
 Gestão de grupos na v0.2.0: [escopo e critérios](docs/20-grupos-prd.md), [contratos oficiais mapeados](docs/21-grupos-contratos.md), [manual de uso](docs/23-usar-grupos.md) e [matriz das 35 operações](docs/24-grupos-cobertura.md). Inclui participantes/admins, convites, permissões, menções, organização dos chats e associações com comunidades. OCR, campanhas e busca semântica continuam fora do escopo. Nenhuma ferramenta genérica de API/SQL é exposta.
 

@@ -4,6 +4,18 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
+### Added
+
+- Transcrição automática dos áudios novos recebidos, com Whisper Turbo, fila limitada, cota diária e texto vinculado à versão da mensagem.
+- Consulta e busca incluem transcrição separada do original, com estados de processamento, falha e pausa.
+- Áudios recebidos de até 10 minutos e 20 MiB; uploads e envios preservam limites anteriores.
+
+### Fixed
+
+- Configuração de download passa a permitir a origem exata verificada das mídias recebidas; HTTPS, bloqueio de redirects e validação de conteúdo permanecem ativos.
+
 ## [0.5.2] - 2026-10-20
 
 ### Fixed

@@ -68,7 +68,16 @@ export interface TranscriptView {
   untrusted: true;
 }
 const DOWNLOAD_MS = 15000;
-const TRANSCRIBE_MS = 45000;
+const TRANSCRIBE_MS = 90000;
+const mediaLimit = (kind?: string) =>
+  kind === "audio" ? LIMITS.audioBytes : LIMITS.mediaBytes;
+function base64(bytes: Uint8Array): string {
+  // Avoid a numeric JSON array (several times the input size) and giant spread calls.
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += 24576)
+    chunks.push(btoa(String.fromCharCode(...bytes.subarray(i, i + 24576))));
+  return chunks.join("");
+}
 // All aliases here are internal constants, never input. D1, not an R2 key, grants visibility.
 function visible(alias = "media"): string {
   return `${alias}.deleted_at IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=${alias}.chat_id AND c.epoch=${alias}.epoch AND c.generation=${alias}.generation) AND (${alias}.message_id IS NULL OR EXISTS(SELECT 1 FROM messages msg WHERE msg.id=${alias}.message_id AND msg.chat_id=${alias}.chat_id AND msg.epoch=${alias}.epoch AND msg.generation=${alias}.generation AND msg.version=${alias}.message_version AND msg.deleted_at IS NULL AND msg.unavailable_reason IS NULL AND msg.kind=${alias}.kind))`;
@@ -133,7 +142,7 @@ function filename(name?: string | null, mime?: string): string | null {
 function duration(seconds?: number | null): void {
   if (
     seconds != null &&
-    (!Number.isFinite(seconds) || seconds < 0 || seconds > 120)
+    (!Number.isFinite(seconds) || seconds < 0 || seconds > 600)
   )
     throw new AppError("invalid_audio_duration");
 }
@@ -254,9 +263,11 @@ function validate(
 ): { kind: "image" | "pdf" | "audio"; mime: string } {
   if (!(bytes instanceof Uint8Array) || bytes.length === 0)
     throw new AppError("invalid_media");
-  if (bytes.length > LIMITS.mediaBytes)
+  if (bytes.length > LIMITS.audioBytes)
     throw new AppError("body_too_large", 413);
   const detected = detect(bytes);
+  if (bytes.length > mediaLimit(detected.kind))
+    throw new AppError("body_too_large", 413);
   if (mime && canonicalMime(mime) !== detected.mime)
     throw new AppError("media_mime_mismatch", 415);
   if (kind && kind !== detected.kind)
@@ -277,12 +288,12 @@ export async function readMedia(
     !m.object_key ||
     !m.sha256 ||
     m.size == null ||
-    m.size > LIMITS.mediaBytes
+    m.size > mediaLimit(m.kind)
   )
     throw new AppError("media_not_ready", 409);
   const object = await env.MEDIA.get(m.object_key);
   if (!object) throw new AppError("media_missing", 404);
-  const bytes = await readBounded(object.body, LIMITS.mediaBytes);
+  const bytes = await readBounded(object.body, mediaLimit(m.kind));
   if (bytes.length !== m.size || (await sha256(bytes)) !== m.sha256)
     throw new AppError("media_integrity_failed", 409);
   const latest = await row(env, id, fence);
@@ -456,6 +467,7 @@ async function failJob(env: Env, job: Job, error: unknown): Promise<void> {
 async function readDownload(
   response: Response,
   signal: AbortSignal,
+  maxBytes: number,
 ): Promise<Uint8Array> {
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
@@ -472,7 +484,7 @@ async function readDownload(
       if (signal.aborted) throw new AppError("media_deadline", 504);
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > LIMITS.mediaBytes) {
+      if (size > maxBytes) {
         await reader.cancel();
         throw new AppError("body_too_large", 413);
       }
@@ -532,12 +544,16 @@ async function download(
         const length = response.headers.get("content-length");
         if (
           length &&
-          (!/^\d+$/.test(length) || Number(length) > LIMITS.mediaBytes)
+          (!/^\d+$/.test(length) || Number(length) > mediaLimit(m.kind))
         ) {
           await response.body?.cancel();
           throw new AppError("body_too_large", 413);
         }
-        const result = await readDownload(response, controller.signal);
+        const result = await readDownload(
+          response,
+          controller.signal,
+          mediaLimit(m.kind),
+        );
         validate(result, response.headers.get("content-type"), m.kind);
         return result;
       })(),
@@ -667,6 +683,21 @@ export async function transcribeMedia(
     .run();
   const job = await claim(env, derivativeId, fence);
   if (!job) throw new AppError("media_job_busy", 409);
+  const day = new Date().toISOString().slice(0, 10);
+  // Count every inference attempt, including manual calls; an uncertain timeout is not free.
+  const quota = await env.DB.prepare(
+    "INSERT INTO transcription_usage(epoch,generation,day,used) VALUES(?,?,?,1) ON CONFLICT(epoch,generation,day) DO UPDATE SET used=used+1 WHERE used<500 RETURNING used",
+  )
+    .bind(fence.epoch, fence.generation, day)
+    .first();
+  if (!quota) {
+    await env.DB.prepare(
+      `UPDATE media_jobs SET status='retry',attempts=attempts-1,error='transcription_quota',lease_until=NULL,next_attempt_at=? WHERE ${ownsLease}`,
+    )
+      .bind(Date.parse(day) + 86_400_000, ...liveJob(job))
+      .run();
+    throw new AppError("transcription_quota", 429);
+  }
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -685,8 +716,13 @@ export async function transcribeMedia(
     });
     const result = await Promise.race([
       env.AI.run(
-        "@cf/openai/whisper",
-        { audio: Array.from(original.bytes) },
+        "@cf/openai/whisper-large-v3-turbo",
+        {
+          audio: base64(original.bytes),
+          task: "transcribe",
+          vad_filter: true,
+          condition_on_previous_text: false,
+        },
         { signal: controller.signal },
       ),
       deadline,

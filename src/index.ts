@@ -36,6 +36,7 @@ import { getGroupAction, approveGroupAction, getGroupInvite } from "./groups";
 import pkg from "../package.json";
 import { resolveRuntimeEnv } from "./connection";
 import { setupFetch } from "./setup";
+import { processTranscriptions } from "./transcription";
 
 async function webhook(
   request: Request,
@@ -134,9 +135,9 @@ async function browserRoute(request: Request, env: Env): Promise<Response> {
       maintenance: env.MAINTENANCE !== "false",
       connectionConfigured: Boolean(
         env.ZAPI_INSTANCE_ID &&
-        env.ZAPI_TOKEN &&
-        env.ZAPI_CLIENT_TOKEN &&
-        env.MAINTENANCE === "false",
+          env.ZAPI_TOKEN &&
+          env.ZAPI_CLIENT_TOKEN &&
+          env.MAINTENANCE === "false",
       ),
     });
   if (parts[1] === "webhook") return webhook(request, env, parts);
@@ -378,5 +379,6 @@ export default {
     if (env.MAINTENANCE !== "false") return;
     await processMediaJobs(env);
     await cleanup(env);
+    await processTranscriptions(env);
   },
 };

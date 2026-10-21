@@ -67,6 +67,7 @@ interface MessageRow {
   unavailable_reason: string | null;
   media_id: string | null;
   author_name: string | null;
+  transcription_json: string | null;
 }
 export interface MessageView {
   id: string;
@@ -77,6 +78,13 @@ export interface MessageView {
   kind: MessageKind;
   text: string | null;
   textTruncated: boolean;
+  transcription: {
+    status: string;
+    text: string | null;
+    error: string | null;
+    untrusted: true;
+    truncated: boolean;
+  } | null;
   timestamp: number;
   receivedAt: number;
   version: number;
@@ -484,7 +492,12 @@ export async function queryMessages(
     last = c;
   }
   const rows = await env.DB.prepare(
-    `SELECT m.*, (SELECT name FROM participants WHERE id=m.author_id) author_name, (SELECT id FROM media WHERE message_id=m.id AND message_version=m.version AND deleted_at IS NULL LIMIT 1) media_id FROM messages m WHERE chat_id=? AND epoch=? AND generation=? AND (timestamp>? OR (timestamp=? AND id>?)) AND (? IS NULL OR timestamp>=?) AND (? IS NULL OR timestamp<=?) AND (? IS NULL OR author_id=?) AND (? IS NULL OR kind=?) AND (? IS NULL OR text LIKE ? ESCAPE '\\') ORDER BY timestamp,id LIMIT ?`,
+    `SELECT m.*, (SELECT name FROM participants WHERE id=m.author_id) author_name, (SELECT id FROM media WHERE message_id=m.id AND message_version=m.version AND epoch=m.epoch AND generation=m.generation AND deleted_at IS NULL LIMIT 1) media_id,
+    (SELECT json_object('status',CASE WHEN d.id IS NOT NULL THEN 'ready' WHEN a.state='failed' THEN 'download_failed' WHEN a.state<>'ready' THEN 'downloading' WHEN ${env.TRANSCRIPTION_ENABLED !== "true" || !env.AI || env.AUTO_TRANSCRIPTION_ENABLED !== "true" || !chat.capture_enabled ? 1 : 0}=1 THEN 'paused' WHEN j.error='transcription_quota' AND j.next_attempt_at>${Date.now()} THEN 'waiting_quota' WHEN j.status='failed' THEN 'failed' WHEN j.status='processing' THEN 'processing' WHEN j.status IN ('pending','retry') THEN 'pending' WHEN m.from_me=0 AND m.received_at>=(SELECT enabled_since FROM transcription_state WHERE id=1) THEN 'pending' ELSE 'not_requested' END,'text',d.text,'error',CASE WHEN a.state='failed' THEN (SELECT error FROM media_jobs WHERE media_id=a.id AND kind='download' AND epoch=a.epoch AND generation=a.generation LIMIT 1) ELSE j.error END,'untrusted',json('true'),'truncated',json('false'))
+    FROM media a LEFT JOIN media_derivatives d ON d.media_id=a.id AND d.media_version=a.version AND d.epoch=a.epoch AND d.generation=a.generation AND d.kind='transcript' AND d.state='ready'
+    LEFT JOIN media_jobs j ON j.media_id=a.id AND j.message_version=a.message_version AND j.epoch=a.epoch AND j.generation=a.generation AND j.kind='transcribe'
+    WHERE a.message_id=m.id AND a.message_version=m.version AND a.chat_id=m.chat_id AND a.epoch=m.epoch AND a.generation=m.generation AND a.kind='audio' AND a.deleted_at IS NULL AND m.deleted_at IS NULL AND m.privacy_locked=0 AND m.unavailable_reason IS NULL AND m.kind='audio' LIMIT 1) transcription_json
+    FROM messages m WHERE chat_id=? AND epoch=? AND generation=? AND (timestamp>? OR (timestamp=? AND id>?)) AND (? IS NULL OR timestamp>=?) AND (? IS NULL OR timestamp<=?) AND (? IS NULL OR author_id=?) AND (? IS NULL OR kind=?) AND (? IS NULL OR (m.deleted_at IS NULL AND m.privacy_locked=0 AND m.unavailable_reason IS NULL AND (text LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM media a JOIN media_derivatives d ON d.media_id=a.id AND d.media_version=a.version AND d.epoch=a.epoch AND d.generation=a.generation AND d.kind='transcript' AND d.state='ready' WHERE a.message_id=m.id AND a.message_version=m.version AND a.chat_id=m.chat_id AND a.epoch=m.epoch AND a.generation=m.generation AND a.deleted_at IS NULL AND a.state='ready' AND a.kind='audio' AND m.kind='audio' AND d.text LIKE ? ESCAPE '\\')))) ORDER BY timestamp,id LIMIT ?`,
   )
     .bind(
       chat.id,
@@ -502,6 +515,7 @@ export async function queryMessages(
       input.kind ?? null,
       input.kind ?? null,
       input.term ?? null,
+      `%${escapeLike(input.term ?? "")}%`,
       `%${escapeLike(input.term ?? "")}%`,
       limit + 1,
     )
@@ -551,6 +565,9 @@ export async function queryMessages(
       kind: r.kind,
       text: r.deleted_at ? null : r.text,
       textTruncated: false,
+      transcription: r.transcription_json
+        ? JSON.parse(r.transcription_json)
+        : null,
       timestamp: r.timestamp,
       receivedAt: r.received_at,
       version: r.version,
@@ -571,17 +588,33 @@ export async function queryMessages(
       if (items.length) break;
       // Ensure progress even when JSON escaping or UTF8 expansion makes the first message large.
       // Iterate code points through Array.from so a truncation never splits a surrogate pair.
-      const points = Array.from(view.text ?? "");
-      let low = 0,
-        high = points.length;
-      view.textTruncated = true;
-      while (low < high) {
-        const middle = Math.ceil((low + high) / 2);
-        view.text = points.slice(0, middle).join("");
-        if (fits()) low = middle;
-        else high = middle - 1;
+      const transcript = view.transcription;
+      if (transcript?.text && !fits()) {
+        const points = Array.from(transcript.text);
+        let low = 0,
+          high = points.length;
+        transcript.truncated = true;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          transcript.text = points.slice(0, middle).join("");
+          if (fits()) low = middle;
+          else high = middle - 1;
+        }
+        transcript.text = points.slice(0, low).join("");
       }
-      view.text = points.slice(0, low).join("");
+      if (!fits()) {
+        const points = Array.from(view.text ?? "");
+        let low = 0,
+          high = points.length;
+        view.textTruncated = true;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          view.text = points.slice(0, middle).join("");
+          if (fits()) low = middle;
+          else high = middle - 1;
+        }
+        view.text = points.slice(0, low).join("");
+      }
       if (!fits()) throw new AppError("projection_too_large", 413);
     }
     items.push(view);

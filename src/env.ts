@@ -16,6 +16,7 @@ export interface Env {
   CONNECTED_PHONE: string;
   MEDIA_HOSTS: string;
   TRANSCRIPTION_ENABLED: string;
+  AUTO_TRANSCRIPTION_ENABLED?: string;
   MAINTENANCE: string;
   ZAPI_INSTANCE_ID?: string;
   ZAPI_INSTANCE_TOKEN?: string;
