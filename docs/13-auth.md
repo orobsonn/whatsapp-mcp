@@ -32,3 +32,13 @@ A migração `0002_auth.sql` só guarda metadados e hashes; nenhum JWT Access/to
 - Último comando específico: `npm test -- tests/auth.test.ts`, **14 testes passaram**. `npm run check` passou no workspace integrado às 10:03. Uma execução agregada intermediária encontrou regressão na captura própria (`accepted` versus `received`), corrigida pelo responsável por ações/fundação. Reexecução final `npm test` às 10:03:59: **39/39 testes, quatro arquivos, exit 0**.
 
 Ainda pendentes: provisionar política Access/JWKS reais, audiência/subject do dono, origem pública/rotas que deixem OAuth MCP e callback adequadamente acessíveis, TTLs operacionais, testes em navegador real e cliente MCP escolhido. Nenhuma configuração ou dado do Elo foi utilizado.
+
+## Investigação de reconexão — 21/10/2026
+
+O dono relatou reconexões frequentes durante a homologação Fish. A inspeção confirmou os valores atuais de `src/auth.ts`: access token de cinco minutos, refresh grant absoluto de 24 horas e cadastro do cliente de 24 horas. Na biblioteca 1.2.3, a renovação do access token não estende o prazo absoluto do grant. Isso exige novo consentimento diário mesmo com uso frequente; não explica, sozinho, reconexões sucessivas em poucos minutos.
+
+Na observação real, a conexão original ChatGPT permaneceu válida, com grant ainda não expirado, diagnóstico autenticado respondendo e callbacks chegando. A tela extra de consentimento pertencia ao cliente temporário criado para testar o catálogo TTS novo. Falhas de observação do controle do navegador após uma navegação concluída também não foram consideradas prova de logout. Não foi demonstrada queda repetida da conexão original nesse intervalo.
+
+Revisão adversarial independente: sessão fixa de 30 dias reduziria a reconexão diária, mas ampliaria a janela de exposição de um refresh token roubado. Logout Access não revoga sozinho o MCP; epoch continua sendo a revogação comprovada. A recomendação depende de decisão do dono e de testes de renovação após 24h, limite absoluto, cadastro, grants antigos e revogação/manutenção. Só alterar a configuração não prolonga grants existentes: seria necessária uma última reconexão para obter o novo prazo.
+
+Nenhum prazo, epoch, política Access ou credencial da conexão original foi alterado nesta investigação. Não se afirma que aumentar o prazo corrigiria eventuais falhas do cliente ainda não reproduzidas.

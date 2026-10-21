@@ -1,6 +1,6 @@
 # Geração de áudio com voz própria — Fish Audio
 
-21/10/2026. Implementação solicitada pelo dono; somente código e testes sintéticos autorizados. Nenhum gasto, cadastro, clone, credencial, deploy ou envio real autorizado nesta entrega.
+21/10/2026. A entrega inicial foi limitada a código e testes sintéticos. Depois, o dono autorizou guardar a chave, publicar e gerar uma prévia com voz de demonstração no modelo gratuito. O ensaio real e suas limitações estão registrados ao final. Não houve autorização de consumo pago ou envio do áudio final pelo WhatsApp.
 
 ## Desenho e plano de execução
 
@@ -72,7 +72,7 @@ A identidade persistente impede chamadas concorrentes repetidas, inclusive após
 
 Perda de D1 antes de gravar resultado pode deixar `attempting` até a consulta/cron classificá-lo como incerto. Se o Worker cair entre gravar um objeto e persistir sua chave, pode sobrar objeto R2 órfão; limpeza de órfãos sem referência continua sendo limitação operacional existente. Nunca fica publicamente legível. O sistema não consulta Fish para recuperar áudio perdido nem repete por conta própria.
 
-## Homologação real pendente
+## Limites da entrega inicial com mocks
 
 Tudo nesta entrega é código e ensaio com mocks, D1/R2 locais e identidades sintéticas. Nenhuma API paga, voz real, Access real, deploy ou WhatsApp real foi usado.
 
@@ -100,6 +100,24 @@ A inspeção de conta solicitada depois pelo dono e a autorização de criar uma
 
 ## Configuração posterior autorizada — 21/10/2026
 
-Após a entrega, o dono autorizou explicitamente guardar a chave Fish como secret para preparar os testes. `FISH_API_KEY` foi gravado no Worker existente `whatsapp-mcp`; a API Cloudflare confirmou HTTP 200 e a presença do binding `secret_text`. O valor não foi gravado em arquivo, D1 ou Git. A cópia temporária da sessão foi removida após a confirmação.
+Após a entrega, o dono autorizou explicitamente guardar a chave Fish como secret para preparar os testes. A API Cloudflare confirmou a presença do binding `secret_text`, mas essa conferência não validava a autenticação Fish. A primeira transferência estava incorreta; a primeira chamada real recebeu HTTP 401 e não produziu mídia. O registro de falha foi preservado, sem submissão automática repetida.
 
 A operação atualizou somente o secret do Worker existente. O código novo de TTS, a migration e a ativação da geração não foram publicados nesta etapa. Não houve geração Fish, consumo de saldo ou envio de WhatsApp. A voz própria ainda depende do cadastro separado do dono.
+
+## Publicação e ensaio gratuito autorizados — 21/10/2026
+
+Posteriormente, o dono autorizou publicação e prévia gratuita. A migration `0011_tts.sql` foi aplicada antes do código. A versão `2768c982-6280-48bf-a281-bdd901387c1c` foi promovida a 100%; após substituição da chave de teste com a mesma finalidade e duração autorizadas, a versão ativa passou a `b11cc6db-6a56-43e2-9520-6c2dc099789e`. O secret correto foi transferido por arquivo temporário protegido, fora do repositório, e validado pela geração real. Nenhuma chave ou token foi incluído no Git/D1/URLs.
+
+Configuração do ensaio: `TTS_ENABLED=true`, modelo explícito `s2.1-pro-free`, voz pública de demonstração do exemplo oficial Fish (`933563129e564b19a115bedd57b7406a`). Sem fallback pago. A voz do dono não foi clonada nem usada.
+
+O catálogo antigo da conexão não oferecia a ferramenta nova. Um único cliente OAuth temporário de homologação, autenticado pelo fluxo normal do dono, foi usado para chamar o MCP publicado. A conexão original do ChatGPT não foi substituída. Após a rejeição definitiva 401, foi gerado o texto sintético originalmente solicitado, “Oi testando criacao de audio com mcp”; não se alterou texto para contornar resultado incerto.
+
+Evidências reais:
+
+- `gerar_audio` retornou `ready`, MP3 `audio/mpeg`, 52.243 bytes, com hash persistido e prévia privada. A chamada usou o modelo gratuito explicitamente configurado.
+- A página autenticada exibiu texto, voz, arquivo e aviso de que nada havia sido enviado. O player Chrome chegou ao fim: duração 3,265188 segundos, `readyState=4`, sem erro de mídia. Isso confirma reprodução com o Access real nesse navegador, sem expor R2 ou credencial na URL.
+- Requests sem autenticação para HTML e bytes receberam HTTP 403.
+- Smoke após a publicação: exit 0, manutenção desativada, recurso privado recusado sem autenticação. O diagnóstico pela conexão original continuou respondendo e a captura recebeu callbacks durante o ensaio.
+- Pré-publicação: tipagem e suíte completa passaram, **260/260 testes em 20 arquivos**. Erros, concorrência, timeout incerto, exclusão em voo e vínculo da aprovação continuam validados com mocks; não foram provocados contra Fish/Z-API reais.
+
+Não houve `preparar_envio` ou `executar_envio` para este áudio, nem envio WhatsApp. A aprovação posterior deve identificar o MP3 final e o destinatário. Permanecem pendentes: revisão auditiva do dono, voz própria, homologação de envio especificamente autorizada e comportamento em outros navegadores/clientes.
