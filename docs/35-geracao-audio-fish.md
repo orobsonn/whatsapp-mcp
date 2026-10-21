@@ -33,7 +33,7 @@ A revisão independente atacou custos, concorrência, exclusão em voo, autentic
 
 ## Configuração futura — somente após autorização
 
-Esta entrega mantém `TTS_ENABLED=false`; nenhum secret do Worker ou configuração Cloudflare remota foi criado. Não cole credenciais no chat.
+A entrega inicial manteve `TTS_ENABLED=false`, sem secret do Worker ou configuração Cloudflare remota. A gravação posterior autorizada da chave está registrada abaixo. Não cole credenciais no chat.
 
 1. Separadamente, cadastrar/clonar **sua própria voz** no Fish e confirmar o identificador da voz pronta. A ferramenta não cadastra vozes, não envia amostras nem busca áudio em conversas.
 2. Conferir acesso de API por consumo e saldo/preço vigente. Assinatura Plus do site não é requisito da integração nem substitui saldo de API.
@@ -96,3 +96,10 @@ O dono informou que criou a conta Fish, aberta no Chrome, e mencionou 8.000 cré
 - Revisão independente final: correções de cancelamento, orientação específica da proposta e anotação de processamento externo verificadas; nenhum P1/P2 identificado pelo revisor.
 
 A inspeção de conta solicitada depois pelo dono e a autorização de criar uma chave sem expiração não configuraram o Worker nem autorizaram consumo pago. Não há valores de credenciais ou dados financeiros da conta neste repositório. Cadastro da voz e homologação real permanecem separados.
+
+
+## Configuração posterior autorizada — 21/10/2026
+
+Após a entrega, o dono autorizou explicitamente guardar a chave Fish como secret para preparar os testes. `FISH_API_KEY` foi gravado no Worker existente `whatsapp-mcp`; a API Cloudflare confirmou HTTP 200 e a presença do binding `secret_text`. O valor não foi gravado em arquivo, D1 ou Git. A cópia temporária da sessão foi removida após a confirmação.
+
+A operação atualizou somente o secret do Worker existente. O código novo de TTS, a migration e a ativação da geração não foram publicados nesta etapa. Não houve geração Fish, consumo de saldo ou envio de WhatsApp. A voz própria ainda depende do cadastro separado do dono.
