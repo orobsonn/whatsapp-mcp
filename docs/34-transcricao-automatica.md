@@ -59,7 +59,17 @@ Ensaio real com Workers AI em 21/10: arquivo sintético Ogg de 600 segundos,
 repetiu frases inexistentes e omitiu as falas posteriores. Com VAD e sem condicionar
 na saída anterior, reconheceu as três falas; retorno informou 600 segundos e levou
 6,56 segundos. Isso verifica esse ensaio controlado, não garante reconhecimento
-perfeito de todo áudio. Publicação e ensaio da mensagem selecionada ainda pendentes.
+perfeito de todo áudio. Verificação local final: 228 testes em 18 arquivos, typecheck e build aprovados.
+
+Publicação direta da v0.6.0 executada em 21/10, versão Worker
+`b936ba09-d2ec-4e39-a47c-eb25f66cf13c`; smoke confirmou versão, manutenção desligada
+e recusa de acesso anônimo a arquivo privado. Migração 0010 aplicada. Plugin Zap
+atualizado para 1.0.4 e skill relida após publicação.
+
+Ensaio real selecionado pelo dono: download recuperado sem alterar o conteúdo,
+transcrição gravada, consulta por termo da transcrição encontrou a mensagem original,
+com autor/data preservados, `text=null` e `transcription.status=ready`. Não houve envio
+WhatsApp. Não guardar nomes, conteúdo, IDs da mensagem ou URLs privadas nesta evidência.
 
 Fontes: [Whisper Turbo](https://developers.cloudflare.com/workers-ai/models/whisper-large-v3-turbo/),
 [webhook Z-API](https://developer.z-api.io/webhooks/on-message-received-examples).
