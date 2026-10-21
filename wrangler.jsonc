@@ -24,7 +24,7 @@
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "93907348ac84473c949f9400b0c796ba" },
   ],
-  // Ativação explícita: "ai": { "binding": "AI" },
+  "ai": { "binding": "AI" },
   "vars": {
     "RUNTIME_CONFIG": "database",
     "GPT_PLUGIN_URL": "https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64",
@@ -33,8 +33,9 @@
     "ACCESS_AUD": "059c5acda78277bb1525f1900a6765d75befb4c3525ad26a3c954c15477b75c6",
     "CONNECTION_GENERATION": "pending",
     "CONNECTED_PHONE": "",
-    "MEDIA_HOSTS": "",
-    "TRANSCRIPTION_ENABLED": "false",
+    "MEDIA_HOSTS": "f004.backblazeb2.com",
+    "TRANSCRIPTION_ENABLED": "true",
+    "AUTO_TRANSCRIPTION_ENABLED": "true",
     "MAINTENANCE": "false",
   },
 }

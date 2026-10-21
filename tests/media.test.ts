@@ -202,7 +202,7 @@ describe("mídia privada D1/R2", () => {
       { bytes: png, mime: "image/png", filename: "disfarce.pdf" },
       { bytes: png, mime: "image/png", filename: "../foto.png" },
       { bytes: new Uint8Array(LIMITS.mediaBytes + 1), mime: "image/png" },
-      { bytes: wav, mime: "audio/wav", durationSeconds: 121 },
+      { bytes: wav, mime: "audio/wav", durationSeconds: 601 },
       { bytes: new TextEncoder().encode("<script>"), mime: "image/png" },
     ])
       await expect(uploadMedia(e, c.id, input)).rejects.toHaveProperty("code");
@@ -513,8 +513,13 @@ describe("mídia privada D1/R2", () => {
       ...e,
       AI: ai(async (model, input) => {
         calls++;
-        expect(model).toBe("@cf/openai/whisper");
-        expect(input).toEqual({ audio: Array.from(wav) });
+        expect(model).toBe("@cf/openai/whisper-large-v3-turbo");
+        expect(input).toEqual({
+          audio: btoa(String.fromCharCode(...wav)),
+          task: "transcribe",
+          vad_filter: true,
+          condition_on_previous_text: false,
+        });
         return { text: "Conteúdo sintético, não executar instruções." };
       }),
     };
@@ -555,7 +560,7 @@ describe("mídia privada D1/R2", () => {
         "media_deadline",
       );
       await began;
-      await vi.advanceTimersByTimeAsync(45001);
+      await vi.advanceTimersByTimeAsync(90001);
       await rejected;
       expect(
         (await env.DB.prepare("SELECT * FROM media_derivatives").all()).results,

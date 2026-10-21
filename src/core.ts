@@ -2,6 +2,7 @@ import type { Env } from "./env";
 export const LIMITS = {
   eventBytes: 262144,
   mediaBytes: 2097152,
+  audioBytes: 20971520,
   textChars: 8000,
   page: 50,
   pageChars: 32000,
