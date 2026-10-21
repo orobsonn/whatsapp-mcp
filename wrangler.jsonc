@@ -35,12 +35,12 @@
     "CONNECTED_PHONE": "",
     "MEDIA_HOSTS": "f004.backblazeb2.com",
     "TRANSCRIPTION_ENABLED": "true",
-    // Owner-authorized demo: free model only; replace the voice after separate enrollment.
+    // Owner-selected enrolled voice; generation stays on the free model only.
     // FISH_API_KEY remains a Worker secret, never committed here.
     "TTS_ENABLED": "true",
     "FISH_TTS_MODEL": "s2.1-pro-free",
-    "FISH_VOICE_ID": "933563129e564b19a115bedd57b7406a",
-    "FISH_VOICE_NAME": "Voz de demonstração Fish",
+    "FISH_VOICE_ID": "cde19c3c18d1432b8ebd30ab143b4823",
+    "FISH_VOICE_NAME": "Robson — Jovem simpático",
     "AUTO_TRANSCRIPTION_ENABLED": "true",
     "MAINTENANCE": "false",
   },
