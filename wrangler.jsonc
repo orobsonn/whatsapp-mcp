@@ -35,6 +35,8 @@
     "CONNECTED_PHONE": "",
     "MEDIA_HOSTS": "f004.backblazeb2.com",
     "TRANSCRIPTION_ENABLED": "true",
+    // Fish TTS stays off until separately authorized/configured. Never put FISH_API_KEY here.
+    "TTS_ENABLED": "false",
     "AUTO_TRANSCRIPTION_ENABLED": "true",
     "MAINTENANCE": "false",
   },

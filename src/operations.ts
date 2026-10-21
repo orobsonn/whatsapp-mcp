@@ -329,6 +329,16 @@ export async function applyPolicyProposal(
     const chat = envelope.chatId;
     statements.push(
       env.DB.prepare(
+        `UPDATE tts_generations SET status='unavailable',text=NULL,voice_name=NULL,error=NULL WHERE chat_id=? AND epoch=? AND generation=? AND ${guard}`,
+      ).bind(
+        chat,
+        env.INSTALLATION_EPOCH,
+        env.CONNECTION_GENERATION,
+        ...bindGuard,
+      ),
+    );
+    statements.push(
+      env.DB.prepare(
         `UPDATE capture_settings SET mode='disabled',revision=revision+1,updated_at=? WHERE chat_id=? AND ${guard}`,
       ).bind(time, chat, ...bindGuard),
     );

@@ -34,6 +34,10 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 Áudios novos recebidos em individuais e grupos entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).
 
+## Geração com minha voz
+
+Implementação em desenvolvimento, desativada por padrão: `gerar_audio` integra Fish Audio por API na nuvem, guarda MP3 privado e oferece prévia com login. O texto vai ao Fish e pode consumir saldo de API. Gerar nunca envia; é necessária nova autorização após revisar o áudio final. Configuração, cadastro de voz separado, idempotência, testes e limites: [geração Fish Audio](docs/35-geracao-audio-fish.md). Nenhum modelo ou servidor de voz roda no computador do dono.
+
 ## Confirmações
 
 Envios e ações comuns são autorizados no chat, sem abrir página. O pedido exato do dono já pode autorizar; alvos ou conteúdo ambíguos precisam de esclarecimento. A página fica para ações críticas, com nomes e consequências legíveis. A decisão de risco é do servidor, não do modelo. [Política e limites](docs/31-confirmacoes-simples.md).
