@@ -36,7 +36,7 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 ## Geração com minha voz
 
-Implementação em desenvolvimento, desativada por padrão: `gerar_audio` integra Fish Audio por API na nuvem, guarda MP3 privado e oferece prévia com login. O texto vai ao Fish e pode consumir saldo de API. Gerar nunca envia; é necessária nova autorização após revisar o áudio final. Configuração, cadastro de voz separado, idempotência, testes e limites: [geração Fish Audio](docs/35-geracao-audio-fish.md). Nenhum modelo ou servidor de voz roda no computador do dono.
+`gerar_audio` integra Fish Audio por API na nuvem, guarda MP3 privado e oferece prévia com login. A instalação pessoal foi ativada com o modelo gratuito e a voz cadastrada escolhida pelo dono. O texto vai ao Fish; outros modelos podem consumir saldo de API. Gerar nunca envia; é necessária nova autorização após revisar o áudio final. Configuração, cadastro de voz separado, idempotência, testes e limites: [geração Fish Audio](docs/35-geracao-audio-fish.md). Nenhum modelo ou servidor de voz roda no computador do dono.
 
 ## Confirmações
 

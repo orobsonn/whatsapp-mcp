@@ -129,3 +129,9 @@ O dono ouviu a prévia e relatou áudio estranho. Isso invalida qualquer interpr
 A inspeção do MP3 já existente, sem nova síntese, confirmou hash igual ao persistido, 52.243 bytes, mono/44.100 Hz/128 kbps e 3,265188 segundos. A decodificação completa pelo FFmpeg terminou sem erros. Esses resultados não excluem artefatos na síntese nem problema no dispositivo de reprodução.
 
 A voz de exemplo escolhida (`933563129e564b19a115bedd57b7406a`) é apresentada pelo [Fish como “English Sarah”](https://fish.audio/developers/). Não foi selecionada uma voz brasileira. Sotaque/pronúncia inadequados são uma hipótese a distinguir de cortes, aceleração ou chiado relatados pelo dono; não uma causa já comprovada. A documentação descreve `s2.1-pro-free` como o mesmo modelo de `s2.1-pro`, portanto o resultado ruim não foi atribuído automaticamente ao plano gratuito. Não houve nova geração, consumo adicional ou envio durante esta inspeção.
+
+## Voz própria selecionada pelo dono — 21/10/2026
+
+O dono cadastrou sua voz separadamente e forneceu o link do modelo Fish, autorizando seu uso para gerar a mesma mensagem de teste. A página conferida identifica “Jovem simpático”, por Robson Junior, idioma `pt`. Foram alterados somente `FISH_VOICE_ID` e `FISH_VOICE_NAME` na configuração controlada; `s2.1-pro-free` permaneceu explícito, sem fallback pago. A integração não enviou amostras nem coletou áudio de conversas.
+
+A versão `e90ab8ad-2ddc-4956-9cde-87fbc5440c64` foi publicada a 100% após tipagem, **260/260 testes** e build dry-run passarem. A conferência da versão preservou os secrets; smoke após publicação passou. A geração real pelo MCP retornou `ready`, voz “Robson — Jovem simpático”, modelo gratuito e MP3 de 40.541 bytes. A prévia autenticada exibiu a nova voz e o mesmo texto de teste. A avaliação de naturalidade e semelhança cabe à revisão auditiva do dono; reprodução técnica não comprova essas qualidades. Nenhuma proposta ou execução de envio WhatsApp foi feita.
