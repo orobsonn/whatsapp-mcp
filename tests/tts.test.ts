@@ -80,6 +80,8 @@ it("gera MP3 privado, exige contrato controlado e nunca envia", async () => {
     mayHaveConsumedCredit: true,
   });
   expect(result.previewUrl).toBe(`${e.PUBLIC_ORIGIN}/audio/${result.id}`);
+  expect(result.guidance).toContain("pedido de envio");
+  expect(result.guidance).not.toMatch(/nova autorização|após a revisão/i);
   expect((await readMedia(e, result.media!.id)).bytes).toEqual(mp3);
   expect(JSON.stringify(result)).not.toMatch(
     /synthetic-key|object_key|source_url/,
@@ -249,7 +251,9 @@ it("áudio final e destinatário participam da aprovação; envio não repete", 
     mediaId: result.media!.id,
     mediaHash: result.media!.sha256,
   });
-  expect(proposal.authorization).toContain("NOVA autorização posterior");
+  expect(proposal.authorization).toContain("pedido de envio");
+  expect(proposal.authorization).toContain("sem nova pergunta");
+  expect(proposal.authorization).not.toMatch(/nova autorização|posterior à geração/i);
   expect(proposal.previewUrl).toBe(result.previewUrl);
   const other = (
     await upsertDirectoryPage(e, currentFence(e), {

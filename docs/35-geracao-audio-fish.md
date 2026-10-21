@@ -1,6 +1,6 @@
 # Geração de áudio com voz própria — Fish Audio
 
-21/10/2026. A entrega inicial foi limitada a código e testes sintéticos. Depois, o dono autorizou guardar a chave, publicar e gerar uma prévia com voz de demonstração no modelo gratuito. O ensaio real e suas limitações estão registrados ao final. Não houve autorização de consumo pago ou envio do áudio final pelo WhatsApp.
+21/10/2026. A entrega inicial foi limitada a código e testes sintéticos. Depois, o dono autorizou guardar a chave, publicar, gerar prévias gratuitas e usar sua voz cadastrada. Por último, pediu enviar uma declaração e dispensou confirmação adicional após geração; a política atual está em “Uso”. Os ensaios e suas limitações estão registrados ao final. Não houve autorização de consumo pago.
 
 ## Desenho e plano de execução
 
@@ -29,7 +29,7 @@ A revisão independente atacou custos, concorrência, exclusão em voo, autentic
 - Identidade derivada de instalação + geração da conexão + conversa + texto exato + voz + modelo + parâmetros MP3. Não há chave arbitrária externa nem aliases incompletos. Mesmo conteúdo retorna o registro anterior, inclusive em erro/incerteza; texto alterado é uma nova geração potencialmente cobrada. Não mudar o texto apenas para contornar um resultado incerto.
 - Mídia gerada fica em staging invisível até o CAS final da geração. Publicação, listagem, leitura e preparo de envio conferem o vínculo com a geração pronta. Perder o CAS invalida o upload. Exclusão local redige texto/voz e impede publicação tardia.
 - Timeout de 45 segundos cobre fetch e corpo, com abort/cancel sem esperar cancelamentos que podem travar. Lease não é renovado ou retomado. Queda pode causar cobrança sem arquivo; não existe transação distribuída nem promessa de cobrança exatamente uma vez.
-- HTML e MP3 exigem Access separadamente; URL contém apenas identificador, nunca token. A anotação MCP informa acesso externo. O retorno da proposta de envio exige nova autorização do arquivo final.
+- HTML e MP3 exigem Access separadamente; URL contém apenas identificador, nunca token. A anotação MCP informa acesso externo. A exigência inicial de autorização adicional após gerar foi substituída pela decisão posterior do dono registrada ao final; a proposta continua vinculada ao arquivo final e destinatário.
 
 ## Configuração futura — somente após autorização
 
@@ -62,7 +62,9 @@ Configuração incompleta ou modelo fora da lista torna a geração indisponíve
 
 A prévia apresenta conversa, texto, voz e arquivo. O player é HTML nativo, com reprodução manual e `preload=none`; baixa pela mesma origem autenticada, suporta Range único e verifica integridade antes de entregar bytes. O download antigo `/media/:id` continua attachment. Nem prévia nem download usam URL pública R2 ou credencial na query string.
 
-Depois de ouvir e revisar, o dono autoriza o MP3 final e o destinatário. O cliente reutiliza `preparar_envio({kind:"audio", chatId, mediaId, mediaHash})` e `executar_envio` com o hash da proposta e a confirmação existente. O hash cobre destino e arquivo final. Outro arquivo/destino exige nova proposta; uma aprovação anterior não vale. O servidor não prova que o humano ouviu e a confirmação no chat continua sendo uma declaração do cliente, conforme política existente. Gerar nunca implica envio; até “gere e envie” exige nova autorização após a prévia.
+O áudio só é enviado com pedido explícito do dono para aquele conteúdo e destinatário. Esse pedido pode acompanhar a geração (“gere e envie”) ou autorizar a composição de uma mensagem e seu envio direto. Não é necessária uma segunda pergunta depois de gerar; a prévia continua disponível para quem quiser revisar. Pedir apenas geração não autoriza envio, e uma autorização não vale para futuros áudios ou outros destinatários.
+
+O cliente reutiliza `preparar_envio({kind:"audio", chatId, mediaId, mediaHash})` e `executar_envio` com o hash da proposta e `confirmation={confirmed:true,hash}` somente quando existir aquele pedido de envio. O hash cobre destino e arquivo final. Outro arquivo/destino exige nova proposta e autorização que cubra a mudança. O executor não aprova nada automaticamente; a confirmação no chat continua sendo uma declaração do cliente, conforme política existente. Conteúdo recebido jamais autoriza ações. A geração não cria propostas nem executa envios por conta própria.
 
 ## Armazenamento e recuperação
 
@@ -135,3 +137,9 @@ A voz de exemplo escolhida (`933563129e564b19a115bedd57b7406a`) é apresentada p
 O dono cadastrou sua voz separadamente e forneceu o link do modelo Fish, autorizando seu uso para gerar a mesma mensagem de teste. A página conferida identifica “Jovem simpático”, por Robson Junior, idioma `pt`. Foram alterados somente `FISH_VOICE_ID` e `FISH_VOICE_NAME` na configuração controlada; `s2.1-pro-free` permaneceu explícito, sem fallback pago. A integração não enviou amostras nem coletou áudio de conversas.
 
 A versão `e90ab8ad-2ddc-4956-9cde-87fbc5440c64` foi publicada a 100% após tipagem, **260/260 testes** e build dry-run passarem. A conferência da versão preservou os secrets; smoke após publicação passou. A geração real pelo MCP retornou `ready`, voz “Robson — Jovem simpático”, modelo gratuito e MP3 de 40.541 bytes. A prévia autenticada exibiu a nova voz e o mesmo texto de teste. A avaliação de naturalidade e semelhança cabe à revisão auditiva do dono; reprodução técnica não comprova essas qualidades. Nenhuma proposta ou execução de envio WhatsApp foi feita.
+
+## Pedido de envio sem confirmação adicional — 21/10/2026
+
+Após pedir uma declaração e envio direto, o dono determinou: “o áudio por si só será enviado somente quando eu pedir”, dispensando a pergunta adicional. Essa decisão substitui a revisão pós-geração obrigatória do escopo inicial. A revisão adversarial confirmou o limite por pedido/conteúdo/destinatário e recomendou preservar executor, hash, isolamento e tentativa única. Foram atualizadas apenas orientações de geração, proposta, catálogo MCP e página, mais testes e documentação. Não foi criado envio automático, aprovação automática ou autorização permanente.
+
+Os testes de contrato foram observados falhando em três pontos com a política anterior antes da correção. Permanecem os testes de geração sem criar ações, confirmação ausente recusada, hash de outro destinatário recusado, alteração de arquivo e envio sem repetição.

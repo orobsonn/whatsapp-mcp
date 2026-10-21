@@ -7,7 +7,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ### Added
 
 - Geração de MP3 com voz própria previamente cadastrada no Fish Audio via API na nuvem, desativada por padrão, com prévia autenticada e armazenamento privado.
-- Registro persistente de geração, deduplicação concorrente e resultado incerto sem repetição automática; envio continua exigindo aprovação independente do arquivo final e destinatário.
+- Registro persistente de geração, deduplicação concorrente e resultado incerto sem repetição automática; envio exige pedido explícito do dono e proposta vinculada ao arquivo final e destinatário, sem confirmação adicional após geração.
 
 
 ## [0.6.0] - 2026-10-21

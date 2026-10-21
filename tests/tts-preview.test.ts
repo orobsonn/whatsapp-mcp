@@ -88,7 +88,8 @@ it("prévia escapa conteúdo e permite reprodução somente na mesma origem aute
   expect(html).toContain(
     `<audio controls preload="none" src="/audio/${generated.id}/file"`,
   );
-  expect(html).toContain("Nada foi enviado");
+  expect(html).toContain("Gerar não envia WhatsApp");
+  expect(html).toContain("não precisa confirmar novamente");
   expect(html).not.toContain("Bearer");
   expect(html).not.toContain("?token");
   const audio = await call(`/audio/${generated.id}/file`, { cookie });
@@ -167,6 +168,11 @@ it("MCP expõe orientação sem configuração e rejeita parâmetros de segredo/
       list.tools.find((t) => t.name === "gerar_audio")?.annotations
         ?.openWorldHint,
     ).toBe(true);
+    for (const name of ["gerar_audio", "preparar_envio", "executar_envio"]) {
+      const description = list.tools.find((t) => t.name === name)!.description!;
+      expect(description).toContain("pedido de envio");
+      expect(description).not.toMatch(/NOVA autorização|após a revisão/);
+    }
     const result = await client.callTool({
       name: "gerar_audio",
       arguments: { chatId, text: "Olá" },
