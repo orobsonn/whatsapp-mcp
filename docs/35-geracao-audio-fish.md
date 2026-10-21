@@ -121,3 +121,11 @@ Evidências reais:
 - Pré-publicação: tipagem e suíte completa passaram, **260/260 testes em 20 arquivos**. Erros, concorrência, timeout incerto, exclusão em voo e vínculo da aprovação continuam validados com mocks; não foram provocados contra Fish/Z-API reais.
 
 Não houve `preparar_envio` ou `executar_envio` para este áudio, nem envio WhatsApp. A aprovação posterior deve identificar o MP3 final e o destinatário. Permanecem pendentes: revisão auditiva do dono, voz própria, homologação de envio especificamente autorizada e comportamento em outros navegadores/clientes.
+
+## Qualidade rejeitada pelo dono — 21/10/2026
+
+O dono ouviu a prévia e relatou áudio estranho. Isso invalida qualquer interpretação de que a homologação técnica aprovou a qualidade da fala. O ensaio acima verificou geração, integridade e reprodução; não validou naturalidade, pronúncia ou adequação da voz.
+
+A inspeção do MP3 já existente, sem nova síntese, confirmou hash igual ao persistido, 52.243 bytes, mono/44.100 Hz/128 kbps e 3,265188 segundos. A decodificação completa pelo FFmpeg terminou sem erros. Esses resultados não excluem artefatos na síntese nem problema no dispositivo de reprodução.
+
+A voz de exemplo escolhida (`933563129e564b19a115bedd57b7406a`) é apresentada pelo [Fish como “English Sarah”](https://fish.audio/developers/). Não foi selecionada uma voz brasileira. Sotaque/pronúncia inadequados são uma hipótese a distinguir de cortes, aceleração ou chiado relatados pelo dono; não uma causa já comprovada. A documentação descreve `s2.1-pro-free` como o mesmo modelo de `s2.1-pro`, portanto o resultado ruim não foi atribuído automaticamente ao plano gratuito. Não houve nova geração, consumo adicional ou envio durante esta inspeção.
