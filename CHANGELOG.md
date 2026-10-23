@@ -9,6 +9,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Geração de MP3 com voz própria previamente cadastrada no Fish Audio via API na nuvem, desativada por padrão, com prévia autenticada e armazenamento privado.
 - Registro persistente de geração, deduplicação concorrente e resultado incerto sem repetição automática; envio exige pedido explícito do dono e proposta vinculada ao arquivo final e destinatário, sem confirmação adicional após geração.
 
+### Fixed
+
+- Novas autorizações do GPT duram 30 dias absolutos, em vez de exigir reconexão diária; cadastro do cliente dura 90 dias e tokens de acesso continuam em cinco minutos. Autorizações existentes exigem uma reconexão para receber o prazo novo.
+- Falhas inesperadas de armazenamento/runtime no OAuth respondem indisponibilidade temporária (503), com orientação de retry, em vez de acesso negado (403).
+
 
 ## [0.6.0] - 2026-10-21
 
