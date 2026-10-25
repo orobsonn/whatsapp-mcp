@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-25
+
+### Added
+- Pausa e replay persistentes por conversa, com lacunas explícitas e admissão atômica de trabalho.
+
 ## [0.21.0] - 2026-10-25
 
 ### Added
