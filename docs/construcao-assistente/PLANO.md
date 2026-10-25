@@ -30,10 +30,10 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [x] [29 · Persistir fontes, versões e mudanças canônicas](https://github.com/orobsonn/whatsapp-mcp/issues/29) — requisito 3; antecedentes: #28.
 - [x] [30 · Persistir identidades comprovadas e políticas](https://github.com/orobsonn/whatsapp-mcp/issues/30) — requisito 3; antecedentes: #29.
 - [x] [31 · Persistir trabalhos, missões e retornos separados](https://github.com/orobsonn/whatsapp-mcp/issues/31) — requisito 12; antecedentes: #29.
-- [ ] [32 · Registrar mudanças de captura na mesma transação](https://github.com/orobsonn/whatsapp-mcp/issues/32) — requisito 4; antecedentes: #27.
-- [ ] [33 · Propagar transcrição, retirada e acesso para o contexto](https://github.com/orobsonn/whatsapp-mcp/issues/33) — requisito 4; antecedentes: #32.
-- [ ] [34 · Entregar mudanças com autenticação e retomada](https://github.com/orobsonn/whatsapp-mcp/issues/34) — requisito 4; antecedentes: #28, #29, #32, #33.
-- [ ] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30.
+- [x] [32 · Registrar mudanças de captura na mesma transação](https://github.com/orobsonn/whatsapp-mcp/issues/32) — requisito 4; antecedentes: #27.
+- [x] [33 · Propagar transcrição, retirada e acesso para o contexto](https://github.com/orobsonn/whatsapp-mcp/issues/33) — requisito 4; antecedentes: #32.
+- [x] [34 · Entregar mudanças com autenticação e retomada](https://github.com/orobsonn/whatsapp-mcp/issues/34) — requisito 4; antecedentes: #28, #29, #32, #33.
+- [x] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30.
 - [ ] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34, #35.
 - [ ] [37 · Reservar gasto antes de cada chamada de modelo](https://github.com/orobsonn/whatsapp-mcp/issues/37) — requisito 9; antecedentes: #36.
 - [ ] [38 · Publicar afirmações e relações com suporte](https://github.com/orobsonn/whatsapp-mcp/issues/38) — requisito 6; antecedentes: #35.
@@ -65,3 +65,9 @@ A sequência cobre componentes e integração. Releases intermediárias não sig
 - [ ] [70 · Materialização e guard atual da origem](https://github.com/orobsonn/whatsapp-mcp/issues/70) — antecedentes #34/#35/#69; antecede #41.
 
 #34 transporta somente metadados. #35 controla fontes canônicas; #69/#70 cobrem snapshot e materialização antes retirados de uma única entrega grande. TOCTOU entre bancos é tratado por rechecagem antes de IA/publicação, sem alegar transação distribuída. Nenhum requisito foi removido.
+
+## Subchamadas do motor
+
+- [ ] [79 · Broker específico de modelos do Cognee](https://github.com/orobsonn/whatsapp-mcp/issues/79) — depende de #37 e antecede #39. Chaves e recibos permanecem no Worker/D1; job novo com a mesma operação lógica não permite nova inferência.
+
+Separação revisada adversarialmente: #79 controla subchamadas, #39 executa imagem/motor e #40 restaura checkpoints. Cada fronteira tem contraprovas próprias; não incorporar as três em um único diff.
