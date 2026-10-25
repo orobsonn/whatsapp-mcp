@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-25
+
+### Added
+- Motor Cognee em Container restrito, integrado ao broker persistente e homologado com API real na Cloudflare.
+
 ## [0.22.0] - 2026-10-25
 
 ### Added
