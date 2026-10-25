@@ -1,0 +1,266 @@
+{
+  "environment": "isolated Cloudflare Container + D1, synthetic sources",
+  "workerVersion": "5ba84e2d-dd09-4b24-9b0d-0e42c12a82e5",
+  "generation": "build-g3",
+  "paidModelCalls": 79,
+  "conservativeMicroUsd": 1819,
+  "newModelCallsAfterCheckpointAndRestore": 0,
+  "snapshotBytes": 2978146,
+  "sourceCount": 2,
+  "trace": [
+    {
+      "path": "/seed",
+      "status": 200,
+      "seconds": 1.92,
+      "body": {
+        "sources": [
+          {
+            "id": "7e393079-ff06-4b08-8333-37308a867e7d",
+            "revision": 1,
+            "version": 1
+          },
+          {
+            "id": "85839c5f-27a5-474f-84dc-4e37230a2763",
+            "revision": 1,
+            "version": 1
+          }
+        ],
+        "budget": {
+          "cap": 257107,
+          "committed": 0,
+          "blocked": false
+        }
+      }
+    },
+    {
+      "path": "/ingest/0",
+      "status": 200,
+      "seconds": 68.7,
+      "body": {
+        "state": "complete",
+        "operationId": "69629c8b58e8010d2cc5e206facf9844fc50f400bd39ce95e871373206b73c2a",
+        "result": {
+          "id": "7e393079-ff06-4b08-8333-37308a867e7d",
+          "version": 1,
+          "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+          "state": "completed",
+          "chunks": 1,
+          "relations": 12,
+          "nodes": 13,
+          "edges": 25
+        },
+        "indexRevision": "e7bf1112ec21eb97f78555abe01d3b0fa40db26f5cadf6ae6cc97027d98e0526",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/ingest/1",
+      "status": 200,
+      "seconds": 35.37,
+      "body": {
+        "state": "complete",
+        "operationId": "be947ca9d877d3223023eadc7130f45af8e52d29122cdd9231def4bd5053bb0b",
+        "result": {
+          "id": "85839c5f-27a5-474f-84dc-4e37230a2763",
+          "version": 1,
+          "hash": "9998cd0e28a384589aaeb0de02460140b50acf82e34068bec102a1b9305ac140",
+          "state": "completed",
+          "chunks": 1,
+          "relations": 13,
+          "nodes": 21,
+          "edges": 47
+        },
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/search",
+      "status": 200,
+      "seconds": 4.56,
+      "body": {
+        "state": "complete",
+        "operationId": "802f8dd4e959a02f544ca78c34737bd8a1f29c2230ba6e8c17b613388bb7f2f6",
+        "result": {
+          "candidates": [
+            {
+              "id": "7e393079-ff06-4b08-8333-37308a867e7d",
+              "version": 1,
+              "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 12
+            },
+            {
+              "id": "85839c5f-27a5-474f-84dc-4e37230a2763",
+              "version": 1,
+              "hash": "9998cd0e28a384589aaeb0de02460140b50acf82e34068bec102a1b9305ac140",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 13
+            }
+          ],
+          "missing": []
+        },
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.58,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/checkpoint",
+      "status": 200,
+      "seconds": 19.16,
+      "body": {
+        "state": "checkpoint_confirmed",
+        "id": "e318a58b71cc8162b4abadf97b3c023260faddc6aaf682f6580776185497724c",
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41"
+      }
+    },
+    {
+      "path": "/checkpoint/status",
+      "status": 200,
+      "seconds": 0.35,
+      "body": {
+        "state": "confirmed",
+        "checkpointId": "e318a58b71cc8162b4abadf97b3c023260faddc6aaf682f6580776185497724c",
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "sourceCount": 2,
+        "snapshotBytes": 2978146,
+        "restoredAt": 1792971098185
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.53,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/stop",
+      "status": 200,
+      "seconds": 0.68,
+      "body": {
+        "stopped": true
+      }
+    },
+    {
+      "path": "/restore",
+      "status": 200,
+      "seconds": 13.65,
+      "body": {
+        "state": "checkpoint_confirmed",
+        "id": "e318a58b71cc8162b4abadf97b3c023260faddc6aaf682f6580776185497724c",
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41"
+      }
+    },
+    {
+      "path": "/search",
+      "status": 200,
+      "seconds": 1.46,
+      "body": {
+        "state": "complete",
+        "operationId": "802f8dd4e959a02f544ca78c34737bd8a1f29c2230ba6e8c17b613388bb7f2f6",
+        "result": {
+          "candidates": [
+            {
+              "id": "7e393079-ff06-4b08-8333-37308a867e7d",
+              "version": 1,
+              "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 12
+            },
+            {
+              "id": "85839c5f-27a5-474f-84dc-4e37230a2763",
+              "version": 1,
+              "hash": "9998cd0e28a384589aaeb0de02460140b50acf82e34068bec102a1b9305ac140",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 13
+            }
+          ],
+          "missing": []
+        },
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "indexState": "checkpoint_confirmed"
+      }
+    },
+    {
+      "path": "/checkpoint/status",
+      "status": 200,
+      "seconds": 0.37,
+      "body": {
+        "state": "confirmed",
+        "checkpointId": "e318a58b71cc8162b4abadf97b3c023260faddc6aaf682f6580776185497724c",
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "sourceCount": 2,
+        "snapshotBytes": 2978146,
+        "restoredAt": 1792971113236
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.7,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/stop",
+      "status": 200,
+      "seconds": 0.52,
+      "body": {
+        "stopped": true
+      }
+    }
+  ]
+}

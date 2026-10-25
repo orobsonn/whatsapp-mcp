@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import sqlite3
+import math
 from server import BROKER, VERSION, source_key
 
 
@@ -110,3 +111,20 @@ class CogneeBackend:
         for engine in (self.engine.graph, self.engine.vector):
             result = engine.close()
             if inspect.isawaitable(result): await result
+        from cognee.infrastructure.databases.relational import get_relational_engine
+        await get_relational_engine().engine.dispose()
+        database = self.root / 'system/databases/assistant_index'
+        if database.exists():
+            with sqlite3.connect(database) as connection:
+                result = connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                if result and result[0]: raise RuntimeError('sqlite_checkpoint_busy')
+        os.sync()
+    async def verify_vectors(self, chunks):
+        if not chunks: return
+        if await self.engine.vector.get_stored_vector_size() != 1536: raise RuntimeError('vector_dimensions')
+        ids = list(dict.fromkeys(item['chunkId'] for item in chunks))
+        for offset in range(0, len(ids), 128):
+            batch = ids[offset:offset + 128]
+            rows = await self.engine.vector.score_by_ids('DocumentChunk_text', batch, [1.0] * 1536)
+            if {normalize(row.id) for row in rows} != {normalize(item) for item in batch} or any(not math.isfinite(float(row.score)) for row in rows):
+                raise RuntimeError('vector_provenance_missing')

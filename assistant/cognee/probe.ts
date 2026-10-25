@@ -21,21 +21,35 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 export default {
   async fetch(request: Request, env: ProbeEnv) {
     if (env.PROBE_MODE !== 'build_check' || !env.PROBE_TOKEN || env.PROBE_TOKEN.length !== 64 || !env.DB || !env.COGNEE ||
-      env.INSTALLATION_ID !== 'build-check-20261025' || env.OPERATIONAL_GENERATION !== 'build-g2') return json({ error: 'probe_unconfigured' }, 503);
+      env.INSTALLATION_ID !== 'build-check-20261025' || env.OPERATIONAL_GENERATION !== 'build-g3') return json({ error: 'probe_unconfigured' }, 503);
     const authorization = request.headers.get('Authorization') ?? '';
     if (authorization.length > 128) return json({ error: 'probe_denied' }, 403);
     const [a, b] = await Promise.all([bridgeHash(authorization), bridgeHash('Bearer ' + env.PROBE_TOKEN)]);
     let difference = 0; for (let i = 0; i < 64; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
     if (difference || request.method !== 'POST') return json({ error: 'probe_denied' }, 403);
     const url = new URL(request.url);
-    if (url.search || !['/seed', '/status', '/ingest/0', '/ingest/1', '/search', '/stop', '/model-check'].includes(url.pathname)) return json({ error: 'probe_denied' }, 403);
+    if (url.search || !['/seed', '/status', '/ingest/0', '/ingest/1', '/search', '/stop', '/model-check', '/checkpoint', '/restore', '/checkpoint/status'].includes(url.pathname)) return json({ error: 'probe_denied' }, 403);
     const scope = { installationId: env.INSTALLATION_ID, generation: env.OPERATIONAL_GENERATION };
     const budget = new InferenceBudget(env.DB, { ...scope, period: new Date().toISOString().slice(0, 10) });
     const engine = env.COGNEE.get(env.COGNEE.idFromName(engineName(scope.installationId, scope.generation)));
     try {
       if (url.pathname === '/stop') return json(await engine.stopProbe());
+      if (url.pathname === '/checkpoint') return json(await engine.checkpoint());
+      if (url.pathname === '/restore') return json(await engine.restoreCheckpoint());
+      if (url.pathname === '/checkpoint/status') return json(await engine.checkpointStatus());
       if (url.pathname === '/seed') {
-        await budget.configure(260000); // $0.26 plus $0.04 reserved by generation 1; total <= $0.30.
+        const period = new Date().toISOString().slice(0, 10);
+        const existing = await env.DB.prepare('SELECT cap_units FROM assistant_budget_accounts WHERE installation_id=? AND generation=? AND period=?')
+          .bind(scope.installationId, scope.generation, period).first();
+        if (!existing) {
+          // Preserve all prior generations/days, including their uncertain ceilings.
+          const prior = await env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual_units ELSE ceiling_units END),0) AS committed
+            FROM assistant_budget_reservations WHERE installation_id=? AND NOT(generation=? AND period=?)`)
+            .bind(scope.installationId, scope.generation, period).first<{ committed: number }>();
+          const used = prior?.committed ?? 0;
+          if (!Number.isSafeInteger(used) || used < 0 || used > 300000) return json({ error: 'probe_budget_exhausted' }, 409);
+          await budget.configure(300000 - used);
+        }
         const controller = new SourceController(env.DB, scope, owner), sources = [];
         for (let i = 0; i < originals.length; i++) sources.push(await controller.create({ originKey: 'build-check-' + i,
           text: originals[i], authorId: i ? 'isadora-synthetic' : 'robson-synthetic', occurredAt: Date.UTC(2026, 9, 25), audience: 'owner' }));

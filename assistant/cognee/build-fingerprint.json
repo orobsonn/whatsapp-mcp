@@ -1,0 +1,11 @@
+{
+  "buildFingerprint": "ebafa7fff647fc11003bf3a790159ac57eae2312f44fe41f167fdf3a0ec11b04",
+  "files": {
+    "Dockerfile": "31990022f46e313bcc3f0978c1a5e01ddb34247b83fa7a54c00a2c6d15d3d8e0",
+    "server.py": "019ae1a6eaaec716410c31401e3785e5d55bde7eb41ad100e51ef2f86f16dd27",
+    "backend.py": "6030cbec91bc561402849bd63156fa14f06cd53aa709a1fd5ce1939f23004e55",
+    "requirements.lock": "64af7cc2fad8850be6171dc211c698d14312b8d8dc9a258dd5e93e9c518fc246",
+    "build.lock": "6e7910c87ddfeaefcae794df890eeeb6be8ad963297bf693b09fba962a24ce6f",
+    "precache.py": "e2bf0acff3a3034b3eece74bd37e5272be4a79d54be3bc2392faace7751f9bf6"
+  }
+}

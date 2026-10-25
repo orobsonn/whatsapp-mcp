@@ -5,7 +5,7 @@ function fixture() {
   const stopProbe = vi.fn(async () => ({ stopped: true }));
   const get = vi.fn(() => ({ stopProbe }));
   const env = { DB: {}, COGNEE: { get, idFromName: () => 'fixed' }, PROBE_MODE: 'build_check', PROBE_TOKEN: token,
-    INSTALLATION_ID: 'build-check-20261025', OPERATIONAL_GENERATION: 'build-g2' };
+    INSTALLATION_ID: 'build-check-20261025', OPERATIONAL_GENERATION: 'build-g3' };
   return { env, get, stopProbe };
 }
 it('requires an isolated namespace and secret before any container access', async () => {
@@ -28,4 +28,15 @@ it('authenticated stop exposes only its fixed result and has no message capabili
   const response = await probe.fetch(new Request('https://probe/stop', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }), env as never);
   expect(await response.json()).toEqual({ stopped: true }); expect(stopProbe).toHaveBeenCalledTimes(1);
   expect(response.headers.get('Cache-Control')).toBe('no-store');
+});
+it.each(['/checkpoint', '/restore', '/checkpoint/status'])('requires the same secret for the fixed %s lifecycle route', async path => {
+  const { env, get } = fixture();
+  expect((await probe.fetch(new Request('https://probe' + path, { method: 'POST' }), env as never)).status).toBe(403);
+  expect(get).not.toHaveBeenCalled();
+});
+it('calls only the fixed checkpoint capability and returns no handle or credentials', async () => {
+  const { env } = fixture(), checkpoint = vi.fn(async () => ({ state: 'checkpoint_confirmed', id: 'a'.repeat(64), indexRevision: 'b'.repeat(64) }));
+  env.COGNEE.get = vi.fn(() => ({ checkpoint })) as never;
+  const response = await probe.fetch(new Request('https://probe/checkpoint', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }), env as never);
+  expect(await response.json()).toMatchObject({ state: 'checkpoint_confirmed' }); expect(checkpoint).toHaveBeenCalledTimes(1);
 });
