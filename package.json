@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Arquivo privado e MCP pessoal de WhatsApp",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "test": "vitest run",
@@ -13,20 +13,36 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "wrangler dev",
     "db:local": "wrangler d1 migrations apply DB --local",
-    "build:assistant": "wrangler deploy --config assistant/wrangler.jsonc --dry-run --outdir dist/assistant"
+    "build:assistant": "vite build --config assistant/vite.config.ts",
+    "test:assistant-runtime": "vitest run --config assistant/flue-test.config.ts"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.3",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@flue/runtime": "2.3.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "jose": "6.2.12",
+    "valibot": "1.5.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "1.64.0",
     "@cloudflare/vitest-plugin": "1.4.5",
     "@cloudflare/workers-types": "5.20261019.1",
+    "@flue/vite": "2.3.0",
     "@types/node": "22.19.0",
+    "miniflare": "5.20261019.0-beta",
     "typescript": "5.9.3",
+    "vite": "8.3.5",
     "vitest": "4.1.12",
     "wrangler": "4.151.2"
+  },
+  "overrides": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "undici": "7.30.1",
+    "agents": "0.28.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.6.7"
   }
 }
