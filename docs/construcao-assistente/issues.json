@@ -16,7 +16,7 @@
 {"order": 15, "number": 41, "slug": "scoped-context-retrieval", "requirement": 7, "dependencies": [12, 13, 33], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/41"},
 {"order": 16, "number": 42, "slug": "context-selection-language", "requirement": 7, "dependencies": [15, 11, 34], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/42"},
 {"order": 17, "number": 43, "slug": "conversation-pause-replay", "requirement": 5, "dependencies": [8, 10, 9, 33], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/43"},
-{"order": 18, "number": 44, "slug": "flue-isolated-episodes", "requirement": 9, "dependencies": [11, 16, 17], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/44"},
+{"order": 18, "number": 44, "slug": "flue-isolated-episodes", "requirement": 9, "dependencies": [11, 16, 17, 10, 34, 36, 37, 38], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/44"},
 {"order": 19, "number": 45, "slug": "shadow-decision-journal", "requirement": 10, "dependencies": [18], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/45"},
 {"order": 20, "number": 46, "slug": "owner-control-mcp", "requirement": 11, "dependencies": [9, 12, 5, 36, 19], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/46"},
 {"order": 21, "number": 47, "slug": "telegram-owner-link", "requirement": 14, "dependencies": [2, 20], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/47"},
@@ -29,10 +29,12 @@
 {"order": 28, "number": 54, "slug": "shadow-evaluation-health", "requirement": 15, "dependencies": [19, 27], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/54"},
 {"order": 29, "number": 55, "slug": "retention-export-restore", "requirement": 16, "dependencies": [9, 14, 23], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/55"},
 {"order": 30, "number": 56, "slug": "cloud-shadow-installation", "requirement": 16, "dependencies": [14, 18, 22, 24, 25, 26, 27, 29], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/56"},
-{"order": 31, "number": 57, "slug": "shadow-end-to-end-readiness", "requirement": 16, "dependencies": [28, 30, 35], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/57"},
+{"order": 31, "number": 57, "slug": "shadow-end-to-end-readiness", "requirement": 16, "dependencies": [28, 30, 35, 38], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/57"},
 {"order": 32, "number": 69, "slug": "capture-source-reader", "requirement": 6, "dependencies": [6, 7], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/69"},
 {"order": 33, "number": 70, "slug": "source-materialization", "requirement": 6, "dependencies": [8, 9, 32, 10], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/70"},
 {"order": 34, "number": 79, "slug": "cognee-model-broker", "requirement": 9, "dependencies": [11], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/79"},
 {"order": 35, "number": 91, "slug": "rebuild-receipt-only", "requirement": 8, "dependencies": [14, 34], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/91"},
-{"order": 36, "number": 93, "slug": "owner-command-ledger", "requirement": 11, "dependencies": [5, 9, 12], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/93"}
+{"order": 36, "number": 93, "slug": "owner-command-ledger", "requirement": 11, "dependencies": [5, 9, 12], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/93"},
+{"order": 37, "number": 96, "slug": "flue-runtime-foundation", "requirement": 9, "dependencies": [2, 13], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/96"},
+{"order": 38, "number": 100, "slug": "persistent-context-continuation", "requirement": 7, "dependencies": [9, 10, 15, 33, 17], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/100"}
 ]
