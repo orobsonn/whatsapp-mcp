@@ -3,6 +3,7 @@ import { CaptureReader } from "../src/assistant-source-reader";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SourceAccess } from "../assistant/access";
 import { JobQueue } from "../assistant/queue";
+import { Conversations } from "../assistant/conversations";
 import { receiveCapture } from "../assistant/ingress";
 import { CaptureMaterializer } from "../assistant/materialize";
 import { OriginGuard, type OriginScope, type ReaderQuery, type SnapshotReader } from "../assistant/origin-guard";
@@ -18,6 +19,8 @@ import origins from "../assistant/migrations/0006_source_origins.sql?raw";
 import work from "../assistant/migrations/0003_work.sql?raw";
 // @ts-expect-error Vite raw SQL import.
 import jobs from "../assistant/migrations/0005_job_ledger.sql?raw";
+// @ts-expect-error Vite raw SQL import.
+import conversations from "../assistant/migrations/0011_conversations.sql?raw";
 let scope: OriginScope;
 let now: number;
 const secret = "synthetic-exclusive-reader-bridge-secret";
@@ -41,7 +44,7 @@ function snapshot(kind = "message", id = "message", watermark = 10, text = "Synt
 beforeEach(async () => {
   scope = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "capture-e", sourceGeneration: "capture-g" };
   now = 100;
-  for (const schema of [sources, policy, work, inbox, jobs, origins]) {
+  for (const schema of [sources, policy, work, inbox, jobs, origins, conversations]) {
     const statements = schema.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|$)/).filter((part: string) => part.trim());
     if (statements.length) await env.DB.batch(statements.map((part: string) => env.DB.prepare(part)));
   }
@@ -308,6 +311,7 @@ it("withdraws every canonical source on capture-off before ACL reads or queue ad
   snapshots.set("message:second", snapshot("message", "second", 20, "Second source"));
   await event(20, 10, "message", "second"); await materializer.drain();
   const queue = new JobQueue(env.DB, scope);
+  await new Conversations(env.DB, config).replay("chat");
   await queue.enqueue({ kind: "reasoning", dedupeKey: "before-capture-off", sourceId: first, sourceRevision: 1, request: "Synthetic reasoning" }, now);
   const lease = (await queue.claim(now, 100))!;
   snapshots.set("conversation:chat", { ...snapshot("conversation", "chat", 30), state: "withdrawn", access: { captureEnabled: false, captureSince: 0, discontinuous: true }, content: undefined });

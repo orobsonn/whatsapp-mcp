@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issues #27–35, #69 e #38 concluídas, com CI/revisão e releases v0.7.0–v0.17.0 publicadas. Nenhum deploy da assistente.
+Goal ativo desde 25/10/2026. Issues #27–38, #69, #70 e #79 concluídas, com CI/revisão e releases v0.7.0–v0.21.0 publicadas. Homologação isolada do motor em andamento na Cloudflare; canais do produto ainda não ativados.
 
 ## Método
 
@@ -30,8 +30,13 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 - #35: acesso a fontes e versões, PRs #76/#77 e v0.15.0.
 - #69: reader restrito de captura, PRs #78/#80 e v0.16.0.
 - #38: relações atribuídas com fontes atuais, PRs #81/#82 e v0.17.0.
-- #36: fila com autorização atômica e recibos tardios; 38 testes, mais 20 de fontes, antes do PR.
-- #37/#70/#79/#39: orçamento, materialização e Cognee em revisão e integração; nenhuma prontidão operacional afirmada.
+- #36: fila com autorização atômica e recibos tardios; 36 testes, mais 20 de fontes; PRs #83/#84 e v0.18.0.
+- #37: orçamento persistente, PRs #85/#86 e v0.19.0.
+- #70: materialização canônica com cobertura e retiradas, PRs #87/#88 e v0.20.0.
+- #79: broker de modelos e recibos, PRs #89/#90 e v0.21.0.
+- #39: motor Cognee em homologação isolada; erro de redirect detectado na fronteira real, corrigido com contraprova do runtime. Nenhuma prontidão operacional afirmada.
+- #40/#91: snapshot e reconstrução separados; recibos incertos não autorizam nova inferência.
+- #43: replay/pause em revisão final após três contraprovas adversariais corrigidas.
 - A captura existente tem opt-in próprio: cobertura de todos privados da assistente ainda precisa ser integrada em #43/#56, com exclusões e lacunas honestas.
 
 ## Regras de conclusão

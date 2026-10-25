@@ -11,13 +11,19 @@ import policies from "../assistant/migrations/0002_identity_policy.sql?raw";
 import work from "../assistant/migrations/0003_work.sql?raw";
 // @ts-expect-error Vite raw SQL imports, without app configuration changes.
 import ledger from "../assistant/migrations/0005_job_ledger.sql?raw";
+// @ts-expect-error Vite raw SQL import.
+import inbox from "../assistant/migrations/0004_capture_inbox.sql?raw";
+// @ts-expect-error Vite raw SQL import.
+import origins from "../assistant/migrations/0006_source_origins.sql?raw";
+// @ts-expect-error Vite raw SQL import.
+import conversations from "../assistant/migrations/0011_conversations.sql?raw";
 
 let scope = { installationId: "jobs-test", generation: "g1" };
 let now: number;
 let queue: JobQueue;
 beforeEach(async () => {
   scope = { installationId: crypto.randomUUID(), generation: "g1" };
-  for (const sql of [sources, policies, work, ledger]) {
+  for (const sql of [sources, policies, work, ledger, inbox, origins, conversations]) {
     const statements = sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|$)/).filter((s: string) => s.trim());
     if (statements.length) await env.DB.batch(statements.map((s: string) => env.DB.prepare(s)));
   }
