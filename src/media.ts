@@ -314,6 +314,18 @@ export async function readMedia(
     throw new AppError("stale_media", 409);
   return { metadata: view(latest), bytes };
 }
+// A lost D1 acknowledgement is not proof that publication failed. Object keys
+// are unique per attempt; retain them if a committed reference exists or D1 is
+// unavailable. Unreferenced leftovers belong to reconciliation, not blind delete.
+async function discardUnpublishedObject(env: Env, key: string): Promise<void> {
+  let referenced: unknown;
+  try {
+    referenced = await env.DB.prepare(
+      "SELECT id FROM media WHERE object_key=? UNION ALL SELECT id FROM media_derivatives WHERE object_key=? LIMIT 1",
+    ).bind(key, key).first();
+  } catch { return; }
+  if (!referenced) await env.MEDIA.delete(key);
+}
 export async function uploadMedia(
   env: Env,
   chatId: string,
@@ -368,11 +380,12 @@ export async function uploadMedia(
     assertActive(env);
     assertFence(env, fence);
     const result = await env.DB.prepare(
-      `UPDATE media SET state='ready',object_key=? WHERE id=? AND epoch=? AND generation=? AND version=1 AND state='pending' AND ${visible("media", true)}`,
+      `UPDATE media SET state='ready',object_key=? WHERE id=? AND epoch=? AND generation=? AND version=1 AND state='pending' AND ${visible("media", true)} RETURNING id`,
     )
       .bind(key, id, fence.epoch, fence.generation)
       .run();
-    if (result.meta.changes !== 1) throw new AppError("stale_media", 409);
+    // D1 meta.changes includes outbox triggers; RETURNING counts the CAS row only.
+    if (result.results.length !== 1) throw new AppError("stale_media", 409);
     published = true;
     if (!input.ttsGenerationId) return await getMedia(env, id);
     // TTS must finish its own CAS before this staged file becomes publicly visible.
@@ -382,7 +395,7 @@ export async function uploadMedia(
     if (!staged) throw new AppError("stale_media", 409);
     return view(staged);
   } catch (error) {
-    if (!published) await env.MEDIA.delete(key);
+    if (!published) await discardUnpublishedObject(env, key);
     await env.DB.prepare(
       "UPDATE media SET state='failed' WHERE id=? AND state='pending'",
     )
@@ -587,7 +600,7 @@ async function download(
     assertFence(env, fence);
     const results = await env.DB.batch([
       env.DB.prepare(
-        `UPDATE media SET mime=?,size=?,sha256=?,object_key=?,state='ready',source_url=NULL WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='pending' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?)`,
+        `UPDATE media SET mime=?,size=?,sha256=?,object_key=?,state='ready',source_url=NULL WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='pending' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) RETURNING id`,
       ).bind(
         type.mime,
         bytes.length,
@@ -605,10 +618,10 @@ async function download(
         `UPDATE media_jobs SET status='ready',lease_until=NULL,error=NULL WHERE ${ownsLease} AND EXISTS(SELECT 1 FROM media WHERE id=? AND object_key=? AND state='ready' AND ${visible()})`,
       ).bind(...liveJob(job), m.id, key),
     ]);
-    if (results[0]!.meta.changes !== 1 || results[1]!.meta.changes !== 1)
+    if (results[0]!.results.length !== 1 || results[1]!.meta.changes !== 1)
       throw new AppError("stale_media", 409);
   } catch (error) {
-    if (key) await env.MEDIA.delete(key);
+    if (key) await discardUnpublishedObject(env, key);
     throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -752,7 +765,7 @@ export async function transcribeMedia(
     assertFence(env, fence);
     const results = await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO media_derivatives(id,media_id,media_version,epoch,generation,kind,text,state,created_at) SELECT ?,id,version,epoch,generation,'transcript',?,'ready',? FROM media WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='ready' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) ON CONFLICT DO NOTHING`,
+        `INSERT INTO media_derivatives(id,media_id,media_version,epoch,generation,kind,text,state,created_at) SELECT ?,id,version,epoch,generation,'transcript',?,'ready',? FROM media WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='ready' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) ON CONFLICT DO NOTHING RETURNING id`,
       ).bind(
         derivativeId,
         result.text,
@@ -769,7 +782,7 @@ export async function transcribeMedia(
         `UPDATE media_jobs SET status='ready',lease_until=NULL,error=NULL WHERE ${ownsLease} AND EXISTS(SELECT 1 FROM media_derivatives WHERE id=? AND state='ready')`,
       ).bind(...liveJob(job), derivativeId),
     ]);
-    if (results[0]!.meta.changes !== 1 || results[1]!.meta.changes !== 1)
+    if (results[0]!.results.length !== 1 || results[1]!.meta.changes !== 1)
       throw new AppError("stale_media", 409);
     await row(env, id, fence);
     return {
