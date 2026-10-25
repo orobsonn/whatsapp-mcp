@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-25
+
+### Added
+- Leitura autenticada e restrita de snapshots da captura, com versões, limites e watermark por conversa (#69).
+
 ## [0.15.0] - 2026-10-25
 
 ### Added
