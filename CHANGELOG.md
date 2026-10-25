@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-25
+
+### Added
+- Fila persistente com autorização atual na admissão e publicação, recibos tardios e recuperação sem repetição de tentativa (#36).
+
 ## [0.17.0] - 2026-10-25
 
 ### Added
