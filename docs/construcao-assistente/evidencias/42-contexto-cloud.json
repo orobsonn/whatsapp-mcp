@@ -1,0 +1,92 @@
+{
+  "issue": 42,
+  "scope": "isolated Cloudflare Worker + real OpenAI API + synthetic new corpus",
+  "run": [
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.54,
+      "body": {
+        "cap": 260000,
+        "committed": 1810,
+        "blocked": false
+      }
+    },
+    {
+      "path": "/run",
+      "status": 200,
+      "seconds": 39.91,
+      "body": {
+        "metrics": {
+          "cases": 4,
+          "modelCases": 3,
+          "retainedCases": 4,
+          "focusedCases": 3,
+          "additionalUnits": 1083,
+          "adapterCalls": 4
+        },
+        "diagnostics": [
+          {
+            "stage": "done",
+            "outcome": "success",
+            "status": 200,
+            "elapsedMs": 2786,
+            "aborted": false
+          },
+          {
+            "stage": "done",
+            "outcome": "success",
+            "status": 200,
+            "elapsedMs": 5681,
+            "aborted": false
+          },
+          {
+            "stage": "done",
+            "outcome": "success",
+            "status": 200,
+            "elapsedMs": 4838,
+            "aborted": false
+          },
+          {
+            "stage": "done",
+            "outcome": "success",
+            "status": 200,
+            "elapsedMs": 6181,
+            "aborted": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "/run",
+      "status": 200,
+      "seconds": 15.3,
+      "body": {
+        "metrics": {
+          "cases": 4,
+          "modelCases": 3,
+          "retainedCases": 4,
+          "focusedCases": 3,
+          "additionalUnits": 0,
+          "adapterCalls": 0
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.42,
+      "body": {
+        "cap": 260000,
+        "committed": 2893,
+        "blocked": false
+      }
+    }
+  ],
+  "limits": [
+    "Four cases only; not aggregate language accuracy",
+    "Focus is optional; all permitted originals retained",
+    "Replay uses persistent receipt and still revalidates original sources"
+  ]
+}
