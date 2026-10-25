@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-25
+
+### Added
+- Fontes canônicas com versões, atribuição e controle de acesso por público, prova e mandato vigente (#35).
+
 ## [0.14.0] - 2026-10-25
 
 ### Added
