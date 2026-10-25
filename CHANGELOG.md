@@ -9,6 +9,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ### Fixed
 ### Removed
 
+## [0.8.0] - 2026-10-25
+
+### Added
+
+- Runtime próprio da assistente em sombra, sem credenciais ou bindings de envio, com saúde e recusa explícita de ações externas.
+- Plano rastreável de construção, revisão adversarial e build isolado obrigatório no CI.
+
 ## [0.7.0] - 2026-10-25
 
 ### Added
