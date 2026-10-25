@@ -32,7 +32,10 @@ beforeAll(async () => {
     alg: "RS256",
   };
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 async function jwt(overrides: Record<string, unknown> = {}) {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({
@@ -251,6 +254,174 @@ async function codeChallenge(verifier: string) {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
+
+// Exercise the installed provider and real Worker KV, not a mocked token issuer.
+async function oauthSession() {
+  jwks();
+  let current = settings();
+  const api = createOAuthProvider({
+    fetch: async (_request, _env, ctx) => Response.json(ctx.props),
+  });
+  const call = (path: string, init: RequestInit = {}) =>
+    api.fetch(new Request(`https://personal.example${path}`, init), current, createExecutionContext());
+  const registered = await call("/oauth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      redirect_uris: ["https://client.example/callback"],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+    }),
+  });
+  expect(registered.status).toBe(201);
+  const { client_id } = await registered.json() as { client_id: string };
+  async function authorizeAgain() {
+    const verifier = "b".repeat(43);
+    const query = new URLSearchParams({
+      client_id, redirect_uri: "https://client.example/callback",
+      response_type: "code", scope: "mcp offline_access",
+      code_challenge: await codeChallenge(verifier), code_challenge_method: "S256",
+      resource: "https://personal.example/mcp",
+    });
+    const consent = await api.fetch(await ownerRequest(`/authorize?${query}`), current, createExecutionContext());
+    expect(consent.status).toBe(200);
+    const nonce = (await consent.text()).match(/name="nonce" value="([^"]+)"/)![1];
+    const approved = await api.fetch(await ownerRequest("/authorize", {
+      method: "POST", headers: { Origin: "https://personal.example", "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ nonce }),
+    }), current, createExecutionContext());
+    expect(approved.status).toBe(302);
+    const response = await exchange({
+      grant_type: "authorization_code", code: new URL(approved.headers.get("location")!).searchParams.get("code")!,
+      redirect_uri: "https://client.example/callback", code_verifier: verifier,
+      resource: "https://personal.example/mcp",
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as { access_token: string; refresh_token: string; expires_in: number };
+  }
+  function exchange(params: Record<string, string>) {
+    return call("/oauth/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id, ...params }),
+    });
+  }
+  const token = await authorizeAgain();
+  return { call, exchange, authorizeAgain, token, clientKey: `client:${client_id}`,
+    grantKey: `grant:${token.refresh_token.split(":").slice(0, 2).join(":")}`,
+    configure: (overrides: Partial<AuthEnv>) => { current = { ...current, ...overrides }; },
+  };
+}
+
+function oauthClock() {
+  const start = Date.now();
+  let now = start;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  return {
+    start: Math.floor(start / 1000),
+    async advance(seconds: number) {
+      now = start + seconds * 1000;
+      // The KV emulator has a separate clock. Enforce its recorded expirations
+      // when advancing the application clock, including expired DCR records.
+      let cursor: string | undefined;
+      do {
+        const page = await env.OAUTH_KV.list({ cursor });
+        for (const key of page.keys) {
+          if (key.expiration !== undefined && key.expiration <= now / 1000)
+            await env.OAUTH_KV.delete(key.name);
+        }
+        cursor = page.list_complete ? undefined : page.cursor;
+      } while (cursor);
+    },
+  };
+}
+
+describe("OAuth connection lifetime and temporary failures", () => {
+  it("refreshes after a day of inactivity and near day 30 without moving the absolute deadline", async () => {
+    const clock = oauthClock();
+    const session = await oauthSession();
+    const original = await env.OAUTH_KV.get<{ expiresAt: number }>(session.grantKey, "json");
+    expect(session.token.expires_in).toBe(300);
+    await clock.advance(25 * 3600);
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${session.token.access_token}` } })).status).toBe(401);
+    let response = await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token });
+    expect(response.status).toBe(200);
+    let token = await response.json() as typeof session.token;
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${token.access_token}` } })).status).toBe(200);
+    await clock.advance(29 * 86400);
+    response = await session.exchange({ grant_type: "refresh_token", refresh_token: token.refresh_token });
+    expect(response.status).toBe(200);
+    token = await response.json() as typeof session.token;
+    const renewed = await env.OAUTH_KV.get<{ expiresAt: number }>(session.grantKey, "json");
+    expect(renewed!.expiresAt).toBe(original!.expiresAt);
+    await clock.advance(30 * 86400 - 120);
+    response = await session.exchange({ grant_type: "refresh_token", refresh_token: token.refresh_token });
+    expect(response.status).toBe(200);
+    token = await response.json() as typeof session.token;
+    expect(token.expires_in).toBe(120);
+    await clock.advance(30 * 86400);
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${token.access_token}` } })).status).toBe(401);
+    response = await session.exchange({ grant_type: "refresh_token", refresh_token: token.refresh_token });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_grant" });
+  });
+
+  it("keeps the registered client for a new consent after the prior grant expires", async () => {
+    const clock = oauthClock();
+    const session = await oauthSession();
+    await clock.advance(31 * 86400);
+    const token = await session.authorizeAgain();
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${token.access_token}` } })).status).toBe(200);
+  });
+
+  it("renews an old 24-hour client but never extends its old 24-hour grant", async () => {
+    const clock = oauthClock();
+    const session = await oauthSession();
+    const client = await env.OAUTH_KV.get<Record<string, unknown>>(session.clientKey, "json");
+    const grant = await env.OAUTH_KV.get<Record<string, unknown>>(session.grantKey, "json");
+    await env.OAUTH_KV.put(session.clientKey, JSON.stringify({ ...client, registrationExpiresAt: clock.start + 86400 }), { expiration: clock.start + 86400 });
+    await env.OAUTH_KV.put(session.grantKey, JSON.stringify({ ...grant, expiresAt: clock.start + 86400 }), { expiration: clock.start + 86400 });
+    await clock.advance(13 * 3600);
+    const response = await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token });
+    expect(response.status).toBe(200);
+    const token = await response.json() as typeof session.token;
+    const renewedClient = await env.OAUTH_KV.get<{ registrationExpiresAt: number }>(session.clientKey, "json");
+    expect(renewedClient!.registrationExpiresAt).toBeGreaterThan(clock.start + 30 * 86400);
+    const sameGrant = await env.OAUTH_KV.get<{ expiresAt: number }>(session.grantKey, "json");
+    expect(sameGrant!.expiresAt).toBe(clock.start + 86400);
+    await clock.advance(25 * 3600);
+    expect((await session.exchange({ grant_type: "refresh_token", refresh_token: token.refresh_token })).status).toBe(400);
+  });
+
+  it.each([{ MAINTENANCE: "true" }, { INSTALLATION_EPOCH: "revoked" }])("blocks access and refresh after %o", async (overrides) => {
+    const session = await oauthSession();
+    session.configure(overrides);
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${session.token.access_token}` } })).status).toBe(403);
+    const response = await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_grant" });
+  });
+
+  it("reports a temporary token-store failure as service unavailable and allows the same grant to recover", async () => {
+    const session = await oauthSession();
+    const brokenKv = new Proxy(env.OAUTH_KV, {
+      get(target, property) {
+        if (property === "get") return async () => { throw new Error("synthetic storage outage: secret-do-not-disclose"); };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    session.configure({ OAUTH_KV: brokenKv });
+    expect((await session.call("/mcp", { headers: { Authorization: `Bearer ${session.token.access_token}` } })).status).toBe(503);
+    const response = await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(response.headers.has("www-authenticate")).toBe(false);
+    expect(await response.json()).toEqual({ error: "temporarily_unavailable" });
+    session.configure({ OAUTH_KV: env.OAUTH_KV });
+    expect((await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token })).status).toBe(200);
+  });
+});
+
 describe("actual OAuth provider protocol", () => {
   it("uses PKCE, human Access consent and bounded tokens; stale epoch blocks access and refresh", async () => {
     jwks();

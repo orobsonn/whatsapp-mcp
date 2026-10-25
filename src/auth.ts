@@ -653,8 +653,11 @@ export function createOAuthProvider<E extends AuthEnv>(
             authorization_servers: [origin],
           },
           accessTokenTTL: 300,
-          refreshTokenTTL: 86400,
-          clientRegistrationTTL: 86400,
+          // Fixed consent deadline; refreshes must never slide it forward.
+          refreshTokenTTL: 30 * 86400,
+          // DCR happens once per GPT connection. Its registration must outlive
+          // a grant even when there are no requests for several days.
+          clientRegistrationTTL: 90 * 86400,
           scopesSupported: ["mcp", "offline_access"],
           requiredScopes: ["mcp"],
           allowTokenExchangeGrant: false,
@@ -692,8 +695,17 @@ export function createOAuthProvider<E extends AuthEnv>(
           },
         });
         return await provider.fetch(request, env, ctx);
-      } catch {
-        return denied();
+      } catch (error) {
+        if (error instanceof AuthError) return denied();
+        // A storage/runtime outage is not revoked consent. Do not invite clients
+        // to discard valid credentials or expose the original exception.
+        return Response.json(
+          { error: "temporarily_unavailable" },
+          {
+            status: 503,
+            headers: { "Cache-Control": "no-store", "Retry-After": "5" },
+          },
+        );
       }
     },
   };

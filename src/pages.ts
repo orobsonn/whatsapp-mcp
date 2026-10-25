@@ -19,6 +19,7 @@ function humanPage(input: {
   content: string;
   status?: number;
   formOrigin?: string;
+  media?: boolean;
   headers?: HeadersInit;
 }): Response {
   const headers = new Headers(input.headers);
@@ -31,7 +32,7 @@ function humanPage(input: {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${input.formOrigin ? " " + input.formOrigin : ""}; frame-ancestors 'none'; base-uri 'none'`,
+    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; ${input.media ? "media-src 'self'; " : ""}form-action 'self'${input.formOrigin ? " " + input.formOrigin : ""}; frame-ancestors 'none'; base-uri 'none'`,
   }))
     headers.set(k, v);
   return new Response(
@@ -121,10 +122,25 @@ export function invitePage(name: string, invite: string): Response {
   response.headers.set("Referrer-Policy", "no-referrer");
   return response;
 }
+export function audioPreviewPage(input: {
+  id: string;
+  chatName: string;
+  text: string;
+  voice: string;
+  filename: string;
+  size: number;
+}): Response {
+  return humanPage({
+    title: "Ouvir áudio gerado",
+    media: true,
+    content: `${context(input.chatName)}<p class="success">Geração concluída</p><div class="review-field"><strong>Texto enviado ao Fish Audio</strong><p>${escapeHtml(input.text)}</p></div><div class="review-field"><strong>Voz</strong><p>${escapeHtml(input.voice)}</p></div><div class="review-field"><strong>Arquivo MP3</strong><p>${escapeHtml(input.filename)} · ${escapeHtml(input.size)} bytes</p></div><p><audio controls preload="none" src="/audio/${encodeURIComponent(input.id)}/file" style="width:100%">Seu navegador não suporta reprodução de áudio.</audio></p><p>Gerar não envia WhatsApp. O áudio só é enviado quando você pede no chat. Se já pediu para enviar, não precisa confirmar novamente.</p><p class="fine">A geração enviou este texto ao Fish Audio e pode ter consumido saldo da API. O arquivo permanece privado. Se a reprodução falhar, entre nesta página com seu login do Cloudflare Access.</p>`,
+  });
+}
 export function isHumanPagePath(path: string): boolean {
   return (
     path === "/setup" ||
     path === "/authorize" ||
+    /^\/audio\/[^/]+(?:\/file)?$/.test(path) ||
     /^\/(upload|media)\/[^/]+$/.test(path) ||
     /^\/confirm\/(send|group|policy)\/[^/]+$/.test(path) ||
     /^\/groups\/[^/]+\/invite$/.test(path)

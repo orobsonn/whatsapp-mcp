@@ -18,6 +18,11 @@ export interface Env {
   TRANSCRIPTION_ENABLED: string;
   AUTO_TRANSCRIPTION_ENABLED?: string;
   MAINTENANCE: string;
+  TTS_ENABLED?: string;
+  FISH_API_KEY?: string;
+  FISH_VOICE_ID?: string;
+  FISH_VOICE_NAME?: string;
+  FISH_TTS_MODEL?: string;
   ZAPI_INSTANCE_ID?: string;
   ZAPI_INSTANCE_TOKEN?: string;
   ZAPI_TOKEN?: string;

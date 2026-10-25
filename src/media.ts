@@ -16,6 +16,8 @@ export interface UploadMediaInput {
   mime: string;
   filename?: string;
   durationSeconds?: number;
+  /** Internal publication fence, never accepted from MCP/browser uploads. */
+  ttsGenerationId?: string;
 }
 export interface MediaView {
   id: string;
@@ -79,8 +81,14 @@ function base64(bytes: Uint8Array): string {
   return chunks.join("");
 }
 // All aliases here are internal constants, never input. D1, not an R2 key, grants visibility.
-function visible(alias = "media"): string {
-  return `${alias}.deleted_at IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=${alias}.chat_id AND c.epoch=${alias}.epoch AND c.generation=${alias}.generation) AND (${alias}.message_id IS NULL OR EXISTS(SELECT 1 FROM messages msg WHERE msg.id=${alias}.message_id AND msg.chat_id=${alias}.chat_id AND msg.epoch=${alias}.epoch AND msg.generation=${alias}.generation AND msg.version=${alias}.message_version AND msg.deleted_at IS NULL AND msg.unavailable_reason IS NULL AND msg.kind=${alias}.kind))`;
+export function generatedMediaVisible(
+  alias = "media",
+  staging = false,
+): string {
+  return `(${alias}.tts_generation_id IS NULL OR EXISTS(SELECT 1 FROM tts_generations t WHERE t.id=${alias}.tts_generation_id AND t.epoch=${alias}.epoch AND t.generation=${alias}.generation AND t.chat_id=${alias}.chat_id AND t.text IS NOT NULL AND (t.status='ready' AND t.media_id=${alias}.id${staging ? " OR (t.status='attempting' AND t.deadline_at>" + Date.now() + ")" : ""})))`;
+}
+function visible(alias = "media", staging = false): string {
+  return `${generatedMediaVisible(alias, staging)} AND ${alias}.deleted_at IS NULL AND EXISTS(SELECT 1 FROM chats c WHERE c.id=${alias}.chat_id AND c.epoch=${alias}.epoch AND c.generation=${alias}.generation) AND (${alias}.message_id IS NULL OR EXISTS(SELECT 1 FROM messages msg WHERE msg.id=${alias}.message_id AND msg.chat_id=${alias}.chat_id AND msg.epoch=${alias}.epoch AND msg.generation=${alias}.generation AND msg.version=${alias}.message_version AND msg.deleted_at IS NULL AND msg.unavailable_reason IS NULL AND msg.kind=${alias}.kind))`;
 }
 function view(m: MediaRow): MediaView {
   return {
@@ -332,7 +340,7 @@ export async function uploadMedia(
   const id = crypto.randomUUID();
   const key = `original/${id}/${crypto.randomUUID()}`;
   await env.DB.prepare(
-    `INSERT INTO media(id,chat_id,epoch,generation,kind,mime,size,sha256,state,filename,duration_seconds,created_at) SELECT ?,?,?,?,?,?,?,?,'pending',?,?,? WHERE EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=?)`,
+    `INSERT INTO media(id,chat_id,epoch,generation,kind,mime,size,sha256,state,filename,duration_seconds,created_at,tts_generation_id) SELECT ?,?,?,?,?,?,?,?,'pending',?,?,?,? WHERE EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=?)`,
   )
     .bind(
       id,
@@ -346,6 +354,7 @@ export async function uploadMedia(
       name,
       type.kind === "audio" ? (input.durationSeconds ?? null) : null,
       Date.now(),
+      input.ttsGenerationId ?? null,
       chatId,
       fence.epoch,
       fence.generation,
@@ -359,13 +368,19 @@ export async function uploadMedia(
     assertActive(env);
     assertFence(env, fence);
     const result = await env.DB.prepare(
-      `UPDATE media SET state='ready',object_key=? WHERE id=? AND epoch=? AND generation=? AND version=1 AND state='pending' AND ${visible()}`,
+      `UPDATE media SET state='ready',object_key=? WHERE id=? AND epoch=? AND generation=? AND version=1 AND state='pending' AND ${visible("media", true)}`,
     )
       .bind(key, id, fence.epoch, fence.generation)
       .run();
     if (result.meta.changes !== 1) throw new AppError("stale_media", 409);
     published = true;
-    return await getMedia(env, id);
+    if (!input.ttsGenerationId) return await getMedia(env, id);
+    // TTS must finish its own CAS before this staged file becomes publicly visible.
+    const staged = await env.DB.prepare("SELECT * FROM media WHERE id=?")
+      .bind(id)
+      .first<MediaRow>();
+    if (!staged) throw new AppError("stale_media", 409);
+    return view(staged);
   } catch (error) {
     if (!published) await env.MEDIA.delete(key);
     await env.DB.prepare(

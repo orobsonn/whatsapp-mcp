@@ -25,6 +25,7 @@ import { readMedia, uploadMedia, processMediaJobs } from "./media";
 import { getPolicyProposal, applyPolicyProposal, cleanup } from "./operations";
 import {
   uploadPage,
+  audioPreviewPage,
   uploadResultPage,
   invitePage,
   humanErrorPage,
@@ -37,6 +38,7 @@ import pkg from "../package.json";
 import { resolveRuntimeEnv } from "./connection";
 import { setupFetch } from "./setup";
 import { processTranscriptions } from "./transcription";
+import { getGeneratedAudio, cleanupAudioGenerations } from "./tts";
 
 async function webhook(
   request: Request,
@@ -141,6 +143,73 @@ async function browserRoute(request: Request, env: Env): Promise<Response> {
       ),
     });
   if (parts[1] === "webhook") return webhook(request, env, parts);
+  if (
+    parts[1] === "audio" &&
+    (parts.length === 3 || (parts.length === 4 && parts[3] === "file"))
+  ) {
+    await requireOwner(request, env);
+    if (request.method !== "GET")
+      return json({ error: "method_not_allowed" }, 405);
+    const generation = await getGeneratedAudio(env, parts[2]!);
+    if (
+      generation.status !== "ready" ||
+      !generation.media ||
+      generation.text === null ||
+      generation.voice === null
+    )
+      throw new AppError("tts_media_unavailable", 409);
+    if (parts.length === 3)
+      return audioPreviewPage({
+        id: generation.id,
+        chatName: (await getChat(env, generation.media.chatId)).name,
+        text: generation.text,
+        voice: generation.voice,
+        filename: generation.media.filename ?? "audio.mp3",
+        size: generation.media.size!,
+      });
+    const { metadata, bytes } = await readMedia(env, generation.media.id);
+    const headers = new Headers({
+      "content-type": "audio/mpeg",
+      "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(metadata.filename ?? "audio.mp3")}`,
+      "cache-control": "private, no-store",
+      "accept-ranges": "bytes",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cross-origin-resource-policy": "same-origin",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+    });
+    let start = 0,
+      end = bytes.length - 1;
+    const range = request.headers.get("range");
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match || (!match[1] && !match[2])) {
+        headers.set("content-range", `bytes */${bytes.length}`);
+        return new Response(null, { status: 416, headers });
+      }
+      if (!match[1]) start = Math.max(0, bytes.length - Number(match[2]));
+      else {
+        start = Number(match[1]);
+        if (match[2]) end = Math.min(end, Number(match[2]));
+      }
+      if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(end) ||
+        start > end ||
+        start >= bytes.length ||
+        (!match[1] && Number(match[2]) === 0)
+      ) {
+        headers.set("content-range", `bytes */${bytes.length}`);
+        return new Response(null, { status: 416, headers });
+      }
+      headers.set("content-range", `bytes ${start}-${end}/${bytes.length}`);
+    }
+    headers.set("content-length", String(end - start + 1));
+    return new Response(bytes.slice(start, end + 1), {
+      status: range ? 206 : 200,
+      headers,
+    });
+  }
   if (parts[1] === "confirm" && parts[2] === "send" && parts.length === 4) {
     await requireOwner(request, env);
     const action = await getAction(env, parts[3]!);
@@ -378,6 +447,7 @@ export default {
     const env = await resolveRuntimeEnv(rawEnv);
     if (env.MAINTENANCE !== "false") return;
     await processMediaJobs(env);
+    await cleanupAudioGenerations(env);
     await cleanup(env);
     await processTranscriptions(env);
   },
