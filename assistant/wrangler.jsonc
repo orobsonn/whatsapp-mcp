@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "personal-assistant-shadow",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-25",
+  "workers_dev": false,
+  "preview_urls": false,
+  // Local/dry-run configuration only. No production routes, bindings, or secrets.
+  "observability": { "enabled": false }
+}
