@@ -627,6 +627,9 @@ export async function diagnostics(env: Env) {
       pendingMedia: await count(
         "SELECT COUNT(*) n FROM media WHERE epoch=? AND generation=? AND deleted_at IS NULL AND state<>'ready'",
       ),
+      pendingObjectPurges: await count(
+        "SELECT COUNT(*) n FROM (SELECT epoch,generation FROM media WHERE deleted_at IS NOT NULL AND object_key IS NOT NULL UNION ALL SELECT epoch,generation FROM media_derivatives WHERE state='deleted' AND object_key IS NOT NULL) WHERE epoch=? AND generation=?",
+      ),
       pendingJobs: await count(
         "SELECT COUNT(*) n FROM media_jobs WHERE epoch=? AND generation=? AND status IN('pending','retry','processing')",
       ),
