@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-25
+
+### Added
+- Schema canônico da assistente com fontes, versões imutáveis, tombstones e cursores separados; oito testes D1 (#29).
+
 ### Added
 ### Changed
 ### Fixed
