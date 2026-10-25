@@ -1,0 +1,11 @@
+# #79 — broker específico de modelos do Cognee
+
+Issue criada antes do código, dependente somente de #37. #39 preserva suas dependências anteriores e acrescenta #79; DAG verificado sem ciclos antes de `harness:ready`.
+
+Capacidade interna do host vincula namespace, fonte/revisão/versão/hash, configuração e expiração. Fonte e permissão são revalidadas na admissão SQL; custo observado continua registrado se a fonte for retirada durante a chamada, mas o conteúdo não retorna. Payload efetivo e configuração determinam a chave, sem alias/job ID ou período financeiro. Reserva persistida é a única autorização de tentativa; ACK incerto nunca autoriza inferência adicional.
+
+Contrato limitado a chat completions e embeddings, modelos do host, entrada de 64 KiB, saída de 256 KiB, até quatro vetores de 1536 números finitos e deadline de 45 segundos. Campos externos não previstos são rejeitados na entrada e removidos na resposta. HTTP 200 com erro ou formato inválido permanece incerto sem expor corpo; custo real conhecido é liquidado inclusive acima da reserva, bloqueando novas chamadas. O adapter recebe string imutável e AbortSignal. Não há endpoint HTTP, credenciais, transporte real ou ferramenta privilegiada nesta entrega.
+
+TDD: stub inicial produziu 10 falhas; deadline ausente produziu 1 falha entre 14 testes; validação de respostas produziu 2 falhas entre 16. Estado final: `npx vitest run tests/assistant-model-broker.test.ts` passou 17/17 e `npm run check` passou. Os testes usam D1 real local, fixtures sintéticas, concorrência, reinício e falhas após commit de reserva/admissão/resposta/liquidação. Logs locais: `/tmp/assistant79-{red,deadline-red,response-red,final-green,final-check}.txt`. Avisos preexistentes de sourcemaps do SDK continuam presentes. A suíte global fica com o coordenador, que modifica outros componentes em paralelo.
+
+Limites: API real, cálculo de preço observado, integração Container/egress e revalidação remota de origem pertencem a #39/#70. Timeout conserva reserva; não comprova cancelamento da chamada externa. A retenção #55 deve purgar permissões, fences e respostas derivadas antes de apagar fontes. Sem deploy, API paga, Docker ou dados reais nesta entrega.
