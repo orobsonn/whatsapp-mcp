@@ -39,6 +39,7 @@ import { resolveRuntimeEnv } from "./connection";
 import { setupFetch } from "./setup";
 import { processTranscriptions } from "./transcription";
 import { getGeneratedAudio, cleanupAudioGenerations } from "./tts";
+import { deliverCaptureChanges } from "./assistant-bridge";
 
 async function webhook(
   request: Request,
@@ -447,6 +448,9 @@ export default {
   ): Promise<void> {
     const env = await resolveRuntimeEnv(rawEnv);
     if (env.MAINTENANCE !== "false") return;
+    _ctx.waitUntil(deliverCaptureChanges(env).catch(() => {
+      console.warn("assistant_bridge_failed");
+    }));
     await processMediaJobs(env);
     await cleanupAudioGenerations(env);
     await cleanup(env);
