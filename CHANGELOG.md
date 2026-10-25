@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-25
+
+### Added
+- Recuperação limitada de contexto autorizado com fontes e versões verificadas; continuação entre lotes segue como entrega separada antes do piloto.
+
 ## [0.23.0] - 2026-10-25
 
 ### Added
