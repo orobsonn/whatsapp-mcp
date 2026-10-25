@@ -105,7 +105,8 @@ async function webhook(
     }
     return json({ accepted: true });
   }
-  if (body.type !== "ReceivedCallback") return json({ ignored: true });
+  if (body.type !== "ReceivedCallback" && body.type !== "DeletedCallback")
+    return json({ ignored: true });
   if (body.connectedPhone !== env.CONNECTED_PHONE || !env.CONNECTED_PHONE)
     throw new AppError("device_changed", 403);
   try {

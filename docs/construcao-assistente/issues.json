@@ -8,7 +8,7 @@
 {"order": 7, "number": 33, "slug": "derivative-change-outbox", "requirement": 4, "dependencies": [6], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/33"},
 {"order": 8, "number": 34, "slug": "capture-bridge-delivery", "requirement": 4, "dependencies": [2, 3, 6, 7], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/34"},
 {"order": 9, "number": 35, "slug": "source-access-lifecycle", "requirement": 6, "dependencies": [3, 4, 8], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/35"},
-{"order": 10, "number": 36, "slug": "persistent-job-controller", "requirement": 5, "dependencies": [5, 8], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/36"},
+{"order": 10, "number": 36, "slug": "persistent-job-controller", "requirement": 5, "dependencies": [5, 8, 9], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/36"},
 {"order": 11, "number": 37, "slug": "inference-budget-ledger", "requirement": 9, "dependencies": [10], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/37"},
 {"order": 12, "number": 38, "slug": "canonical-relations", "requirement": 6, "dependencies": [9], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/38"},
 {"order": 13, "number": 39, "slug": "cognee-container-service", "requirement": 8, "dependencies": [9, 11], "url": "https://github.com/orobsonn/whatsapp-mcp/issues/39"},

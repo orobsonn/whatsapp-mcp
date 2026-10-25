@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issue #27 concluída: base integrada, CI verde e release v0.7.0 publicada.
+Goal ativo desde 25/10/2026. Issues #27–31 concluídas, com CI/revisão e releases v0.7.0–v0.11.0 publicadas. Nenhum deploy da assistente.
 
 ## Método
 
@@ -20,8 +20,13 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 - Revisão adversarial: `REVISAO-PLANO.md` (10 pontos incorporados).
 - Roadmap publicado: `PLANO.md` e `issues.json`; GitHub conserva os corpos completos.
 - #27: PRs #58/#59, release v0.7.0, 266 testes da base, check/build/audit produção, migração 0011 conferida sem escrita.
-- #28: runtime isolado implementado, 11 testes; revisão sem bloqueantes. PR/CI/release pendentes.
-- #29: schema fontes em revisão; #32: outbox mensagens com 3 testes, em construção. Nenhum deploy da assistente.
+- #28: runtime isolado, 11 testes, PRs #60/#61 e v0.8.0.
+- #29: fontes/versões canônicas, 8 testes, PRs #62/#63 e v0.9.0.
+- #30: identidade/políticas, 6 testes, PRs #64/#65 e v0.10.0.
+- #31: missões/FUPs/jobs, 6 testes, PRs #66/#67 e v0.11.0.
+- #32/#33: outboxes revisadas. Suíte com os drafts passou 309 testes após corrigir CAS de mídia afetado por triggers; contraprovas posteriores de ACK perdido preservam bytes. A entrega ainda depende de PR/CI/release.
+- #34: transporte de metadados em implementação; materialização atual/autorizada explicitamente em #35.
+- A captura existente tem opt-in próprio: cobertura de todos privados da assistente ainda precisa ser integrada em #43/#56, com exclusões e lacunas honestas.
 
 ## Regras de conclusão
 
