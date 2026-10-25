@@ -29,12 +29,12 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [x] [28 · Separar o runtime sombra das capacidades de envio](https://github.com/orobsonn/whatsapp-mcp/issues/28) — requisito 2; antecedentes: #27.
 - [x] [29 · Persistir fontes, versões e mudanças canônicas](https://github.com/orobsonn/whatsapp-mcp/issues/29) — requisito 3; antecedentes: #28.
 - [x] [30 · Persistir identidades comprovadas e políticas](https://github.com/orobsonn/whatsapp-mcp/issues/30) — requisito 3; antecedentes: #29.
-- [ ] [31 · Persistir trabalhos, missões e retornos separados](https://github.com/orobsonn/whatsapp-mcp/issues/31) — requisito 12; antecedentes: #29.
+- [x] [31 · Persistir trabalhos, missões e retornos separados](https://github.com/orobsonn/whatsapp-mcp/issues/31) — requisito 12; antecedentes: #29.
 - [ ] [32 · Registrar mudanças de captura na mesma transação](https://github.com/orobsonn/whatsapp-mcp/issues/32) — requisito 4; antecedentes: #27.
 - [ ] [33 · Propagar transcrição, retirada e acesso para o contexto](https://github.com/orobsonn/whatsapp-mcp/issues/33) — requisito 4; antecedentes: #32.
 - [ ] [34 · Entregar mudanças com autenticação e retomada](https://github.com/orobsonn/whatsapp-mcp/issues/34) — requisito 4; antecedentes: #28, #29, #32, #33.
 - [ ] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30, #34.
-- [ ] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34.
+- [ ] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34, #35.
 - [ ] [37 · Reservar gasto antes de cada chamada de modelo](https://github.com/orobsonn/whatsapp-mcp/issues/37) — requisito 9; antecedentes: #36.
 - [ ] [38 · Publicar afirmações e relações com suporte](https://github.com/orobsonn/whatsapp-mcp/issues/38) — requisito 6; antecedentes: #35.
 - [ ] [39 · Executar ingestão e busca Cognee com contrato restrito](https://github.com/orobsonn/whatsapp-mcp/issues/39) — requisito 8; antecedentes: #35, #37.
