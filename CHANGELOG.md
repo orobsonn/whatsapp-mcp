@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-25
+
+### Added
+- Comandos versionados do dono, com repetição segura e invalidação de trabalho antigo após mudanças de FUP.
+
 ## [0.26.0] - 2026-10-25
 
 ### Added
