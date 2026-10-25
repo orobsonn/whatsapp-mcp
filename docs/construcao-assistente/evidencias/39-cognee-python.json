@@ -1,0 +1,108 @@
+{
+  "issue": 39,
+  "status": "partial_python_container_only",
+  "boundary": "local Docker linux/amd64 --network none; loopback deterministic HTTP models; no cloud/deploy/paid API",
+  "tests": {
+    "python": {
+      "passed": 11,
+      "failed": 0
+    },
+    "typescript_check": "passed"
+  },
+  "base": "python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
+  "local_image": "sha256:af0ef37ba7f3fb9299af399be77aa5a21f83bd4f7d127a5f367aa86a7665092c",
+  "image_bytes": 1599195988,
+  "packages": {
+    "cognee": "1.6.5",
+    "ladybug": "0.19.0",
+    "lancedb": "0.39.0",
+    "litellm": "1.106.4",
+    "aiohttp": "3.14.5",
+    "tiktoken": "0.14.0"
+  },
+  "integration": {
+    "cognee": "1.6.5",
+    "native_pipeline": true,
+    "new_originals": 2,
+    "original_hash_match": true,
+    "restricted_candidate": {
+      "id": "message:synthetic-0",
+      "version": 47,
+      "hash": "7f81928fcc78f5053045f60e160f377fb5e281072038d4d6d7606a119cb76727"
+    },
+    "relation_provenance": true,
+    "duplicate_job_new_calls": 0,
+    "private_wins_global_top1": true,
+    "authorized_prefilter_recovers_target": true,
+    "models": "deterministic HTTP stubs, not semantic quality",
+    "calls": 44,
+    "request_shapes": [
+      {
+        "path": "/v1/chat/completions",
+        "keys": [
+          "messages",
+          "model"
+        ],
+        "types": {
+          "messages": "list",
+          "model": "str"
+        }
+      },
+      {
+        "path": "/v1/embeddings",
+        "keys": [
+          "dimensions",
+          "input",
+          "model"
+        ],
+        "types": {
+          "model": "str",
+          "input": "list",
+          "dimensions": "int"
+        }
+      },
+      {
+        "path": "/v1/chat/completions",
+        "keys": [
+          "messages",
+          "model",
+          "response_format"
+        ],
+        "types": {
+          "messages": "list",
+          "model": "str",
+          "response_format": "dict"
+        }
+      }
+    ],
+    "paid_calls": 0
+  },
+  "source_sha256": {
+    "assistant/cognee/Dockerfile": "c18a1821da7d19e03a9a06ff16b34d796c3c985b72f2db1c0e0151c5d6f7a7ec",
+    "assistant/cognee/backend.py": "188f3ed3f59cf9b6cd845ae88e2ed87d255428037865bccb65b721ebe279b590",
+    "assistant/cognee/build.lock": "6e7910c87ddfeaefcae794df890eeeb6be8ad963297bf693b09fba962a24ce6f",
+    "assistant/cognee/precache.py": "e2bf0acff3a3034b3eece74bd37e5272be4a79d54be3bc2392faace7751f9bf6",
+    "assistant/cognee/requirements.lock": "64af7cc2fad8850be6171dc211c698d14312b8d8dc9a258dd5e93e9c518fc246",
+    "assistant/cognee/server.py": "6c75be6ed88b0f2d91ca56b91c248c45af932af20d46b6244269b4ee18aa0a71",
+    "assistant/cognee/test_real_cognee.py": "655d52f828188912ed8116ed75286517ea77929080dd2f0338e2e98dc38f1ddf",
+    "assistant/cognee/test_server.py": "a34c4e187c10c60ede48354f3cbb03f00275e51a91a04d95b84ea14858327777"
+  },
+  "pending": [
+    "trusted Worker/DO engine boundary and host operation permits",
+    "persistent broker budget/idempotency integration across Container loss",
+    "Cloudflare runtime test before any activation",
+    "checkpoint/retention/rebuild #40 and canonical revalidation #41"
+  ],
+  "limits": [
+    "bounded 128 source versions and 256 operation aliases; no continuous-capacity claim",
+    "relation lane is authorized native provenance, not global semantic graph retrieval",
+    "controlled vectors/models do not prove semantic quality",
+    "same-content chunks may be physically shared by native Cognee; host canonical ACL remains required"
+  ],
+  "root_review": {
+    "contract_tests": 10,
+    "native_integration_tests": 1,
+    "backend_error_classification": "ValueError becomes generic operation_failed, rather than invalid_input; input error allowlist already prevented raw errors",
+    "paid_calls": 0
+  }
+}
