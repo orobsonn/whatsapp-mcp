@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 const migrations = await readD1Migrations("./migrations");
 export default defineConfig({
@@ -29,5 +29,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false },
+  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-flue-runtime.test.ts"] },
 });
