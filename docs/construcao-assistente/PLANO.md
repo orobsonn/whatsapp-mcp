@@ -26,7 +26,7 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 ## Entregas ordenadas
 
 - [x] [27 · Preservar correções publicadas de voz e conexão GPT na base de construção](https://github.com/orobsonn/whatsapp-mcp/issues/27) — requisito 1; antecedentes: nenhum.
-- [ ] [28 · Separar o runtime sombra das capacidades de envio](https://github.com/orobsonn/whatsapp-mcp/issues/28) — requisito 2; antecedentes: #27.
+- [x] [28 · Separar o runtime sombra das capacidades de envio](https://github.com/orobsonn/whatsapp-mcp/issues/28) — requisito 2; antecedentes: #27.
 - [ ] [29 · Persistir fontes, versões e mudanças canônicas](https://github.com/orobsonn/whatsapp-mcp/issues/29) — requisito 3; antecedentes: #28.
 - [ ] [30 · Persistir identidades comprovadas e políticas](https://github.com/orobsonn/whatsapp-mcp/issues/30) — requisito 3; antecedentes: #29.
 - [ ] [31 · Persistir trabalhos, missões e retornos separados](https://github.com/orobsonn/whatsapp-mcp/issues/31) — requisito 12; antecedentes: #29.
