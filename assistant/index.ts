@@ -1,7 +1,8 @@
 import type { AssistantEnv } from "./env";
+import { receiveCapture } from "./ingress";
 
 export default {
-  fetch(request: Request, _env: AssistantEnv): Response {
+  async fetch(request: Request, env: AssistantEnv): Promise<Response> {
     const headers = {
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
@@ -15,6 +16,9 @@ export default {
         { headers },
       );
     }
+
+    if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
+      return receiveCapture(request, env);
 
     // Deny by default. Request content cannot grant an effect capability.
     return Response.json({ error: "shadow_only" }, { status: 403, headers });

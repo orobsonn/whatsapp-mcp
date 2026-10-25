@@ -28,4 +28,8 @@ export interface Env {
   ZAPI_TOKEN?: string;
   ZAPI_CLIENT_TOKEN?: string;
   WEBHOOK_SECRET?: string;
+  ASSISTANT_INGRESS?: Pick<Fetcher, "fetch">;
+  ASSISTANT_BRIDGE_SECRET?: string;
+  ASSISTANT_INSTALLATION_ID?: string;
+  ASSISTANT_GENERATION?: string;
 }

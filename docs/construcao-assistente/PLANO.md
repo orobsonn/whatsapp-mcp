@@ -33,13 +33,13 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [ ] [32 · Registrar mudanças de captura na mesma transação](https://github.com/orobsonn/whatsapp-mcp/issues/32) — requisito 4; antecedentes: #27.
 - [ ] [33 · Propagar transcrição, retirada e acesso para o contexto](https://github.com/orobsonn/whatsapp-mcp/issues/33) — requisito 4; antecedentes: #32.
 - [ ] [34 · Entregar mudanças com autenticação e retomada](https://github.com/orobsonn/whatsapp-mcp/issues/34) — requisito 4; antecedentes: #28, #29, #32, #33.
-- [ ] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30, #34.
+- [ ] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30.
 - [ ] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34, #35.
 - [ ] [37 · Reservar gasto antes de cada chamada de modelo](https://github.com/orobsonn/whatsapp-mcp/issues/37) — requisito 9; antecedentes: #36.
 - [ ] [38 · Publicar afirmações e relações com suporte](https://github.com/orobsonn/whatsapp-mcp/issues/38) — requisito 6; antecedentes: #35.
 - [ ] [39 · Executar ingestão e busca Cognee com contrato restrito](https://github.com/orobsonn/whatsapp-mcp/issues/39) — requisito 8; antecedentes: #35, #37.
 - [ ] [40 · Recuperar motor após perda do Container](https://github.com/orobsonn/whatsapp-mcp/issues/40) — requisito 8; antecedentes: #39.
-- [ ] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39.
+- [ ] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39, #70.
 - [ ] [42 · Selecionar recorte e apresentar linguagem sustentada](https://github.com/orobsonn/whatsapp-mcp/issues/42) — requisito 7; antecedentes: #41, #37.
 - [ ] [43 · Agrupar mensagens e recuperar contexto após pausa](https://github.com/orobsonn/whatsapp-mcp/issues/43) — requisito 5; antecedentes: #34, #36, #35.
 - [ ] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #37, #42, #43.
@@ -58,3 +58,10 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [ ] [57 · Homologar ponta a ponta e entregar prontidão do piloto](https://github.com/orobsonn/whatsapp-mcp/issues/57) — requisito 16; antecedentes: #54, #56.
 
 A sequência cobre componentes e integração. Releases intermediárias não significam prontidão do piloto; a última entrega exige fronteira real e explicita qualquer canal ainda sem vínculo.
+
+## Separação da fronteira de origem (revisão durante implementação)
+
+- [ ] [69 · Leitura nominal e limitada da origem](https://github.com/orobsonn/whatsapp-mcp/issues/69) — antecedentes #32/#33.
+- [ ] [70 · Materialização e guard atual da origem](https://github.com/orobsonn/whatsapp-mcp/issues/70) — antecedentes #34/#35/#69; antecede #41.
+
+#34 transporta somente metadados. #35 controla fontes canônicas; #69/#70 cobrem snapshot e materialização antes retirados de uma única entrega grande. TOCTOU entre bancos é tratado por rechecagem antes de IA/publicação, sem alegar transação distribuída. Nenhum requisito foi removido.

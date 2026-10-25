@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issues #27–31 concluídas, com CI/revisão e releases v0.7.0–v0.11.0 publicadas. Nenhum deploy da assistente.
+Goal ativo desde 25/10/2026. Issues #27–33 concluídas, com CI/revisão e releases v0.7.0–v0.13.0 publicadas. Nenhum deploy da assistente.
 
 ## Método
 
@@ -24,8 +24,9 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 - #29: fontes/versões canônicas, 8 testes, PRs #62/#63 e v0.9.0.
 - #30: identidade/políticas, 6 testes, PRs #64/#65 e v0.10.0.
 - #31: missões/FUPs/jobs, 6 testes, PRs #66/#67 e v0.11.0.
-- #32/#33: outboxes revisadas. Suíte com os drafts passou 309 testes após corrigir CAS de mídia afetado por triggers; contraprovas posteriores de ACK perdido preservam bytes. A entrega ainda depende de PR/CI/release.
-- #34: transporte de metadados em implementação; materialização atual/autorizada explicitamente em #35.
+- #32: outbox de mensagens, PRs #68/#71 e v0.12.0.
+- #33: outbox de mídia/derivados, CAS D1 e ACK perdido com R2 preservado; PRs #72/#73 e v0.13.0, CI aprovada.
+- #34: ponte de metadados revisada; controle de acesso #35, reader restrito #69 e materialização atual #70 separados com aceites próprios.
 - A captura existente tem opt-in próprio: cobertura de todos privados da assistente ainda precisa ser integrada em #43/#56, com exclusões e lacunas honestas.
 
 ## Regras de conclusão
