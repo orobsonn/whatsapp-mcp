@@ -4,6 +4,14 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-25
+
+### Added
+- Feed transacional de metadados para inserções, correções e retiradas da captura (#32).
+
+### Fixed
+- Callback sintético de exclusão alcança o normalizador existente após as verificações do webhook; emissão real pelo provedor ainda não homologada.
+
 ## [0.11.0] - 2026-10-25
 
 ### Added
