@@ -457,3 +457,5 @@ export default {
     await processTranscriptions(env);
   },
 };
+
+export { CaptureReader } from "./assistant-source-reader";
