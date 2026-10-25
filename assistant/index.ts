@@ -1,5 +1,6 @@
 import type { AssistantEnv } from "./env";
 import { receiveCapture } from "./ingress";
+export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
   async fetch(request: Request, env: AssistantEnv): Promise<Response> {

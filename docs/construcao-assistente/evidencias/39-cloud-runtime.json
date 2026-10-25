@@ -1,0 +1,289 @@
+{
+  "issue": 39,
+  "scope": "isolated Cloudflare Worker + Durable Object + native Cognee Container + real OpenAI API; synthetic sources only",
+  "date": "2026-10-25",
+  "worker": "assistant-build-check",
+  "version": "6bf23a68-5b2b-4e1f-a96d-2bf47f01a40a",
+  "model": "gpt-6-luna",
+  "embedding": "text-embedding-3-small",
+  "cases": [
+    {
+      "path": "/seed",
+      "status": 200,
+      "seconds": 1.63,
+      "body": {
+        "sources": [
+          {
+            "id": "8e1869fd-8462-4a3e-a01a-9cd0b21a258b",
+            "revision": 1,
+            "version": 1
+          },
+          {
+            "id": "51b83766-d223-4ec4-987e-9e35acfc4e27",
+            "revision": 1,
+            "version": 1
+          }
+        ],
+        "budget": {
+          "cap": 260000,
+          "committed": 0,
+          "blocked": false
+        }
+      }
+    },
+    {
+      "path": "/model-check",
+      "status": 200,
+      "seconds": 5.11,
+      "body": {
+        "state": "complete",
+        "operationKey": "cognee:5094cc12ae8dafb91da5cae3430ede16e99e5e4ea843e4da84e15196dede3267",
+        "diagnostics": [
+          {
+            "stage": "done",
+            "outcome": "success",
+            "status": 200,
+            "elapsedMs": 1964,
+            "aborted": false
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ingest/0",
+      "status": 200,
+      "seconds": 71.65,
+      "body": {
+        "state": "complete",
+        "operationId": "07417522f43aece4506e3724b0cf947581b4bf4c61decb7e6c80db7d2b824ea2",
+        "result": {
+          "id": "8e1869fd-8462-4a3e-a01a-9cd0b21a258b",
+          "version": 1,
+          "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+          "state": "completed",
+          "chunks": 1,
+          "relations": 12,
+          "nodes": 13,
+          "edges": 25
+        },
+        "indexRevision": "958ded69fdfa1f742f4097a8148df511262d851dddd4be6e59aeb88dc529823e",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.58,
+      "body": {
+        "budget": {
+          "cap": 260000,
+          "committed": 829,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 40
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ingest/0",
+      "status": 200,
+      "seconds": 1.2,
+      "body": {
+        "state": "complete",
+        "operationId": "07417522f43aece4506e3724b0cf947581b4bf4c61decb7e6c80db7d2b824ea2",
+        "result": {
+          "id": "8e1869fd-8462-4a3e-a01a-9cd0b21a258b",
+          "version": 1,
+          "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+          "state": "completed",
+          "chunks": 1,
+          "relations": 12,
+          "nodes": 13,
+          "edges": 25
+        },
+        "indexRevision": "958ded69fdfa1f742f4097a8148df511262d851dddd4be6e59aeb88dc529823e",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/ingest/1",
+      "status": 200,
+      "seconds": 35.17,
+      "body": {
+        "state": "complete",
+        "operationId": "2b4d79b75ee62e51cfc86163efe4f5df11ea1b1934c388b266e5a45369f45627",
+        "result": {
+          "id": "51b83766-d223-4ec4-987e-9e35acfc4e27",
+          "version": 1,
+          "hash": "9998cd0e28a384589aaeb0de02460140b50acf82e34068bec102a1b9305ac140",
+          "state": "completed",
+          "chunks": 1,
+          "relations": 13,
+          "nodes": 20,
+          "edges": 45
+        },
+        "indexRevision": "fc8eaa85b2b181c82a34c55389e96a7eab68e8eef89e3c474e8fde77466b3f5f",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/search",
+      "status": 200,
+      "seconds": 5.31,
+      "body": {
+        "state": "complete",
+        "operationId": "3a28c55a3c9b3de2f0517f77c3e8d5fcad890621b0cf0e8026c3fa21b9e8f9b3",
+        "result": {
+          "candidates": [
+            {
+              "id": "51b83766-d223-4ec4-987e-9e35acfc4e27",
+              "version": 1,
+              "hash": "9998cd0e28a384589aaeb0de02460140b50acf82e34068bec102a1b9305ac140",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 13
+            },
+            {
+              "id": "8e1869fd-8462-4a3e-a01a-9cd0b21a258b",
+              "version": 1,
+              "hash": "ef5123194a0f36ec28a4a1fc563666705583dcddeee40751ba1909a841cd730a",
+              "via": [
+                "chunks",
+                "graph"
+              ],
+              "relationCount": 12
+            }
+          ],
+          "missing": []
+        },
+        "indexRevision": "fc8eaa85b2b181c82a34c55389e96a7eab68e8eef89e3c474e8fde77466b3f5f",
+        "indexState": "needs_checkpoint"
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.53,
+      "body": {
+        "budget": {
+          "cap": 260000,
+          "committed": 1810,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 80
+          }
+        ]
+      }
+    }
+  ],
+  "loss_checks": [
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.6,
+      "body": {
+        "budget": {
+          "cap": 260000,
+          "committed": 1810,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 80
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ingest/0",
+      "status": 200,
+      "seconds": 3.38,
+      "body": {
+        "state": "blocked",
+        "reason": "index_lost"
+      }
+    },
+    {
+      "path": "/search",
+      "status": 200,
+      "seconds": 1.39,
+      "body": {
+        "state": "blocked",
+        "reason": "index_lost"
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.57,
+      "body": {
+        "budget": {
+          "cap": 260000,
+          "committed": 1810,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 80
+          }
+        ]
+      }
+    },
+    {
+      "path": "/stop",
+      "status": 200,
+      "seconds": 0.36,
+      "body": {
+        "stopped": true
+      }
+    },
+    {
+      "path": "/search",
+      "status": 200,
+      "seconds": 1.22,
+      "body": {
+        "state": "blocked",
+        "reason": "index_lost"
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.53,
+      "body": {
+        "budget": {
+          "cap": 260000,
+          "committed": 1810,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 80
+          }
+        ]
+      }
+    }
+  ],
+  "paid_receipts_complete": 80,
+  "conservative_usage_charge_microUSD": 1810,
+  "earlier_uncertain_reservations_microUSD": 40000,
+  "total_budget_cap_microUSD": 300000,
+  "limits": [
+    "No quality claim beyond this two-source corpus",
+    "Native relation lane is provenance restricted to authorized sources",
+    "Index lost on inactivity; snapshot/restore remains #40, rebuild #91",
+    "Budget charge uses conservative input pricing, not provider invoice"
+  ]
+}
