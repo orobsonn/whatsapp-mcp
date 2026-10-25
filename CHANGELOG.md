@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-25
+
+### Added
+- Broker de modelos com orçamento persistente, recibos recuperáveis e revalidação de acesso às fontes.
+
 ## [0.20.0] - 2026-10-25
 
 ### Added
