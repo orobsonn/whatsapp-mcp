@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-25
+
+### Added
+- Relações e afirmações atribuídas com referências canônicas, fonte vigente e cobertura limitada explícita (#38).
+
 ## [0.16.0] - 2026-10-25
 
 ### Added
