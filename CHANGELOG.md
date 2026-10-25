@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-25
+
+### Added
+- Missões, FUPs versionados, ocorrências únicas e jobs separados, sem confundir conclusão simulada com contato real (#31).
+
 ## [0.10.0] - 2026-10-25
 
 ### Added
