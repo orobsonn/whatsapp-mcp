@@ -34,17 +34,17 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [x] [33 · Propagar transcrição, retirada e acesso para o contexto](https://github.com/orobsonn/whatsapp-mcp/issues/33) — requisito 4; antecedentes: #32.
 - [x] [34 · Entregar mudanças com autenticação e retomada](https://github.com/orobsonn/whatsapp-mcp/issues/34) — requisito 4; antecedentes: #28, #29, #32, #33.
 - [x] [35 · Controlar acesso, correção e retirada canônicos](https://github.com/orobsonn/whatsapp-mcp/issues/35) — requisito 6; antecedentes: #29, #30.
-- [ ] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34, #35.
-- [ ] [37 · Reservar gasto antes de cada chamada de modelo](https://github.com/orobsonn/whatsapp-mcp/issues/37) — requisito 9; antecedentes: #36.
-- [ ] [38 · Publicar afirmações e relações com suporte](https://github.com/orobsonn/whatsapp-mcp/issues/38) — requisito 6; antecedentes: #35.
-- [ ] [39 · Executar ingestão e busca Cognee com contrato restrito](https://github.com/orobsonn/whatsapp-mcp/issues/39) — requisito 8; antecedentes: #35, #37.
-- [ ] [40 · Recuperar motor após perda do Container](https://github.com/orobsonn/whatsapp-mcp/issues/40) — requisito 8; antecedentes: #39.
-- [ ] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39, #70.
-- [ ] [42 · Selecionar recorte e apresentar linguagem sustentada](https://github.com/orobsonn/whatsapp-mcp/issues/42) — requisito 7; antecedentes: #41, #37.
-- [ ] [43 · Agrupar mensagens e recuperar contexto após pausa](https://github.com/orobsonn/whatsapp-mcp/issues/43) — requisito 5; antecedentes: #34, #36, #35.
-- [ ] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #37, #42, #43.
+- [x] [36 · Executar fila persistente e recuperar o mesmo trabalho](https://github.com/orobsonn/whatsapp-mcp/issues/36) — requisito 5; antecedentes: #31, #34, #35.
+- [x] [37 · Reservar gasto antes de cada chamada de modelo](https://github.com/orobsonn/whatsapp-mcp/issues/37) — requisito 9; antecedentes: #36.
+- [x] [38 · Publicar afirmações e relações com suporte](https://github.com/orobsonn/whatsapp-mcp/issues/38) — requisito 6; antecedentes: #35.
+- [x] [39 · Executar ingestão e busca Cognee com contrato restrito](https://github.com/orobsonn/whatsapp-mcp/issues/39) — requisito 8; antecedentes: #35, #37.
+- [x] [40 · Recuperar motor após perda do Container](https://github.com/orobsonn/whatsapp-mcp/issues/40) — requisito 8; antecedentes: #39.
+- [x] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39, #70.
+- [x] [42 · Selecionar recorte e apresentar linguagem sustentada](https://github.com/orobsonn/whatsapp-mcp/issues/42) — requisito 7; antecedentes: #41, #37.
+- [x] [43 · Agrupar mensagens e recuperar contexto após pausa](https://github.com/orobsonn/whatsapp-mcp/issues/43) — requisito 5; antecedentes: #34, #36, #35.
+- [ ] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #36, #37, #42, #43, #79, #93, #96.
 - [ ] [45 · Registrar respostas, pendências e silêncios em sombra](https://github.com/orobsonn/whatsapp-mcp/issues/45) — requisito 10; antecedentes: #44.
-- [ ] [46 · Ensinar contexto e dirigir assistente pelo MCP](https://github.com/orobsonn/whatsapp-mcp/issues/46) — requisito 11; antecedentes: #35, #38, #31.
+- [ ] [46 · Ensinar contexto e dirigir assistente pelo MCP](https://github.com/orobsonn/whatsapp-mcp/issues/46) — requisito 11; antecedentes: #35, #38, #31, #45, #93.
 - [ ] [47 · Vincular Telegram privado do dono](https://github.com/orobsonn/whatsapp-mcp/issues/47) — requisito 14; antecedentes: #28, #46.
 - [ ] [48 · Organizar revisão nos quatro tópicos privados](https://github.com/orobsonn/whatsapp-mcp/issues/48) — requisito 14; antecedentes: #47, #45.
 - [ ] [49 · Acompanhar missões e FUPs com vencimento](https://github.com/orobsonn/whatsapp-mcp/issues/49) — requisito 12; antecedentes: #31, #36, #46.
@@ -61,13 +61,21 @@ A sequência cobre componentes e integração. Releases intermediárias não sig
 
 ## Separação da fronteira de origem (revisão durante implementação)
 
-- [ ] [69 · Leitura nominal e limitada da origem](https://github.com/orobsonn/whatsapp-mcp/issues/69) — antecedentes #32/#33.
-- [ ] [70 · Materialização e guard atual da origem](https://github.com/orobsonn/whatsapp-mcp/issues/70) — antecedentes #34/#35/#69; antecede #41.
+- [x] [69 · Leitura nominal e limitada da origem](https://github.com/orobsonn/whatsapp-mcp/issues/69) — antecedentes #32/#33.
+- [x] [70 · Materialização e guard atual da origem](https://github.com/orobsonn/whatsapp-mcp/issues/70) — antecedentes #34/#35/#69; antecede #41.
 
 #34 transporta somente metadados. #35 controla fontes canônicas; #69/#70 cobrem snapshot e materialização antes retirados de uma única entrega grande. TOCTOU entre bancos é tratado por rechecagem antes de IA/publicação, sem alegar transação distribuída. Nenhum requisito foi removido.
 
 ## Subchamadas do motor
 
-- [ ] [79 · Broker específico de modelos do Cognee](https://github.com/orobsonn/whatsapp-mcp/issues/79) — depende de #37 e antecede #39. Chaves e recibos permanecem no Worker/D1; job novo com a mesma operação lógica não permite nova inferência.
+- [x] [79 · Broker específico de modelos do Cognee](https://github.com/orobsonn/whatsapp-mcp/issues/79) — depende de #37 e antecede #39. Chaves e recibos permanecem no Worker/D1; job novo com a mesma operação lógica não permite nova inferência.
 
 Separação revisada adversarialmente: #79 controla subchamadas, #39 executa imagem/motor e #40 restaura checkpoints. Cada fronteira tem contraprovas próprias; não incorporar as três em um único diff.
+
+## Complementos antes do piloto
+
+- [ ] [91 · Reconstrução somente com recibos existentes](https://github.com/orobsonn/whatsapp-mcp/issues/91) — depende de #40/#79.
+- [ ] [93 · Comandos persistentes do dono](https://github.com/orobsonn/whatsapp-mcp/issues/93) — depende de #31/#35/#38; antecede #44/#46.
+- [ ] [96 · Fundação oficial Flue e persistência real](https://github.com/orobsonn/whatsapp-mcp/issues/96) — depende de #28/#39; antecede #44.
+
+A busca #41 limita cada operação a um lote autorizado. A continuação por inventário maior foi registrada na [issue #100](https://github.com/orobsonn/whatsapp-mcp/issues/100) como entrega própria, obrigatória antes do piloto; não há promessa de cobertura completa a partir de um único lote.
