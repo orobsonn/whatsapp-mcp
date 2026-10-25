@@ -3,12 +3,13 @@ import type { OriginFence } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { sourceTextHash } from "./sources";
 import { z } from "zod";
+import type { CheckpointPlan, SourceStamp } from "./checkpoints";
 export type Ref = { id: string; version: number; hash: string };
 export type EnginePermit = { source: SourceFence; origin?: OriginFence };
 export type EngineSearch = { query: string; allowedSources: Ref[]; limit: number; actor: TrustedActor; permits: EnginePermit[] };
 export type EngineRequest = EngineSearch;
 export type EngineIngest = { source: SourceRead; actor: TrustedActor; origin?: OriginFence };
-export type EngineSearchOutcome = { state: "complete"; operationId: string; result: { candidates: (Ref & { via: string[]; relationCount: number })[]; missing: Ref[] }; indexRevision: string; indexState: "needs_checkpoint" }
+export type EngineSearchOutcome = { state: "complete"; operationId: string; result: { candidates: (Ref & { via: string[]; relationCount: number })[]; missing: Ref[] }; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" }
   | { state: "blocked" | "uncertain"; reason: string; operationId?: string };
 export interface EnginePort { search(input: EngineSearch): Promise<EngineSearchOutcome> }
 export interface EngineStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> }
@@ -26,8 +27,8 @@ export interface EngineGuard {
   revoke(token: string): Promise<void>;
 }
 type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number };
-type Meta = { namespace: string; revision: string; lost: boolean };
-type Receipt = { state: "complete"; operationId: string; result: unknown; indexRevision: string; indexState: "needs_checkpoint" };
+type Meta = { namespace: string; revision: string; lost: boolean; epoch?: string; sources?: SourceStamp[]; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
+type Receipt = { state: "complete"; operationId: string; result: unknown; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" };
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/);
 const refSchema = z.object({ id: identifier, version: z.number().int().positive().max(2147483647), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -67,6 +68,27 @@ export class CogneeEngine implements EnginePort {
     const receipt = await this.store.get<Receipt>(`receipt:${id}`), auth = await this.store.get<Pick<Active, "actor" | "permits">>(`access:${id}`);
     return receipt && auth && await this.guard.check(auth.actor, auth.permits) ? receipt : { state: "uncertain" };
   }
+  /** Host-only lifecycle exclusion. Callback contains trusted checkpoint code,
+   * never a model tool, URL or caller-supplied command. Persisted gate survives DO restart. */
+  async maintain<T>(operation: (plan: CheckpointPlan | null) => Promise<{ value: T; restored?: CheckpointPlan }>, recovering = false): Promise<T | { state: "blocked" | "uncertain" | "rebuild_required"; reason: string }> {
+    if (this.busy) return { state: "blocked", reason: "busy" }; this.busy = true; this.activeEpoch = null;
+    try {
+      const active = await this.store.get<Active>("active");
+      if (active) { await this.stop(active); if (!recovering) return { state: "blocked", reason: "restart_uncertain" }; }
+      const meta = await this.store.get<Meta>("index");
+      if (!recovering && (!meta?.epoch || !meta.sources || meta.lost || !this.container.running)) return { state: "rebuild_required", reason: "index_lost" };
+      await this.store.put("maintenance", true); await this.container.deny();
+      const outcome = await operation(meta?.epoch && meta.sources ? { indexEpoch: meta.epoch, indexRevision: meta.revision, sources: JSON.parse(JSON.stringify(meta.sources)) } : null);
+      if (outcome.restored) {
+        if (!this.container.running) throw 0;
+        await this.store.put("index", { namespace: JSON.stringify(this.scope), revision: outcome.restored.indexRevision, epoch: outcome.restored.indexEpoch,
+          sources: outcome.restored.sources, indexState: "checkpoint_confirmed", lost: false } satisfies Meta);
+        await this.store.put("quarantine", false); await this.store.put("maintenance", false); this.quarantined = false;
+      }
+      return outcome.value;
+    } catch { await this.stop().catch(() => {}); return { state: "uncertain", reason: "checkpoint_operation_uncertain" }; }
+    finally { this.busy = false; }
+  }
   async authorize(epoch: string): Promise<{ token: string; period: string } | null> {
     if (!epoch || epoch !== this.activeEpoch) return null;
     const active = await this.store.get<Active>("active");
@@ -91,11 +113,12 @@ export class CogneeEngine implements EnginePort {
         || !await this.guard.check(actor, permits)) return { state: "blocked", reason: "source_denied" };
       const previous = await this.store.get<Active>("active");
       if (previous) { await this.stop(previous); return { state: "blocked", reason: "restart_uncertain" }; }
+      if (await this.store.get<boolean>("maintenance")) return { state: "blocked", reason: "checkpoint_pending" };
       if (this.quarantined || await this.store.get<boolean>("quarantine")) return { state: "blocked", reason: "index_lost" };
       let meta = await this.store.get<Meta>("index"); const namespace = JSON.stringify(this.scope);
       if (meta && (meta.namespace !== namespace || meta.lost || !this.container.running)) return { state: "blocked", reason: "index_lost" };
       if (!meta) {
-        meta = { namespace, revision: "empty", lost: false }; await this.store.put("index", meta);
+        meta = { namespace, revision: "empty", epoch: crypto.randomUUID(), sources: [], indexState: "needs_checkpoint", lost: false }; await this.store.put("index", meta);
         await this.container.deny(); await this.container.start();
         const health = await this.container.request("/health", {});
         const h = health as { namespace?: { installationId: string; generation: string }; ready?: boolean; poisoned?: boolean };
@@ -103,7 +126,7 @@ export class CogneeEngine implements EnginePort {
       }
       const operationId = await bridgeHash([this.scope, path, wire, path === "/search" ? meta.revision : null]);
       const prior = await this.store.get<Receipt>(`receipt:${operationId}`);
-      if (prior) return await this.guard.check(actor, permits) ? prior : { state: "blocked", reason: "source_denied", operationId };
+      if (prior) return await this.guard.check(actor, permits) ? { ...prior, indexState: meta.indexState ?? "needs_checkpoint" } : { state: "blocked", reason: "source_denied", operationId };
       await this.store.put(`access:${operationId}`, { actor, permits });
       active = { epoch: crypto.randomUUID(), operationId, token: await this.guard.issue(permits[0].source, this.clock() + 300000),
         period: new Date(this.clock()).toISOString().slice(0, 10), actor, permits, until: this.clock() + 250000 };
@@ -119,9 +142,11 @@ export class CogneeEngine implements EnginePort {
       } else {
         const parsed = refSchema.extend({ state: z.literal("completed"), chunks: counter, relations: counter, nodes: counter, edges: counter }).strict().parse(result);
         const source = wire.source as Ref; if (parsed.id !== source.id || parsed.version !== source.version || parsed.hash !== source.hash || !parsed.chunks) throw 0;
-        meta = { ...meta, revision: await bridgeHash([meta.revision, operationId]) }; await this.store.put("index", meta);
+        const f = permits[0].source.source;
+        meta = { ...meta, revision: await bridgeHash([meta.revision, operationId]), indexState: "needs_checkpoint",
+          sources: [...(meta.sources ?? []).filter(ref => ref.id !== f.id), { id: f.id, revision: f.revision, version: f.version, hash: f.hash }] }; await this.store.put("index", meta);
       }
-      const receipt: Receipt = { state: "complete", operationId, result, indexRevision: meta.revision, indexState: "needs_checkpoint" };
+      const receipt: Receipt = { state: "complete", operationId, result, indexRevision: meta.revision, indexState: meta.indexState ?? "needs_checkpoint" };
       await this.store.put(`receipt:${operationId}`, receipt);
       if (!await this.authorize(active.epoch)) { await this.stop(active); return { state: "blocked", reason: "source_denied", operationId }; }
       this.activeEpoch = null; await this.container.deny(); await this.guard.revoke(active.token); await this.store.put("active", null);

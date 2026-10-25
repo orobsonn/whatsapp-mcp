@@ -50,6 +50,10 @@ class Service:
         self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
         self.namespace = {'installationId': identifier(installation), 'generation': identifier(generation)}
         self.backend = backend; self.lock = asyncio.Lock(); self.ready = False
+        build_path = Path(__file__).with_name('build-fingerprint.json')
+        self.build_fingerprint = json.loads(build_path.read_text())['buildFingerprint'] if build_path.exists() else digest(b'unbuilt-test')
+        self.configuration_hash = os.environ.get('ASSISTANT_CONFIGURATION_HASH', '0' * 64)
+        self.closed = False
         self.path = self.root / 'manifest.json'
         self.record = json.loads(self.path.read_text()) if self.path.exists() else {'namespace': self.namespace, 'sources': {}, 'operations': {}, 'ids': {}}
         if self.record['namespace'] != self.namespace: raise ValueError('namespace_conflict')
@@ -59,13 +63,45 @@ class Service:
             if item['state'] in ('started', 'uncertain'):
                 item['state'] = 'uncertain'; self.record['poisoned'] = True
     def persist(self):
-        temporary = self.path.with_suffix('.tmp'); temporary.write_bytes(encoded(self.record)); temporary.replace(self.path)
+        temporary = self.path.with_suffix('.tmp')
+        with temporary.open('wb') as stream:
+            stream.write(encoded(self.record)); stream.flush(); os.fsync(stream.fileno())
+        temporary.replace(self.path)
+        directory = os.open(self.root, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
     async def initialize(self):
+        build_path = Path(__file__).with_name('build-fingerprint.json')
+        if build_path.exists():
+            build = json.loads(build_path.read_text())
+            if digest(encoded(build['files'])) != self.build_fingerprint: raise RuntimeError('build_fingerprint')
+            for name, expected in build['files'].items():
+                if digest(Path(__file__).with_name(name).read_bytes()) != expected: raise RuntimeError('build_fingerprint')
         await self.backend.initialize(); self.ready = not self.record.get('poisoned', False); self.persist()
     def health(self):
         return {'ready': self.ready, 'poisoned': self.record.get('poisoned', False), 'busy': self.lock.locked(), 'cognee': VERSION, 'namespace': self.namespace, 'mode': 'shadow'}
     async def call(self, path, payload):
         if len(encoded(payload)) > MAX_BODY: raise ValueError('request_size')
+        if path == '/quiesce':
+            fields(payload, ('manifest',))
+            if self.lock.locked(): raise ValueError('busy')
+            async with self.lock:
+                if not self.ready: raise ValueError('not_ready')
+                manifest = json.loads(encoded(payload['manifest']))
+                proof = await self.checkpoint_proof(manifest)
+                if proof['pendingOperations'] or proof['poisoned']: raise ValueError('operation_uncertain')
+                self.ready = False
+                try:
+                    await self.backend.close(); self.closed = True
+                    self.record['checkpoint'] = manifest; self.persist(); os.sync()
+                    return {**proof, 'closed': True}
+                except BaseException:
+                    self.record['poisoned'] = True; self.persist(); raise RuntimeError('operation_failed') from None
+        if path == '/inspect-index':
+            fields(payload, ())
+            if self.lock.locked() or not self.ready: raise ValueError('not_ready')
+            if 'checkpoint' not in self.record: raise ValueError('not_ready')
+            return await self.checkpoint_proof(self.record['checkpoint'])
         if path == '/operation':
             fields(payload, ('operationId',)); identifier(payload['operationId'])
             key = self.record['ids'].get(payload['operationId'])
@@ -110,6 +146,7 @@ class Service:
             self.record['ids'][operation_id] = key
             operation = self.record['operations'][key] = {'state': 'started', 'payloadHash': key}
             if path == '/ingest': self.record['sources'][source_key(source)] = {'state': 'started', 'source': source}
+            if path == '/ingest': self.record.pop('checkpoint', None)
             self.persist()
             try:
                 if path == '/ingest':
@@ -139,6 +176,35 @@ class Service:
     def indexed(self, item):
         known = self.record['sources'].get(source_key(item))
         return known is not None and known['state'] == 'completed' and known['source']['hash'] == item['hash']
+    async def checkpoint_proof(self, manifest):
+        fields(manifest, ('identity', 'indexEpoch', 'indexRevision', 'sources'))
+        identity = manifest['identity']
+        fields(identity, ('installationId', 'generation', 'imageRef', 'buildFingerprint', 'configurationHash', 'engineVersion'))
+        expected = {**self.namespace, 'buildFingerprint': self.build_fingerprint,
+                    'configurationHash': self.configuration_hash, 'engineVersion': VERSION}
+        if any(identity[key] != value for key, value in expected.items()): raise ValueError('invalid_input')
+        identifier(manifest['indexEpoch'])
+        if manifest['indexRevision'] != 'empty' and not HASH.fullmatch(manifest['indexRevision']): raise ValueError('invalid_input')
+        refs = manifest['sources']
+        if not isinstance(refs, list) or len(refs) > 128 or len({item.get('id') for item in refs}) != len(refs): raise ValueError('invalid_input')
+        chunks = (await self.backend.snapshot())[0]
+        if len(chunks) > 4096: raise RuntimeError('checkpoint_capacity')
+        await self.backend.verify_vectors(chunks)
+        current = self.record['sources']; sources = []
+        if len(current) != len(refs): raise ValueError('invalid_input')
+        for ref in refs:
+            fields(ref, ('id', 'version', 'hash', 'revision')); validate_ref({key: ref[key] for key in ('id', 'version', 'hash')})
+            if type(ref['revision']) is not int or not 1 <= ref['revision'] <= 9007199254740991: raise ValueError('invalid_input')
+            stored = current.get(source_key(ref))
+            if not stored or stored['state'] != 'completed': raise ValueError('operation_uncertain')
+            original = validate_source(stored['source'])
+            if original['hash'] != ref['hash']: raise ValueError('source_hash')
+            count = sum(item['ref'] == {key: ref[key] for key in ('id', 'version', 'hash')} for item in chunks)
+            if not count: raise RuntimeError('source_provenance_missing')
+            sources.append({**{key: ref[key] for key in ('id', 'version', 'hash')}, 'originalHash': digest(original['text'].encode()), 'chunks': count})
+        return {**expected, 'indexEpoch': manifest['indexEpoch'], 'indexRevision': manifest['indexRevision'],
+                'manifestHash': digest(encoded(manifest)), 'sources': sources, 'closed': self.closed,
+                'poisoned': self.record.get('poisoned', False), 'pendingOperations': sum(op['state'] != 'completed' for op in self.record['operations'].values())}
 
 
 def make_app(service):

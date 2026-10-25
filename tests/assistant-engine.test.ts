@@ -114,7 +114,7 @@ it("starts the fixed image without internet or provider keys and waits for readi
   const container = { running: false, images: { cognee: "pinned-image" }, start, interceptOutboundHttp, getTcpPort: vi.fn(() => ({ fetch })), setInactivityTimeout: vi.fn(async () => {}) } as unknown as Container;
   const adapter = new DirectContainerPort(container, () => ({ fetch } as unknown as Fetcher), scope);
   await adapter.deny(); await adapter.start();
-  expect(start).toHaveBeenCalledWith({ image: "pinned-image", instance: "standard-1", enableInternet: false, env: { ASSISTANT_INSTALLATION_ID: scope.installationId, ASSISTANT_GENERATION: scope.generation } });
+  expect(start).toHaveBeenCalledWith({ image: "pinned-image", instance: "standard-1", enableInternet: false, env: { ASSISTANT_INSTALLATION_ID: scope.installationId, ASSISTANT_GENERATION: scope.generation, ASSISTANT_CONFIGURATION_HASH: expect.stringMatching(/^[a-f0-9]{64}$/) } });
   expect(interceptOutboundHttp).toHaveBeenCalledWith("broker.internal", expect.anything()); expect(fetch).toHaveBeenCalledTimes(2);
 });
 it("checks real canonical ACL and source correction before granting the host capability", async () => {
@@ -180,4 +180,26 @@ it("rechecks a cached receipt after the storage read yields", async () => {
   await engine.ingest(ingest); const get = store.get;
   store.get = async <T>(key: string) => { const value = await get<T>(key); if (key.startsWith("receipt:")) vi.mocked(guard.check).mockResolvedValue(false); return value; };
   expect(await engine.ingest(ingest)).toMatchObject({ state: "blocked" });
+});
+it("excludes inference during checkpoint maintenance and records confirmed index state", async () => {
+  await engine.ingest(ingest);
+  const result = await engine.maintain(async plan => {
+    expect(plan?.sources).toEqual([{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }]);
+    expect(await engine.search(search)).toMatchObject({ state: "blocked", reason: "busy" });
+    expect(await engine.authorize(epoch)).toBeNull(); return { value: { state: "checkpoint_confirmed" }, restored: plan! };
+  });
+  expect(result).toMatchObject({ state: "checkpoint_confirmed" });
+  expect(await engine.search(search)).toMatchObject({ state: "complete", indexState: "checkpoint_confirmed" });
+});
+it("recovers a lost index only through explicit validated maintenance", async () => {
+  await engine.ingest(ingest); const meta = data.get("index") as { epoch: string; revision: string };
+  await port.destroy();
+  expect(await engine.maintain(async () => { throw 0; })).toMatchObject({ state: "rebuild_required" });
+  expect(await engine.maintain(async () => {
+    Object.defineProperty(port, "running", { value: true, configurable: true });
+    return { value: { state: "checkpoint_confirmed" }, restored: { indexEpoch: meta.epoch, indexRevision: meta.revision,
+      sources: [{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }] } };
+  }, true)).toMatchObject({ state: "checkpoint_confirmed" });
+  expect(await engine.search(search)).toMatchObject({ state: "complete", indexState: "checkpoint_confirmed" });
+  expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/ingest")).toHaveLength(1);
 });
