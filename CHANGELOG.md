@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-25
+
+### Added
+- Snapshots do Cognee são confirmados apenas após restauração e verificação das fontes; recuperação real na Cloudflare preserva chamadas e orçamento.
+
 ## [0.25.0] - 2026-10-25
 
 ### Added
