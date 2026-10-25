@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-25
+
+### Added
+- Contexto preserva originais e recusa seleções inválidas; linguagem operacional vinculada a recibos, com prova real e replay sem nova chamada.
+
 ## [0.24.0] - 2026-10-25
 
 ### Added
