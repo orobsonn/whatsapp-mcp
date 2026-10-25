@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-25
+
+### Added
+- Ponte autenticada e retomável de metadados da captura, com inbox persistente e recibos por sequência (#34).
+
 ## [0.13.0] - 2026-10-25
 
 ### Added
