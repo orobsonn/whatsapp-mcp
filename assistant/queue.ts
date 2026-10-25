@@ -1,5 +1,6 @@
 import { SourceAccess, type SourceFence, type TrustedActor } from "./access";
-export type JobScope = Readonly<{ installationId: string; generation: string }>;
+import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
+export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
 export type JobKind = "extraction" | "reasoning" | "follow_up" | "review" | "maintenance";
 export type Job = {
   id: string; kind: JobKind; state: "pending" | "processing" | "shadow_completed" | "failed" | "cancelled";
@@ -30,6 +31,8 @@ export class JobQueue {
   private readonly access: SourceAccess;
   constructor(private readonly db: D1Database, scope: JobScope, actor: TrustedActor = { kind: "owner" }) {
     if (!scope.installationId || !scope.generation) throw new Error("unconfigured_job_scope");
+    if ((scope.sourceEpoch !== undefined || scope.sourceGeneration !== undefined) &&
+      [scope.sourceEpoch, scope.sourceGeneration].some(value => typeof value !== "string" || !value || value.length > 256)) throw new Error("unconfigured_job_origin");
     this.scope = Object.freeze({ ...scope });
     this.actor = Object.freeze({ ...actor });
     this.access = new SourceAccess(db, this.scope);
@@ -51,8 +54,11 @@ export class JobQueue {
     }
     const source = await this.access.read(this.actor, input.sourceId, input.sourceRevision, now);
     if (!source) throw new Error("source_access_denied");
+    const chatId = this.actor.kind === "interlocutor" ? this.actor.conversationId : source.fence.source.conversationId;
+    const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
+    if (chatId && !conversation) throw new Error("conversation_not_ready");
     const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,
-      input: input.request, actor: this.actor, fence: source.fence });
+      input: input.request, actor: this.actor, fence: source.fence, conversation });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     await this.db.batch([
@@ -107,10 +113,23 @@ export class JobQueue {
     const ledger = await this.ledger(lease.id);
     if (!ledger || await digest(ledger.request_json) !== ledger.request_hash) return null;
     try {
-      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number };
+      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null };
       if (request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision
         || request.fence.source.id !== lease.source_id || request.fence.source.revision !== lease.source_revision) return null;
-      return { ledger, guard: this.access.guard(request.actor, request.fence, now) };
+      const chatId = request.actor.kind === "interlocutor" ? request.actor.conversationId : request.fence.source.conversationId;
+      const guard = this.access.guard(request.actor, request.fence, now);
+      if (chatId) {
+        const conversation = request.conversation;
+        if (!conversation || conversation.installationId !== this.scope.installationId || conversation.generation !== this.scope.generation || conversation.chatId !== chatId) return null;
+        if (conversation.sourceEpoch !== (this.scope.sourceEpoch ?? null) || conversation.sourceGeneration !== (this.scope.sourceGeneration ?? null)) return null;
+        const current = conversationGuard(conversation);
+        guard.sql = `(${guard.sql}) AND (${current.sql})`; guard.values.push(...current.values);
+        if (request.fence.source.origin === "whatsapp") {
+          guard.sql += ` AND EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND canonical_id=? AND source_epoch=? AND source_generation=?)`;
+          guard.values.push(this.scope.installationId, this.scope.generation, request.sourceId, conversation.sourceEpoch, conversation.sourceGeneration);
+        }
+      }
+      return { ledger, guard };
     } catch { return null; } // Legacy/malformed requests cannot acquire new authority.
   }
   async admit(lease: JobLease, now: number) {
