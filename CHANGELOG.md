@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-25
+
+### Added
+- Pessoas e identidades comprovadas, projetos, políticas por conversa e mandatos versionados no banco da assistente (#30).
+
 ## [0.9.0] - 2026-10-25
 
 ### Added
