@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-25
+
+### Added
+- Materialização de fontes capturadas com versões, retirada e verificação de origem antes do uso (#70).
+
 ## [0.19.0] - 2026-10-25
 
 ### Added
