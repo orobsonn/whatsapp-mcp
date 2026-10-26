@@ -9,11 +9,10 @@ export async function planCanonicalRestore(rawManifest: unknown, input: Snapshot
   if (records.length !== manifest.rowCount) throw new Error("restore_bundle_incomplete");
   const tree = await buildSnapshotMembership(records); if (tree.root !== manifest.rowRoot) throw new Error("restore_bundle_membership");
   const indexed = records.map((record, index) => ({ record, proof: tree.proof(index) }));
-  const headers = new Map<string, typeof indexed[number]>(), versions = new Map<string, typeof indexed[number]>(), missions = new Map<string, string>();
+  const headers = new Map<string, typeof indexed[number]>(), versions = new Map<string, typeof indexed[number]>();
   for (const row of indexed) {
     if (row.record.table === "assistant_sources") headers.set(String(row.record.value.id), row);
     if (row.record.table === "assistant_source_versions") versions.set(JSON.stringify([row.record.value.source_id, row.record.value.version]), row);
-    if (row.record.table === "assistant_missions") missions.set(String(row.record.value.id), String(row.record.value.source_id));
   }
   const pair = (sourceId: string): RestoreSourcePair => {
     const header = headers.get(sourceId); if (!header) throw new Error("restore_source_header_missing");
@@ -27,7 +26,7 @@ export async function planCanonicalRestore(rawManifest: unknown, input: Snapshot
     if (typeof value.canonical_id === "string") return value.canonical_id;
     if (typeof value.source_id === "string") return value.source_id;
     if (typeof value.proof_source_id === "string") return value.proof_source_id;
-    if (record.table === "assistant_mission_versions") return missions.get(String(value.id));
+    if (record.table === "assistant_mission_versions") { const body = JSON.parse(String(value.body_json)); if (typeof body?.sourceId !== "string") throw new Error("restore_work_provenance"); return body.sourceId as string; }
     if (record.table === "assistant_fup_provenance") { const body = JSON.parse(String(value.body_json)); if (typeof body?.source?.id !== "string") throw new Error("restore_work_provenance"); return body.source.id as string; }
     return undefined;
   };

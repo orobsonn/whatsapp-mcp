@@ -7,7 +7,8 @@ import { CanonicalRestore, type RestoreAuthorityPort } from "./retention-restore
 import { OriginGuard } from "./origin-guard";
 /** Async startup proof, not a configuration diagnostic or an activation API.
  * A restored generation needs the exact externally configured seal. Its
- * execution hold is never released by any #55 command. */
+ * execution hold is released only by the separate explicit owner activation,
+ * never by import, finish, release, background work or configuration alone. */
 export async function assertRestoredGeneration(env: AssistantEnv, execution = true) {
   if (!env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION) throw new Error("restore_runtime_configuration");
   if (env.RETENTION_GENERATION_SEAL_REQUIRED !== undefined && !["true", "false"].includes(env.RETENTION_GENERATION_SEAL_REQUIRED)) throw new Error("restore_runtime_configuration");

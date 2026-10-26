@@ -7,13 +7,13 @@ Engenharia local em 26/10/2026. Sem dado real, paid API, provisionamento/deploy 
 | Gate | Evidência |
 | --- | --- |
 | TypeScript | `npm run check` passou após o patch final |
-| Producer + importer/reproof/activation | **23/23** em 33,47 s: `npm test -- tests/assistant-retention-snapshot.test.ts tests/assistant-retention-restore.test.ts` |
+| Producer + importer/reproof/activation, após revisão independente | **29/29** em 46,83 s: `npm test -- tests/assistant-retention-snapshot.test.ts tests/assistant-retention-restore.test.ts` |
 | Financeiro vivo ausente, contraprova adicional | **1/1**, 12 ignorados, em 10,31 s: `npm test -- tests/assistant-retention-restore.test.ts -t 'missing live financial history'` |
 | Codec + operador local | **11/11** em 0,88 s, com nova checagem do token fora de vars imprimíveis **5/5** em 0,66 s |
 | CLI | `node scripts/assistant-retention.mjs --help` e `node --check scripts/assistant-retention.mjs` passaram; nenhuma conexão remota foi iniciada |
 | Whitespace | `git diff --check` passou |
 
-O total da suíte C é agora 24 casos D1, comprovados pelas duas execuções acima; não se afirma uma execução única de 24/24. Suite geral, nativa, build e CI da composição final são gates do coordenador. Authority/reader externos são controlados nos testes; D1, runtime Workers e transações são locais reais.
+O histórico anterior foi 23/23 + uma contraprova financeira isolada; depois da revisão independente, os 29 casos passaram em uma única execução. Suite geral, nativa, build e CI da composição final são gates do coordenador. Authority/reader externos são controlados nos testes; D1, runtime Workers e transações são locais reais.
 
 ## Antes/depois e contraprovas
 
@@ -24,6 +24,10 @@ Revisão adversarial do root apontou a recuperação pré-ticket: se DO/mirror f
 O próprio patch fechou o interleaving pause→row batch: uma admissão efêmera no mesmo batch condiciona grants, escrita canônica, quarentenas e recibo. O teste pausa depois das consultas de validação e antes da transação; não nasce corpo, recibo ou grant residual. A operação original retoma e admite o membro. Nenhum receipt “imported” é inferido de batch sem corpo.
 
 O teste de concorrência de privacy devolve o lookup externo antigo e faz **retirada legítima local-barrier-first** antes do fim do await. O final não publica a cópia antiga: counter/guard reiniciam o passe, mirror adota a retirada e closure B purga o target. O teste cobre a janela DO/D1 com o fluxo host legítimo. `authority.record` cru não é um comando público/CLI/modelo. Substituição física do D1 e host externo malicioso não são promessas desse teste.
+
+A revisão independente identificou cinco bugs adicionais, todos reproduzidos contra `068ac5c` **antes** dos fixes: (1) prova A com watermark de fonte 1 e conversa 2 nunca vinculava identidade, RED em 9,12 s; (2) política que mudava de revisão 2 para exclusão 3 antes do batch ainda admitia vínculo, e (3) resposta antiga de A durante chegada de B podia regredir a conversa de 2 para 1, dois RED em 13,88 s; (4) missão que mudou fonte A→B associava o histórico A ao par B e falhava no importer, RED em 8,15 s; (5) pause A depois de perder o gate para restore B sobrescrevia hold/cancelava trabalho B, RED em 8,45 s.
+
+O followup fixa separadamente watermark/referência/hash da fonte e watermark da conversa, inclui policy revision/kind/mode na admissão SQL final, torna o primer monotônico e escolhe a fonte no corpo de **cada** versão histórica. Pause agora adquire admissão efêmera no mesmo batch com pin de operação/token/target/generation/hash/state; sem ela nenhum efeito ocorre. Release transfere hold apenas sob seu guard atômico atual. Os cinco cenários passaram juntos **5/5** em 17,27 s; a regressão C completa passou **29/29** em 46,83 s. Isso não depende de forçar uma edição da fonte A nem converter LID/nomes.
 
 ## Resultados observados
 

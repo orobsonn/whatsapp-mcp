@@ -313,13 +313,17 @@ export class CanonicalRestore {
   private async pause(operationId: string) {
     const session = await this.session(operationId), gate = await this.gate();
     if (!gate || gate.operation_id !== operationId || gate.target_generation !== this.target.generation || session && session.token !== gate.token) throw new Error("restore_quiescence_lost");
-    const hold = this.sql("INSERT INTO assistant_retention_runtime_hold VALUES(?,?,?,1,?) ON CONFLICT(installation_id) DO UPDATE SET operation_id=excluded.operation_id,target_generation=excluded.target_generation,active=1", this.target.installationId, operationId, this.target.generation, this.clock());
-    await this.db.batch([hold,
-      this.sql("UPDATE assistant_job_ledger SET state='uncertain' WHERE installation_id=? AND state='attempting'", this.target.installationId),
-      this.sql("UPDATE assistant_jobs SET state='cancelled',lease_until=NULL,last_error='restore_runtime_paused' WHERE installation_id=? AND state IN ('pending','processing')", this.target.installationId),
-      this.sql("UPDATE assistant_retention_restore_sessions SET state='paused' WHERE installation_id=? AND generation=? AND operation_id=? AND state NOT IN ('inactive_complete','budget_blocked')", ...this.keys(), operationId),
-      this.sql("UPDATE assistant_retention_installation_gate SET state='idle' WHERE installation_id=? AND operation_id=? AND token=? AND target_generation=?", this.target.installationId, operationId, gate.token, this.target.generation),
+    const attempt = crypto.randomUUID(), admitted = `EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND gate_token=? AND table_name='restore_pause_admission' AND action='update')`, pin = [...this.keys(), attempt, gate.token];
+    const results = await this.db.batch([
+      this.sql(`INSERT INTO assistant_retention_restore_grants SELECT ?,?,?,?,'restore_pause_admission','update' WHERE EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND operation_id=? AND token=? AND target_generation=? AND generation=? AND request_hash=? AND state=?)`, ...this.keys(), attempt, gate.token, this.target.installationId, operationId, gate.token, this.target.generation, gate.generation, gate.request_hash, gate.state),
+      this.sql(`INSERT INTO assistant_retention_runtime_hold SELECT ?,?,?,1,? WHERE ${admitted} ON CONFLICT(installation_id) DO UPDATE SET operation_id=excluded.operation_id,target_generation=excluded.target_generation,active=1`, this.target.installationId, operationId, this.target.generation, this.clock(), ...pin),
+      this.sql(`UPDATE assistant_job_ledger SET state='uncertain' WHERE installation_id=? AND state='attempting' AND ${admitted}`, this.target.installationId, ...pin),
+      this.sql(`UPDATE assistant_jobs SET state='cancelled',lease_until=NULL,last_error='restore_runtime_paused' WHERE installation_id=? AND state IN ('pending','processing') AND ${admitted}`, this.target.installationId, ...pin),
+      this.sql(`UPDATE assistant_retention_restore_sessions SET state='paused' WHERE installation_id=? AND generation=? AND operation_id=? AND state NOT IN ('inactive_complete','budget_blocked') AND ${admitted}`, ...this.keys(), operationId, ...pin),
+      this.sql(`UPDATE assistant_retention_installation_gate SET state='idle' WHERE installation_id=? AND operation_id=? AND token=? AND target_generation=? AND ${admitted}`, this.target.installationId, operationId, gate.token, this.target.generation, ...pin),
+      this.sql("DELETE FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND gate_token=?", ...pin),
     ]);
+    if (results[0].meta.changes !== 1) throw new Error("restore_quiescence_lost");
     return { state: "paused", operationId, canonicalWriters: "released", runtime: "held", generation: "inactive", oauth: "credential_generation_unchanged" };
   }
   private async resume(operationId: string) {
@@ -352,7 +356,7 @@ export class CanonicalRestore {
       AND NOT EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND (source_epoch<>? OR source_generation<>?))`;
     const values = [this.target.installationId, operationId, session.token, progress.mutation!, progress.financial!, this.target.installationId, ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration];
     await this.db.batch([
-      this.sql(`INSERT INTO assistant_retention_runtime_hold SELECT ?,?,?,1,? WHERE ${guard} ON CONFLICT(installation_id) DO NOTHING`, this.target.installationId, operationId, this.target.generation, this.clock(), ...values),
+      this.sql(`INSERT INTO assistant_retention_runtime_hold SELECT ?,?,?,1,? WHERE ${guard} ON CONFLICT(installation_id) DO UPDATE SET operation_id=excluded.operation_id,target_generation=excluded.target_generation,active=1`, this.target.installationId, operationId, this.target.generation, this.clock(), ...values),
       this.sql(`UPDATE assistant_job_ledger SET state='uncertain' WHERE installation_id=? AND state='attempting' AND ${guard}`, this.target.installationId, ...values),
       this.sql(`UPDATE assistant_jobs SET state='cancelled',lease_until=NULL,last_error='restore_runtime_paused' WHERE installation_id=? AND state IN ('pending','processing') AND ${guard}`, this.target.installationId, ...values),
       this.sql(`UPDATE assistant_retention_restore_sessions SET released=1 WHERE installation_id=? AND generation=? AND operation_id=? AND ${guard}`, ...this.keys(), operationId, ...values),
@@ -373,12 +377,12 @@ export class CanonicalRestore {
     if (!metadata) throw new Error("restore_origin_reproof_required");
     const currentScope = { ...this.target, ...this.capture }, observed = await this.origin.observe(currentScope, { sourceKind: metadata.source_kind, sourceId: metadata.source_id, chatId: metadata.chat_id });
     if (observed.state !== "available" || observed.hash !== metadata.observation_hash || observed.kind !== metadata.kind || observed.watermark! < metadata.watermark) throw new Error("restore_origin_reproof_required");
-    await this.sql(`UPDATE assistant_origin_conversations SET access_state='available',watermark=? WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND chat_id=?
+    await this.sql(`UPDATE assistant_origin_conversations SET access_state='available',watermark=? WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND chat_id=? AND watermark<=? AND (kind IS NULL OR kind=?) AND access_state<>'withdrawn'
       AND EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND canonical_id=? AND source_epoch=? AND source_generation=? AND source_kind=? AND source_id=? AND chat_id=? AND observation_hash=? AND tombstoned=0)
       AND EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND current_version=? AND status='active')
       AND EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=? AND revision=? AND kind=? AND effective_mode=?)
       AND EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='idle')
-      AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied')`, observed.watermark, ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration, metadata.chat_id, ...this.keys(), sourceId, this.capture.sourceEpoch, this.capture.sourceGeneration, metadata.source_kind, metadata.source_id, metadata.chat_id, metadata.observation_hash, ...this.keys(), sourceId, revision, metadata.current_version, ...this.keys(), metadata.chat_id, metadata.policy_revision, metadata.kind, metadata.effective_mode, this.target.installationId, this.target.installationId).run();
+      AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied')`, observed.watermark, ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration, metadata.chat_id, observed.watermark, observed.kind, ...this.keys(), sourceId, this.capture.sourceEpoch, this.capture.sourceGeneration, metadata.source_kind, metadata.source_id, metadata.chat_id, metadata.observation_hash, ...this.keys(), sourceId, revision, metadata.current_version, ...this.keys(), metadata.chat_id, metadata.policy_revision, metadata.kind, metadata.effective_mode, this.target.installationId, this.target.installationId).run();
     const fence = await this.origin.fence(sourceId);
     if (!fence || fence.generation !== this.target.generation || fence.sourceEpoch !== this.capture.sourceEpoch || fence.sourceGeneration !== this.capture.sourceGeneration || fence.revision !== revision || !await this.origin.check(fence)) throw new Error("restore_origin_reproof_required");
     await this.retirement.allow("whatsapp", (await this.sql("SELECT origin_key FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=?", ...this.keys(), sourceId, revision).first<string>("origin_key"))!, sourceId);
@@ -430,7 +434,9 @@ export class CanonicalRestore {
     // Exact owner assertion, never an identity inferred from names or fromMe.
     if (!proof || proof.fence.source.origin !== "whatsapp" || !this.origin) throw new Error("restore_identity_proof_required");
     const origin = await this.origin.fence(proof.id);
-    if (!origin || !await this.origin.check(origin)) throw new Error("restore_identity_proof_required");
+    if (!origin) throw new Error("restore_identity_proof_required");
+    const sourceOrigin = await this.sql(`SELECT watermark FROM assistant_source_origins WHERE installation_id=? AND generation=? AND canonical_id=? AND source_epoch=? AND source_generation=? AND source_kind=? AND source_id=? AND chat_id=? AND observation_hash=? AND tombstoned=0`, ...this.keys(), proof.id, origin.sourceEpoch, origin.sourceGeneration, origin.sourceKind, origin.sourceId, origin.chatId, origin.hash).first<{watermark:number}>();
+    if (!sourceOrigin || !await this.origin.check(origin)) throw new Error("restore_identity_proof_required");
     const expected = "absent" in input.expected ? "NOT EXISTS(SELECT 1 FROM assistant_provider_identities WHERE installation_id=? AND generation=? AND provider=? AND address=?)"
       : "EXISTS(SELECT 1 FROM assistant_provider_identities WHERE installation_id=? AND generation=? AND provider=? AND address=? AND person_id=? AND proof_source_id=? AND proof_source_revision=? AND verified_at=?)";
     const values = [...this.keys(), input.provider, input.address, ...("absent" in input.expected ? [] : [input.expected.personId, input.expected.proofSourceId, input.expected.proofRevision, input.expected.boundAt])];
@@ -440,10 +446,11 @@ export class CanonicalRestore {
       AND EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='idle') AND EXISTS(SELECT 1 FROM assistant_retention_runtime_hold WHERE installation_id=? AND active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied')
       AND EXISTS(SELECT 1 FROM assistant_source_versions WHERE installation_id=? AND generation=? AND source_id=? AND version=? AND author_id=?)
-      AND EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND canonical_id=? AND source_epoch=? AND source_generation=? AND observation_hash=? AND watermark=? AND tombstoned=0)
-      AND EXISTS(SELECT 1 FROM assistant_origin_conversations WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND chat_id=? AND watermark=? AND kind=? AND access_state='available')`;
+      AND EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND canonical_id=? AND source_epoch=? AND source_generation=? AND source_kind=? AND source_id=? AND chat_id=? AND observation_hash=? AND watermark=? AND tombstoned=0)
+      AND EXISTS(SELECT 1 FROM assistant_origin_conversations WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND chat_id=? AND watermark=? AND kind=? AND access_state='available')
+      AND EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=? AND revision=? AND kind=? AND effective_mode=?)`;
     await this.db.batch([
-      ledger.admit(result, now, condition, [...guard.values, ...values, ...this.keys(), input.personId, this.target.installationId, this.target.installationId, this.target.installationId, ...this.keys(), proof.id, origin.version, input.address, ...this.keys(), proof.id, origin.sourceEpoch, origin.sourceGeneration, origin.hash, origin.watermark, ...this.keys(), origin.sourceEpoch, origin.sourceGeneration, origin.chatId, origin.watermark, origin.conversationKind]),
+      ledger.admit(result, now, condition, [...guard.values, ...values, ...this.keys(), input.personId, this.target.installationId, this.target.installationId, this.target.installationId, ...this.keys(), proof.id, origin.version, input.address, ...this.keys(), proof.id, origin.sourceEpoch, origin.sourceGeneration, origin.sourceKind, origin.sourceId, origin.chatId, origin.hash, sourceOrigin.watermark, ...this.keys(), origin.sourceEpoch, origin.sourceGeneration, origin.chatId, origin.watermark, origin.conversationKind, ...this.keys(), origin.chatId, origin.policyRevision, origin.conversationKind, origin.policyMode]),
       ledger.statement(`INSERT INTO assistant_provider_identities SELECT ?,?,?,?,?,?,?,'owner_confirmed',? WHERE $gate ON CONFLICT(installation_id,generation,provider,address) DO UPDATE SET person_id=excluded.person_id,proof_source_id=excluded.proof_source_id,proof_source_revision=excluded.proof_source_revision,proof_kind=excluded.proof_kind,verified_at=excluded.verified_at`, ...this.keys(), input.provider, input.address, input.personId, proof.id, proof.fence.source.revision, now),
       ledger.statement("UPDATE assistant_retention_quarantines SET active=0,reason='owner_assertion_after_restore' WHERE installation_id=? AND generation=? AND kind='provider_identity' AND provider=? AND address=? AND $gate", ...this.keys(), input.provider, input.address),
     ]);
