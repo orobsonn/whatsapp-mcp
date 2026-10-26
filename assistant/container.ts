@@ -7,7 +7,7 @@ import { CogneeModelBroker } from "./model-broker";
 import { createOpenAIAdapter, DEFAULT_BROKER_CONFIG } from "./model-transport";
 import { OriginGuard, checkOriginsWithin } from "./origin-guard";
 import { bridgeHash } from "./ingress";
-import { CheckpointController, type CheckpointManifest, type CheckpointResult, type CheckpointState, type CheckpointStore, type IndexProof, type SnapshotHandle } from "./checkpoints";
+import { CheckpointController, type CheckpointFence, type CheckpointManifest, type CheckpointPlan, type CheckpointResult, type CheckpointState, type CheckpointStore, type IndexProof, type SnapshotHandle } from "./checkpoints";
 import build from "./cognee/build-fingerprint.json";
 import { RebuildController, type RebuildState, type RebuildStore } from "./rebuild";
 import type { SourceStamp } from "./checkpoints";
@@ -24,6 +24,12 @@ export async function boundedJson(request: Request | Response, max = 65536): Pro
 type Grant = { token: string; period: string; mode?: "replay_only"; coverage?: CoverageProof };
 type Authority = { authorize(epoch: string): Promise<Grant | null> };
 type Broker = { invoke(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }>; replay?(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }> };
+type LifecycleCheck = () => Promise<void>;
+async function checked<T>(check: LifecycleCheck | undefined, effect: () => Promise<T>): Promise<T> {
+  if (check) await check();
+  try { const value = await effect(); if (check) await check(); return value; }
+  catch (error) { if (check) await check(); throw error; }
+}
 /** Fixed outbound route only. It never forwards caller headers or provider errors. */
 export async function handleBrokerRequest(request: Request, epoch: string, host: Authority, makeBroker: (period: string, coverage?: CoverageProof) => Broker): Promise<Response> {
   try {
@@ -43,37 +49,46 @@ export class DirectContainerPort implements ContainerPort {
   async start() {
     return this.boot();
   }
-  private async boot(snapshot?: SnapshotHandle) {
-    if (!this.container.running) this.container.start({ ...(snapshot ? { containerSnapshot: { id: snapshot.id } } : { image: this.container.images.cognee }), instance: "standard-1", enableInternet: false,
-      env: { ASSISTANT_INSTALLATION_ID: this.scope.installationId, ASSISTANT_GENERATION: this.scope.generation, ASSISTANT_CONFIGURATION_HASH: await bridgeHash(DEFAULT_BROKER_CONFIG) } });
-    await this.container.setInactivityTimeout(60000);
+  private async boot(snapshot?: SnapshotHandle, check?: LifecycleCheck) {
+    if (!this.container.running) {
+      const hash = await checked(check, () => bridgeHash(DEFAULT_BROKER_CONFIG));
+      if (check) await check();
+      this.container.start({ ...(snapshot ? { containerSnapshot: { id: snapshot.id } } : { image: this.container.images.cognee }), instance: "standard-1", enableInternet: false,
+        env: { ASSISTANT_INSTALLATION_ID: this.scope.installationId, ASSISTANT_GENERATION: this.scope.generation, ASSISTANT_CONFIGURATION_HASH: hash } });
+    }
+    await checked(check, () => this.container.setInactivityTimeout(60000));
     // running means process allocated, not ready. Initialization receives no model permit.
     const deadline = Date.now() + 45000;
     while (Date.now() < deadline) {
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 1500);
-      try { const response = await this.container.getTcpPort(8080).fetch("http://container/health", { signal: controller.signal }); await response.body?.cancel(); if (response.ok) return; }
-      catch { /* Port may not yet be listening. */ } finally { clearTimeout(timer); }
-      await new Promise(resolve => setTimeout(resolve, 250));
+      try { const response = await checked(check, () => this.container.getTcpPort(8080).fetch("http://container/health", { signal: controller.signal })); await checked(check, async () => { await response.body?.cancel(); }); if (response.ok) return; }
+      catch { if (check) await check(); /* Port may not yet be listening. */ } finally { clearTimeout(timer); }
+      await checked(check, () => new Promise(resolve => setTimeout(resolve, 250)));
     }
     throw new Error("engine_start_timeout");
   }
   intercept(epoch: string) { return this.container.interceptOutboundHttp("broker.internal", this.outbound(epoch)); }
-  deny() { return this.intercept(""); }
-  async destroy() { if (this.container.running) await this.container.destroy(); }
-  async snapshot(name: string): Promise<SnapshotHandle> {
-    const handle = await this.container.snapshotContainer({ name }); return { id: handle.id, size: handle.size };
+  deny(check?: LifecycleCheck) { return checked(check, () => this.intercept("")); }
+  async destroy(check?: LifecycleCheck) {
+    if (check) await check();
+    if (this.container.running) await checked(check, () => this.container.destroy());
+    if (this.container.running) throw new Error("checkpoint_destroy_uncertain");
   }
-  async restore(snapshot: SnapshotHandle) {
+  async snapshot(name: string, check?: LifecycleCheck): Promise<SnapshotHandle> {
+    const handle = await checked(check, () => this.container.snapshotContainer({ name })); return { id: handle.id, size: handle.size };
+  }
+  async restore(snapshot: SnapshotHandle, check?: LifecycleCheck) {
+    if (check) await check();
     if (this.container.running) throw new Error("checkpoint_requires_stopped_instance");
-    await this.boot(snapshot); await this.deny();
+    await checked(check, () => this.boot(snapshot, check)); await this.deny(check);
   }
-  async quiesce(manifest: CheckpointManifest): Promise<IndexProof> { return this.proof("/quiesce", { manifest }); }
-  async inspect(): Promise<IndexProof> { return this.proof("/inspect-index", {}); }
+  async quiesce(manifest: CheckpointManifest, check?: LifecycleCheck): Promise<IndexProof> { return this.proof("/quiesce", { manifest }, check); }
+  async inspect(check?: LifecycleCheck): Promise<IndexProof> { return this.proof("/inspect-index", {}, check); }
   async verify(manifest: CheckpointManifest): Promise<IndexProof> { return this.proof("/verify-index", { manifest }); }
-  private async proof(path: string, body: unknown): Promise<IndexProof> {
+  private async proof(path: string, body: unknown, check?: LifecycleCheck): Promise<IndexProof> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 60000);
     try {
-      const result = await this.request(path, body, controller.signal) as { ok?: boolean; result?: IndexProof };
+      const result = await checked(check, () => this.request(path, body, controller.signal)) as { ok?: boolean; result?: IndexProof };
       if (result.ok !== true || !result.result) throw new Error("checkpoint_response"); return result.result;
     } finally { clearTimeout(timer); }
   }
@@ -134,6 +149,40 @@ export class CanonicalEngineGuard implements EngineGuard {
       .bind(scope.installationId, scope.generation, await bridgeHash(token)).run();
   }
 }
+type IndexMetadata = { namespace: string; epoch: string; revision: string; sources: SourceStamp[]; lost?: boolean; indexState?: string };
+function samePlan(plan: CheckpointPlan, index: Pick<IndexMetadata, "epoch" | "revision" | "sources">) {
+  const stamps = (values: SourceStamp[]) => values.map(({ id, revision, version, hash }) => ({ id, revision, version, hash })).sort((a, b) => a.id.localeCompare(b.id));
+  return plan.indexEpoch === index.epoch && plan.indexRevision === index.revision && Array.isArray(index.sources) &&
+    JSON.stringify(stamps(plan.sources)) === JSON.stringify(stamps(index.sources));
+}
+/** The checkpoint and usable index are one owner/epoch-fenced publication.
+ * Rebuild may replace the index without touching checkpoint history. */
+export function makeCheckpointStore(storage: DurableObjectStorage, scope: { installationId: string; generation: string }): CheckpointStore {
+  const namespace = JSON.stringify({ installationId: scope.installationId, generation: scope.generation });
+  return {
+    read: async () => await storage.get<CheckpointState>("checkpoint") ?? null,
+    owns: fence => storage.transaction(async tx => {
+      const state = await tx.get<CheckpointState>("checkpoint"), index = await tx.get<IndexMetadata>("index");
+      return !!state?.index && !!index && state.owner === fence.owner && state.revision === fence.revision &&
+        ["preparing", "restoring"].includes(state.phase) && state.index.indexEpoch === fence.indexEpoch &&
+        index.namespace === namespace && samePlan(state.index, index) && await tx.get<boolean>("maintenance") === true;
+    }),
+    compareAndSet: (revision, next) => storage.transaction(async tx => {
+      const prior = await tx.get<CheckpointState>("checkpoint"), index = await tx.get<IndexMetadata>("index");
+      if ((prior?.revision ?? null) !== revision || !next.index || !index || index.namespace !== namespace || !samePlan(next.index, index)) return false;
+      if (next.phase === "confirmed") {
+        const record = next.confirmed;
+        if (!record || prior?.owner !== next.owner || prior.phase !== "restoring" || prior.candidate?.id !== record.id ||
+          prior.candidate.manifestHash !== record.manifestHash || prior.candidate.snapshot.id !== record.snapshot.id || prior.candidate.snapshot.size !== record.snapshot.size ||
+          !samePlan(next.index, { epoch: record.manifest.indexEpoch, revision: record.manifest.indexRevision, sources: record.manifest.sources })) return false;
+        await tx.put("checkpoint", next);
+        await tx.put("index", { ...index, lost: false, indexState: "checkpoint_confirmed" });
+        await tx.put("maintenance", false); await tx.put("quarantine", false); await tx.put("active", null);
+      } else { await tx.put("checkpoint", next); await tx.put("maintenance", true); }
+      return true;
+    }),
+  };
+}
 export class CogneeContainer extends DurableObject<AssistantEnv> {
   private engine?: CogneeEngine;
   private port?: DirectContainerPort;
@@ -178,17 +227,24 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
     }, async sources => { for (const source of sources) if (!await this.rebuildSource(source)) return false; return true; });
   }
   private checkpointStore(): CheckpointStore {
-    return { read: async () => await this.ctx.storage.get<CheckpointState>("checkpoint") ?? null,
-      compareAndSet: (revision, next) => this.ctx.storage.transaction(async transaction => {
-        const prior = await transaction.get<CheckpointState>("checkpoint"); if ((prior?.revision ?? null) !== revision) return false;
-        await transaction.put("checkpoint", next); return true;
-      }) };
+    return makeCheckpointStore(this.ctx.storage, configured(this.env));
   }
   private async checkpoints() {
-    this.host(); const scope = configured(this.env);
+    const host = this.host(), scope = configured(this.env), store = this.checkpointStore();
+    const effect = <T>(fence: CheckpointFence, action: (check: LifecycleCheck) => Promise<T>) => host.checkpointEffect(async () => {
+      const check = async () => { if (!await store.owns!(fence)) throw new Error("checkpoint_fenced"); };
+      return checked(check, () => action(check));
+    });
     return new CheckpointController({ installationId: scope.installationId, generation: scope.generation,
       imageRef: this.ctx.container!.images.cognee, buildFingerprint: build.buildFingerprint, configurationHash: await bridgeHash(DEFAULT_BROKER_CONFIG), engineVersion: "1.6.5" },
-    this.checkpointStore(), this.port!, async manifest => {
+    store, {
+      deny: fence => effect(fence, check => this.port!.deny(check)),
+      destroy: fence => effect(fence, check => this.port!.destroy(check)),
+      snapshot: (name, fence) => effect(fence, check => this.port!.snapshot(name, check)),
+      restore: (snapshot, fence) => effect(fence, check => this.port!.restore(snapshot, check)),
+      quiesce: (manifest, fence) => effect(fence, check => this.port!.quiesce(manifest, check)),
+      inspect: fence => effect(fence, check => this.port!.inspect(check)),
+    }, async manifest => {
       const access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation });
       const guard = new CanonicalEngineGuard(this.env);
       for (const stamp of manifest.sources) {

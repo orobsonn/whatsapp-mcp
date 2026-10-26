@@ -121,6 +121,23 @@ it("starts the fixed image without internet or provider keys and waits for readi
   expect(start).toHaveBeenCalledWith({ image: "pinned-image", instance: "standard-1", enableInternet: false, env: { ASSISTANT_INSTALLATION_ID: scope.installationId, ASSISTANT_GENERATION: scope.generation, ASSISTANT_CONFIGURATION_HASH: expect.stringMatching(/^[a-f0-9]{64}$/) } });
   expect(interceptOutboundHttp).toHaveBeenCalledWith("broker.internal", expect.anything()); expect(fetch).toHaveBeenCalledTimes(2);
 });
+it("a checkpoint restore fenced while its configuration hash yields never starts a replacement process", async () => {
+  let owned = true, resume!: () => void;
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  const hashing = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (...args) => { await new Promise<void>(resolve => { resume = resolve; }); return digest(...args); });
+  const start = vi.fn(), fetch = vi.fn(async () => new Response("{}"));
+  const container = { running: false, images: { cognee: "fixed" }, start, getTcpPort: () => ({ fetch }), setInactivityTimeout: async () => {}, interceptOutboundHttp: async () => {} } as unknown as Container;
+  const adapter = new DirectContainerPort(container, () => ({ fetch } as unknown as Fetcher), scope);
+  const pending = adapter.restore({ id: "existing-snapshot", size: 4096 }, async () => { if (!owned) throw new Error("checkpoint_fenced"); });
+  await vi.waitFor(() => expect(resume).toBeTypeOf("function")); owned = false; resume();
+  await expect(pending).rejects.toThrow("checkpoint_fenced"); expect(start).not.toHaveBeenCalled();
+  expect(hashing).toHaveBeenCalledTimes(1);
+});
+it("a checkpoint destroy must confirm the process stopped before any restore", async () => {
+  const container = { running: true, destroy: vi.fn(async () => {}) } as unknown as Container;
+  const adapter = new DirectContainerPort(container, () => ({} as Fetcher), scope);
+  await expect(adapter.destroy(async () => {})).rejects.toThrow("checkpoint_destroy_uncertain");
+});
 it("checks real canonical ACL and source correction before granting the host capability", async () => {
   for (const sql of [sources, controls]) {
     await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
@@ -190,10 +207,40 @@ it("excludes inference during checkpoint maintenance and records confirmed index
   const result = await engine.maintain(async plan => {
     expect(plan?.sources).toEqual([{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }]);
     expect(await engine.search(search)).toMatchObject({ state: "blocked", reason: "busy" });
-    expect(await engine.authorize(epoch)).toBeNull(); return { value: { state: "checkpoint_confirmed" }, restored: plan! };
+    expect(await engine.authorize(epoch)).toBeNull();
+    data.set("checkpoint", { phase: "confirmed", confirmed: { manifest: plan } });
+    data.set("index", { ...(data.get("index") as object), indexState: "checkpoint_confirmed" });
+    data.set("maintenance", false); data.set("quarantine", false);
+    return { value: { state: "checkpoint_confirmed" }, restored: plan! };
   });
   expect(result).toMatchObject({ state: "checkpoint_confirmed" });
   expect(await engine.search(search)).toMatchObject({ state: "complete", indexState: "checkpoint_confirmed" });
+});
+it("an old maintenance callback cannot publish its restored index over a replacement epoch", async () => {
+  await engine.ingest(ingest); const original = structuredClone(data.get("index")) as Record<string, unknown>;
+  const replacement = { ...original, epoch: "replacement-epoch", revision: "replacement-revision", lost: true };
+  const result = await engine.maintain(async plan => {
+    data.set("index", replacement); data.set("checkpoint", { revision: 99, owner: "replacement-owner", phase: "restoring" });
+    data.set("maintenance", true); data.set("quarantine", true);
+    return { value: { state: "checkpoint_confirmed" }, restored: plan! };
+  });
+  expect(result).toMatchObject({ state: "uncertain" });
+  expect(data.get("index")).toEqual(replacement); expect(data.get("maintenance")).toBe(true); expect(data.get("quarantine")).toBe(true);
+});
+it("a timed-out checkpoint destroy keeps lifecycle exclusion until the underlying operation settles", async () => {
+  await engine.ingest(ingest); vi.useFakeTimers(); let finish!: () => void;
+  vi.mocked(port.destroy).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const result = engine.maintain(async () => {
+    data.set("maintenance", true);
+    await Promise.race([engine.checkpointEffect(() => port.destroy()), new Promise(resolve => setTimeout(resolve, 10))]);
+    return { value: { state: "uncertain" } };
+  });
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function")); await vi.advanceTimersByTimeAsync(11);
+  expect(await result).toEqual({ state: "uncertain" });
+  expect(await engine.search(search)).toMatchObject({ state: "blocked", reason: "busy" });
+  expect(await engine.rebuildExclusive(async () => "unexpected")).toMatchObject({ state: "blocked", reason: "busy" });
+  expect(await engine.maintain(async () => ({ value: "unexpected" }), true)).toMatchObject({ state: "blocked", reason: "busy" });
+  finish(); await vi.waitFor(async () => expect(await engine.search(search)).toMatchObject({ state: "blocked", reason: "checkpoint_pending" }));
 });
 it("recovers a lost index only through explicit validated maintenance", async () => {
   await engine.ingest(ingest); const meta = data.get("index") as { epoch: string; revision: string };
@@ -201,8 +248,11 @@ it("recovers a lost index only through explicit validated maintenance", async ()
   expect(await engine.maintain(async () => { throw 0; })).toMatchObject({ state: "rebuild_required" });
   expect(await engine.maintain(async () => {
     Object.defineProperty(port, "running", { value: true, configurable: true });
-    return { value: { state: "checkpoint_confirmed" }, restored: { indexEpoch: meta.epoch, indexRevision: meta.revision,
-      sources: [{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }] } };
+    const restored = { indexEpoch: meta.epoch, indexRevision: meta.revision, sources: [{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }] };
+    data.set("checkpoint", { phase: "confirmed", confirmed: { manifest: restored } });
+    data.set("index", { ...(data.get("index") as object), indexState: "checkpoint_confirmed" });
+    data.set("maintenance", false); data.set("quarantine", false);
+    return { value: { state: "checkpoint_confirmed" }, restored };
   }, true)).toMatchObject({ state: "checkpoint_confirmed" });
   expect(await engine.search(search)).toMatchObject({ state: "complete", indexState: "checkpoint_confirmed" });
   expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/ingest")).toHaveLength(1);
