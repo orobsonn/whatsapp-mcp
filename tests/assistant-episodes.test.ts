@@ -13,6 +13,7 @@ import { SourceAccess } from "../assistant/access";
 import { InferenceBudget } from "../assistant/budget";
 import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
 import { RetrievalRuns } from "../assistant/retrieval-runs";
+import { DecisionJournal } from "../assistant/decisions";
 
 const root = resolve(import.meta.dirname, "..");
 const scope = { installationId: "synthetic-episodes", generation: "g1" };
@@ -97,7 +98,7 @@ test("a Flue job cannot bypass its runtime guard through a legacy queue instance
   const queue = new JobQueue(db, scope);
   await queue.fail(lease, "synthetic_previous_job", now);
   const job = await queue.enqueue({ kind: "reasoning", dedupeKey: "runtime", sourceId: "source", sourceRevision: 1,
-    request: "synthetic", runtime: "flue" }, now);
+    request: "synthetic", runtime: "flue", subject: { kind: "owner_request", sourceId: "source", sourceRevision: 1, requestKey: "synthetic-runtime" } }, now);
   const current = (await queue.claim(now, 90000))!;
   expect(current.id).toBe(job.id);
   expect(await queue.admit(current, now)).toBeNull();
@@ -108,7 +109,7 @@ test("runtime admission is composable in D1 and publication retests the runtime 
   const queue = new JobQueue(db, scope, { kind: "owner" }, async () => ({ sql: "?=1", values: [current ? 1 : 0] }));
   await queue.fail(lease, "synthetic_previous_job", now);
   await queue.enqueue({ kind: "reasoning", dedupeKey: "runtime", sourceId: "source", sourceRevision: 1,
-    request: "synthetic", runtime: "flue" }, now);
+    request: "synthetic", runtime: "flue", subject: { kind: "owner_request", sourceId: "source", sourceRevision: 1, requestKey: "synthetic-runtime" } }, now);
   const claimed = (await queue.claim(now, 90000))!;
   const statement = await queue.admissionStatement(claimed, now);
   expect(statement).not.toBeNull();
@@ -151,7 +152,7 @@ async function controller(during: () => Promise<void> = async () => {}) {
   let calls = 0;
   const queue = new JobQueue(db, scope);
   await queue.fail(lease, "synthetic_previous_job", now);
-  await queue.enqueue({ kind: "reasoning", dedupeKey: "controller", sourceId: "source", sourceRevision: 1, request: "Synthetic question", runtime: "flue" }, now);
+  await queue.enqueue({ kind: "reasoning", dedupeKey: "controller", sourceId: "source", sourceRevision: 1, request: "Synthetic question", runtime: "flue", subject: { kind: "owner_request", sourceId: "source", sourceRevision: 1, requestKey: "synthetic-question" } }, now);
   lease = (await queue.claim(now, 90000))!;
   const source = (await new SourceAccess(db, scope).read({ kind: "owner" }, "source", 1, now))!;
   const search = new RetrievalRuns(db, scope, { clock: () => now, purpose: "owner_read" });
@@ -276,7 +277,7 @@ test("a zero-row publication gate preserves the paid observation without complet
   await host.episodes.dispatch(episode.id);
   await host.episodes.accept(episode.id, { profile: "owner", runtimeId: episode.runtime_id, bindingHash: episode.binding_hash, envelopeHash: episode.dispatch_hash, receipt: native });
   const raw = await host.model(episode.id, { profile: "owner", runtimeId: episode.runtime_id, submissionId: native.submissionId }, { messages: [{ role: "user", content: host.message(episode) }] });
-  const plan = await host.preparePublication(episode.id, { text: raw, data: {}, ...native }, { publicationGate: () => ({ sql: "0=1", values: [] }) });
+  const plan = await (host as any).preparePublication(episode.id, { text: raw, data: {}, ...native }, { publicationGate: () => ({ sql: "0=1", values: [] }) });
   const result = await db.batch(plan.statements);
   expect(result[plan.publicationIndex].results).toHaveLength(0);
   expect((await host.queue.get(lease.id))!.state).toBe("processing");
@@ -290,7 +291,7 @@ test("a fresh job rebuilds from the current canonical checkpoint instead of a pr
   await expect(first.host.model(before.id, { profile: "owner", runtimeId: before.runtime_id, submissionId: "old-submission" }, { messages: [{ role: "user", content: first.host.message(before) }] })).rejects.toThrow("episode_denied");
   await first.host.queue.fail(lease, "superseded", now);
   const queue = new JobQueue(db, scope);
-  await queue.enqueue({ kind: "reasoning", dedupeKey: "rebuilt", sourceId: "source", sourceRevision: 2, request: "Corrected synthetic source", runtime: "flue" }, now);
+  await queue.enqueue({ kind: "reasoning", dedupeKey: "rebuilt", sourceId: "source", sourceRevision: 2, request: "Corrected synthetic source", runtime: "flue", subject: { kind: "owner_request", sourceId: "source", sourceRevision: 2, requestKey: "rebuilt-owner-request" } }, now);
   lease = (await queue.claim(now, 90000))!;
   const search = new RetrievalRuns(db, scope, { clock: () => now, purpose: "owner_read" });
   let progress = await search.start({ kind: "owner" }, "rebuilt-search", { query: "Corrected synthetic source" });
@@ -320,7 +321,7 @@ test("overflow waits intact; a distinct owner request rebuilds a useful episode 
   for (const source of large) await owner.correct(source.id, 1, { text: "Corrected synthetic question", occurredAt: now });
   const query = "Review corrected synthetic question", anchor = await owner.create({ originKey: "later-owner-request", text: query, occurredAt: now });
   const queue = new JobQueue(db, scope);
-  await queue.enqueue({ kind: "reasoning", dedupeKey: "distinct-owner-request", sourceId: anchor.id, sourceRevision: 1, request: query, runtime: "flue" }, now);
+  await queue.enqueue({ kind: "reasoning", dedupeKey: "distinct-owner-request", sourceId: anchor.id, sourceRevision: 1, request: query, runtime: "flue", subject: { kind: "owner_request", sourceId: anchor.id, sourceRevision: 1, requestKey: "distinct-owner-request" } }, now);
   const currentLease = (await queue.claim(now, 90000))!, search = new RetrievalRuns(db, scope, { clock: () => now, purpose: "owner_read" });
   let progress = await search.start({ kind: "owner" }, "corrected-checkpoint", { query });
   for (let index = 0; progress.state === "pending" && index < 10; index++) progress = await search.step({ kind: "owner" }, { runId: progress.runId, stepId: "corrected-" + index, expectedCheckpoint: progress.checkpoint });
@@ -361,9 +362,9 @@ import {episodeDriver} from ${JSON.stringify(join(root, "assistant/agent-runtime
 import {EpisodeController} from ${JSON.stringify(join(root, "assistant/agent/controller.ts"))};
 import {RetrievalRuns} from ${JSON.stringify(join(root, "assistant/retrieval-runs.ts"))};
 import {DEFAULT_BROKER_CONFIG} from ${JSON.stringify(join(root, "assistant/model-transport.ts"))};
-function host(env,purpose='owner_read'){
+function host(env,purpose='owner_read',dropPublication=false){
  const scope={installationId:env.INSTALLATION_ID,generation:env.OPERATIONAL_GENERATION};
- const database={prepare(sql){const statement=env.DB.prepare(sql);return new Proxy(statement,{get(target,key){if(key==='bind')return(...values)=>{if(values.length>100)throw new Error('synthetic_d1_bind_limit');return target.bind(...values)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})},batch:statements=>env.DB.batch(statements)};
+ const database={prepare(sql){const statement=env.DB.prepare(sql);return new Proxy(statement,{get(target,key){if(key==='bind')return(...values)=>{if(values.length>100)throw new Error('synthetic_d1_bind_limit');return target.bind(...values)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})},async batch(statements){const result=await env.DB.batch(statements);if(dropPublication&&statements.length===5)throw new Error('synthetic_publication_ack_lost');return result}};
  return new EpisodeController(database,{...scope,period:'synthetic-period'},new RetrievalRuns(database,scope,{clock:()=>100,purpose}),async request=>{
   await env.DB.prepare('INSERT INTO synthetic_model_calls(body) VALUES(?)').bind(request.body).run();
   const payload=JSON.parse(request.body), pack=payload.messages.filter(m=>m.role==='user').map(m=>{try{return JSON.parse(m.content)}catch{return null}}).find(v=>v?.sources);
@@ -378,7 +379,7 @@ installEpisodeRuntime(async(env,identity)=>{
 export default {async fetch(request,env){
  try {const input=await request.json(), path=new URL(request.url).pathname;let controller=host(env);
  const episode=await controller.episodes.get(input.episodeId);if(!episode)return Response.json({error:'missing'},{status:404});
- controller=host(env,episode.binding.purpose);
+ controller=host(env,episode.binding.purpose,input.dropPublication===true);
  let driver=episodeDriver;
  if(input.drop)driver=(profile,id)=>{const native=episodeDriver(profile,id);return {read:(...args)=>native.read(...args),async dispatch(envelope){
   if(input.drop==='before_commit')throw new Error('synthetic_transport_lost');
@@ -440,6 +441,22 @@ test("native exact submission replay survives cold restart, with one model call 
   expect(await db.prepare("SELECT COUNT(*) FROM synthetic_model_calls").first("COUNT(*)")).toBe(1);
   expect(await db.prepare("SELECT COUNT(*) FROM assistant_episodes").first("COUNT(*)")).toBe(1);
 });
+test("native publication ACK loss preserves one journal reference across cold restart without another model call", async () => {
+  await worker.dispose(); await bootstrap(nativeWorker("journal-ack"));
+  await db.prepare("CREATE TABLE synthetic_model_calls(body TEXT NOT NULL)").run();
+  const { host, runId } = await controller(), episode = await host.prepare(lease, "owner", runId);
+  const original = await db.prepare("SELECT id,revision,current_version,status FROM assistant_sources ORDER BY id").all();
+  expect((await runtimeCall("/dispatch", { episodeId: episode.id })).body.state).toBe("accepted");
+  const published = await runtimeCall("/read", { episodeId: episode.id, dropPublication: true });
+  expect(published.body).toMatchObject({ state: "shadow_completed", decisionId: expect.any(String) });
+  await worker.dispose(); await connect(nativeWorker("journal-ack"));
+  const restored = await runtimeCall("/read", { episodeId: episode.id });
+  expect(restored.body).toEqual(published.body);
+  expect(await db.prepare("SELECT COUNT(*) FROM assistant_shadow_decisions WHERE proposal_json IS NOT NULL").first("COUNT(*)")).toBe(1);
+  expect(await db.prepare("SELECT COUNT(*) FROM synthetic_model_calls").first("COUNT(*)")).toBe(1);
+  expect((await db.prepare("SELECT id,revision,current_version,status FROM assistant_sources ORDER BY id").all()).results).toEqual(original.results);
+  expect(await new DecisionJournal(db, scope, { kind: "owner" }, { clock: () => 200000 }).get(published.body.decisionId)).toMatchObject({ freshness: "current" });
+});
 test.each(["before_commit", "after_model"])("lost dispatch ACK %s reconciles only the identical native envelope after restart", async drop => {
   const state = "dispatch-" + drop;
   await worker.dispose(); await bootstrap(nativeWorker(state));
@@ -463,7 +480,7 @@ async function followUp(during: () => Promise<void> = async () => {}) {
       VALUES(?,?,'fup',1,'source',1,'owner_request','fup-target','Synthetic follow up','UTC',0)`).bind(scope.installationId, scope.generation),
     db.prepare("INSERT INTO assistant_fup_occurrences(installation_id,generation,id,follow_up_id,follow_up_version,due_at) VALUES(?,?,'occurrence','fup',1,0)").bind(scope.installationId, scope.generation),
   ]);
-  const queue = new JobQueue(db, scope), job = await queue.enqueue({ kind: "follow_up", dedupeKey: "fup", sourceId: "source", sourceRevision: 1, request: "Synthetic question", runtime: "flue" }, now);
+  const queue = new JobQueue(db, scope), job = await queue.enqueue({ kind: "follow_up", dedupeKey: "fup", sourceId: "source", sourceRevision: 1, request: "Synthetic question", runtime: "flue", subject: { kind: "fup_occurrence", occurrenceId: "occurrence", followUpId: "fup", followUpVersion: 1 } }, now);
   await db.prepare("UPDATE assistant_jobs SET occurrence_id='occurrence' WHERE id=?").bind(job.id).run();
   lease = (await queue.claim(now, 90000))!;
   const nominal = { ...scope, sourceEpoch: "synthetic-epoch", sourceGeneration: "synthetic-source-generation" };
@@ -479,12 +496,33 @@ async function followUp(during: () => Promise<void> = async () => {}) {
 }
 test("a current FUP completes the guarded publication plan within real D1 limits", async () => {
   const { host, runId, calls } = await followUp(), episode = await host.prepare(lease, "owner", runId);
+  const before = await db.batch([db.prepare("SELECT * FROM assistant_follow_ups"), db.prepare("SELECT * FROM assistant_fup_occurrences"), db.prepare("SELECT * FROM assistant_source_versions")]);
   const native = { submissionId: "synthetic-fup-submission", uid: "synthetic-fup-uid", acceptedAt: "2026-10-25T00:00:00Z" };
   await host.episodes.dispatch(episode.id);
   await host.episodes.accept(episode.id, { profile: "owner", runtimeId: episode.runtime_id, bindingHash: episode.binding_hash, envelopeHash: episode.dispatch_hash, receipt: native });
   const raw = await host.model(episode.id, { profile: "owner", runtimeId: episode.runtime_id, submissionId: native.submissionId }, { messages: [{ role: "user", content: host.message(episode) }] });
   expect(await host.publish(episode.id, { text: raw, data: {}, ...native })).toMatchObject({ state: "shadow_completed", proposal: { execution: "unconfirmed" } });
   expect(calls()).toBe(1);
+  const after = await db.batch([db.prepare("SELECT * FROM assistant_follow_ups"), db.prepare("SELECT * FROM assistant_fup_occurrences"), db.prepare("SELECT * FROM assistant_source_versions")]);
+  expect(after.map(result => result.results)).toEqual(before.map(result => result.results));
+  const diary = new DecisionJournal(db, { ...scope, sourceEpoch: "synthetic-epoch", sourceGeneration: "synthetic-source-generation" }, { kind: "owner" }, { clock: () => 200000 });
+  const entry = (await diary.list({})).items.find(row => row.episodeId === episode.id && row.phase === "proposed")!;
+  expect(await diary.get(entry.id)).toMatchObject({ freshness: "current" });
+  await db.prepare("UPDATE assistant_follow_ups SET state='cancelled' WHERE id='fup'").run();
+  expect(await diary.get(entry.id)).toMatchObject({ freshness: "stale" });
+
+});
+test("journal freshness rechecks mandate expiry after awaits rather than using its first clock sample", async () => {
+  const { host, runId, nominal } = await followUp();
+  await db.prepare("INSERT INTO assistant_mandates(installation_id,generation,id,version,conversation_id,purpose,status,issued_at,expires_at) VALUES(?,?,'mandate',1,'fup-target','Synthetic evaluation','active',0,500)").bind(scope.installationId,scope.generation).run();
+  await db.prepare("UPDATE assistant_follow_ups SET mandate_id='mandate',mandate_version=1 WHERE id='fup'").run();
+  const episode = await host.prepare(lease,"owner",runId), native = { submissionId:"synthetic-fup-submission",uid:"synthetic-fup-uid",acceptedAt:"2026-10-25T00:00:00Z" };
+  await host.episodes.dispatch(episode.id);await host.episodes.accept(episode.id,{profile:"owner",runtimeId:episode.runtime_id,bindingHash:episode.binding_hash,envelopeHash:episode.dispatch_hash,receipt:native});
+  const text = await host.model(episode.id,{profile:"owner",runtimeId:episode.runtime_id,submissionId:native.submissionId},{messages:[{role:"user",content:host.message(episode)}]});
+  const published = await host.publish(episode.id,{...native,text,data:{}});let ticks=0;
+  const diary = new DecisionJournal(db,nominal,{kind:"owner"},{clock:()=>++ticks===1?100:1000});
+  const detail = await diary.get(published.decisionId!);
+  expect(detail).toMatchObject({freshness:"stale"});expect(detail).not.toHaveProperty("proposal");
 });
 test("a follow-up anchored in an owner note cannot ignore a paused target conversation", async () => {
   const { host, runId, nominal } = await followUp();
@@ -520,7 +558,7 @@ test("real interlocutor Flue receives public canonical context instead of owner 
   expect(ownerContext.host.message(ownerEpisode)).toContain("OWNER_PRIVATE_SENTINEL");
   const actor = { kind: "interlocutor", provider: "synthetic-provider", address: "synthetic-address", conversationId: "synthetic-private-chat", conversationKind: "private", action: "reply_text" } as const;
   const queue = new JobQueue(db, scope, actor);
-  await queue.enqueue({ kind: "reasoning", dedupeKey: "interlocutor", sourceId: publicSource.id, sourceRevision: 1, request: "OWNER_PRIVATE_SENTINEL must never enter the interlocutor input", runtime: "flue" }, now);
+  await queue.enqueue({ kind: "reasoning", dedupeKey: "interlocutor", sourceId: publicSource.id, sourceRevision: 1, request: "OWNER_PRIVATE_SENTINEL must never enter the interlocutor input", runtime: "flue", subject: { kind: "owner_request", sourceId: publicSource.id, sourceRevision: 1, requestKey: "owner-requested-interlocutor-proposal" } }, now);
   const interlocutorLease = (await queue.claim(now, 90000))!;
   const search = new RetrievalRuns(db, scope, { clock: () => now });
   let progress = await search.start(actor, "interlocutor-search", { query: "Synthetic public source" });

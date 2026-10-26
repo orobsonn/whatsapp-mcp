@@ -8,8 +8,8 @@ const purpose = z.enum(["automation", "owner_read"]);
 const action = z.enum(["reply_text", "reply_audio", "ask_clarification", "future_contact", "read_github", "read_calendar", "propose_calendar_change"]);
 const actor = z.discriminatedUnion("kind", [z.object({ kind: z.literal("owner") }).strict(), z.object({ kind: z.literal("interlocutor"),
   provider: label, address: label, conversationId: label, conversationKind: z.enum(["private", "group"]), action, mandateId: label.optional() }).strict()]);
-const sourceRef = z.object({ id: label, revision: version, version, hash }).strict();
-const sourceFence = z.object({ ...scope, ...originScope, actor: z.string().max(2048),
+export const sourceRef = z.object({ id: label, revision: version, version, hash }).strict();
+export const sourceFence = z.object({ ...scope, ...originScope, actor: z.string().max(2048),
   source: sourceRef.extend({ audience: z.enum(["owner", "restricted", "public"]), origin: label, conversationId: label.nullable(), projectId: label.nullable() }).strict(),
   policy: z.object({ conversationId: label, kind: label, revision: time, mode: label }).strict().nullable(),
   identity: z.object({ personId: label, proofId: label, proofRevision: version }).strict().nullable(),
@@ -28,13 +28,20 @@ const config = z.object({ extractionConfig: label, priceVersion: label, chatMode
   maxOutputTokens: version.max(6000), chatCeiling: version, embeddingCeiling: version }).strict();
 const work = z.object({ ...scope, kind: z.literal("follow_up"), jobId: label, occurrenceId: label, occurrenceState: label, followUpId: label,
   version, state: label, sourceId: label, sourceRevision: version, missionId: label.nullable(), missionRevision: version.nullable(), mandateId: label.nullable(), mandateVersion: version.nullable() }).strict();
-const target = z.object({ fence: z.object({ ...scope, chatId: label, sourceEpoch: label.nullable(), sourceGeneration: label.nullable(),
-  revision: time, policyRevision: time, mode: label, applied: time, received: time, coverageFrom: time }).strict(),
-  policy: z.object({ kind: z.enum(["private", "group"]), revision: version, mode: label }).strict() }).strict();
+export const conversationFence = z.object({ ...scope, chatId: label, sourceEpoch: label.nullable(), sourceGeneration: label.nullable(),
+  revision: time, policyRevision: time, mode: label, applied: time, received: time, coverageFrom: time }).strict();
+const target = z.object({ fence: conversationFence, policy: z.object({ kind: z.enum(["private", "group"]), revision: version, mode: label }).strict() }).strict();
+
+export const decisionSubject = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("capture_event"), sourceEpoch: label, sourceGeneration: label, chatId: label, sequence: version, metadataHash: hash }).strict(),
+  z.object({ kind: z.literal("owner_request"), sourceId: label, sourceRevision: version, requestKey: label }).strict(),
+  z.object({ kind: z.literal("fup_occurrence"), occurrenceId: label, followUpId: label, followUpVersion: version }).strict(),
+]);
+export type DecisionSubject = z.infer<typeof decisionSubject>;
 export const jobRequest = z.object({ kind: label, sourceId: label, sourceRevision: version, input: z.string().max(32768), actor,
-  fence: sourceFence, conversation: z.unknown(), runtime: z.literal("flue") }).strict();
+  fence: sourceFence, conversation: conversationFence.nullable(), runtime: z.literal("flue"), subject: decisionSubject }).strict();
 export const modelPayload = z.object({ messages: z.array(z.object({ role: z.enum(["system", "user", "assistant"]), content: z.string().max(60000) }).strict()).min(1).max(64) }).strict();
-const binding = z.object({ lease, actor, purpose, search, runId: hash, query: z.string().min(1).max(2048), config,
+const binding = z.object({ lease, actor, purpose, search, subject: decisionSubject, runId: hash, query: z.string().min(1).max(2048), config,
   coverage: z.object({ inventoryComplete: z.boolean(), engine: label, gaps: z.array(label).max(32) }).strict(),
   context: z.object({ state: z.literal("ready"), mode: z.enum(["model", "fallback", "originals"]), sources: z.array(source).min(1).max(10),
     focus: z.array(z.object({ id: label, spans: z.array(z.object({ start: time, end: time, quote: z.string().max(4096) }).strict()).max(4) }).strict()).max(10),
@@ -53,3 +60,8 @@ export type BoundEpisode = Omit<Episode, "binding" | "receipt" | "envelope"> & {
 export function boundEpisode(row: Episode): BoundEpisode {
   return { ...row, binding: binding.parse(row.binding), receipt: row.receipt === null ? null : receipt.parse(row.receipt), envelope: row.envelope === null ? null : envelope.parse(row.envelope) };
 }
+
+export const validatedProposal = proposal.extend({ schema: z.literal(1), kind: z.literal("shadow_proposal"), execution: z.literal("unconfirmed"), semanticValidation: z.literal("structure_and_attribution_only"),
+  coverage: z.object({ inventoryComplete: z.boolean(), engine: label, gaps: z.array(label).max(32) }).strict(),
+  binding: z.object({ episodeId: hash, bindingHash: hash, jobId: label, requestHash: hash, runId: hash, allowedPackHash: hash, profile: z.enum(["owner", "interlocutor"]), purpose }).strict(),
+}).strict();

@@ -1,3 +1,4 @@
+import { DecisionJournal } from "../decisions";
 import { z } from "zod";
 import { SourceAccess, type AccessGuard, type TrustedActor } from "../access";
 import type { BudgetScope } from "../budget";
@@ -44,10 +45,12 @@ export class EpisodeController {
   private readonly scope: Readonly<EpisodeScope>;
   private readonly config: Readonly<BrokerConfig>;
   private readonly purpose: Purpose;
+  private readonly journal: DecisionJournal;
   constructor(private readonly db: D1Database, scope: EpisodeScope, private readonly search: EpisodeSearch,
     private readonly adapter: ModelAdapter, config: BrokerConfig, options: { clock?: () => number; purpose?: Purpose } = {}) {
     this.scope = Object.freeze({ ...scope }); this.config = Object.freeze({ ...config }); this.clock = options.clock ?? Date.now;
     this.purpose = options.purpose ?? "automation";
+    this.journal = new DecisionJournal(db, scope, { kind: "owner" }, { clock: this.clock, search });
     const sourceScope = { installationId: scope.installationId, generation: scope.generation,
       ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) };
     this.episodes = new Episodes(db, sourceScope, this.clock);
@@ -65,14 +68,15 @@ export class EpisodeController {
   private async guard(episode: BoundEpisode, lease: JobLease, now: number): Promise<RuntimeGuardPlan | null> {
     const binding = episode.binding;
     if (binding.purpose !== this.purpose || JSON.stringify(binding.config) !== JSON.stringify(this.config) || binding.lease.id !== lease.id || binding.lease.lease_generation !== lease.lease_generation) return null;
-    const current: AccessGuard = { sql: `EXISTS(SELECT 1 FROM assistant_episodes e JOIN(SELECT json(?) AS p) a
+    const current: AccessGuard = { sql: `EXISTS(SELECT 1 FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id JOIN(SELECT json(?) AS p) a
       WHERE e.installation_id=json_extract(p,'$.i') AND e.generation=json_extract(p,'$.g') AND e.id=json_extract(p,'$.id')
       AND e.binding_hash=json_extract(p,'$.hash') AND e.profile=json_extract(p,'$.profile') AND e.runtime_id=json_extract(p,'$.runtime')
-      AND e.state IN ('prepared','dispatching','accepted','running') AND e.deadline>json_extract(p,'$.now'))`,
-      values: [JSON.stringify({ i: this.scope.installationId, g: this.scope.generation, id: episode.id, hash: episode.binding_hash, profile: episode.profile, runtime: episode.runtime_id, now })] };
+      AND e.state IN ('prepared','dispatching','accepted','running') AND e.deadline>json_extract(p,'$.now')
+      AND j.id=json_extract(p,'$.job') AND j.state='processing' AND j.lease_generation=json_extract(p,'$.lease') AND j.lease_until>json_extract(p,'$.now'))`,
+      values: [JSON.stringify({ i: this.scope.installationId, g: this.scope.generation, id: episode.id, hash: episode.binding_hash, profile: episode.profile, runtime: episode.runtime_id, job: lease.id, lease: lease.lease_generation, now })] };
     const nonce = crypto.randomUUID(), search = await this.search.guard(binding.actor, binding.search, now);
-    const attest = this.db.prepare(`UPDATE assistant_episodes SET search_nonce=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND profile=? AND runtime_id=? AND (${search.sql}) RETURNING id`)
-      .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...search.values);
+    const attest = this.db.prepare(`UPDATE assistant_episodes SET search_nonce=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND profile=? AND runtime_id=? AND (${current.sql}) AND (${search.sql}) RETURNING id`)
+      .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...current.values, ...search.values);
     const proof: AccessGuard = { sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND search_nonce=?)",
       values: [this.scope.installationId, this.scope.generation, episode.id, nonce] };
     const guards = [current, proof], statements = [attest];
@@ -90,8 +94,8 @@ export class EpisodeController {
       // depth limit. Only this fresh plan's nonces authorize later statements;
       // all attestations and the guarded mutation execute in ONE D1 batch.
       for (const [column, guard] of attestations) {
-        statements.push(this.db.prepare(`UPDATE assistant_episodes SET ${column}=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND profile=? AND runtime_id=? AND (${guard.sql}) RETURNING id`)
-          .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...guard.values));
+        statements.push(this.db.prepare(`UPDATE assistant_episodes SET ${column}=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND profile=? AND runtime_id=? AND (${current.sql}) AND (${guard.sql}) RETURNING id`)
+          .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...current.values, ...guard.values));
       }
       guards.push({ sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND work_nonce=? AND target_nonce=?)",
         values: [this.scope.installationId, this.scope.generation, episode.id, nonce, nonce] });
@@ -99,6 +103,14 @@ export class EpisodeController {
     return { guard: merge(...guards), statements };
   }
   async prepare(input: JobLease, profile: "owner" | "interlocutor", runId: string): Promise<BoundEpisode> {
+    try { return await this.prepareBound(input, profile, runId); }
+    catch (error) {
+      const reason = error instanceof Error && error.message === "episode_waiting_context" ? "waiting_context" : "source_changed";
+      await this.journal.record(input.id, input.lease_generation, reason === "waiting_context" ? "waiting_context" : "failed", reason);
+      throw new Error(reason === "waiting_context" ? "episode_waiting_context" : "episode_denied");
+    }
+  }
+  private async prepareBound(input: JobLease, profile: "owner" | "interlocutor", runId: string): Promise<BoundEpisode> {
     const lease = Object.freeze({ ...input }), now = this.clock(), ledger = await this.queue.ledger(lease.id);
     if (!ledger || ledger.state !== "prepared" || await bridgeHash(JSON.parse(ledger.request_json)) !== ledger.request_hash) throw new Error("episode_denied");
     const request = jobRequest.parse(JSON.parse(ledger.request_json)), actor = request.actor;
@@ -134,7 +146,7 @@ export class EpisodeController {
       if (!row || !fence) throw new Error("episode_denied");
       target = { fence, policy: { kind: row.kind, revision: row.revision, mode: row.mode } };
     }
-    const binding = parseBinding({ lease, actor, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },
+    const binding = parseBinding({ lease, actor, subject: request.subject, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },
       work: work ? { kind: "follow_up", fence: work, target } : { kind: "not_follow_up" } });
     const episode = await this.episodes.prepare({ lease, requestHash: ledger.request_hash, profile, checkpoint: await bridgeHash([found.fence, context.sources.map(row => row.fence)]),
       binding, deadline: Math.min(this.clock() + 60000, lease.lease_until - 1), maxCalls: 3 });
@@ -197,9 +209,9 @@ export class EpisodeController {
       // This fixed broker error is raised only by reservation, before its
       // admission hook or external attempt. Other failures remain uncertain.
       if (error instanceof Error && error.message === "broker_budget_exhausted") {
-        await this.episodes.budgetBlocked(id); throw new Error("episode_budget_blocked");
+        await this.episodes.budgetBlocked(id); await this.journal.record(episode.job_id, episode.binding.lease.lease_generation, "failed", "budget_blocked", id); throw new Error("episode_budget_blocked");
       }
-      await this.episodes.uncertain(id, "model_uncertain"); throw new Error("episode_denied");
+      await this.episodes.uncertain(id, "model_uncertain"); await this.journal.record(episode.job_id, episode.binding.lease.lease_generation, "uncertain", "model_uncertain", id); throw new Error("episode_denied");
     }
   }
   private parse(text: string, episode: BoundEpisode) {
@@ -214,7 +226,7 @@ export class EpisodeController {
   }
   /** #45 can insert its journal row immediately before publicationIndex in
    * this same D1 batch. The object is not an action/dispatch receipt. */
-  async preparePublication(id: string, reply: AgentReply, options: PublicationOptions = {}) {
+  private async preparePublication(id: string, reply: AgentReply, options: PublicationOptions = {}) {
     const episode = await this.get(id);
     if (!episode?.receipt || reply.submissionId !== episode.submission_id || reply.submissionId !== episode.receipt.receipt.submissionId ||
       reply.uid !== episode.receipt.receipt.uid || !await this.check(episode)) throw new Error("episode_denied");
@@ -239,11 +251,16 @@ export class EpisodeController {
       .bind(this.scope.installationId, this.scope.generation, id, json, this.scope.installationId, this.scope.generation, episode.job_id);
     return { proposal: validated, statements: [...plan.statements, save, plan.statement, settle], publicationIndex: plan.statements.length + 1, journalGuard: merge(plan.guard, complete) };
   }
-  async publish(id: string, reply: AgentReply): Promise<{ state: string; proposal?: ValidatedProposal }> {
+  async publish(id: string, reply: AgentReply): Promise<{ state: string; proposal?: ValidatedProposal; decisionId?: string }> {
     try {
-      const plan = await this.preparePublication(id, reply), result = await this.db.batch(plan.statements);
-      return result[plan.publicationIndex].results.length === 1 ? { state: "shadow_completed", proposal: plan.proposal } : { state: "blocked" };
-    } catch { return { state: "blocked" }; }
+      return await this.journal.publish(publicationGate => this.preparePublication(id, reply, { publicationGate }));
+    } catch {
+      const recovered = await this.journal.publishedEpisode(id);
+      if (recovered.state === "shadow_completed") return recovered;
+      const episode = await this.get(id);
+      if (episode) await this.journal.record(episode.job_id, episode.binding.lease.lease_generation, "failed", "publication_rejected", id);
+      return { state: "blocked" };
+    }
   }
   private async deliver(episode: BoundEpisode, driver: EpisodeDriver) {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -259,7 +276,8 @@ export class EpisodeController {
     } catch {
       // A dispatch timeout cannot prove whether native admission committed.
       // Exact transport reconciliation never reopens model callbacks.
-      await this.episodes.uncertain(episode.id, "dispatch_ack"); return { state: "uncertain" };
+      await this.episodes.uncertain(episode.id, "dispatch_ack");
+      await this.journal.record(episode.job_id, episode.binding.lease.lease_generation, "uncertain", "dispatch_uncertain", episode.id); return { state: "uncertain" };
     } finally { clearTimeout(timer); }
   }
   async dispatch(id: string, driver: EpisodeDriver) {
@@ -274,14 +292,18 @@ export class EpisodeController {
     if (!await this.episodes.replayDispatch(id)) return { state: "uncertain" };
     return this.deliver(episode, driver);
   }
-  async read(id: string, driver: EpisodeDriver): Promise<{ state: string; proposal?: ValidatedProposal }> {
+  async read(id: string, driver: EpisodeDriver): Promise<{ state: string; proposal?: ValidatedProposal; decisionId?: string }> {
     const episode = await this.get(id), stored = episode?.receipt;
     if (!episode || !stored || stored.profile !== episode.profile || stored.runtimeId !== episode.runtime_id || stored.bindingHash !== episode.binding_hash || stored.envelopeHash !== episode.dispatch_hash) return { state: "blocked" };
-    if (episode.state === "settled") return { state: "shadow_completed" }; // #45 owns current journal reads.
+    if (episode.state === "settled") return this.journal.publishedEpisode(id);
     try {
       const reply = await driver(episode.profile, episode.runtime_id).read(nativeReceipt.parse(stored.receipt),
         { signal: AbortSignal.timeout(Math.max(1, Math.min(60000, episode.deadline - this.clock()))) });
       return this.publish(id, reply);
-    } catch { await this.episodes.uncertain(id, "model_uncertain"); return { state: "uncertain" }; }
+    } catch {
+      await this.episodes.uncertain(id, "model_uncertain");
+      await this.journal.record(episode.job_id, episode.binding.lease.lease_generation, "uncertain", "model_uncertain", id);
+      return { state: "uncertain" };
+    }
   }
 }
