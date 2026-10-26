@@ -9,6 +9,17 @@ import {Relations,type CandidateClaim} from './relations';
 export const CANONICAL_EXTRACTION_CONFIG=Object.freeze({...DEFAULT_BROKER_CONFIG,extractionConfig:'canonical-candidates-v1',maxOutputTokens:2048});
 const ns='installation_id=? AND generation=?',limit=16,path='/v1/chat/completions';
 type CatalogEntry={kind:'project'|'mission';id:string;revision:number;projectId:string|null};
+type CatalogField='installation_id'|'generation'|'id'|'revision'|'origin'|'project_id';
+/** Host-owned expressions only. Both admission and metadata diagnostics use
+ * exactly this bounded set; project_revisions has one row per canonical ID. */
+function catalogRows(ref:(field:CatalogField)=>string){return `SELECT kind,id,revision,projectId FROM (
+ SELECT 'mission' kind,m.id,m.revision,m.project_id projectId FROM assistant_missions m
+  WHERE m.installation_id=${ref('installation_id')} AND m.generation=${ref('generation')} AND m.source_id=${ref('id')} AND m.source_revision=${ref('revision')} AND m.state IN ('draft','active')
+  AND (m.project_id IS NULL OR EXISTS(SELECT 1 FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id))
+ UNION ALL
+ SELECT 'project' kind,p.id,r.revision,NULL projectId FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id
+  WHERE p.installation_id=${ref('installation_id')} AND p.generation=${ref('generation')} AND ((${ref('origin')}='owner_note' AND p.id=${ref('project_id')}) OR EXISTS(SELECT 1 FROM assistant_missions m WHERE m.installation_id=p.installation_id AND m.generation=p.generation AND m.project_id=p.id AND m.source_id=${ref('id')} AND m.source_revision=${ref('revision')} AND m.state IN ('draft','active')))
+ ) ORDER BY kind,id LIMIT 17`;}
 type Slot={state:string;source_version:number;source_hash:string;slot_key:string;pin_hash:string;config_hash:string;actor_json:string;fence_json:string;origin_json:string|null;catalog_json:string;payload_json:string;period:string;operation_key:string|null;request_hash:string|null;claims_count:number|null;gap:string|null};
 type Options={clock?:()=>number;adapter:ModelAdapter;enabled:()=>boolean;guard:()=>AccessGuard;origin?:OriginGuard;runtime?:()=>Promise<void>};
 type Outcome={state:'published'|'blocked'|'uncertain'|'empty_catalog';claims?:number;gap?:string};
@@ -46,15 +57,8 @@ export class CanonicalCandidateExtractor {
  /** The same bounded query feeds the model and transaction proof. Private
   * mission prose and names are not provider input or an identity resolver. */
  private catalogQuery(source:SourceRead):AccessGuard {
-  const f=source.fence.source;
-  return {sql:`SELECT kind,id,revision,projectId FROM (
-   SELECT 'mission' kind,m.id,m.revision,m.project_id projectId FROM assistant_missions m
-    WHERE m.installation_id=? AND m.generation=? AND m.source_id=? AND m.source_revision=? AND m.state='draft'
-    AND EXISTS(SELECT 1 FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id)
-   UNION ALL
-   SELECT 'project' kind,p.id,r.revision,NULL projectId FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id
-    WHERE p.installation_id=? AND p.generation=? AND (p.id=? OR EXISTS(SELECT 1 FROM assistant_missions m WHERE m.installation_id=p.installation_id AND m.generation=p.generation AND m.project_id=p.id AND m.source_id=? AND m.source_revision=? AND m.state='draft'))
-   ) ORDER BY kind,id LIMIT 17`,values:[...this.keys(),source.id,f.revision,...this.keys(),f.origin==='owner_note'?f.projectId:null,source.id,f.revision]};
+  const f=source.fence.source,fields:Record<CatalogField,string|number|null>={installation_id:this.scope.installationId,generation:this.scope.generation,id:source.id,revision:f.revision,origin:f.origin,project_id:f.projectId},values:(string|number|null)[]=[];
+  return {sql:catalogRows(field=>{values.push(fields[field]);return '?';}),values};
  }
  private catalogGuard(source:SourceRead,json:string):AccessGuard {
   const q=this.catalogQuery(source);return {sql:`(SELECT json_group_array(json_object('kind',kind,'id',id,'revision',revision,'projectId',projectId)) FROM (${q.sql}))=?`,values:[...q.values,json]};
@@ -158,8 +162,7 @@ export async function canonicalExtractionSummary(db:D1Database,scope:OriginScope
   SELECT EXISTS(SELECT 1 FROM assistant_canonical_extractions x WHERE x.installation_id=s.installation_id AND x.generation=s.generation AND x.source_id=s.id AND x.source_revision=s.revision AND x.source_version=s.current_version AND x.source_hash=v.content_hash AND x.config_hash=? AND x.state='published'
     AND EXISTS(SELECT 1 FROM assistant_model_receipts m JOIN assistant_budget_reservations r ON r.installation_id=m.installation_id AND r.generation=m.generation AND r.operation_key=m.operation_key AND r.request_hash=m.request_hash AND r.state='settled' AND r.actual_units IS m.actual_units WHERE m.installation_id=x.installation_id AND m.generation=x.generation AND m.operation_key=x.operation_key AND m.request_hash=x.request_hash AND m.source_id=x.source_id AND m.source_revision=x.source_revision AND m.state='complete' AND m.response_json IS NOT NULL AND m.actual_units IS NOT NULL)
     AND ((x.claims_count=0 AND NOT EXISTS(SELECT 1 FROM assistant_relation_batches b WHERE b.installation_id=x.installation_id AND b.generation=x.generation AND b.operation_key=x.slot_key)) OR (x.claims_count>0 AND EXISTS(SELECT 1 FROM assistant_relation_batches b WHERE b.installation_id=x.installation_id AND b.generation=x.generation AND b.operation_key=x.slot_key AND b.source_id=x.source_id AND b.source_revision=x.source_revision AND b.source_version=x.source_version AND b.source_hash=x.source_hash AND json_array_length(b.claims_json)=x.claims_count)))) terminal,
-   NOT (EXISTS(SELECT 1 FROM assistant_projects p WHERE p.installation_id=s.installation_id AND p.generation=s.generation AND s.origin='owner_note' AND p.id=s.project_id)
-    OR EXISTS(SELECT 1 FROM assistant_missions m JOIN assistant_projects p ON p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id WHERE m.installation_id=s.installation_id AND m.generation=s.generation AND m.source_id=s.id AND m.source_revision=s.revision AND m.state='draft')) missing_catalog,
+   NOT EXISTS(${catalogRows(field=>`s.${field}`)}) missing_catalog,
    EXISTS(SELECT 1 FROM assistant_canonical_extractions x WHERE x.installation_id=s.installation_id AND x.generation=s.generation AND x.source_id=s.id AND x.source_revision=s.revision AND x.state IN ('attempting','uncertain')) uncertain
   FROM assistant_sources s JOIN assistant_source_versions v ON v.installation_id=s.installation_id AND v.generation=s.generation AND v.source_id=s.id AND v.version=s.current_version
   WHERE s.installation_id=? AND s.generation=? AND s.status='active' AND s.origin IN ('owner_note','whatsapp') AND v.original_text IS NOT NULL

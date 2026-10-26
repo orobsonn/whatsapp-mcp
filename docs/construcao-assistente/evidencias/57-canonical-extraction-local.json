@@ -20,6 +20,8 @@
     {"boundary": "unbound canonical ID and restore parser", "result": "GREEN", "passed": 2, "skipped": 31, "durationSeconds": 8.79},
     {"boundary": "reviewer initial slot hash await race", "result": "RED", "failed": 1, "skipped": 33, "durationSeconds": 9.8, "observation": "pause during slot hash created1slot; expected0"},
     {"boundary": "final extractor after guard sampling correction", "result": "GREEN", "passed": 34, "failed": 0, "durationSeconds": 20.73},
+    {"boundary": "active and standalone eligibility followup", "result": "RED", "passed": 7, "failed": 3, "skipped": 32, "durationSeconds": 10.16},
+    {"boundary": "shared catalog eligibility followup", "result": "GREEN", "passed": 42, "failed": 0, "durationSeconds": 39.66, "schemaFact": "17 real project renames preserve one project_revisions row by its primary key; no fabricated history or redundant MAX"},
     {"boundary": "existing index API budget counter", "result": "GREEN", "passed": 9, "failed": 0, "durationSeconds": 0.93, "whatsapp128WarmD1ApiCalls": 872, "maximumBoundParameters": 13}
   ],
   "observedContracts": [

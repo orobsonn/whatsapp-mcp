@@ -7,8 +7,10 @@ produtor runtime de `Relations.publish`, sem declarar homologação cloud do
 critério #57/ac-16.311.
 
 O host lê a fonte atual com `SourceAccess(actor)`. O catálogo contém somente
-projetos explicitamente associados a owner notes, ou missões **draft** ligadas à
-mesma fonte/revisão e seus projetos explícitos. São até 16 referências, com IDs
+projetos explicitamente associados a owner notes, ou missões **draft/active**
+ligadas à mesma fonte/revisão, com projeto opcional. Projetos de missões entram
+somente quando definidos explicitamente. Catálogo, guard e resumo usam a mesma
+consulta; paused/resolved/cancelled não viram nova atuação. São até 16 referências, com IDs
 e revisões canônicos; nomes, objetivos privados de missões, hashes de autores e
 HMACs não viram identidades. Não há inferência/criação de pessoas, identidades,
 memberships, autorização, missões ou FUPs. Fonte e autor originais permanecem
