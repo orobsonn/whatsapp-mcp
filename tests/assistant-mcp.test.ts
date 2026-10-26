@@ -7,7 +7,7 @@ import type { Env } from "../src/env";
 
 const owner = { sub: "synthetic-assistant-owner", epoch: "assistant-mcp-epoch" };
 function setup() {
-  const rpc = { source: vi.fn(), control: vi.fn(), query: vi.fn(), telegramLink: vi.fn() };
+  const rpc = { source: vi.fn(), control: vi.fn(), query: vi.fn(), telegramLink: vi.fn(), telegramReview: vi.fn() };
   const settings: Env = Object.assign({ ...env, PUBLIC_ORIGIN: "https://assistant-mcp.invalid", OWNER_SUB: owner.sub,
     INSTALLATION_EPOCH: owner.epoch, CONNECTION_GENERATION: "capture-generation", MAINTENANCE: "false",
     ASSISTANT_INSTALLATION_ID: "assistant-installation", ASSISTANT_GENERATION: "assistant-generation" }, { ASSISTANT_OWNER: rpc });
@@ -42,7 +42,7 @@ it("exposes the authenticated assistant families through the authenticated HTTP 
   expect(response.status).toBe(200);
   const body = await response.json() as { result?: { tools?: { name: string }[] } };
   expect(body.result?.tools?.filter(t => t.name.startsWith("assistente_")).map(t => t.name).sort())
-    .toEqual(["assistente_consultar", "assistente_controlar", "assistente_fonte", "assistente_telegram"]);
+    .toEqual(["assistente_consultar", "assistente_controlar", "assistente_fonte", "assistente_telegram", "assistente_telegram_revisar"]);
 });
 it("forwards only a typed command and host affinity, never principal or namespace from model input", async () => {
   const { settings, rpc } = setup();
@@ -189,4 +189,14 @@ it("reports an absent assistant binding as unavailable, without inventing an emp
   expect(response.status).toBe(200);
   const body = await response.json() as { result: { isError?: boolean; content: { text: string }[] } };
   expect(body.result.isError).toBe(true); expect(body.result.content[0].text).toContain("assistant_unconfigured");
+});
+
+it("routes authenticated review commands with host affinity and rejects injected authority before binding",async()=>{
+ const {settings,rpc}=setup(),command={kind:"topics.ensure"};rpc.telegramReview.mockResolvedValue({mode:"shadow",topics:[]});
+ for(const principal of [undefined,{}, {...owner,sub:"other"}])await expect(mcpFetch(request("tools/call",{name:"assistente_telegram_revisar",arguments:{command}}),settings,principal)).rejects.toThrow();
+ expect(rpc.telegramReview).not.toHaveBeenCalled();
+ const response=await mcpFetch(request("tools/call",{name:"assistente_telegram_revisar",arguments:{command}}),settings,owner);
+ expect(response.status).toBe(200);expect(rpc.telegramReview).toHaveBeenCalledExactlyOnceWith({installationId:"assistant-installation",generation:"assistant-generation",sourceEpoch:owner.epoch,sourceGeneration:"capture-generation"},command);
+ await mcpFetch(request("tools/call",{name:"assistente_telegram_revisar",arguments:{command:{...command,chatId:"foreign"}}}),settings,owner);expect(rpc.telegramReview).toHaveBeenCalledTimes(1);
+ rpc.telegramReview.mockRejectedValue(new Error("SYNTHETIC_PRIVATE_TOKEN"));const failed=await mcpFetch(request("tools/call",{name:"assistente_telegram_revisar",arguments:{command}}),settings,owner);expect(await failed.text()).not.toContain("SYNTHETIC_PRIVATE_TOKEN");
 });

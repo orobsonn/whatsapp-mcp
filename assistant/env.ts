@@ -2,11 +2,12 @@ import type { CogneeContainer } from "./container";
 import type { MediaReader } from "./media";
 import type { PdfAdmissionReader } from "./media-admission";
 import type { SnapshotReader } from "./origin-guard";
-// Host-only configuration. No outgoing messaging/action credentials.
+// Host-only owner Telegram notifications; never WhatsApp or Calendar write credentials.
 export interface AssistantEnv {
   DB?: D1Database;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_BOT_INSTANCE?: string;
+  TELEGRAM_BOT_TOKEN?: string;
   BRIDGE_SECRET?: string;
   BRIDGE_SOURCE_EPOCH?: string;
   BRIDGE_SOURCE_GENERATION?: string;

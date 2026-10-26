@@ -61,6 +61,7 @@ export async function seedDecisionJob(db: D1Database, scope: Scope, jobId: strin
   if (stored?.seed_hash !== seedHash) throw new Error("decision_subject_conflict");
 }
 export type DecisionMetadata = { id: string; subject?: DecisionSubject; jobId?: string; episodeId?: string; phase: JournalPhase; reason?: JournalReason; freshness: "unchecked" | "current" | "stale" | "unavailable"; recordedAt: number | null; effects: { mode: "shadow"; external: "none" }; capture?: { operation: string; applicationState: string; replayState: string | null } };
+type ReviewAdmission = { hash: string; build: (guard: AccessGuard) => D1PreparedStatement[]; results: D1Result[] | null };
 type Plan = { proposal: ValidatedProposal; statements: D1PreparedStatement[]; publicationIndex: number; journalGuard: AccessGuard };
 type Options = { clock?: () => number; origin?: OriginGuard; search?: EpisodeSearch; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort }; timeoutMs?: number };
 type MetadataRow = { family: string; key: string; sort: number; recorded: number | null; job_id: string | null; episode_id: string | null; subject_json: string | null; phase: string; reason: string | null; coalesced: number | null; observed_revision: number | null; observed_watermark: number | null; operation: string | null; application_state: string; replay_state: string | null };
@@ -184,7 +185,16 @@ export class DecisionJournal {
     const row = await this.sql(`SELECT id FROM assistant_shadow_decisions WHERE ${ns} AND episode_id=? AND proposal_json IS NOT NULL`, ...keys(this.scope), episodeId).first<{ id: string }>();
     return row && await this.committed(row.id) ? { state: "shadow_completed", decisionId: row.id } : { state: "blocked" };
   }
-  async get(id: string): Promise<DecisionMetadata & { proposal?: ValidatedProposal } | { state: "unavailable" }> {
+  get(id: string) { return this.read(id); }
+  /** Host-only atomic read admission. Remote checks run immediately before a
+   * single batch; its one-use attestation is always removed in that same batch.
+   * SQL builders are trusted code, never RPC/model/message input. */
+  async admitReview(id: string, hash: string, build: (guard: AccessGuard) => D1PreparedStatement[]): Promise<D1Result[] | null> {
+    if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("decision_hash");
+    const admission: ReviewAdmission = { hash, build, results: null };
+    await this.read(id, admission); return admission.results;
+  }
+  private async read(id: string, admission?: ReviewAdmission): Promise<DecisionMetadata & { proposal?: ValidatedProposal } | { state: "unavailable" }> {
     this.owner();
     if (typeof id !== "string" || id.length > 2048) throw new Error("decision_id");
     const prefixed = id.includes(":") ? id : "decision:" + id, separator = prefixed.indexOf(":"), family = prefixed.slice(0,separator), key = prefixed.slice(separator+1);
@@ -193,9 +203,9 @@ export class DecisionJournal {
     const metadata = this.metadata(row);
     if (family !== "decision" || !["proposed","silence","waiting_context"].includes(metadata.phase)) return metadata;
     try {
-      const stored = await this.sql(`SELECT d.proposal_json,d.proposal_hash,d.dependencies_json,l.request_json,l.request_hash,d.episode_id FROM assistant_shadow_decisions d
+      const stored = await this.sql(`SELECT d.proposal_json,d.proposal_hash,d.publication_nonce,d.dependencies_json,l.request_json,l.request_hash,d.episode_id FROM assistant_shadow_decisions d
         JOIN assistant_job_ledger l ON l.installation_id=d.installation_id AND l.generation=d.generation AND l.job_id=d.job_id WHERE d.installation_id=? AND d.generation=? AND d.id=?`, ...keys(this.scope), key)
-        .first<{ proposal_json: string | null; proposal_hash: string; dependencies_json: string; request_json: string; request_hash: string; episode_id: string }>();
+        .first<{ proposal_json: string | null; proposal_hash: string; publication_nonce: string; dependencies_json: string; request_json: string; request_hash: string; episode_id: string }>();
       if (!stored?.proposal_json || !await this.committed(key)) return metadata;
       const value = validatedProposal.parse(JSON.parse(stored.proposal_json)), refs = z.array(sourceRef).max(10).parse(JSON.parse(stored.dependencies_json));
       if (new TextEncoder().encode(stored.proposal_json).length > 32768 || await bridgeHash(value) !== stored.proposal_hash || await bridgeHash(JSON.parse(stored.request_json)) !== stored.request_hash) throw 0;
@@ -242,10 +252,25 @@ export class DecisionJournal {
       // A single final D1 transaction sees all local predicates coherently;
       // separate SELECTs preserve depth100 and <=100 bindings per statement.
       const guards = await localGuards(this.clock());
-      const final = await this.db.batch(guards.map(guard => this.sql(`SELECT 1 WHERE ${guard.sql}`, ...guard.values)));
-      if (!final.every(result => result.results.length === 1) || !await this.committed(key)) return { ...metadata, freshness: "stale" };
       const detail = { ...metadata, freshness: "current" as const, proposal: value };
       if (new TextEncoder().encode(JSON.stringify(detail)).length > 32768) throw 0;
+      if (admission) {
+        if (stored.proposal_hash !== admission.hash || guards.some(guard => guard.values.length > 97)) return { ...metadata, freshness: "stale" };
+        const token = crypto.randomUUID(), gate: AccessGuard = { sql: `EXISTS(SELECT 1 FROM assistant_telegram_read_admissions WHERE ${ns} AND token=?)`, values: [...keys(this.scope), token] };
+        const insert = this.sql(`INSERT INTO assistant_telegram_read_admissions SELECT d.installation_id,d.generation,?,d.id,d.proposal_hash,d.publication_nonce FROM assistant_shadow_decisions d
+          JOIN assistant_jobs j ON j.installation_id=d.installation_id AND j.generation=d.generation AND j.id=d.job_id
+          JOIN assistant_job_ledger l ON l.installation_id=d.installation_id AND l.generation=d.generation AND l.job_id=d.job_id
+          JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id
+          WHERE d.installation_id=? AND d.generation=? AND d.id=? AND d.proposal_hash=? AND d.publication_nonce=? AND ${committed}`,
+          token, ...keys(this.scope), key, admission.hash, stored.publication_nonce);
+        const gates = guards.map(guard => this.sql(`DELETE FROM assistant_telegram_read_admissions WHERE ${ns} AND token=? AND NOT(${guard.sql})`, ...keys(this.scope), token, ...guard.values));
+        const actions = admission.build(gate), offset = 1 + gates.length;
+        const results = await this.db.batch([insert, ...gates, ...actions, this.sql(`SELECT 1 WHERE ${gate.sql}`, ...gate.values), this.sql(`DELETE FROM assistant_telegram_read_admissions WHERE ${ns} AND token=?`, ...keys(this.scope), token)]);
+        if (results[offset + actions.length].results.length !== 1) return { ...metadata, freshness: "stale" };
+        admission.results = results.slice(offset, offset + actions.length); return detail;
+      }
+      const final = await this.db.batch(guards.map(guard => this.sql(`SELECT 1 WHERE ${guard.sql}`, ...guard.values)));
+      if (!final.every(result => result.results.length === 1) || !await this.committed(key)) return { ...metadata, freshness: "stale" };
       return detail;
     } catch { return { ...metadata, freshness: "unavailable", reason: "invariant_failure" }; }
   }

@@ -1,6 +1,7 @@
 import type { AssistantEnv } from "./env";
 import { bridgeHash } from "./ingress";
 import { TelegramLink } from "./telegram-auth";
+import { createTelegramReview } from "./telegram";
 class InputError extends Error { constructor(readonly status: number) { super("telegram_input"); } }
 async function read(request: Request): Promise<unknown> {
   const reader = request.body?.getReader(); if (!reader) throw new InputError(400);
@@ -29,7 +30,12 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
   try {
     const link = new TelegramLink(env.DB, { installationId: env.INSTALLATION_ID!, generation: env.OPERATIONAL_GENERATION!,
       sourceEpoch: env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: env.BRIDGE_SOURCE_GENERATION! }, env.TELEGRAM_BOT_INSTANCE!, env.TELEGRAM_WEBHOOK_SECRET);
-    return reply(await link.receive(await read(request)));
+    const input = await read(request);
+    if (input && typeof input === "object" && "callback_query" in input) {
+      const review = await createTelegramReview(env, { installationId: env.INSTALLATION_ID!, generation: env.OPERATIONAL_GENERATION!, sourceEpoch: env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: env.BRIDGE_SOURCE_GENERATION! });
+      return reply(await review.receiveCallback(input));
+    }
+    return reply(await link.receive(input));
   } catch (error) {
     if (error instanceof InputError) return reply("telegram_input", error.status);
     if (error instanceof Error && error.message === "telegram_input") return reply("telegram_input", 400);

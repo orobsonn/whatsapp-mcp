@@ -28,7 +28,7 @@ async function start() {
     outboundService: () => { outbound++; throw new Error("network_forbidden"); },
   }, { name: "owner-binding-probe", modules: true, compatibilityDate: "2026-10-25",
     script: `export default {async fetch(request,env){try{const {method,affinity,input}=await request.json();
-      if(!['source','control','query','telegramLink'].includes(method))return new Response(null,{status:400});
+      if(!['source','control','query','telegramLink','telegramReview'].includes(method))return new Response(null,{status:400});
       return Response.json(await env.OWNER[method](affinity,input));}catch{return Response.json({error:'binding_rejected'},{status:403});}}};`,
     serviceBindings: { OWNER: { name: "owner-receiver", entrypoint: "OwnerAssistant", props: {} } },
   }] }), resourcePersistencePath: join(scratch, "state") });
@@ -51,6 +51,10 @@ test("official bundle exports the named owner capability and preserves command r
   const diary=await call("query",{kind:"decisions"});
   expect(diary).toMatchObject({status:200,body:{items:[],coverage:{kind:"page",remoteFreshness:"unchecked"}}});
   expect(await call("query",{kind:"decision",id:"capture:"+"x".repeat(300)})).toMatchObject({status:200,body:{state:"unavailable"}});
+  expect((await call("telegramReview", { kind: "status" })).status).toBe(403); // Unlinked, never inferred from observed IDs.
+  for (const key of Object.keys(affinity) as (keyof typeof affinity)[]) {
+    expect((await call("telegramReview", { kind: "topics.ensure" }, { ...affinity, [key]: "foreign" })).status).toBe(403);
+  }
   const command = { kind: "source.create", operationId: "bound-note", input: { originKey: "bound-note", text: "Synthetic owner note", occurredAt: 1 } };
   for (const key of Object.keys(affinity) as (keyof typeof affinity)[]) {
     expect((await call("source", command, { ...affinity, [key]: "foreign" })).status).toBe(403);

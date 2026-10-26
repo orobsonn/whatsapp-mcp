@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { bridgeHash } from "../assistant/ingress";
 import { DecisionJournal, type DecisionSubject } from "../assistant/decisions";
 import { SourceController } from "../assistant/sources";
@@ -386,4 +386,41 @@ test("owner journal reads required semantic decisions without engine calls and r
   await query("UPDATE assistant_retrieval_semantic SET ranking_json='{}' WHERE installation_id=?",scope.installationId).run();
   const changed=await new DecisionJournal(database,scope,{kind:"owner"},{clock:()=>now,semantic:{mode:"required",engine}}).get(published.decisionId!);
   expect(changed).toMatchObject({freshness:"stale"});expect(changed).not.toHaveProperty("proposal");expect(reads).toBe(before);
+});
+
+async function reviewAdmissionFixture() {
+  await env.DB.exec("CREATE TABLE IF NOT EXISTS assistant_telegram_read_admissions (installation_id TEXT,generation TEXT,token TEXT,decision_id TEXT,proposal_hash TEXT,publication_nonce TEXT,PRIMARY KEY(installation_id,generation,token));CREATE TABLE IF NOT EXISTS telegram_admission_effects (installation_id TEXT,id TEXT,PRIMARY KEY(installation_id,id));");
+  const result=await computed(),published=await result.host.publish(result.episode.id,result.reply),detail=await journal.get(published.decisionId!);
+  if(!("proposal"in detail))throw new Error("proposal missing");
+  const hash=await bridgeHash(detail.proposal),id=published.decisionId!;
+  const build=(guard:{sql:string;values:(string|number|null)[]})=>[env.DB.prepare(`INSERT INTO telegram_admission_effects SELECT ?,? WHERE ${guard.sql} ON CONFLICT DO NOTHING RETURNING id`).bind(scope.installationId,"effect",...guard.values)];
+  return {id,hash,build};
+}
+test("host review admission consumes a same-batch nonce and supports ten source guards without one giant predicate",async()=>{
+  for(let i=0;i<9;i++)await new SourceController(env.DB,scope,{kind:"owner"},()=>now).create({originKey:`review-${i}`,text:`Synthetic request background ${i}`,occurredAt:now});
+  const {id,hash,build}=await reviewAdmissionFixture();
+  expect((await journal.admitReview(id,hash,build))?.[0].results).toEqual([{id:"effect"}]);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test.each(["source","nonce"])("host review admission rejects %s mutation immediately before the atomic batch",async kind=>{
+  const {id,hash,build}=await reviewAdmissionFixture(),batch=env.DB.batch.bind(env.DB);let changed=false;
+  const fault=vi.spyOn(env.DB,"batch").mockImplementation(async statements=>{
+    if(!changed){changed=true;if(kind==="source")await query("UPDATE assistant_sources SET revision=revision+1 WHERE installation_id=? AND id=?",scope.installationId,source.id).run();else await query("UPDATE assistant_shadow_decisions SET publication_nonce='stale-nonce' WHERE installation_id=? AND id=?",scope.installationId,id).run();}
+    return batch(statements);
+  });
+  expect(await journal.admitReview(id,hash,build)).toBeNull();fault.mockRestore();
+  expect(await query("SELECT COUNT(*) n FROM telegram_admission_effects WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test.each(["rollback","lost_ack"])("host review admission leaves no reusable attestation after %s",async mode=>{
+  const {id,hash,build}=await reviewAdmissionFixture(),batch=env.DB.batch.bind(env.DB);
+  const fault=mode==="lost_ack"?vi.spyOn(env.DB,"batch").mockImplementationOnce(async statements=>{await batch(statements);throw new Error("ACK lost");}):null;
+  expect(await journal.admitReview(id,hash,guard=>[...build(guard),...(mode==="rollback"?[env.DB.prepare("SELECT json('invalid-json')")]:[])])).toBeNull();fault?.mockRestore();
+  expect(await query("SELECT COUNT(*) n FROM telegram_admission_effects WHERE installation_id=?",scope.installationId).first("n")).toBe(mode==="lost_ack"?1:0);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test("host review admission denies a remotely withdrawn proposal without yielding any action statement",async()=>{
+  const remote=await remoteProposal(),detail=await remote.diary.get(remote.id);if(!("proposal"in detail))throw new Error("proposal missing");
+  remote.setState("withdrawn");const build=vi.fn(()=>[]);
+  expect(await remote.diary.admitReview(remote.id,await bridgeHash(detail.proposal),build)).toBeNull();expect(build).not.toHaveBeenCalled();
 });
