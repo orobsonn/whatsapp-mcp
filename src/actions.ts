@@ -1,75 +1,28 @@
 import { assertChatConfirmation, type ChatConfirmation } from "./approval";
-import { z } from "zod";
 import type { Env } from "./env";
 import { AppError, assertActive, currentFence, sha256, LIMITS } from "./core";
 import { getChat } from "./store";
 import type { ZapiSendEnvelope, ZapiSendIds } from "./zapi";
-import { supportsSendMedia, ZapiError, ProviderUncertainError } from "./zapi";
+import { ZapiError, ProviderUncertainError } from "./zapi";
 import { ingestEvent, ingestStatus } from "./capture";
-import { generatedMediaVisible } from "./media";
 
-const ref = z.string().min(1).max(200);
-const options = { chatId: ref, replyTo: ref.optional() };
-const file = {
-  ...options,
-  mediaId: ref,
-  mediaHash: z.string().regex(/^[a-f0-9]{64}$/),
-  caption: z.string().max(8000).optional(),
-  fileName: z
-    .string()
-    .min(1)
-    .max(255)
-    .regex(/^[^/\\\x00-\x1f]+$/)
-    .optional(),
-};
-export const sendEnvelopeSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      ...options,
-      kind: z.literal("text"),
-      text: z
-        .string()
-        .min(1)
-        .max(8000)
-        .refine((s) => s.trim().length > 0),
-    })
-    .strict(),
-  z.object({ ...file, kind: z.literal("image") }).strict(),
-  z.object({ ...file, kind: z.literal("pdf") }).strict(),
-  z.object({ ...file, kind: z.literal("audio") }).strict(),
-]);
-/** MCP requires an object at the root; enforce the discriminated contract again in prepareAction. */
-export const sendToolSchema = z
-  .object({
-    ...file,
-    mediaId: file.mediaId
-      .optional()
-      .describe(
-        "Referência obtida de recentUploads ou consultar_midia; obrigatória para imagem, PDF e áudio.",
-      ),
-    mediaHash: file.mediaHash
-      .optional()
-      .describe("Hash retornado pelo MCP junto à mídia, nunca pedido ao dono."),
-    kind: z
-      .enum(["text", "image", "pdf", "audio"])
-      .describe(
-        "Use image com caption para enviar imagem e texto juntos; text envia somente texto.",
-      ),
-    text: sendEnvelopeSchema.options[0].shape.text
-      .optional()
-      .describe("Somente para kind=text. Para imagem ou PDF use caption."),
-  })
-  .strict();
-export type SendEnvelope = z.infer<typeof sendEnvelopeSchema>;
+export {sendEnvelopeSchema,sendToolSchema,canonicalEnvelope,actionDigest} from "./send-envelope";
+export type {SendEnvelope} from './send-envelope';
+import {sendEnvelopeSchema,canonicalEnvelope,actionDigest,type SendEnvelope} from "./send-envelope";
+import {resolveMedia,resolveSendEnvelope,type MediaRow} from "./send-envelope-validation";
 
-/** Parse to a fixed key order before hashing; unknown transport options are forbidden. */
-export function canonicalEnvelope(input: unknown): string {
-  return JSON.stringify(sendEnvelopeSchema.parse(input));
+export interface SendProvider {
+  status(): Promise<{ connected: boolean; phone?: string }>;
+  send(envelope: ZapiSendEnvelope): Promise<ZapiSendIds>;
 }
-export async function actionDigest(input: unknown): Promise<string> {
-  const parsed = JSON.parse(canonicalEnvelope(input));
-  return sha256(JSON.stringify(parsed, Object.keys(parsed).sort()));
+export interface ApprovalProof {
+  sub: string;
+  epoch: string;
+  purpose: string;
+  resourceId: string;
+  envelopeHash: string;
 }
+
 interface ActionRow {
   id: string;
   epoch: string;
@@ -85,27 +38,6 @@ interface ActionRow {
   provider_zaap_id: string | null;
   last_error: string | null;
   created_at: number;
-}
-interface MediaRow {
-  id: string;
-  kind: string;
-  mime: string;
-  size: number;
-  sha256: string;
-  object_key: string;
-  filename: string | null;
-  version: number;
-}
-export interface SendProvider {
-  status(): Promise<{ connected: boolean; phone?: string }>;
-  send(envelope: ZapiSendEnvelope): Promise<ZapiSendIds>;
-}
-export interface ApprovalProof {
-  sub: string;
-  epoch: string;
-  purpose: string;
-  resourceId: string;
-  envelopeHash: string;
 }
 async function row(env: Env, id: string): Promise<ActionRow> {
   assertActive(env);
@@ -123,52 +55,8 @@ async function row(env: Env, id: string): Promise<ActionRow> {
     throw new AppError("action_changed", 409);
   return a;
 }
-async function resolveMedia(
-  env: Env,
-  envelope: SendEnvelope,
-): Promise<MediaRow | null> {
-  if (envelope.kind === "text") return null;
-  const f = currentFence(env);
-  const m = await env.DB.prepare(
-    `SELECT m.* FROM media m LEFT JOIN messages x ON x.id=m.message_id WHERE m.id=? AND m.epoch=? AND m.generation=? AND m.state='ready' AND m.deleted_at IS NULL AND (m.message_id IS NULL OR (x.deleted_at IS NULL AND x.version=m.message_version)) AND ${generatedMediaVisible("m")}`,
-  )
-    .bind(envelope.mediaId, f.epoch, f.generation)
-    .first<MediaRow>();
-  if (
-    !m ||
-    m.sha256 !== envelope.mediaHash ||
-    m.kind !== envelope.kind ||
-    !m.object_key ||
-    m.size > LIMITS.mediaBytes
-  )
-    throw new AppError("media_unavailable", 409);
-  if (!supportsSendMedia(envelope.kind, m.mime))
-    throw new AppError("unsupported_send_media", 415);
-  return m;
-}
 export async function prepareAction(env: Env, input: unknown) {
-  assertActive(env);
-  const envelope = sendEnvelopeSchema.parse(input);
-  const chat = await getChat(env, envelope.chatId);
-  const source = await resolveMedia(env, envelope);
-  if (
-    envelope.kind === "audio" &&
-    (envelope.caption !== undefined || envelope.replyTo !== undefined)
-  )
-    throw new AppError("unsupported_audio_options");
-  if (envelope.kind === "pdf") {
-    envelope.fileName = envelope.fileName ?? source?.filename ?? "arquivo.pdf";
-    if (!/^[^/\\\x00-\x1f\x7f]{1,124}\.pdf$/i.test(envelope.fileName))
-      throw new AppError("invalid_pdf_filename");
-  }
-  if (envelope.replyTo) {
-    const reply = await env.DB.prepare(
-      "SELECT id FROM messages WHERE id=? AND chat_id=? AND epoch=? AND generation=? AND deleted_at IS NULL",
-    )
-      .bind(envelope.replyTo, chat.id, chat.epoch, chat.generation)
-      .first();
-    if (!reply) throw new AppError("reply_not_found", 404);
-  }
+  const {envelope,chat}=await resolveSendEnvelope(env,input);
   const id = crypto.randomUUID(),
     now = Date.now(),
     hash = await actionDigest(envelope);
