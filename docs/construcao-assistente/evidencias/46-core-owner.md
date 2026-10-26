@@ -20,6 +20,8 @@ O núcleo amplia os controladores existentes; a autenticação MCP, a afinidade 
 
 Todos devolvem `{operationId,kind,id,revision,version,shadow:true}` do recibo original. Uma segunda operação com o mesmo `originKey` e conteúdo/metadados originais aponta a revisão/versão **1/1**, mesmo depois de correção/retirada; payload diferente é recusado. O mesmo `operationId` com hash diferente é recusado no ledger compartilhado com os outros comandos.
 
+Atualização de composição com #55: a frase acima registra o contrato inicial. Recibos de operações **já admitidas** continuam imutáveis e recuperáveis após retirada; um **novo** alias de criação para origem retirada agora é recusado sem novo recibo, por sua barreira monotônica. Após correção ainda ativa, o alias original conserva1/1 conforme o ledger.
+
 `ownerCommandSchema`, `OwnerCommand` e `CommandReceipt` são exportados por `assistant/control.ts`. Projetos/mandatos/FUP mantêm `expectedVersion` e recibo `version`. Novos comandos:
 
 - `mission.put`: `operationId,id,expectedRevision,objective,source:{id,revision}`, opcionais `project:{id,revision},stopCondition,state: draft|active,nextEvaluationAt`; padrão `draft`.
@@ -53,6 +55,8 @@ Qualquer nova revisão de missão invalida trabalho vivo por `occurrence → FUP
 A revisão encontrou dois P1s reais, reproduzidos em cinco REDs: um `expectedRevision` futuro podia aproveitar correção concorrente entre o SELECT e o batch e gravar um recibo com a versão anterior; políticas aceitavam `private` apesar de conversa `group` observada e depois impediam o reparo do tipo legado.
 
 A admissão de fonte agora exige o `current_version` exato do snapshot usado para montar o recibo, além da revisão esperada. Os três casos de correção/audiência/retirada recusam a corrida, sem mutação ou recibo parcial; repetir após ler a versão nova retorna o recibo correto. A admissão de política compara no mesmo batch apenas a observação do epoch/generation configurado pelo host. Para política efetivamente não excluída, tipo NULL, divergente ou observação não disponível bloqueiam. Um sexto RED adicional provou o caso de kind preenchido com estado ainda desconhecido. Ausência de observação é diferente: permite cadastrar tipo explícito ou conservar tipo existente, mas não reparar um tipo diferente sem prova. O reparo autorizado atualiza `kind`, revisão e histórico juntos.
+
+Na composição #55, retirada usa uma admissão própria: versão e revisão são capturadas no **mesmo SQL/CAS** da barreira, antes de gravar o recibo. Se a revisão esperada2 passa após correção concorrente, a retirada pode devolver3/v2 correto; nunca publica a versão1 obsoleta. Correção/audiência conservam o guard de snapshot. Testes atuais cobrem ACK perdido e rollback nas duas fases, uma única mudança e recuperação do recibo original. A injeção de ACK do broker acompanha a gravação atual com `all()/RETURNING`, verificando que a falha foi realmente injetada, sem nova chamada ao adapter.
 
 Os testes cobrem reparo legado, observação inserida entre preparação e admissão, E/G antigos contraditórios e origem não configurada. Regressão dirigida após as correções: 65/65 (24 novos + 20 fontes + 21 controle); check de tipos e diff limpo. Sem chamada paga, deploy ou alteração de gateway.
 
