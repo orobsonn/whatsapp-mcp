@@ -8,7 +8,15 @@ Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnic
 
 #121 fechada com v0.34.0, tag em56769c8658f9daf698c6766b45ea268a7557513e. PR124 recebeu correção determinística da disputa de prazo25ms no teste de política do diário e revisão adversarial independente. Ambos checks do PR e CI40320191142 na main aprovados:729 testes gerais/52 nativos, tipos, ambos builds e audit. Pacote/lock/changelog/tag conferidos. Prova cloud anterior preservada, sem repetir snapshot/recuperação paga.
 
-## Engenharia ainda em validação
+## Checkpoint mais recente — composição e instalação
+
+CI40380964450 aprovada em14895a722dfca8a10fd54c3b78bb67b981545cc0:1165 testes gerais,62 nativos,4 OAuth Node,29 instalação/operadores Node, tipos, builds e audit. Inclui snapshot/restoreC, os cinco fixes de reproof/pause, purge de história sem fundir IDs, preservação de históricoB com parentA retirado, bloqueio final de modelo/OCR/Telegram durante hold e diagnóstico acessível. A CI anterior40378903500 teve10 falhas no catálogo export; fix dirigido24/24 e esta CI confirmam a correção. Ainda não é o HEAD final: revisão encontrou ACL antiga de nota restaurada e cotaD1 na verificação128, em correção separada antes de deploy.
+
+Instalação própria avançou: arquivo atualizado no commit49292bd,4 migrações metadata-only e MCP conectado autenticado0.35.0; parser isolado ec10c8ee sem bindings/secrets e limiteCPU100ms; banco próprio com24 migrações do commit171ec55. Fresh reader secret provisionado uma vez, arquivo agora7f24b5f5, código/bindings anteriores preservados, bridge contínuo desligado. Nenhum Worker da assistente foi publicado ainda; migração25, autoridade, afinidade, saúde/cron e produto/canais continuam pendentes. Evidências56-archive-readers-vps.md e56-own-resources-vps.md separam cada efeito/gate. Operadores locais têm logs0600 persistentes e named service remoto, sem depender de Chrome.
+
+Corte46 preservado emcodex/assistant-owner-release-next, candidato3f6fefa para0.36.0, com ancestry da main0.35 e handshake de leitura; CI própria em curso. Sem tag/release/fechamento até homologação cloud/cliente. Contagem concluída permanece29/41;12 abertas. Nenhuma chamada paga de modelo adicional: ledger49053microUSD inclui40000 incertos antigos, sem reset. Scripts/journals privados novos preservados emlocal/, inclusive cópia dos operadores de/tmp; custos operacionais ainda não reconciliados com fatura.
+
+## Histórico de composição e pendências
 
 - #112: branches originais preservadas e combinadas com121. Correções de prepare recusado por manutenção e submit frio preservam alias/ticket/hash/prova e admissão única. Revisão encontrou e corrigiu também recusa busy concorrente escondendo recibo completo; só o mesmo ticket/operação/revisão sob prova atual reconcilia, sem retry. Evidência112-semantic-recovery-vps.md registra RED/GREEN e contraprovas. CI da primeira composição semântica passou, mas ainda não contém todos os follow-ups; não é aceite final. Runtime callback Flue que reconstruía busca lexical está sendo corrigido/testado separadamente.
 - #46/#47/#49/#52: commits autorais preservados em codex/assistant-product-integration; migrações0015–0020 distintas. Conflitos combinam testes nativos checkpoint+owner binding, semantic ranking+mediaEvidence, Telegram+FUP. Nenhuma issue destas foi fechada.
