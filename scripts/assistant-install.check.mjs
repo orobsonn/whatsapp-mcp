@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { renderInstallation, prepareBridge, pinAffinity } from "./assistant-install.mjs";
+import { validateAssistantInstallConfig } from "../assistant/installation.ts";
 const manifest = () => ({ schema: 1, accountId: "ab9f6d8988145943bf8bbab313e45e6e", installationId: "synthetic-install", generation: "g1",
   databaseId: "11111111-1111-4111-8111-111111111111", imageDigest: `registry.cloudflare.com/ab9f6d8988145943bf8bbab313e45e6e/assistant-cognee@sha256:${"a".repeat(64)}`,
   archiveBaseline: { versionId: "22222222-2222-4222-8222-222222222222", settingsHash: "b".repeat(64) } });
@@ -17,6 +18,9 @@ test("artifact rendering is private, idempotent, local-only and refuses a change
     assert.deepEqual(await renderInstallation(manifest(), directory, "/synthetic/root", "synthetic-head"), result);
     await assert.rejects(renderInstallation({ ...manifest(), generation: "other" }, directory, "/synthetic/root", "synthetic-head"));
     const review = JSON.parse(await readFile(join(directory, "review.json"), "utf8")); assert.equal(review.sourceHead, "synthetic-head");
+    const config = JSON.parse(await readFile(join(directory, "assistant.wrangler.jsonc"), "utf8"));
+    assert.equal(config.vars.ARTIFACTS_INSTALLATION_ID, manifest().installationId); assert.equal(config.vars.ARTIFACTS_GENERATION, manifest().generation);
+    assert.throws(() => validateAssistantInstallConfig({ ...config, vars: { ...config.vars, ARTIFACTS_GENERATION: "foreign" } }, "/synthetic/root"));
     await assert.rejects(renderInstallation(manifest(), "/unrelated-project/install", "/synthetic/root"));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

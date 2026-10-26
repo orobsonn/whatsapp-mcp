@@ -32,3 +32,9 @@ Executar o plano de infraestrutura com preflight live, recursos, migrações, im
 Sem conta financeira criada/resetada. Cap futuro deve descontar todo comprometido anterior, incluindo reservas incertas e demais gerações/períodos/instalações; o teto US$10 não se renova por conta. Custo incremental de inferência desta rodada: US$0. Custos Cloudflare de leitura não foram tratados como inferência nem como fatura final.
 
 Runbook: [operação](../operacao.md). Não declarar #56/#57 prontas por este commit local; release/CI, deploy e homologação têm fronteiras próprias.
+
+## Composição com retenção de objetos #55
+
+A instalação agora rende ARTIFACTS_INSTALLATION_ID e ARTIFACTS_GENERATION iguais ao host; o validator recusa ausência/divergência. Health distingue artifactAffinity verified/changed/unconfigured. Somente affinity verificada permite head no prefixo próprio calculado pelo mesmo helper de RetentionObjects; ausência/divergência não toca bucket. observed_bindings exige também affinity, reachability e schema coreReady. artifactBindingIdentity permanece dependente de prova API do binding real; marcadores não provam bucket ID.
+
+Node 3/3 atualizado e TypeScript passaram. RED controlado com health anterior falhou 1/1 (9 pulados); implementação restaurada e GREEN dirigido de instalação passou 10/10 em 6,81s. Node smoke57 passou 5/5 em 0,27s, compondo o configHash novo. Revisão estática independente de semantic_bugs aprovou sem bloqueantes; nenhuma suíte pesada foi concorrente. O hash da configuração muda com esses campos: renderer conserva artefatos anteriores e exige outra pasta de revisão; smoke57 recalcula o grafo e recusa hash antigo, sem reescrever pins silenciosamente. Nenhuma chamada cloud ou inferência nesta correção.

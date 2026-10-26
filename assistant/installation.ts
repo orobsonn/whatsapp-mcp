@@ -36,7 +36,7 @@ export function installationConfigs(input: unknown, repositoryRoot: string) {
     containers: [{ name: `${INSTALLATION.worker}-cognee`, class_name: "CogneeContainer", scheduling_policy: "durable_object", images: { cognee: { image: manifest.imageDigest } }, observability: { enabled: false, logs: { enabled: false } } }],
     d1_databases: [{ binding: "DB", database_name: INSTALLATION.database, database_id: manifest.databaseId, migrations_dir: `${root}/assistant/migrations` }],
     r2_buckets: [{ binding: "ARTIFACTS", bucket_name: INSTALLATION.artifacts }], services: services.map(binding => ({ ...binding })), triggers: { crons: ["* * * * *"] },
-    vars: { INSTALLATION_ID: manifest.installationId, OPERATIONAL_GENERATION: manifest.generation, FLUE_EPISODES_ENABLED: "shadow", SEMANTIC_SEARCH_MODE: "required",
+    vars: { INSTALLATION_ID: manifest.installationId, OPERATIONAL_GENERATION: manifest.generation, ARTIFACTS_INSTALLATION_ID: manifest.installationId, ARTIFACTS_GENERATION: manifest.generation, FLUE_EPISODES_ENABLED: "shadow", SEMANTIC_SEARCH_MODE: "required",
       ROUTINES_ENABLED: "off", ROUTINES_PAUSED: "true", TELEGRAM_SUMMARIES_ENABLED: "false", MEDIA_CONTEXT_ENABLED: "false", RETENTION_AUTHORITY_REQUIRED: "true" } };
   const pdf = { $schema: `${root}/node_modules/wrangler/config-schema.json`, name: INSTALLATION.pdf, account_id: INSTALLATION.accountId, main: `${root}/assistant/pdf-parser/index.ts`,
     compatibility_date: "2026-10-26", workers_dev: false, preview_urls: false, limits: { cpu_ms: 100 }, observability: { enabled: false } };
@@ -57,7 +57,7 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
     durable_objects: z.object({ bindings: z.array(z.object({ name: z.string(), class_name: z.string() }).strict()).length(3) }).strict(),
     containers: z.tuple([z.object({ name: z.literal(`${INSTALLATION.worker}-cognee`), class_name: z.literal("CogneeContainer"), scheduling_policy: z.literal("durable_object"),
       images: z.object({ cognee: z.object({ image }).strict() }).strict(), observability: z.object({ enabled: z.literal(false), logs: z.object({ enabled: z.literal(false) }).strict() }).strict() }).strict()]),
-    vars: z.object({ INSTALLATION_ID: id, OPERATIONAL_GENERATION: id, FLUE_EPISODES_ENABLED: z.literal("shadow"), SEMANTIC_SEARCH_MODE: z.literal("required"),
+    vars: z.object({ INSTALLATION_ID: id, OPERATIONAL_GENERATION: id, ARTIFACTS_INSTALLATION_ID: id, ARTIFACTS_GENERATION: id, FLUE_EPISODES_ENABLED: z.literal("shadow"), SEMANTIC_SEARCH_MODE: z.literal("required"),
       ROUTINES_ENABLED: z.literal("off"), ROUTINES_PAUSED: z.literal("true"), TELEGRAM_SUMMARIES_ENABLED: z.literal("false"), MEDIA_CONTEXT_ENABLED: z.literal("false"), RETENTION_AUTHORITY_REQUIRED: z.literal("true") }).strict(),
     $schema: z.string(), compatibility_date: z.literal("2026-10-25"), compatibility_flags: z.tuple([z.literal("nodejs_compat")]),
     observability: z.object({ enabled: z.literal(false) }).strict(), triggers: z.object({ crons: z.tuple([z.literal("* * * * *")]) }).strict(),
@@ -66,6 +66,7 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
   if (JSON.stringify(config.services) !== JSON.stringify(services) || JSON.stringify(config.durable_objects.bindings) !== JSON.stringify(ownBindings) ||
     JSON.stringify(config.migrations) !== JSON.stringify([{ tag: "flue-runtime-v1", new_sqlite_classes: ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] },
       { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) }])) throw new Error("installation_capability_config");
+  if (config.vars.ARTIFACTS_INSTALLATION_ID !== config.vars.INSTALLATION_ID || config.vars.ARTIFACTS_GENERATION !== config.vars.OPERATIONAL_GENERATION) throw new Error("installation_artifact_affinity");
   const root = repositoryRoot.replace(/\/$/, "");
   if (config.d1_databases[0].migrations_dir !== `${root}/assistant/migrations` || config.$schema !== `${root}/node_modules/wrangler/config-schema.json`) throw new Error("installation_config_path");
   return config;

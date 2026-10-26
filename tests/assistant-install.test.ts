@@ -17,7 +17,7 @@ test("an incomplete plan is inert, names only dedicated resources and never gran
 test("rendered graph binds only private read capabilities, new state/artifacts, official DO classes and a pinned image", () => {
   const { assistant, pdf, archiveDelta } = installationConfigs(manifest(), root);
   expect(validateAssistantInstallConfig(assistant, root).name).toBe(INSTALLATION.worker);
-  expect(assistant.vars).toMatchObject({ ROUTINES_ENABLED: "off", ROUTINES_PAUSED: "true", FLUE_EPISODES_ENABLED: "shadow", SEMANTIC_SEARCH_MODE: "required", MEDIA_CONTEXT_ENABLED: "false", TELEGRAM_SUMMARIES_ENABLED: "false", RETENTION_AUTHORITY_REQUIRED: "true" });
+  expect(assistant.vars).toMatchObject({ ROUTINES_ENABLED: "off", ROUTINES_PAUSED: "true", FLUE_EPISODES_ENABLED: "shadow", SEMANTIC_SEARCH_MODE: "required", MEDIA_CONTEXT_ENABLED: "false", TELEGRAM_SUMMARIES_ENABLED: "false", RETENTION_AUTHORITY_REQUIRED: "true", ARTIFACTS_INSTALLATION_ID: manifest().installationId, ARTIFACTS_GENERATION: manifest().generation });
   expect(assistant.containers[0]).toMatchObject({ scheduling_policy: "durable_object", images: { cognee: { image: manifest().imageDigest } } });
   expect(assistant.containers[0]).not.toHaveProperty("max_instances");
   expect(assistant.services).toContainEqual({ binding: "CAPTURE_READER", service: "whatsapp-mcp", entrypoint: "CaptureReader" });
@@ -47,13 +47,16 @@ test("host config override refuses default archive capabilities, public routes, 
     (value: any) => { value.routes = [{ pattern: "whatsapp.robsonlins.com" }]; },
     (value: any) => { value.vars.ZAPI_INSTANCE_TOKEN = "synthetic-private"; },
     (value: any) => { value.vars.ROUTINES_PAUSED = "false"; },
+    (value: any) => { delete value.vars.ARTIFACTS_INSTALLATION_ID; },
+    (value: any) => { value.vars.ARTIFACTS_INSTALLATION_ID = "other-installation"; },
+    (value: any) => { value.vars.ARTIFACTS_GENERATION = "other-generation"; },
     (value: any) => { value.durable_objects.bindings[0].script_name = "other"; },
     (value: any) => { value.d1_databases[0].migrations_dir = "/other-project/migrations"; },
   ]) { const changed = structuredClone(original); mutate(changed); expect(() => validateAssistantInstallConfig(changed, root)).toThrow(); }
 });
 test("private installation diagnostics report missing schema/bindings honestly without requiring provider credentials", async () => {
   const result = await installationHealth({});
-  expect(result).toMatchObject({ infrastructure: "pending", schema: { state: "unconfigured", coreReady: false }, capture: "unconfigured_or_upgrade_pending", artifacts: "unconfigured", retention: "unconfigured",
+  expect(result).toMatchObject({ infrastructure: "pending", schema: { state: "unconfigured", coreReady: false }, capture: "unconfigured_or_upgrade_pending", artifacts: "unconfigured", artifactAffinity: "unconfigured", retention: "unconfigured",
     gates: { routineMode: "off", paused: false, pauseConfigured: false, modelKeyConfigured: false }, functionalHomologation: "not_proven_by_health", checkpointHealth: "not_probed_no_container_wake" });
   await expect(assistantHealth({}, { kind: "extractor" })).rejects.toThrow("owner_required");
 });
@@ -61,15 +64,33 @@ test("binding probes compare affinity privately and never wake a container, refr
   const network = vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("external_network_forbidden"); });
   const affinity = vi.fn(async () => ({ observation: "capture_installation_affinity", state: "available", fence: { epoch: "synthetic-private-epoch", generation: "synthetic-private-source-generation" } }));
   const settings = { INSTALLATION_ID: "synthetic", OPERATIONAL_GENERATION: "g", BRIDGE_SECRET: "synthetic-private-bridge-key", BRIDGE_SOURCE_EPOCH: "synthetic-private-epoch", BRIDGE_SOURCE_GENERATION: "synthetic-private-source-generation",
-    CAPTURE_READER: { installationAffinity: affinity, readSnapshot: vi.fn() }, ARTIFACTS: env.MEDIA,
+    CAPTURE_READER: { installationAffinity: affinity, readSnapshot: vi.fn() }, ARTIFACTS: env.MEDIA, ARTIFACTS_INSTALLATION_ID: "synthetic", ARTIFACTS_GENERATION: "g",
     RETENTION_AUTHORITY: { idFromName: (name: string) => name, get: () => ({ lookup: async () => ({ state: "sealed", revision: 1, blocked: [] }) }) },
     COGNEE: { get: vi.fn() }, CALENDAR_OAUTH: { get: vi.fn() }, OPENAI_API_KEY: "synthetic-private-provider-key" } as unknown as AssistantEnv;
   try {
     const result = await installationHealth(settings);
-    expect(result).toMatchObject({ capture: "affinity_verified", artifacts: "reachable", retention: "sealed", functionalHomologation: "not_proven_by_health" });
+    expect(result).toMatchObject({ capture: "affinity_verified", artifacts: "reachable", artifactAffinity: "verified", retention: "sealed", functionalHomologation: "not_proven_by_health" });
     expect(affinity).toHaveBeenCalledWith({ secret: "synthetic-private-bridge-key" });
     expect(JSON.stringify(result)).not.toContain("synthetic-private");
     expect(settings.COGNEE!.get).not.toHaveBeenCalled(); expect(settings.CALENDAR_OAUTH!.get).not.toHaveBeenCalled(); expect(network).not.toHaveBeenCalled();
     expect(await installationHealth({ ...settings, BRIDGE_SOURCE_GENERATION: "changed" })).toMatchObject({ capture: "affinity_changed" });
   } finally { network.mockRestore(); }
+});
+
+test("artifact scope markers gate the own-prefix probe and observed bindings without claiming bucket identity", async () => {
+  const head = vi.fn(async () => null);
+  const settings = { INSTALLATION_ID: "synthetic/one", OPERATIONAL_GENERATION: "g/one", ARTIFACTS_INSTALLATION_ID: "synthetic/one", ARTIFACTS_GENERATION: "g/one",
+    DB: { prepare: () => ({ bind: (...tables: string[]) => ({ all: async () => ({ results: tables.map(name => ({ name })) }), first: async (column: string) => column === "n" ? 5 : null }) }) },
+    BRIDGE_SECRET: "synthetic-private-key", BRIDGE_SOURCE_EPOCH: "e", BRIDGE_SOURCE_GENERATION: "g",
+    CAPTURE_READER: { installationAffinity: async () => ({ observation: "capture_installation_affinity", state: "available", fence: { epoch: "e", generation: "g" } }) }, ARTIFACTS: { head },
+    RETENTION_AUTHORITY: { idFromName: (name: string) => name, get: () => ({ lookup: async () => ({ state: "sealed" }) }) } } as unknown as AssistantEnv;
+  expect(await installationHealth(settings)).toMatchObject({ infrastructure: "observed_bindings", artifactAffinity: "verified", artifacts: "reachable", artifactBindingIdentity: "requires_cloud_binding_api_verification" });
+  expect(head).toHaveBeenCalledExactlyOnceWith("assistant-artifacts/v1/synthetic%2Fone/g%2Fone/installation-health/no-private-body");
+  for (const changed of [{ ARTIFACTS_INSTALLATION_ID: undefined }, { ARTIFACTS_GENERATION: undefined }, { ARTIFACTS_INSTALLATION_ID: "other" }, { ARTIFACTS_GENERATION: "other" }]) {
+    head.mockClear();
+    expect(await installationHealth({ ...settings, ...changed })).toMatchObject({ infrastructure: "pending", artifactAffinity: Object.values(changed)[0] === undefined ? "unconfigured" : "changed", artifacts: "not_probed_affinity" });
+    expect(head).not.toHaveBeenCalled();
+  }
+  head.mockRejectedValueOnce(new Error("bucket_unavailable"));
+  expect(await installationHealth(settings)).toMatchObject({ infrastructure: "pending", artifactAffinity: "verified", artifacts: "unavailable" });
 });
