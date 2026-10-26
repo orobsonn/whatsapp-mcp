@@ -1,0 +1,118 @@
+{
+  "issue": 52,
+  "date": "2026-10-26",
+  "state": "isolated_synthetic_cloud_evidence_not_pilot_ready",
+  "codeValidation": {
+    "integratedBase": "6171513cdc461b375b81b6804a3ea9d79aec07eb",
+    "ciRun": 40415132411,
+    "scopeCorrection": "f3aef6b",
+    "cloudRuntime": "private isolated harness; not the unpaused complete Own product"
+  },
+  "scenarioMetadata": {
+    "png": {
+      "settledMicroUsd": 691,
+      "exactConditionalActorPassed": false,
+      "literalNameAmbiguous": true
+    },
+    "pdfText": {
+      "settledMicroUsd": 358,
+      "oldDateAndConditionalProposalDistinguished": true,
+      "pages": 2
+    },
+    "pdfScan": {
+      "settledMicroUsd": 3087,
+      "controlledScannedDocument": true,
+      "pages": 2
+    },
+    "acknowledgedFixedJournalSteps": 26,
+    "positiveReadsWithoutNewProviderCalls": 3
+  },
+  "financialTruth": {
+    "unit": "microUSD in the conservative application ledger, not a provider invoice",
+    "previousCommitted": 49053,
+    "previousUncertainRetained": 40000,
+    "newSettled": 4136,
+    "newUncertain": 0,
+    "globalCommitted": 53189,
+    "fixedMediaReceiptsAllComplete": true,
+    "legacyFinancialStateReset": false
+  },
+  "invariants": {
+    "originalsHashesAndModelExtractionProvenancePreserved": true,
+    "replayCountersUnchangedAllCases": true,
+    "samePngPaidArtifactRecoveredAfterScopeCorrection": true,
+    "historicalNullReadObservationPreserved": true,
+    "pngReinterpreted": false,
+    "remoteWithdrawalDeniesBeforeCanonicalMaterialization": true,
+    "canonicalWithdrawalDeniesAfterMaterialization": true,
+    "negationsPreserved": true,
+    "conditionalStructurePreserved": true,
+    "quotedInjectionRemainedData": true,
+    "perfectOCR": false,
+    "newASRExercised": false,
+    "arbitraryUrlDownloaderAdded": false
+  },
+  "configurationTruth": {
+    "uncertainFixtureConfigurationRecordPreserved": true,
+    "unknownConfigurationIsDistinctFromUncertainInference": true,
+    "mimeRepairHasSeparateAcknowledgement": true
+  },
+  "teardown": {
+    "legacyExactV5CodeAndSevenBindingsRestored": true,
+    "onlyFourMediaBindingsAndNewCaptureSecretRemoved": true,
+    "legacyNamespaceImageCheckpointInventoryAndLedgerPreserved": true,
+    "fixtureOriginalThreeOverridesRestoredFreshKnownKeysPreserved": true,
+    "newDbArtifactsReceiptsAndCostsPreserved": true,
+    "operatorsStopped": true,
+    "temporaryCredentialsRemoved": true,
+    "operatorStopAloneDoesNotProveFinancialSettlement": true
+  },
+  "notEstablished": [
+    "New audio ASR or audio quality in cloud",
+    "Universal OCR or exact person identity from extracted names",
+    "Cloud parser CPU enforcement for every hostile PDF",
+    "Unpaused complete product, continuous summary delivery or pilot readiness",
+    "Deletion of copies already sent upstream"
+  ],
+  "privateArtifactsBase": "local/assistant-build/personal-shadow-stage/",
+  "privateArtifactSHA256": {
+    "media52-activation-v1/final-summary.private.json": "75e0553ff73c17835f6c5da842a5cfdabd649e0e8c9eadfcd125ca8044ea5050",
+    "media52-activation-v1/fixture-bind-mime-verified.private.json": "8139a5a9de839848e07a7c2aab1ee57f1aa114e660bf60ce2534857fb9b8f653",
+    "media52-activation-v1/fixture-bind-unknown-observation.private.json": "9163c270c9d5bd7d9a9bc3bffa694d70098d0b48cf236ed21db090c173ea6c34",
+    "media52-activation-v1/fixture-bind-unknown.private.json": "3c003b6ab79baf0ebc6e379c027edf7b3937234692175c0526946ed34d2d6e99",
+    "media52-activation-v1/fixture-rollback-verified.private.json": "963dd2394299e56e61e61bc1b41c5567584b4cfbb0fe675c10e30e3af5044120",
+    "media52-activation-v1/lab-scope-repair-verified.private.json": "c1326afec811460c13d571775242fe963933de4f22aa6af6ca10c63be41c5a6d",
+    "media52-activation-v1/operator-stopped.private.json": "5c107c6c89a817c237a5a4b60f510924065c2251b222390b2c62fced7d2fc1b6",
+    "media52-activation-v1/restore-v5-verified.private.json": "70f8695d07ba2272853f14ab0db160a0aaa22306bc443b2f81a893c28195f614",
+    "media52-activation-v1/restored.private.json": "712baca6ae0e71edc49212e1b321288da7eb97ae916b93952a77aaa31353edf4",
+    "media52-active-v3/media52.frozen.private.json": "917198f3335e64589227f48b0de6e705fc180656f0d5b7bd676d40824408509c",
+    "media52-active-v3/run-v3/after.ack.private.json": "e1334e54477b6598c97eb05595bf7d892c6cb9c1566435af79ec85f94bc2b584",
+    "media52-active-v3/run-v3/before.ack.private.json": "4b9376f686e630bd14588b7281acdda87604efc9b85bfbef7c91a9f6e72492ab",
+    "media52-active-v3/run-v3/bootstrap.ack.private.json": "e237239892ccae5446ef93f94688e0b981dcfd91c7ff05b436ead0bb3e766ea9",
+    "media52-active-v3/run-v3/fixture.bridge.1.ack.private.json": "bc770b8d87ada7c97bf5b6d425db7a041a435fd0346065eb5c5682de430ac12f",
+    "media52-active-v3/run-v3/fixture.bridge.2.ack.private.json": "87b01fd8c4f7768a4452fa91519b21b8c5fc9fa407a28b09916e518f68f26aed",
+    "media52-active-v3/run-v3/fixture.bridge.3.ack.private.json": "ba9f13c34fd67ee5c803bce3769191953be84bd5221ae4f2143eb0323be31873",
+    "media52-active-v3/run-v3/fixture.bridge.withdraw.ack.private.json": "52728a8372b90b1d135af5551bc4cd81635c0318de2eed82725ecd556973bfdd",
+    "media52-active-v3/run-v3/fixture.seed.ack.private.json": "ef7a76fa7796623496b07e3345ea7ffeb2b17d21623cee6e2c332c8d3b3c74aa",
+    "media52-active-v3/run-v3/fixture.withdraw.ack.private.json": "934c70f6e7a1ab511b8931bf0fd3c4ba417c4ba9f5e58693166abb63c9b1e472",
+    "media52-active-v3/run-v3/materialize.1.ack.private.json": "9f7a5bbc2c4910e108bf328f21b67b16a9455345000820e25d6fc93f853dfabf",
+    "media52-active-v3/run-v3/materialize.2.ack.private.json": "b5d7df7d51eb65bb7b09780ab519aca72bc36b33173b03a2d690eccf5586a22b",
+    "media52-active-v3/run-v3/materialize.3.ack.private.json": "867261bee79e746b6c6dff5f017e1c81c5ec91484882c49a6091054183205128",
+    "media52-active-v3/run-v3/materialize.withdraw.ack.private.json": "cc70d7cb5522e9045ea0f96955df4c9a0dc81b549d5ba555f30361e62346fc6c",
+    "media52-active-v3/run-v3/observe-1793055326920-png.read.private.json": "e029a76f81ad9197c1762501be5e1876ba9674f6afc7124fabadae8c17452df3",
+    "media52-active-v3/run-v3/parents.ready.ack.private.json": "484a34c0619ff1c5b94059ade7ea872078b9ec2b5ca09a5246eaf66dec414343",
+    "media52-active-v3/run-v3/parser.negative.ack.private.json": "a3536160aac7dcb85bd86f25e966274f0b44bea822908940d0da3562e56d4c36",
+    "media52-active-v3/run-v3/pdf-scan.interpret.ack.private.json": "9066b0c44818a53d83f9bc2db7bafeaeffe38bc1a0fb2918767dabe666e94e09",
+    "media52-active-v3/run-v3/pdf-scan.read.ack.private.json": "9a7e8601c21fff4c7939e598c2c9dda080d199cf8e20d592847e9b050fbf7cfc",
+    "media52-active-v3/run-v3/pdf-scan.replay.ack.private.json": "eb5ff4ea45bdb13b3814be9e74973bf99a637ae406bf79effdcf239e2f01887a",
+    "media52-active-v3/run-v3/pdf-text.interpret.ack.private.json": "20c07d174f7b21efa5fcc1372826b6977a13cccc26ed58d3a88e4b0037a1666c",
+    "media52-active-v3/run-v3/pdf-text.read.ack.private.json": "797e9b28b076389a7ea2930afdc117e26f4179019ac73b3f77b95ae12a394f19",
+    "media52-active-v3/run-v3/pdf-text.replay.ack.private.json": "d15b06e889d624f9faa3c6c0029db2a0bf529e30616cc5882312361df23bf01f",
+    "media52-active-v3/run-v3/png.interpret.ack.private.json": "e3eb2e0e04fc47a6c73813063bee4b00c4722df656aff3bb0fd8b5b8857989cd",
+    "media52-active-v3/run-v3/png.read.ack.private.json": "262be564f3f418af0ee0b1b6270ec0ae44cc609dcbced4ce97dab439777f1f71",
+    "media52-active-v3/run-v3/png.replay.ack.private.json": "821a46b293574b83585d705cb73c43beba6a165baedad160c9b9e86212ee4ea1",
+    "media52-active-v3/run-v3/withdraw.check.canonical.ack.private.json": "bfb000f5df5c4c18b89d258d3ebc79da0006777288f74f753b6c857168c7e75c",
+    "media52-active-v3/run-v3/withdraw.check.remote.ack.private.json": "b2a4cfd0b16737659e08a78e3d64f553482edaaee97cb2cd237a4de2d8a24203",
+    "media52-input-review-v1/semantic-gold.private.json": "3a9dfa18655f91d0a3872397795c7f87254cf96bb4b1cef7166dc1597e9405b9"
+  }
+}
