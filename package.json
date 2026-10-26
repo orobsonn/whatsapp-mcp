@@ -14,7 +14,8 @@
     "dev": "wrangler dev",
     "db:local": "wrangler d1 migrations apply DB --local",
     "build:assistant": "vite build --config assistant/vite.config.ts",
-    "test:assistant-runtime": "vitest run --config assistant/flue-test.config.ts"
+    "test:assistant-runtime": "vitest run --config assistant/flue-test.config.ts",
+    "test:calendar-oauth": "node --test scripts/calendar-oauth.check.mjs scripts/calendar-oauth-runtime.check.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.3",
