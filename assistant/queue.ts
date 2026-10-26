@@ -1,5 +1,6 @@
 import { decisionSubject, type DecisionSubject } from "./agent/contracts";
 import { seedDecisionJob } from "./decisions";
+import { dueFollowUpGuard } from "./followups";
 import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
@@ -67,10 +68,11 @@ export class JobQueue {
       input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
+    const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;
     await this.db.batch([
       this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts,occurrence_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
-      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null),
+        SELECT ?,?,?,?,?,?,?,?,?,? ${due?`WHERE ${due.sql} AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND occurrence_id=?)`:""} ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
+      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null,...(due?[...due.values,this.scope.installationId,this.scope.generation,input.subject?.kind==="fup_occurrence"?input.subject.occurrenceId:null]:[])),
       this.raw(`INSERT INTO assistant_job_ledger(installation_id,generation,job_id,request_hash,request_json)
         SELECT installation_id,generation,id,?,? FROM assistant_jobs
         WHERE installation_id=? AND generation=? AND dedupe_key=? ON CONFLICT DO NOTHING`, hash, request,

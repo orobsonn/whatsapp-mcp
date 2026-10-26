@@ -56,8 +56,13 @@ test("official bundle exports the named owner capability and preserves command r
   }
   const first = await call("source", command);
   expect(first).toMatchObject({ status: 200, body: { revision: 1, version: 1, shadow: true } });
+  expect(await call("control",{kind:"policy.put",operationId:"fup-policy",id:"chat",expectedRevision:0,conversationKind:"private"})).toMatchObject({status:200});
+  const followUp={kind:"fup.put",operationId:"fup",id:"fup",expectedVersion:0,conversationId:"chat",policyRevision:1,source:{id:(first.body as {id:string}).id,revision:1},purpose:"Synthetic review",dueAt:"2030-10-26T09:00:00-03:00",timezone:"America/Fortaleza",precision:"exact",state:"scheduled"};
+  expect(await call("control",followUp)).toMatchObject({status:200,body:{version:1,fupProvenance:1}});
+  expect(await call("query",{kind:"follow_up",id:"fup"})).toMatchObject({status:200,body:{obligationState:"scheduled",dueAt:Date.UTC(2030,9,26,12),provenance:{evidenceKind:"owner_directive",conditionStatus:"none_explicit"}}});
   await runtime.dispose(); await start();
   expect(await call("source", command)).toEqual(first);
+  expect(await call("control",followUp)).toMatchObject({status:200,body:{version:1}});
   const rows = await call("query", { kind: "sources" });
   expect(rows.body).toMatchObject({ items: [{ origin: "owner_note", revision: 1 }], coverage: "end_of_listing" });
   expect(JSON.stringify(rows.body)).not.toContain("Synthetic owner note");
