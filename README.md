@@ -43,6 +43,8 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 Envios e ações comuns são autorizados no chat, sem abrir página. O pedido exato do dono já pode autorizar; alvos ou conteúdo ambíguos precisam de esclarecimento. A página fica para ações críticas, com nomes e consequências legíveis. A decisão de risco é do servidor, não do modelo. [Política e limites](docs/31-confirmacoes-simples.md).
 
+Para telefone internacional explícito sem conversa anterior, `resolver_destinatario` retorna uma referência local utilizável no preparo individual. Resolver não envia nem salva contato no celular; formato aceito não comprova conta WhatsApp. [Contrato, captura e validação por fronteira](docs/36-destinatario-explicito.md).
+
 ## Limites explícitos
 
 Arquivo desde ativação, sem promessa de importação retroativa. Áudio recebido até 20 MiB/10 minutos; demais arquivos e uploads até 2 MiB; até 128 KiB no conteúdo MCP, maiores via navegador autenticado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
