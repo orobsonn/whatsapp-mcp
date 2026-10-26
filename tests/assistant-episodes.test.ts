@@ -577,7 +577,7 @@ test("real interlocutor Flue receives public canonical context instead of owner 
 async function semanticController(mode:"required"|"lexical_fallback") {
   const actor={kind:"owner"} as const,query=mode==="required"?"Quem responde pela cobrança?":"Synthetic question";
   const queue=new JobQueue(db,scope);await queue.fail(lease,"previous",now);
-  await queue.enqueue({kind:"reasoning",dedupeKey:"semantic-episode",sourceId:"source",sourceRevision:1,request:query,runtime:"flue"},now);lease=(await queue.claim(now,90000))!;
+  await queue.enqueue({kind:"reasoning",dedupeKey:"semantic-episode",sourceId:"source",sourceRevision:1,request:query,runtime:"flue",subject:{kind:"owner_request",sourceId:"source",sourceRevision:1,requestKey:"semantic-episode"}},now);lease=(await queue.claim(now,90000))!;
   let semanticReceipt:EngineSearchOutcome={state:"uncertain",reason:"not_submitted"},preparedInput:Parameters<SemanticEnginePort["prepare"]>[1],semanticCalls=0,modelCalls=0;
   const engine:SemanticEnginePort={prepare:async(alias,input)=>{
     preparedInput=input;

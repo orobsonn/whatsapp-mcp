@@ -47,6 +47,9 @@ test("official bundle exports the named owner capability and preserves command r
     const parts = sql.split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim());
     if (parts.length) await db.batch(parts.map(part => db.prepare(part)));
   }
+  const diary=await call("query",{kind:"decisions"});
+  expect(diary).toMatchObject({status:200,body:{items:[],coverage:{kind:"page",remoteFreshness:"unchecked"}}});
+  expect(await call("query",{kind:"decision",id:"capture:"+"x".repeat(300)})).toMatchObject({status:200,body:{state:"unavailable"}});
   const command = { kind: "source.create", operationId: "bound-note", input: { originKey: "bound-note", text: "Synthetic owner note", occurredAt: 1 } };
   for (const key of Object.keys(affinity) as (keyof typeof affinity)[]) {
     expect((await call("source", command, { ...affinity, [key]: "foreign" })).status).toBe(403);
