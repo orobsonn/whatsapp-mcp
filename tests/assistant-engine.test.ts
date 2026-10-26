@@ -254,3 +254,40 @@ it("does not write or destroy the replacement index when an old rebuild response
   expect(result).toMatchObject({ state: "blocked" }); expect(data.get("index")).toMatchObject({ epoch: "replacement-epoch", sources: [] });
   expect(port.destroy).toHaveBeenCalledTimes(1);
 });
+
+// Faithful serializable adapter: isolated copy, commit on success, rollback on throw.
+function transactionalStore(): NonNullable<EngineStore["transaction"]> {
+  let tail=Promise.resolve();
+  return async operation=>{
+    const previous=tail;let release!:()=>void;tail=new Promise(resolve=>{release=resolve;});await previous;
+    const snapshot=new Map(structuredClone([...data]));
+    try {const result=await operation({get:async <T>(key:string)=>structuredClone(snapshot.get(key)) as T|undefined,put:async(key,value)=>{snapshot.set(key,structuredClone(value));}});data.clear();for(const [key,value]of snapshot)data.set(key,value);return result;} finally {release();}
+  };
+}
+it("prepares a persistent alias without wake or permit, then submits once across restart and ACK loss", async () => {
+  await engine.ingest(ingest);
+  store.transaction = transactionalStore();
+  vi.mocked(port.request).mockClear(); vi.mocked(port.start).mockClear(); vi.mocked(guard.issue).mockClear();
+  const prepared = await engine.prepare("retrieval-run", search);
+  expect(prepared.state).toBe("prepared");
+  expect(port.request).not.toHaveBeenCalled(); expect(port.start).not.toHaveBeenCalled(); expect(guard.issue).not.toHaveBeenCalled();
+  const restarted = new CogneeEngine(scope, store, port, guard, () => now);
+  expect(await restarted.prepare("retrieval-run", search)).toEqual(prepared);
+  expect(await restarted.prepare("retrieval-run", { ...search, query: "conflict" })).toMatchObject({ state: "blocked", reason: "ticket_conflict" });
+  if (prepared.state !== "prepared") throw new Error("ticket missing");
+  const results = await Promise.all([engine.submit(prepared.ticket), restarted.submit(prepared.ticket)]);
+  expect(results.some(result => result.state === "complete")).toBe(true);
+  expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/search")).toHaveLength(1);
+  expect((await restarted.lookupTicket(prepared.ticket)).state).toBe("complete");
+  await restarted.submit(prepared.ticket);
+  expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/search")).toHaveLength(1);
+});
+it("blocks a prepared ticket on index mutation without rekey or search", async () => {
+  await engine.ingest(ingest); store.transaction = transactionalStore();
+  const prepared = await engine.prepare("index-fixed", search);
+  if (prepared.state !== "prepared") throw new Error("ticket missing");
+  data.set("index", { ...(data.get("index") as object), revision: "a".repeat(64) });
+  vi.mocked(port.request).mockClear();
+  expect(await engine.submit(prepared.ticket)).toMatchObject({ state: "blocked", reason: "index_changed" });
+  expect(port.request).not.toHaveBeenCalled();
+});

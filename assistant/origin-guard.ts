@@ -32,6 +32,25 @@ export type Observation = {
 };
 export type OriginFence = OriginScope & OriginRef & { canonicalId: string; revision: number; version: number;
   watermark: number; hash: string; conversationKind: "private" | "group"; policyRevision: number; policyMode: string };
+// Persistence/schema parsing may reorder properties. Compare the exact flat
+// field set and values; additional or changed fields still deny the reference.
+function sameFence(current: OriginFence | null, expected: OriginFence): boolean {
+  if (!current || Object.keys(current).length !== Object.keys(expected).length) return false;
+  return (Object.keys(current) as (keyof OriginFence)[]).every(key => Object.hasOwn(expected, key) && current[key] === expected[key]);
+}
+
+/** Remote observations only: eight in flight, one fixed total five-second
+ * deadline. Late RPCs can finish but cannot publish or start more checks. */
+export async function checkOriginsWithin(fences:OriginFence[],check:(fence:OriginFence)=>Promise<boolean>):Promise<boolean> {
+  if(!fences.length)return true;
+  let next=0,stopped=false,timer:ReturnType<typeof setTimeout>|undefined;
+  const deadline=new Promise<boolean>(resolve=>{timer=setTimeout(()=>{stopped=true;resolve(false);},5000);});
+  const work=Promise.all(Array.from({length:Math.min(8,fences.length)},async()=>{
+    while(!stopped && next<fences.length){const fence=fences[next++];let valid=false;try{valid=await check(fence);}catch{/* A failed observation denies the whole proof. */}if(!valid){stopped=true;return false;}}
+    return !stopped;
+  })).then(results=>results.every(Boolean));
+  try{return await Promise.race([work,deadline]);}finally{stopped=true;clearTimeout(timer);}
+}
 
 // Reader responses remain observations. Consumers must also enforce local ACL
 // in their admission/publication mutation; no cross-worker transaction exists.
@@ -91,10 +110,10 @@ export class OriginGuard {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;
     if (!fence || JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(scopeKeys(fence))) return false;
     const current = await this.fence(fence.canonicalId);
-    if (!current || JSON.stringify(current) !== JSON.stringify(fence)) return false;
+    if (!sameFence(current, fence)) return false;
     const observed = await this.observe(fence, fence);
     return JSON.stringify(scopeKeys(activeOrigin(this.getScope))) === JSON.stringify(scopeKeys(fence)) && observed.state === "available"
       && observed.watermark === fence.watermark && observed.hash === fence.hash && observed.kind === fence.conversationKind
-      && JSON.stringify(await this.fence(fence.canonicalId)) === JSON.stringify(fence);
+      && sameFence(await this.fence(fence.canonicalId), fence);
   }
 }
