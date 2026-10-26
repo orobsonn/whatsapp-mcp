@@ -23,6 +23,8 @@ A inspeção final alinhou `ROUTINES_PAUSED === 'true'` ao runtime #53 e acresce
 
 Build oficial Flue com configuração privada sintética passou: 1.630 módulos, artefato gerado com cinco DOs (owner/interlocutor + Cognee/CalendarOAuth/RetentionAuthority), DB/R2 próprios, readers nomeados e gates inicialmente inertes. Não comprova digest ou recurso live. O primeiro build teve erro apenas de log fora da sandbox, exit0; repetido com WRANGLER_LOG_PATH privado passou sem esse erro. Avisos de extensão de import futuro do Vite e diretiva use agent foram preservados, sem esconder diagnóstico.
 
+Revisão de segurança posterior fixou o registry na conta própria e exigiu asset assistant/assistant[-._]suffix. Contraprova com schema anterior aceitou account estrangeiro e falhou o teste dirigido; schema corrigido passou 1/1 (8 pulados), Node 3/3 e TypeScript verde. O digest ainda exige prova live de imagem/buildFingerprint.
+
 ## Pendências reais
 
 Executar o plano de infraestrutura com preflight live, recursos, migrações, imagem/buildFingerprint, secrets privados, baseline atualizado e bridge atual. O CLI prepara artefatos, não é prova desses efeitos. Homologar cron fora da VPS, MCP cliente, Telegram e Google com credenciais/consentimento próprios. A existência de uma API key no laboratório não a transfere ao produto. Falta de chave não impede health/headless e não autoriza extrair OAuth do Codex.

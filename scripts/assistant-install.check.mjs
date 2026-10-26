@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { renderInstallation, prepareBridge, pinAffinity } from "./assistant-install.mjs";
 const manifest = () => ({ schema: 1, accountId: "ab9f6d8988145943bf8bbab313e45e6e", installationId: "synthetic-install", generation: "g1",
-  databaseId: "11111111-1111-4111-8111-111111111111", imageDigest: `registry.cloudflare.com/account/assistant-cognee@sha256:${"a".repeat(64)}`,
+  databaseId: "11111111-1111-4111-8111-111111111111", imageDigest: `registry.cloudflare.com/ab9f6d8988145943bf8bbab313e45e6e/assistant-cognee@sha256:${"a".repeat(64)}`,
   archiveBaseline: { versionId: "22222222-2222-4222-8222-222222222222", settingsHash: "b".repeat(64) } });
 test("artifact rendering is private, idempotent, local-only and refuses a changed plan instead of overwriting", async () => {
   const directory = await mkdtemp(join(tmpdir(), "assistant-install-check-"));

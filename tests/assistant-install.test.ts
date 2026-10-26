@@ -36,7 +36,7 @@ test.each(["43e62922-40f7-4fb8-8544-8b7f13c693b0", "33766712-30c3-4570-991e-ddf2
 });
 test("manifest refuses credentials, foreign account, moving image tags and arbitrary worker targets", () => {
   for (const changed of [{ accountId: "0".repeat(32) }, { worker: "elo" }, { OPENAI_API_KEY: "synthetic-private-key" }, { bridgeSecret: "synthetic-private-key" },
-    { imageDigest: "registry.cloudflare.com/account/assistant:latest" }, { imageDigest: `docker.io/assistant@sha256:${"a".repeat(64)}` }, { imageDigest: `registry.cloudflare.com/account/elo-assistant@sha256:${"a".repeat(64)}` }])
+    { imageDigest: `registry.cloudflare.com/${INSTALLATION.accountId}/assistant:latest` }, { imageDigest: `registry.cloudflare.com/${"f".repeat(32)}/assistant-cognee@sha256:${"a".repeat(64)}` }, { imageDigest: `registry.cloudflare.com/${INSTALLATION.accountId}/unrelated-assistant@sha256:${"a".repeat(64)}` }, { imageDigest: `docker.io/assistant@sha256:${"a".repeat(64)}` }, { imageDigest: `registry.cloudflare.com/account/elo-assistant@sha256:${"a".repeat(64)}` }])
     expect(() => installationManifest.parse({ ...manifest(), ...changed })).toThrow();
 });
 test("host config override refuses default archive capabilities, public routes, write credentials and foreign migrations", () => {

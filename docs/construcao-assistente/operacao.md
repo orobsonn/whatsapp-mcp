@@ -6,7 +6,7 @@ Este runbook descreve artefatos e etapas de instalação. Renderizar configuraç
 
 Consulta Cloudflare somente leitura em 26/10/2026 confirmou o domínio `whatsapp.robsonlins.com` no Worker próprio `whatsapp-mcp`, com D1/R2/KV/AI e cron por minuto. Não havia bindings ASSISTANT_* no deploy observado. O Worker `personal-assistant-shadow` retornou 404. `assistant-build-check` e `assistant-media-pdf-check` existiam como laboratórios sem cron. Esse inventário examinou nomes/tipos e configuração pública permitida; não recuperou valores de secrets nem acessou recursos do Elo. Revalidar no momento da instalação.
 
-Recursos novos do produto: Worker `personal-assistant-shadow`, D1 `personal-assistant-shadow-state`, bucket privado `personal-assistant-shadow-artifacts` e parser `personal-assistant-pdf-parser`. Não usar o banco, bucket, namespaces ou estado do laboratório/Archive como se fossem instalação nova. O instalador recusa os IDs conhecidos desses bancos. A imagem Cognee pode reutilizar o digest comprovado do build próprio; o Container/DO e seu namespace de dados são novos. Não há build Docker improvisado quando a VPS não tem Docker.
+Recursos novos do produto: Worker `personal-assistant-shadow`, D1 `personal-assistant-shadow-state`, bucket privado `personal-assistant-shadow-artifacts` e parser `personal-assistant-pdf-parser`. Não usar o banco, bucket, namespaces ou estado do laboratório/Archive como se fossem instalação nova. O instalador recusa os IDs conhecidos desses bancos. O digest deve usar o registry da mesma conta e um asset com prefixo assistant; outra conta ou nome apenas contendo assistant são recusados. A imagem Cognee pode reutilizar o digest comprovado do build próprio; o Container/DO e seu namespace de dados são novos. Não há build Docker improvisado quando a VPS não tem Docker.
 
 ## Artefatos locais sem ações cloud
 
@@ -19,7 +19,7 @@ Node>=22.19 e dependências do lockfile. Criar um manifest privado com este form
   "installationId": "ID-estavel-da-instalacao",
   "generation": "geracao-operacional-externa-ao-D1",
   "databaseId": "UUID-do-novo-banco",
-  "imageDigest": "registry.cloudflare.com/CONTA/assistant-cognee@sha256:DIGEST",
+  "imageDigest": "registry.cloudflare.com/ab9f6d8988145943bf8bbab313e45e6e/assistant-cognee@sha256:DIGEST",
   "archiveBaseline": {
     "versionId": "UUID-da-versao-Archive-observada",
     "settingsHash": "SHA256-do-baseline-privado"

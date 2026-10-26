@@ -5,8 +5,7 @@ export const INSTALLATION = Object.freeze({ accountId: "ab9f6d8988145943bf8bbab3
 const knownDatabases = new Set(["43e62922-40f7-4fb8-8544-8b7f13c693b0", "33766712-30c3-4570-991e-ddf250c52a2e", "baa2a0c3-0d31-45ee-b559-835aa57a49ae"]);
 const id = z.string().min(1).max(256).refine(value => value.trim() === value && !/[\x00-\x1f\x7f]/.test(value));
 const hash = z.string().regex(/^[a-f0-9]{64}$/), database = z.uuid().refine(value => !knownDatabases.has(value));
-const image = z.string().regex(/^registry\.cloudflare\.com\/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$/)
-  .refine(value => value.includes("assistant") && !value.split("/").some(part => /^elo(?:[-_.@]|$)/i.test(part)));
+const image = z.string().regex(new RegExp(`^registry\\.cloudflare\\.com/${INSTALLATION.accountId}/assistant(?:[-._][A-Za-z0-9][A-Za-z0-9._-]*)?@sha256:[a-f0-9]{64}$`));
 export const installationManifest = z.object({ schema: z.literal(1), installationId: id, generation: id, accountId: z.literal(INSTALLATION.accountId),
   databaseId: database.optional(), imageDigest: image.optional(), archiveBaseline: z.object({ versionId: z.uuid(), settingsHash: hash }).strict().optional() }).strict();
 export type InstallationManifest = z.infer<typeof installationManifest>;
