@@ -2,13 +2,27 @@
 
 Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; ainda não há homologação integrada do produto. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
 
+## Checkpoint atual — captura, bootstrap e mídia
+
+A composição agora inclui a extração canônica26 (CI40408838148 verde em3bffd33:1227 gerais/63 nativos), o destinatário sem histórico #126 e três correções reproduzidas: captura de conversa com tipo ainda desconhecido, bootstrap do primeiro índice não vazio e normalização do scope de autorização. Estes últimos deltas foram revisados e têm contraprovas locais; exigem CI integrada no novo HEAD antes da publicação. Nenhuma dessas issues foi fechada por esses resultados parciais.
+
+O Worker próprio recebeu schema26 e bundle oficial3bffd33, fetch+scheduled verificados. Rotinas estão em shadow e pausadas, mídia/resumos desligados, sem orçamento de inferência próprio. O cron real executou ciclos em minutos distintos, mas falhou na descoberta de conversas com kindNULL. Agregados privados e RED D1 reproduziram a causa; a correção preserva cursor e lacuna explícita, sem inventar tipo. Ainda precisa deploy e nova observação natural do cron. Não confundir agendamento executado com pipeline aprovado.
+
+Bootstrap vazio também tinha um bloqueio real: os testes anteriores já criavam índice/checkpoint, enquanto o scheduler novo parava antes da primeira ingestão. A correção873f087 usa admissão durável, epoch/op fixos e guardas atuais, sem iniciar índice vazio ou repetir tentativas incertas. Foram112 checks locais, incluindo corrupção/ACK perdido/concorrência; falta prova cloud do caminho inicial.
+
+O ensaio isolado de mídia confirmou captura/materialização dos arquivos sintéticos, fontes atuais e recusa real de PDF inválido. Um PNG foi interpretado por modelo e produziu1 recibo,1 artefato e settlement691microUSD. A leitura posterior retornou null: SourceAccess copiava campos extras de OriginScope/BudgetScope para o fence, incompatíveis com a referência interna de dois campos. A correçãof3aef6b normaliza somente instalação/geração, mantém comparação/ACL/origem estritas e passou4 REDs causais/4 GREENs. Leitura/cache cloud ainda pendentes; não reinterpretar o PNG para contornar essa falha. PDF textual/scan, retirada/cache e avaliação semântica completa ainda não concluídos. O nome Iara/lara ficou ambíguo no OCR observado; não foi usado como identidade ou autorização.
+
+Total comprometido observado:49744microUSD (US$0,049744), incluindo40000 incertos anteriores;691 desta interpretação conhecida. O orçamento isolado novo permanece550947microUSD no diaUTC26, sem reset/rekey. Uma tentativa de configuração do fixture ficou incerta e foi preservada; readback mostrou versão/configuração intocadas e uma correção idempotente posterior preservou o MIME original do sourcemap, com novo ACK/readback. Isso não foi repetição de inferência. Custos de infraestrutura e fatura final são separados.
+
+Pedido adicional do dono: iniciar conversa com alguém sem histórico, pelo MCP e pelo agente, sem abrir o chat antes. MacBook foi apenas exemplo. #126 tem resolução genérica implementada (55 checks dirigidos e revisão); #128 trata do reuso pelo agente no marco sombra. #127 foi cancelada como escopo inferido, não concluída, sem release. O plano original permanece29/41 concluídas,12 abertas, mais essas duas entregas adicionais. Catálogo real MCP, Telegram/Google próprios e homologação integrada continuam pendentes.
+
 ## Entrega concluída
 
 #112 fechada com v0.35.0, tag anotada em f3e99b57d739510e2b9bc452eb8c70fc3b5fa03f. PR119 integrado após ambos checks verdes; CI40369673335 da main aprovada com793 gerais/60 nativos, tipos, builds e audit. Corpus Cognee real novo:6/6 originais esperados em2,5/6 em1,3 casos score0, privados ausentes; correção/missing/cache/restart/retirada comprovados. Checkpoint terminal8 confirmado25b39a9aa0ee1244bee8c5f904c356f5a688ce34f72f5b516ceb0d616d90ec93,7.483.755bytes, depois stop. Recuperação explícita de idle preservou contadorCore/plano antigo/claims e não gerou inferência. Evidência pública e14 hashes privados no commit de release. Não constitui homologação do produto completo. Contagem viva:29/41 concluídas (71%),12 abertas (#46–57).
 
 #121 fechada com v0.34.0, tag em56769c8658f9daf698c6766b45ea268a7557513e. PR124 recebeu correção determinística da disputa de prazo25ms no teste de política do diário e revisão adversarial independente. Ambos checks do PR e CI40320191142 na main aprovados:729 testes gerais/52 nativos, tipos, ambos builds e audit. Pacote/lock/changelog/tag conferidos. Prova cloud anterior preservada, sem repetir snapshot/recuperação paga.
 
-## Checkpoint mais recente — composição e instalação
+## Checkpoint anterior — composição e instalação
 
 Composição2055d047eb4002d9eda6256756b5b31a4077ffd2 aprovada em CI40383981628:1169 gerais,62 nativos,4 OAuth Node,9 quota Node,29 instalação/operadores Node, tipos, builds e audit. Esse código foi instalado no Worker próprio, com25 migrações, cinco namespaces novos e imagem imutável; hashes dos três módulos relidos. Correções finais de ACL restaurada e quota128 incluídas. Não é homologação integral do produto.
 
