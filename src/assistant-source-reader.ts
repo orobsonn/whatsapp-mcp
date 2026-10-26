@@ -6,6 +6,8 @@ import { resolveRuntimeEnv } from "./connection";
 
 const MAX_BYTES = 32768;
 const id = z.string().min(1).max(256);
+export type CaptureInstallationAffinity = { observation: "capture_installation_affinity"; state: "available"; fence: { epoch: string; generation: string } }
+  | { observation: "capture_installation_affinity"; state: "blocked"; reason: "reader_unavailable" | "reader_changed" };
 const inputSchema = z.object({ secret: z.string().max(256), sourceEpoch: id, sourceGeneration: id,
   chatId: id, sourceId: id, sourceKind: z.enum(["message", "media", "derivative", "conversation"]),
 }).strict().refine((input) => input.sourceKind !== "conversation" || input.sourceId === input.chatId);
@@ -129,7 +131,26 @@ export async function readCaptureSnapshot(rawEnv: Env, input: unknown): Promise<
   return new TextEncoder().encode(JSON.stringify(result)).length > MAX_BYTES ? blocked("snapshot_too_large") : result;
 }
 
+/** Bootstrap only through the named read capability with its fresh shared key.
+ * No body, provider credential, phone, URL or public HTTP endpoint is involved. */
+export async function readInstallationAffinity(rawEnv: Env, input: unknown): Promise<CaptureInstallationAffinity> {
+  const parsed = z.object({ secret: z.string().max(256) }).strict().safeParse(input);
+  if (!parsed.success) throw new Error("reader_invalid_input");
+  const secret = rawEnv.ASSISTANT_READER_SECRET;
+  if (typeof secret !== "string" || secret.length < 32 || !await safeEqual(secret, parsed.data.secret)) throw new Error("reader_denied");
+  const blocked = (reason: "reader_unavailable" | "reader_changed"): CaptureInstallationAffinity => ({ observation: "capture_installation_affinity", state: "blocked", reason });
+  const first = await resolveRuntimeEnv(rawEnv);
+  try { assertActive(first); } catch { return blocked("reader_unavailable"); }
+  const fence = currentFence(first), current = await resolveRuntimeEnv(rawEnv);
+  if (rawEnv.ASSISTANT_READER_SECRET !== secret || !await safeEqual(secret, parsed.data.secret)) throw new Error("reader_denied");
+  try { assertActive(current); } catch { return blocked("reader_unavailable"); }
+  const after = currentFence(current);
+  if (after.epoch !== fence.epoch || after.generation !== fence.generation) return blocked("reader_changed");
+  return { observation: "capture_installation_affinity", state: "available", fence };
+}
+
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
   readSnapshot(input: unknown): Promise<CaptureSnapshot> { return readCaptureSnapshot(this.env, input); }
+  installationAffinity(input: unknown): Promise<CaptureInstallationAffinity> { return readInstallationAffinity(this.env, input); }
 }
