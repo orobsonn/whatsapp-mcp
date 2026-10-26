@@ -12,7 +12,7 @@ export type SourceFence = {
   mandate: { id: string; version: number; expiresAt: number; action: string } | null;
 };
 export type SourceRead = { id: string; text: string | null; authorId: string | null; authorLabel: string | null; occurredAt: number; fence: SourceFence };
-type Row = {
+export type AccessRow = {
   id: string; revision: number; version: number; content_hash: string; audience: Audience; origin: string;
   conversation_id: string | null; project_id: string | null; original_text: string | null;
   author_id: string | null; author_label: string | null; occurred_at: number;
@@ -36,11 +36,11 @@ export class SourceAccess {
     if (!scope.installationId || !scope.generation) throw new Error("invalid_source_scope");
     this.scope = Object.freeze({ ...scope });
   }
-  private current(actor: TrustedActor, id: string, expectedRevision: number | undefined, now: number): AccessGuard | null {
+  private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number): AccessGuard | null {
     if (actor.kind === "extractor") return null;
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) return null;
-    const keys = [this.scope.installationId, this.scope.generation, id, expectedRevision ?? null, expectedRevision ?? null];
-    const current = `s.installation_id=? AND s.generation=? AND s.id=? AND (? IS NULL OR s.revision=?) AND s.status='active'`;
+    const keys = [this.scope.installationId, this.scope.generation, ...(id === null ? [] : [id]), expectedRevision ?? null, expectedRevision ?? null];
+    const current = `s.installation_id=? AND s.generation=?${id === null ? '' : ' AND s.id=?'} AND (? IS NULL OR s.revision=?) AND s.status='active'`;
 
     if (actor.kind === "owner") {
       return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}`, values: keys };
@@ -75,8 +75,12 @@ export class SourceAccess {
     actor = Object.freeze({ ...actor });
     const query = this.current(actor, id, expectedRevision, now);
     if (!query || actor.kind === "extractor") return null;
-    const row = await this.db.prepare(query.sql).bind(...query.values).first<Row>();
+    const row = await this.db.prepare(query.sql).bind(...query.values).first<AccessRow>();
     if (!row) return null;
+    return this.fromRow(actor, row);
+  }
+  fromRow(actor: TrustedActor, row: AccessRow): SourceRead {
+    if (actor.kind === "extractor") throw new Error("source_access_denied");
     const needsMandate = actor.kind === "interlocutor" && row.audience === "restricted"
       && !(row.origin === "whatsapp" && row.conversation_id === actor.conversationId);
     const fence: SourceFence = {
@@ -89,6 +93,42 @@ export class SourceAccess {
       mandate: needsMandate ? { id: actor.kind === "interlocutor" ? actor.mandateId! : "", version: row.mandate_version!, expiresAt: row.mandate_expires_at!, action: actor.kind === "interlocutor" ? actor.action : "" } : null,
     };
     return { id: row.id, text: row.original_text, authorId: row.author_id, authorLabel: row.author_label, occurredAt: row.occurred_at, fence };
+  }
+  /** Internal authorized inventory: no caller-supplied permission expression.
+   * Fingerprints include authorization, local pause/origin and extraction state;
+   * bodies remain outside the persistent search manifest. Origin bindings have
+   * a UNIQUE canonical_id. Seventeen relation refs detect the scorer's overflow
+   * (maximum sixteen batches), without copying an unbounded extraction list. */
+  inventory(actor: TrustedActor, projectId: string | undefined, now: number, control: { sourceEpoch?: string; sourceGeneration?: string; includePaused?: boolean } = {}): AccessGuard {
+    const query = this.current(actor, null, undefined, now);
+    if (!query) return { sql: "SELECT NULL AS id,NULL AS fingerprint WHERE 0", values: [] };
+    const authority = actor.kind === "owner" ? "'owner'" : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
+    const keys = [this.scope.installationId, this.scope.generation];
+    return { sql: `WITH visible AS (${query.sql}), facts AS (
+      SELECT visible.*,
+       (SELECT json_group_array(json_array(source_epoch,source_generation,chat_id,revision,paused,applied_sequence,policy_revision,mode,coverage_from,received,gaps,watermark,access_state,current_kind,current_policy_kind,current_policy_revision,current_mode,unapplied)) FROM (
+        SELECT o.source_epoch,o.source_generation,o.chat_id,c.revision,c.paused,c.applied_sequence,c.policy_revision,c.mode,c.coverage_from,o.watermark,o.access_state,o.kind AS current_kind,p.kind AS current_policy_kind,COALESCE(p.revision,0) AS current_policy_revision,
+         COALESCE(p.effective_mode,CASE WHEN o.kind='private' THEN 'attend' ELSE 'ignore' END) AS current_mode,
+         (SELECT COUNT(*) FROM assistant_capture_inbox u WHERE u.installation_id=o.installation_id AND u.generation=o.generation AND u.source_epoch=o.source_epoch AND u.source_generation=o.source_generation AND u.chat_id=o.chat_id AND u.application_state<>'applied') unapplied,
+         (SELECT COALESCE(MAX(sequence),0) FROM assistant_capture_inbox i WHERE i.installation_id=o.installation_id AND i.generation=o.generation AND i.source_epoch=o.source_epoch AND i.source_generation=o.source_generation AND i.chat_id=o.chat_id) received,
+         (SELECT COUNT(*) FROM assistant_conversation_replay r WHERE r.installation_id=o.installation_id AND r.generation=o.generation AND r.source_epoch=o.source_epoch AND r.source_generation=o.source_generation AND r.chat_id=o.chat_id AND r.state='gap') gaps
+        FROM assistant_origin_conversations o LEFT JOIN assistant_conversations c ON c.installation_id=o.installation_id AND c.generation=o.generation AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
+        LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
+        WHERE o.installation_id=? AND o.generation=? AND (o.chat_id=? OR o.chat_id=visible.conversation_id)
+        AND (? IS NULL OR (o.source_epoch=? AND o.source_generation=?)) ORDER BY o.source_epoch,o.source_generation,o.chat_id)) conversations,
+       (SELECT json_group_array(json_array(source_epoch,source_generation,chat_id,received,unapplied)) FROM (
+        SELECT source_epoch,source_generation,chat_id,MAX(sequence) received,SUM(CASE WHEN application_state<>'applied' THEN 1 ELSE 0 END) unapplied
+        FROM assistant_capture_inbox WHERE installation_id=? AND generation=? AND (chat_id=? OR chat_id=visible.conversation_id)
+        AND (? IS NULL OR (source_epoch=? AND source_generation=?)) GROUP BY source_epoch,source_generation,chat_id ORDER BY source_epoch,source_generation,chat_id)) inboxes,
+       (SELECT json_group_array(json_array(o.source_epoch,o.source_generation,o.source_kind,o.source_id,o.chat_id,o.watermark,o.observation_hash,o.tombstoned,c.watermark,c.kind,c.access_state,p.revision,p.effective_mode))
+        FROM assistant_source_origins o LEFT JOIN assistant_origin_conversations c ON c.installation_id=o.installation_id AND c.generation=o.generation AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
+        LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
+        WHERE o.installation_id=? AND o.generation=? AND o.canonical_id=visible.id) origins,
+       (SELECT json_group_array(json_array(operation_key,request_hash)) FROM (SELECT operation_key,request_hash FROM assistant_relation_batches b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash ORDER BY operation_key LIMIT 17)) relations
+      FROM visible WHERE (? IS NULL OR project_id=?))
+      SELECT facts.*,json_array(id,revision,version,content_hash,audience,origin,conversation_id,project_id,${authority},conversations,inboxes,origins,relations) fingerprint
+      FROM facts WHERE (?=1 OR NOT EXISTS(SELECT 1 FROM json_each(conversations) c WHERE json_extract(c.value,'$[4]')=1))`,
+      values: [...query.values, ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, ...keys, projectId ?? null, projectId ?? null, control.includePaused ? 1 : 0] };
   }
   // Fixed SELECT shared with read(); embed this predicate in the protected mutation.
   guard(actor: TrustedActor, fence: SourceFence, now: number): AccessGuard {
