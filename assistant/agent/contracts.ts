@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mediaEvidenceSchema } from "../media-evidence";
 import type { Episode } from "./episodes";
 export const label = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const time = z.number().int().nonnegative().safe(), version = time.refine(value => value > 0);
@@ -19,7 +20,7 @@ const origin = z.object({ ...scope, sourceEpoch: label, sourceGeneration: label,
   sourceId: label, chatId: label, canonicalId: label, revision: version, version, watermark: time, hash,
   conversationKind: z.enum(["private", "group"]), policyRevision: time, policyMode: label }).strict();
 const source = z.object({ id: label, text: z.string().max(32768).nullable(), authorId: label.nullable(), authorLabel: label.nullable(), occurredAt: time,
-  fence: sourceFence, origin: origin.optional() }).strict();
+  fence: sourceFence, origin: origin.optional(), mediaEvidence: mediaEvidenceSchema.optional() }).strict();
 const lease = z.object({ id: label, kind: z.enum(["extraction", "reasoning", "follow_up", "review", "maintenance"]), state: z.literal("processing"),
   attempts: version, max_attempts: version, lease_generation: version, lease_until: time, source_id: label, source_revision: version, last_error: z.string().nullable() });
 const search = z.object({ ...scope, ...originScope, runId: hash, runToken: label, requestHash: hash, checkpoint: time,
@@ -45,7 +46,7 @@ export const nativeReceipt = z.object({ submissionId: label, uid: label, accepte
 const receipt = z.object({ profile: z.enum(["owner", "interlocutor"]), runtimeId: label, bindingHash: hash, envelopeHash: hash, receipt: nativeReceipt }).strict();
 const envelope = z.object({ message: z.string().max(60000), initialData: z.object({ bindingId: hash }).strict(), idempotencyKey: label }).strict();
 export const proposal = z.object({ decision: z.enum(["proposed", "no_reply", "waiting_context"]), text: z.string().max(8192),
-  citations: z.array(sourceRef.extend({ quote: z.string().min(1).max(4096) }).strict()).max(10) }).strict();
+  citations: z.array(sourceRef.extend({ quote: z.string().min(1).max(4096), media: z.object({ id: hash, hash, configHash: hash }).strict().nullable().optional(), attribution: z.literal("model_extraction").optional() }).strict().refine(row => !row.attribution || !!row.media)).max(10) }).strict();
 export type Binding = z.infer<typeof binding>;
 export const parseBinding = (value: unknown): Binding => binding.parse(value);
 export type BoundEpisode = Omit<Episode, "binding" | "receipt" | "envelope"> & { binding: Binding; receipt: z.infer<typeof receipt> | null; envelope: z.infer<typeof envelope> | null };

@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "personal-assistant-pdf-parser",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-26",
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 100 },
+  // Dedicated isolate, zero bindings/secrets. Platform memory is 128MiB per
+  // isolate (shared by concurrent requests), not a per-request allocation cap.
+  // CPU enforcement and normal PDF admission require isolated cloud validation.
+  "observability": { "enabled": false }
+}

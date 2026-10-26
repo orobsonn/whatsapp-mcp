@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
 import { SourceAccess, type SourceRead, type TrustedActor } from "./access";
 import type { SourceScope } from "./sources";
 import type { EntityRef } from "./relations";
@@ -9,7 +10,7 @@ export type { Ref, EngineRequest };
 // requires runtime validation of every candidate and missing reference here.
 export interface EnginePort { search(input: EngineRequest): Promise<unknown> }
 export type RetrievalInput = { query: string; projectId?: string; entities?: EntityRef[]; limit?: number };
-export type RetrievedSource = SourceRead & { origin?: OriginFence };
+export type RetrievedSource = SourceRead & { origin?: OriginFence; mediaEvidence?: MediaEvidence };
 export type EngineReceipt = { state: "complete" | "blocked" | "uncertain"; operationId: string; indexRevision?: string; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
 export type RetrievalResult = { sources: RetrievedSource[]; engineReceipt?: EngineReceipt; coverage: { inventoryComplete: boolean; engine: string; gaps: string[] } };
 const label = z.string().min(1).max(256), entity = z.object({ kind: z.enum(["person", "project", "mission"]), id: label }).strict();
@@ -82,8 +83,11 @@ export class Retrieval {
     }
     return { score, linked };
   }
+  async evidence(source: SourceRead) {
+    return storedMediaEvidence(this.db, this.scope, { id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash });
+  }
   async scoreOriginal(source: SourceRead, input: RetrievalInput) {
-    const request = normalizeRetrievalInput(input), terms = tokens(request.query), words = new Set(tokens(source.text ?? ""));
+    const request = normalizeRetrievalInput(input), terms = tokens(request.query), words = new Set(tokens((source.text ?? "") + " " + ((await this.evidence(source))?.text ?? "")));
     const gaps: string[] = []; let relations = { score: 0, linked: false };
     try { relations = await this.relationScore(source, terms, request.entities ?? [], reason => gaps.push(reason)); } catch { gaps.push("relation_unavailable"); }
     return { score: terms.filter(term => words.has(term)).length + relations.score * 2, linked: !request.entities?.length || relations.linked, gaps };
@@ -94,7 +98,7 @@ export class Retrieval {
     const gaps = new Set<string>(), gap = (reason: string) => { gaps.add(reason); };
     const coverage = { inventoryComplete: true, engine: "not_run", gaps: [] as string[] };
     let engineReceipt: EngineReceipt | undefined;
-    const pack: { source: SourceRead; origin?: OriginFence; score: number; linked: boolean }[] = [];
+    const pack: { source: SourceRead; origin?: OriginFence; mediaEvidence?: MediaEvidence; score: number; linked: boolean }[] = [];
     let scanned = 0, after = "", finished = false;
     while (scanned < 256 && !finished) {
       const take = Math.min(32, 256 - scanned);
@@ -114,10 +118,13 @@ export class Retrieval {
           origin = fence;
         }
         if (pack.length === 64) { gap("source_limit"); coverage.inventoryComplete = false; finished = true; break; }
-        const words = new Set(tokens(source.text));
+        const mediaEvidence = await this.evidence(source);
+        if (mediaEvidence) gap("media_semantic_unsearched");
+        if (mediaEvidence?.pages.some(page => page.state === "unreadable")) gap("media_unreadable_pages");
+        const words = new Set(tokens(source.text + " " + (mediaEvidence?.text ?? "")));
         let relations = { score: 0, linked: false };
         try { relations = await this.relationScore(source, terms, request.entities ?? [], gap); } catch { gap("relation_unavailable"); }
-        pack.push({ source, origin, score: terms.filter((term) => words.has(term)).length + relations.score * 2, linked: relations.linked });
+        pack.push({ source, origin, ...(mediaEvidence ? { mediaEvidence } : {}), score: terms.filter((term) => words.has(term)).length + relations.score * 2, linked: relations.linked });
       }
       if (ids.results.length < take) finished = true;
     }
@@ -164,10 +171,12 @@ export class Retrieval {
       const current = await this.access.read(actor, item.source.id, item.source.fence.source.revision);
       if (!current || JSON.stringify(current.fence) !== JSON.stringify(item.source.fence)) { gap("source_changed"); continue; }
       if (item.origin && !await this.origin!.check(item.origin)) { gap("origin_stale"); continue; }
-      const size = new TextEncoder().encode(current.text ?? "").length;
+      const mediaEvidence = await this.evidence(current);
+      if (JSON.stringify(mediaEvidence) !== JSON.stringify(item.mediaEvidence ?? null)) { gap("media_changed"); continue; }
+      const size = new TextEncoder().encode((current.text ?? "") + JSON.stringify(mediaEvidence ?? "")).length;
       if (bytes + size > 65536) { gap("context_bytes_limit"); continue; }
       if (result.length === request.limit) { gap("result_limit"); break; }
-      bytes += size; result.push({ ...current, ...(item.origin ? { origin: item.origin } : {}) });
+      bytes += size; result.push({ ...current, ...(item.origin ? { origin: item.origin } : {}), ...(mediaEvidence ? { mediaEvidence } : {}) });
     }
     // Sequential checks are not a publication transaction. The episode/broker
     // must revalidate the whole pack before inference and publication (#44).

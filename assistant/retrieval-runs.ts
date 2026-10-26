@@ -202,12 +202,12 @@ export class RetrievalRuns {
     const sources: RetrievedSource[] = []; let bytes = 0;
     const selected: Selected[] = [];
     for (const row of rows.results) {
-      const source = this.access.fromRow(actor, row); bytes += new TextEncoder().encode(source.text ?? "").length;
+      const source = this.access.fromRow(actor, row), mediaEvidence = await this.scorer.evidence(source); bytes += new TextEncoder().encode((source.text ?? "") + JSON.stringify(mediaEvidence ?? "")).length;
       if (bytes > 65536) return unavailable("context_bytes_limit", true);
       const origin = row.origin_json ? JSON.parse(row.origin_json) as OriginFence : undefined;
       if (origin && (!this.options.origin || !await this.options.origin.check(origin))) return unavailable("origin_unavailable");
       if (row.conversation_json) { const guard = this.contextGuard(JSON.parse(row.conversation_json)); if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`, ...guard.values).first()) return unavailable("conversation_changed"); }
-      sources.push({ ...source, ...(origin ? { origin } : {}) });
+      sources.push({ ...source, ...(origin ? { origin } : {}), ...(mediaEvidence ? { mediaEvidence } : {}) });
       selected.push({ id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash });
     }
     const selectedJson = JSON.stringify(selected), packHash = await bridgeHash([run.request_hash, run.actor_json, selected]);
@@ -215,7 +215,7 @@ export class RetrievalRuns {
     const saved = await this.statement(`UPDATE assistant_retrieval_runs SET pack_json=?,pack_hash=? WHERE ${ns} AND id=? AND ${fresh.sql} RETURNING id`, selectedJson, packHash, ...this.keys(), run.id, ...fresh.values).all();
     if (!saved.results.length) return unavailable("inventory_changed");
     const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose });
-    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: "not_run_capacity", gaps: baseGaps.slice() } };
+    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: "not_run_capacity", gaps: [...baseGaps, ...(sources.some(row => row.mediaEvidence) ? ["media_semantic_unsearched"] : []), ...(sources.some(row => row.mediaEvidence?.pages.some(page => page.state === "unreadable")) ? ["media_unreadable_pages"] : [])] } };
   }
   guard(actor: TrustedActor, fence: SearchFence, now = this.clock()): AccessGuard {
     actor = ownActor(actor);

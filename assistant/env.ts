@@ -1,4 +1,6 @@
 import type { CogneeContainer } from "./container";
+import type { MediaReader } from "./media";
+import type { PdfAdmissionReader } from "./media-admission";
 import type { SnapshotReader } from "./origin-guard";
 // Optional, host-only inference bindings. No messaging/action credentials.
 export interface AssistantEnv {
@@ -12,4 +14,6 @@ export interface AssistantEnv {
   FLUE_EPISODES_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   CAPTURE_READER?: SnapshotReader;
+  CAPTURE_MEDIA_READER?: MediaReader;
+  MEDIA_PDF_PARSER?: PdfAdmissionReader;
 }
