@@ -203,3 +203,49 @@ it("owns payload and config before hashing yields and supplies the host token bo
   const pending = configured.invoke(token, path, body); body.messages[0].content = "mutated"; settings.maxOutputTokens = 1;
   await pending; expect(JSON.parse(adapter.mock.calls[0][0].body)).toMatchObject({ max_completion_tokens: 2000, messages: [{ content: "original" }] });
 });
+it("replays complete exact receipts on a new budget day without reservation, settlement or transport", async () => {
+  const token = await permit(), first = await broker.invoke(token, path, payload());
+  const tomorrow = { ...scope, period: "2026-10-26" }; await new InferenceBudget(env.DB, tomorrow).configure(0);
+  const replay = new CogneeModelBroker(env.DB, tomorrow, config, adapter, () => now);
+  const reserve = vi.spyOn(InferenceBudget.prototype, "reserve"), settle = vi.spyOn(InferenceBudget.prototype, "settle");
+  expect(await replay.replay(token, path, Object.fromEntries(Object.entries(payload()).reverse()))).toEqual(first);
+  expect(reserve).not.toHaveBeenCalled(); expect(settle).not.toHaveBeenCalled(); expect(adapter).toHaveBeenCalledTimes(1);
+  expect((await new InferenceBudget(env.DB, tomorrow).status()).committed).toBe(0); expect((await budget.status()).committed).toBe(3);
+});
+it("blocks replay cache misses, changed payload/config and another source without creating receipts", async () => {
+  const token = await permit(); await broker.invoke(token, path, payload());
+  const reserve = vi.spyOn(InferenceBudget.prototype, "reserve"), settle = vi.spyOn(InferenceBudget.prototype, "settle");
+  expect(await broker.replay(token, path, { ...payload(), temperature: 0 })).toMatchObject({ state: "blocked" });
+  const other = await owner.create({ originKey: "another", text: "Synthetic source", occurredAt: 100 });
+  expect(await broker.replay(await broker.issuePermit(other.id, 1, 200), path, payload())).toMatchObject({ state: "blocked" });
+  const changed = new CogneeModelBroker(env.DB, scope, { ...config, extractionConfig: "different" }, adapter, () => now);
+  expect(await changed.replay(await changed.issuePermit(sourceId, 1, 200), path, payload())).toMatchObject({ state: "blocked" });
+  expect(reserve).not.toHaveBeenCalled(); expect(settle).not.toHaveBeenCalled(); expect(adapter).toHaveBeenCalledTimes(1);
+  expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first<{ n: number }>())?.n).toBe(1);
+});
+it.each(["attempting", "uncertain", "response_ready"])("never reconciles or submits a non-complete replay receipt: %s", async state => {
+  const token = await permit(), first = await broker.invoke(token, path, payload());
+  await env.DB.prepare(`UPDATE assistant_model_receipts SET state=?,response_json=?,actual_units=? WHERE installation_id=? AND operation_key=?`)
+    .bind(state, state === "response_ready" ? JSON.stringify(first.body) : null, state === "attempting" ? null : 3, scope.installationId, first.operationKey!).run();
+  const reserve = vi.spyOn(InferenceBudget.prototype, "reserve"), settle = vi.spyOn(InferenceBudget.prototype, "settle");
+  expect(await broker.replay(token, path, payload())).toMatchObject({ state: "blocked" });
+  expect(reserve).not.toHaveBeenCalled(); expect(settle).not.toHaveBeenCalled(); expect(adapter).toHaveBeenCalledTimes(1);
+});
+it("rechecks source withdrawal after reading the persistent replay response", async () => {
+  const token = await permit(); await broker.invoke(token, path, payload());
+  const prepare = env.DB.prepare.bind(env.DB); let withdrawn = false;
+  vi.spyOn(env.DB, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql); if (!sql.startsWith("SELECT state,response_json,actual_units FROM assistant_model_receipts")) return statement;
+    return new Proxy(statement, { get(target, property) {
+      if (property === "bind") return (...values: unknown[]) => {
+        const bound = target.bind(...values);
+        return new Proxy(bound, { get(value, key) {
+          if (key === "first") return async () => { const row = await value.first(); if (!withdrawn) { withdrawn = true; await owner.withdraw(sourceId, 1); } return row; };
+          const method = Reflect.get(value, key); return typeof method === "function" ? method.bind(value) : method;
+        } });
+      };
+      const method = Reflect.get(target, property); return typeof method === "function" ? method.bind(target) : method;
+    } });
+  });
+  await expect(broker.replay(token, path, payload())).rejects.toThrow("broker_denied"); expect(adapter).toHaveBeenCalledTimes(1);
+});

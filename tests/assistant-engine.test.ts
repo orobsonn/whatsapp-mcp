@@ -15,7 +15,11 @@ const scope = { installationId: "synthetic-install", generation: "g1" };
 beforeEach(async () => {
   data = new Map(); now = 100; revoked = []; epoch = "";
   store = { get: async <T>(key: string) => structuredClone(data.get(key)) as T | undefined,
-    put: async (key, value) => { data.set(key, structuredClone(value)); } };
+    put: async (key, value) => { data.set(key, structuredClone(value)); },
+    putFenced: async (key, value, epoch, owner) => {
+      const run = data.get("rebuild") as { indexEpoch: string; owner: string };
+      if (run?.indexEpoch !== epoch || run.owner !== owner) throw new Error("rebuild_fenced"); data.set(key, structuredClone(value));
+    } };
   const fence = { ...scope, actor: "owner", source: { id: "source", revision: 1, version: 1,
     hash: await sourceTextHash("Synthetic source"), audience: "owner" as const, origin: "note", conversationId: null, projectId: null }, policy: null, identity: null, mandate: null };
   ingest = { actor: { kind: "owner" }, source: { id: "source", text: "Synthetic source", authorId: null, authorLabel: null, occurredAt: 100, fence } };
@@ -202,4 +206,51 @@ it("recovers a lost index only through explicit validated maintenance", async ()
   }, true)).toMatchObject({ state: "checkpoint_confirmed" });
   expect(await engine.search(search)).toMatchObject({ state: "complete", indexState: "checkpoint_confirmed" });
   expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/ingest")).toHaveLength(1);
+});
+it("materializes an existing logical ingestion again in a fresh epoch using replay-only grants", async () => {
+  const first = await engine.ingest(ingest) as { operationId: string };
+  const old = data.get("index") as { epoch: string };
+  const fresh = { ...old, epoch: "rebuild-epoch", revision: "empty", sources: [], lost: true, indexState: "needs_checkpoint" };
+  data.set("index", fresh); data.set("maintenance", true);
+  data.set("rebuild", { phase: "materializing", indexEpoch: "rebuild-epoch", owner: "synthetic-owner", next: 0, sources: [{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }] });
+  const original = vi.mocked(port.request).getMockImplementation()!;
+  vi.mocked(port.request).mockImplementation(async (path, body, signal) => {
+    if (path === "/ingest") expect(await engine.authorize(epoch)).toMatchObject({ mode: "replay_only" });
+    return original(path, body, signal);
+  });
+  const rebuilt = await engine.rebuildExclusive(async () => {
+    await engine.destroyForRebuild(async () => true); await engine.freshForRebuild("rebuild-epoch", "synthetic-owner", async () => true);
+    return engine.ingestForRebuild(ingest, "rebuild-epoch", "synthetic-owner");
+  }) as { operationId: string };
+  expect(rebuilt).toMatchObject({ state: "complete" }); expect(rebuilt.operationId).not.toBe(first.operationId);
+  expect(vi.mocked(port.request).mock.calls.filter(([path]) => path === "/ingest")).toHaveLength(2);
+  expect(await engine.search(search)).toMatchObject({ state: "blocked", reason: "checkpoint_pending" });
+  expect(await engine.lookup(first.operationId)).toMatchObject({ state: "uncertain" });
+});
+it("never starts a replacement when destruction of the preceding process is unconfirmed", async () => {
+  await engine.ingest(ingest); vi.mocked(port.destroy).mockRejectedValue(new Error("destroy uncertain"));
+  expect(await engine.rebuildExclusive(async () => { await engine.destroyForRebuild(async () => true); await engine.freshForRebuild("fresh", "owner", async () => true); })).toMatchObject({ state: "uncertain" });
+  expect(port.start).toHaveBeenCalledTimes(1); expect(await engine.authorize(epoch)).toBeNull();
+});
+it("uses host-only replay mode and cannot fall back to paid invocation on cache miss", async () => {
+  const host = { authorize: vi.fn(async () => ({ token: "host-token", period: "synthetic", mode: "replay_only" as const })) };
+  const invoke = vi.fn(async () => ({ state: "complete", body: {} })), replay = vi.fn(async () => ({ state: "blocked" }));
+  const response = await handleBrokerRequest(new Request("http://broker.internal/v1/chat/completions", { method: "POST", body: JSON.stringify({ mode: "paid" }) }), "epoch", host, () => ({ invoke, replay }));
+  expect(response.status).toBe(403); expect(replay).toHaveBeenCalledTimes(1); expect(invoke).not.toHaveBeenCalled();
+});
+it("does not write or destroy the replacement index when an old rebuild response resumes after ownership changed", async () => {
+  await engine.ingest(ingest); const previous = data.get("index") as Record<string, unknown>;
+  data.set("index", { ...previous, epoch: "rebuild-epoch", revision: "empty", sources: [], lost: true }); data.set("maintenance", true);
+  data.set("rebuild", { phase: "materializing", indexEpoch: "rebuild-epoch", owner: "old-owner", next: 0, sources: [{ id: "source", revision: 1, version: 1, hash: ingest.source.fence.source.hash }] });
+  const original = vi.mocked(port.request).getMockImplementation()!;
+  vi.mocked(port.request).mockImplementation(async (path, body, signal) => {
+    if (path === "/ingest") { data.set("rebuild", { ...(data.get("rebuild") as object), owner: "new-owner" }); data.set("index", { ...previous, epoch: "replacement-epoch", revision: "empty", sources: [] }); }
+    return original(path, body, signal);
+  });
+  const result = await engine.rebuildExclusive(async () => {
+    await engine.destroyForRebuild(async () => true); await engine.freshForRebuild("rebuild-epoch", "old-owner", async () => true);
+    return engine.ingestForRebuild(ingest, "rebuild-epoch", "old-owner");
+  });
+  expect(result).toMatchObject({ state: "blocked" }); expect(data.get("index")).toMatchObject({ epoch: "replacement-epoch", sources: [] });
+  expect(port.destroy).toHaveBeenCalledTimes(1);
 });

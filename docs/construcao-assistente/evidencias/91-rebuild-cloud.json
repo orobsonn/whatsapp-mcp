@@ -1,0 +1,172 @@
+{
+  "workerVersion": "26c6a0de-8896-4802-a905-02b5c4138794",
+  "containerImageDigest": "sha256:d06775a5d6ae8e25aebf2f5dff6bd3d56bc2cba137febef1b8a57e42b1061d39",
+  "trace": [
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.82,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/checkpoint/status",
+      "status": 200,
+      "seconds": 0.43,
+      "body": {
+        "state": "confirmed",
+        "checkpointId": "e318a58b71cc8162b4abadf97b3c023260faddc6aaf682f6580776185497724c",
+        "indexRevision": "d1297885cdceb51b962067cf0bdd7f9e352c8cdd2ad6ffa0c50a3728a5d3cb41",
+        "sourceCount": 2,
+        "snapshotBytes": 2978146,
+        "restoredAt": 1792971113236
+      }
+    },
+    {
+      "path": "/rebuild/begin",
+      "status": 200,
+      "seconds": 24.9,
+      "body": {
+        "state": "pending",
+        "indexEpoch": "5047457d-0d26-478e-9afe-8ba1550fd6e7",
+        "next": 0
+      }
+    },
+    {
+      "path": "/rebuild/step/0",
+      "status": 200,
+      "seconds": 25.39,
+      "body": {
+        "state": "pending",
+        "indexEpoch": "5047457d-0d26-478e-9afe-8ba1550fd6e7",
+        "next": 1
+      }
+    },
+    {
+      "path": "/rebuild/step/0",
+      "status": 200,
+      "seconds": 0.84,
+      "body": {
+        "state": "pending",
+        "indexEpoch": "5047457d-0d26-478e-9afe-8ba1550fd6e7",
+        "next": 1
+      }
+    },
+    {
+      "path": "/rebuild/step/1",
+      "status": 200,
+      "seconds": 12.32,
+      "body": {
+        "state": "pending",
+        "indexEpoch": "5047457d-0d26-478e-9afe-8ba1550fd6e7",
+        "next": 2
+      }
+    },
+    {
+      "path": "/rebuild/step/2",
+      "status": 200,
+      "seconds": 1.75,
+      "body": {
+        "state": "ready",
+        "indexEpoch": "5047457d-0d26-478e-9afe-8ba1550fd6e7",
+        "next": 2
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.49,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/checkpoint",
+      "status": 200,
+      "seconds": 21.14,
+      "body": {
+        "state": "checkpoint_confirmed",
+        "id": "e316359db45c1bd50c6cd81590ccef0dd9ed7f55306ee93dfc78b6fb1470a3f9",
+        "indexRevision": "a98375f774f3a4c5cedbaf8882e10fe8838b3ccb38b710746a692c6030efddbb"
+      }
+    },
+    {
+      "path": "/stop",
+      "status": 200,
+      "seconds": 0.72,
+      "body": {
+        "stopped": true
+      }
+    },
+    {
+      "path": "/restore",
+      "status": 200,
+      "seconds": 14.69,
+      "body": {
+        "state": "checkpoint_confirmed",
+        "id": "e316359db45c1bd50c6cd81590ccef0dd9ed7f55306ee93dfc78b6fb1470a3f9",
+        "indexRevision": "a98375f774f3a4c5cedbaf8882e10fe8838b3ccb38b710746a692c6030efddbb"
+      }
+    },
+    {
+      "path": "/checkpoint/status",
+      "status": 200,
+      "seconds": 0.35,
+      "body": {
+        "state": "confirmed",
+        "checkpointId": "e316359db45c1bd50c6cd81590ccef0dd9ed7f55306ee93dfc78b6fb1470a3f9",
+        "indexRevision": "a98375f774f3a4c5cedbaf8882e10fe8838b3ccb38b710746a692c6030efddbb",
+        "sourceCount": 2,
+        "snapshotBytes": 2977910,
+        "restoredAt": 1792972752421
+      }
+    },
+    {
+      "path": "/status",
+      "status": 200,
+      "seconds": 0.51,
+      "body": {
+        "budget": {
+          "cap": 257107,
+          "committed": 1819,
+          "blocked": false
+        },
+        "calls": [
+          {
+            "state": "complete",
+            "count": 79
+          }
+        ]
+      }
+    },
+    {
+      "path": "/stop",
+      "status": 200,
+      "seconds": 0.52,
+      "body": {
+        "stopped": true
+      }
+    }
+  ]
+}

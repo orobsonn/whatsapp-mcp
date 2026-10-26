@@ -102,6 +102,24 @@ export class CogneeModelBroker {
     return this.db.prepare(`SELECT state,response_json,actual_units FROM assistant_model_receipts WHERE ${ns} AND operation_key=?`)
       .bind(...this.keys(), key).first<Receipt>();
   }
+  private async requestKey(fence: SourceFence, request: { path: ModelPath; body: string }) {
+    const configHash = await this.configHash, requestHash = await bridgeHash([configHash, request.path, request.body]);
+    const key = "cognee:" + await bridgeHash([...this.keys(), fence.source.id, fence.source.revision,
+      fence.source.version, fence.source.hash, configHash, requestHash]);
+    return { key, requestHash, configHash };
+  }
+  /** Reconstruction capability: exact completed receipts only. Deliberately
+   * never calls recover(), budget methods or the network adapter. */
+  async replay(token: string, path: string, payload: unknown): Promise<Result> {
+    const request = Object.freeze(normalize(path, payload, this.config)), permit = await this.permit(token);
+    const { key } = await this.requestKey(permit.fence, request), row = await this.receipt(key);
+    if (!row || row.state !== "complete" || row.actual_units === null || row.response_json === null) return { state: "blocked", operationKey: key };
+    let body: unknown;
+    try { body = JSON.parse(response(request, row.response_json)); }
+    catch { return { state: "blocked", operationKey: key }; }
+    await this.permit(token);
+    return { state: "complete", operationKey: key, body };
+  }
   private async recover(key: string, hash: string, token: string): Promise<Result> {
     const row = await this.receipt(key);
     if (!row || row.actual_units === null) return { state: "uncertain", operationKey: key };
@@ -118,10 +136,7 @@ export class CogneeModelBroker {
   async invoke(token: string, path: string, payload: unknown, jobAlias?: string): Promise<Result> {
     const request = Object.freeze(normalize(path, payload, this.config));
     if (jobAlias !== undefined && (typeof jobAlias !== "string" || jobAlias.length > 256)) throw new Error("broker_invalid_request");
-    const permit = await this.permit(token), configHash = await this.configHash;
-    const requestHash = await bridgeHash([configHash, request.path, request.body]);
-    const key = "cognee:" + await bridgeHash([...this.keys(), permit.fence.source.id, permit.fence.source.revision,
-      permit.fence.source.version, permit.fence.source.hash, configHash, requestHash]);
+    const permit = await this.permit(token), { key, requestHash, configHash } = await this.requestKey(permit.fence, request);
     if (await this.receipt(key)) return this.recover(key, requestHash, token);
     let reserved;
     try { reserved = await this.budget.reserve(key, requestHash, path === "/v1/embeddings" ? this.config.embeddingCeiling : this.config.chatCeiling); }

@@ -8,6 +8,8 @@ import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { CheckpointController, type CheckpointManifest, type CheckpointResult, type CheckpointState, type CheckpointStore, type IndexProof, type SnapshotHandle } from "./checkpoints";
 import build from "./cognee/build-fingerprint.json";
+import { RebuildController, type RebuildState, type RebuildStore } from "./rebuild";
+import type { SourceStamp } from "./checkpoints";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -18,17 +20,18 @@ export async function boundedJson(request: Request | Response, max = 65536): Pro
     return JSON.parse(text + decoder.decode());
   } finally { await reader.cancel().catch(() => {}); }
 }
-type Grant = { token: string; period: string };
+type Grant = { token: string; period: string; mode?: "replay_only" };
 type Authority = { authorize(epoch: string): Promise<Grant | null> };
-type Broker = { invoke(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }> };
+type Broker = { invoke(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }>; replay?(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }> };
 /** Fixed outbound route only. It never forwards caller headers or provider errors. */
 export async function handleBrokerRequest(request: Request, epoch: string, host: Authority, makeBroker: (period: string) => Broker): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.protocol !== "http:" || url.host !== "broker.internal" || url.search || !["/v1/chat/completions", "/v1/embeddings"].includes(url.pathname)) return deny();
     const body = await boundedJson(request), grant = await host.authorize(epoch); if (!grant) return deny();
-    const result = await makeBroker(grant.period).invoke(grant.token, url.pathname, body);
-    if (result.state !== "complete" || !await host.authorize(epoch)) return deny();
+    const broker = makeBroker(grant.period);
+    const result = grant.mode === "replay_only" ? await broker.replay?.(grant.token, url.pathname, body) : await broker.invoke(grant.token, url.pathname, body);
+    if (result?.state !== "complete" || !await host.authorize(epoch)) return deny();
     return Response.json(result.body, { headers: { "Cache-Control": "no-store" } });
   } catch { return deny(); }
 }
@@ -65,6 +68,7 @@ export class DirectContainerPort implements ContainerPort {
   }
   async quiesce(manifest: CheckpointManifest): Promise<IndexProof> { return this.proof("/quiesce", { manifest }); }
   async inspect(): Promise<IndexProof> { return this.proof("/inspect-index", {}); }
+  async verify(manifest: CheckpointManifest): Promise<IndexProof> { return this.proof("/verify-index", { manifest }); }
   private async proof(path: string, body: unknown): Promise<IndexProof> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 60000);
     try {
@@ -120,6 +124,46 @@ export class CanonicalEngineGuard implements EngineGuard {
 export class CogneeContainer extends DurableObject<AssistantEnv> {
   private engine?: CogneeEngine;
   private port?: DirectContainerPort;
+  private async rebuildSource(stamp: SourceStamp): Promise<EngineIngest | null> {
+    const scope = configured(this.env), actor = { kind: "owner" } as const;
+    const source = await new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }).read(actor, stamp.id, stamp.revision);
+    if (!source || source.fence.source.version !== stamp.version || source.fence.source.hash !== stamp.hash) return null;
+    let origin;
+    if (source.fence.source.origin === "whatsapp") {
+      if (!this.env.CAPTURE_READER || !this.env.BRIDGE_SECRET || !this.env.BRIDGE_SOURCE_EPOCH || !this.env.BRIDGE_SOURCE_GENERATION) return null;
+      origin = await new OriginGuard(scope.db, () => ({ installationId: scope.installationId, generation: scope.generation,
+        sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION! }), this.env.CAPTURE_READER, this.env.BRIDGE_SECRET).fence(stamp.id);
+      if (!origin) return null;
+    }
+    return await new CanonicalEngineGuard(this.env).check(actor, [{ source: source.fence, ...(origin ? { origin } : {}) }]) ? { actor, source, ...(origin ? { origin } : {}) } : null;
+  }
+  private async rebuilds() {
+    const host = this.host(), scope = configured(this.env);
+    const owned = async (epoch: string, owner: string) => {
+      const run = await this.ctx.storage.get<RebuildState>("rebuild");
+      return !!run && run.indexEpoch === epoch && run.owner === owner;
+    };
+    const requireOwner = async (epoch: string, owner: string) => { if (!await owned(epoch, owner)) throw new Error("rebuild_fenced"); };
+    const store: RebuildStore = { read: async () => await this.ctx.storage.get<RebuildState>("rebuild") ?? null,
+      compareAndSet: (revision, expectedEpoch, next) => this.ctx.storage.transaction(async transaction => {
+        const prior = await transaction.get<RebuildState>("rebuild"), index = await transaction.get<{ epoch?: string; namespace: string }>("index");
+        if ((prior?.revision ?? null) !== revision || index?.epoch !== expectedEpoch || index.namespace !== JSON.stringify({ installationId: scope.installationId, generation: scope.generation })) return false;
+        await transaction.put("rebuild", next); await transaction.put("maintenance", next.phase !== "ready");
+        if (next.phase === "preparing") await transaction.put("index", { namespace: index.namespace, epoch: next.indexEpoch, revision: "empty", sources: [], lost: true, indexState: "needs_checkpoint" });
+        else if (next.phase === "ready") await transaction.put("index", { namespace: index.namespace, epoch: next.indexEpoch, revision: next.indexRevision, sources: next.sources, lost: false, indexState: "needs_checkpoint" });
+        else if (next.phase === "blocked") await transaction.put("index", { ...index, lost: true });
+        return true;
+      }) };
+    return new RebuildController({ installationId: scope.installationId, generation: scope.generation, imageRef: this.ctx.container!.images.cognee,
+      buildFingerprint: build.buildFingerprint, configurationHash: await bridgeHash(DEFAULT_BROKER_CONFIG), engineVersion: "1.6.5" }, store, {
+      deny: async (epoch, owner) => { await requireOwner(epoch, owner); await this.port!.deny(); },
+      destroy: (epoch, owner) => host.destroyForRebuild(() => owned(epoch, owner)),
+      fresh: (epoch, owner) => host.freshForRebuild(epoch, owner, () => owned(epoch, owner)),
+      materialize: async (epoch, owner, stamp) => { const source = await this.rebuildSource(stamp); await requireOwner(epoch, owner);
+        return source ? await host.ingestForRebuild(source, epoch, owner) as { state: string; indexRevision?: string } : { state: "blocked" }; },
+      inspect: async (manifest, owner) => { await requireOwner(manifest.indexEpoch, owner); return this.port!.verify(manifest); },
+    }, async sources => { for (const source of sources) if (!await this.rebuildSource(source)) return false; return true; });
+  }
   private checkpointStore(): CheckpointStore {
     return { read: async () => await this.ctx.storage.get<CheckpointState>("checkpoint") ?? null,
       compareAndSet: (revision, next) => this.ctx.storage.transaction(async transaction => {
@@ -156,7 +200,12 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
       const exports = this.ctx.exports as unknown as { CogneeBroker(options: { props: { epoch: string; owner: string } }): Fetcher };
       const port = new DirectContainerPort(this.ctx.container, epoch => exports.CogneeBroker({ props: { epoch, owner: this.ctx.id.toString() } }), scope);
       this.port = port;
-      this.engine = new CogneeEngine(scope, this.ctx.storage, port, new CanonicalEngineGuard(this.env));
+      this.engine = new CogneeEngine(scope, { get: key => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value),
+        putFenced: (key, value, indexEpoch, owner) => this.ctx.storage.transaction(async transaction => {
+          const run = await transaction.get<RebuildState>("rebuild"), index = await transaction.get<{ epoch: string }>("index");
+          if (run?.indexEpoch !== indexEpoch || run.owner !== owner || index?.epoch !== indexEpoch || !["preparing", "materializing"].includes(run.phase)) throw new Error("rebuild_fenced");
+          await transaction.put(key, value);
+        }) }, port, new CanonicalEngineGuard(this.env));
     }
     return this.engine;
   }
@@ -165,6 +214,21 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   search(input: EngineSearch) { return this.host().search(input); }
   lookup(id: string) { return this.host().lookup(id); }
   authorize(epoch: string) { return epoch ? this.host().authorize(epoch) : Promise.resolve(null); }
+  rebuildBegin(expectedIndexEpoch: string, sources: SourceStamp[]) {
+    try { sources = JSON.parse(JSON.stringify(sources)) as SourceStamp[]; }
+    catch { return Promise.resolve({ state: "blocked" as const, reason: "rebuild_input" }); }
+    return this.host().rebuildExclusive(async () => (await this.rebuilds()).begin(expectedIndexEpoch, sources));
+  }
+  rebuildStep(indexEpoch: string, cursor: number) {
+    return this.host().rebuildExclusive(async () => (await this.rebuilds()).step(indexEpoch, cursor));
+  }
+  rebuildRecover(indexEpoch: string) {
+    return this.host().rebuildExclusive(async () => (await this.rebuilds()).recover(indexEpoch));
+  }
+  async rebuildStatus() {
+    this.host(); const state = await this.ctx.storage.get<RebuildState>("rebuild");
+    return state ? { state: state.phase, indexEpoch: state.indexEpoch, next: state.next, reason: state.reason ?? null } : { state: "missing" };
+  }
   checkpoint() {
     return this.host().maintain<CheckpointResult>(async plan => {
       if (!plan) return { value: { state: "rebuild_required", reason: "index_lost" } };
