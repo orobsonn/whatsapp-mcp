@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-25
+
+### Added
+- Reconstrução do índice com recibos exatos existentes, posse durável e recuperação homologada na Cloudflare sem novas chamadas de modelo.
+
 ## [0.28.0] - 2026-10-25
 
 ### Added
