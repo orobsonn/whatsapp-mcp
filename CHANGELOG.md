@@ -4,6 +4,10 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+### Added
+- Controle autenticado do dono via MCP: fontes, projetos, missões, políticas, mandatos e FUPs com versão, recibos persistentes e consultas com origem e pendências (#46; candidato, homologação cloud/cliente pendente).
+- Handshake privado de leitura para conferir a afinidade da instalação, necessário à configuração dos bindings sem expor segredos de conexão. A instalação completa permanece em andamento.
+
 ## [0.35.0] - 2026-10-26
 
 ### Added
