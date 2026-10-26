@@ -11,18 +11,20 @@ export type IndexProof = { installationId: string; generation: string; buildFing
   sources: { id: string; version: number; hash: string; originalHash: string; chunks: number }[] };
 export type CheckpointRecord = { id: string; snapshot: SnapshotHandle; manifest: CheckpointManifest; manifestHash: string; createdAt: number; restoredAt: number };
 export type CheckpointState = { revision: number; phase: "preparing" | "restoring" | "confirmed" | "rebuild_required"; owner: string;
-  confirmed?: CheckpointRecord; candidate?: CheckpointRecord; reason?: string; captures?: { day: string; count: number } };
+  confirmed?: CheckpointRecord; candidate?: CheckpointRecord; index?: CheckpointPlan; reason?: string; captures?: { day: string; count: number } };
+export type CheckpointFence = { owner: string; revision: number; indexEpoch: string };
 export interface CheckpointStore {
   read(): Promise<CheckpointState | null>;
   compareAndSet(expectedRevision: number | null, state: CheckpointState): Promise<boolean>;
+  owns?(fence: CheckpointFence): Promise<boolean>;
 }
 export interface CheckpointPort {
-  deny(): Promise<void>;
-  quiesce(manifest: CheckpointManifest): Promise<IndexProof>;
-  snapshot(name: string): Promise<SnapshotHandle>;
-  destroy(): Promise<void>;
-  restore(snapshot: SnapshotHandle): Promise<void>;
-  inspect(): Promise<IndexProof>;
+  deny(fence: CheckpointFence): Promise<void>;
+  quiesce(manifest: CheckpointManifest, fence: CheckpointFence): Promise<IndexProof>;
+  snapshot(name: string, fence: CheckpointFence): Promise<SnapshotHandle>;
+  destroy(fence: CheckpointFence): Promise<void>;
+  restore(snapshot: SnapshotHandle, fence: CheckpointFence): Promise<void>;
+  inspect(fence: CheckpointFence): Promise<IndexProof>;
 }
 export type CheckpointResult = { state: "checkpoint_confirmed"; id: string; indexRevision: string }
   | { state: "blocked" | "uncertain" | "rebuild_required"; reason: string };
@@ -37,9 +39,28 @@ export class CheckpointController {
     if (new Set(result.sources.map(source => source.id)).size !== result.sources.length) throw 0;
     return { ...result, identity: copy(this.identity) };
   }
+  private fence(state: CheckpointState): CheckpointFence {
+    if (!state.index) throw new Error("checkpoint_fenced");
+    return { owner: state.owner, revision: state.revision, indexEpoch: state.index.indexEpoch };
+  }
+  private async owned(state: CheckpointState) {
+    const fence = this.fence(state), current = await this.store.read();
+    if (!current || current.owner !== fence.owner || current.revision !== fence.revision || current.index?.indexEpoch !== fence.indexEpoch ||
+      (this.store.owns && !await this.store.owns(fence))) throw new Error("checkpoint_fenced");
+  }
   private async change(state: CheckpointState | null, owner: string, update: Partial<CheckpointState>) {
     const next = { ...state, ...update, owner, revision: (state?.revision ?? 0) + 1 } as CheckpointState;
-    if (!await this.store.compareAndSet(state?.revision ?? null, next)) throw new Error("checkpoint_fenced"); return next;
+    try { if (await this.store.compareAndSet(state?.revision ?? null, next)) return next; }
+    catch {
+      const observed = await this.store.read();
+      if (JSON.stringify(canonical(observed)) === JSON.stringify(canonical(next))) return next;
+    }
+    throw new Error("checkpoint_fenced");
+  }
+  private async effect<T>(state: CheckpointState, action: (fence: CheckpointFence) => Promise<T>): Promise<T> {
+    await this.owned(state);
+    try { const value = await bounded(action(this.fence(state))); await this.owned(state); return value; }
+    catch (error) { await this.owned(state); throw error; }
   }
   private confirmed(record: CheckpointRecord): CheckpointResult {
     return { state: "checkpoint_confirmed", id: record.id, indexRevision: record.manifest.indexRevision };
@@ -62,64 +83,82 @@ export class CheckpointController {
       const expected = manifest.sources[index]; return source.id !== expected.id || source.version !== expected.version || source.hash !== expected.hash || source.originalHash !== expected.hash || source.chunks < 1;
     })) throw 0;
   }
-  private async failure(owner: string, uncertain: boolean): Promise<CheckpointResult> {
+  private async failure(state: CheckpointState | null, uncertain: boolean, timeout = false): Promise<CheckpointResult> {
     const reason = uncertain ? "checkpoint_outcome_uncertain" : "checkpoint_validation_failed";
     try {
-      const state = await this.store.read(); if (!state || state.owner !== owner) return { state: "uncertain", reason: "checkpoint_fenced" };
-      await Promise.allSettled([bounded(this.port.deny()), bounded(this.port.destroy())]);
-      await this.change(state, owner, { phase: "rebuild_required", reason });
-    } catch { /* The persisted preparing/restoring fence remains closed. */ }
+      if (!state) return { state: "uncertain", reason: "checkpoint_fenced" };
+      await this.owned(state);
+      // A timed-out physical operation is still running. Its host retains the
+      // lifecycle lock; do not race another destroy or overwrite its fence.
+      if (timeout) return { state: "uncertain", reason };
+      try { await this.effect(state, fence => this.port.deny(fence)); await this.effect(state, fence => this.port.destroy(fence)); }
+      catch (error) { await this.owned(state); if (error instanceof CheckpointTimeout) return { state: "uncertain", reason }; }
+      await this.owned(state); await this.change(state, state.owner, { phase: "rebuild_required", reason });
+    } catch { return { state: "uncertain", reason: "checkpoint_fenced" }; }
     return { state: uncertain ? "uncertain" : "rebuild_required", reason };
   }
   async create(plan: CheckpointPlan): Promise<CheckpointResult> {
-    // Own all nested fields before the first hash/authorization await.
     try { plan = planSchema.parse(copy(plan)); if (new Set(plan.sources.map(source => source.id)).size !== plan.sources.length) throw 0; }
     catch { return { state: "blocked", reason: "checkpoint_input" }; }
-    const owner = crypto.randomUUID(); let uncertain = false;
+    const owner = crypto.randomUUID(); let uncertain = false, state: CheckpointState | null = null;
     try {
       const manifest = await this.manifest(plan), hash = await bridgeHash(canonical(manifest));
       if (!await this.current(copy(manifest))) return { state: "blocked", reason: "source_stale" };
-      let state = await this.store.read();
-      if (state && state.phase !== "confirmed") return { state: "blocked", reason: "checkpoint_not_idle" };
-      if (state?.confirmed?.manifestHash === hash) {
-        await this.validateRecord(state.confirmed); return await this.current(copy(manifest)) ? this.confirmed(state.confirmed) : { state: "blocked", reason: "source_stale" };
+      const previous = await this.store.read();
+      if (previous && previous.phase !== "confirmed") return { state: "blocked", reason: "checkpoint_not_idle" };
+      if (previous?.confirmed?.manifestHash === hash) {
+        await this.validateRecord(previous.confirmed);
+        return await this.current(copy(manifest)) ? this.confirmed(previous.confirmed) : { state: "blocked", reason: "source_stale" };
       }
-      const day = new Date(this.clock()).toISOString().slice(0, 10), count = state?.captures?.day === day ? state.captures.count : 0;
+      const day = new Date(this.clock()).toISOString().slice(0, 10), count = previous?.captures?.day === day ? previous.captures.count : 0;
       if (!integer(count) || count >= 24) return { state: "blocked", reason: "checkpoint_daily_limit" };
-      uncertain = true; state = await this.change(state, owner, { phase: "preparing", candidate: undefined, reason: undefined, captures: { day, count: count + 1 } }); uncertain = false;
-      await bounded(this.port.deny());
-      await this.proof(await bounded(this.port.quiesce(copy(manifest))), manifest, true, hash);
+      uncertain = true; state = await this.change(previous, owner, { phase: "preparing", index: copy(plan), candidate: undefined, reason: undefined, captures: { day, count: count + 1 } }); uncertain = false;
+      await this.effect(state, fence => this.port.deny(fence));
+      const proof = await this.effect(state, fence => this.port.quiesce(copy(manifest), fence));
+      await this.proof(proof, manifest, true, hash); await this.owned(state);
       if (!await this.current(copy(manifest))) throw 0;
-      uncertain = true; const snapshot = snapshotSchema.parse(await bounded(this.port.snapshot("checkpoint-" + hash)));
+      await this.owned(state); uncertain = true;
+      const snapshot = snapshotSchema.parse(await this.effect(state, fence => this.port.snapshot("checkpoint-" + hash, fence)));
       const record: CheckpointRecord = { id: await bridgeHash([hash, snapshot.id]), snapshot, manifest, manifestHash: hash, createdAt: this.clock(), restoredAt: this.clock() };
-      state = await this.change(state, owner, { phase: "restoring", candidate: record }); uncertain = false;
-      return await this.restoreRecord(state, owner, record);
-    } catch { return this.failure(owner, uncertain); }
+      await this.owned(state); state = await this.change(state, owner, { phase: "restoring", candidate: record }); uncertain = false;
+      return await this.restoreRecord(state, record);
+    } catch (error) { return this.failure(state, uncertain || error instanceof CheckpointTimeout, error instanceof CheckpointTimeout); }
   }
-  private async restoreRecord(state: CheckpointState, owner: string, record: CheckpointRecord): Promise<CheckpointResult> {
+  private async restoreRecord(state: CheckpointState, record: CheckpointRecord): Promise<CheckpointResult> {
     try {
-      await this.validateRecord(record); if (!await this.current(copy(record.manifest))) throw 0;
-      await bounded(this.port.deny()); await bounded(this.port.destroy()); await bounded(this.port.restore(copy(record.snapshot)));
-      await this.proof(await bounded(this.port.inspect()), record.manifest, false, record.manifestHash);
+      await this.validateRecord(record); await this.owned(state);
       if (!await this.current(copy(record.manifest))) throw 0;
-      record = { ...record, restoredAt: this.clock() };
-      try { await this.change(state, owner, { phase: "confirmed", confirmed: record, candidate: undefined, reason: undefined }); }
-      catch {
-        const observed = await this.store.read();
-        if (observed?.owner !== owner || observed.phase !== "confirmed" || observed.confirmed?.id !== record.id) throw 0;
-      }
-      return await this.current(copy(record.manifest)) ? this.confirmed(record) : this.failure(owner, false);
-    } catch { return this.failure(owner, false); }
+      await this.owned(state);
+      await this.effect(state, fence => this.port.deny(fence));
+      await this.effect(state, fence => this.port.destroy(fence));
+      await this.effect(state, fence => this.port.restore(copy(record.snapshot), fence));
+      const proof = await this.effect(state, fence => this.port.inspect(fence));
+      await this.proof(proof, record.manifest, false, record.manifestHash); await this.owned(state);
+      if (!await this.current(copy(record.manifest))) throw 0;
+      await this.owned(state); record = { ...record, restoredAt: this.clock() };
+      await this.change(state, state.owner, { phase: "confirmed", confirmed: record, candidate: undefined, reason: undefined });
+      return this.confirmed(record);
+    } catch (error) { return this.failure(state, error instanceof CheckpointTimeout, error instanceof CheckpointTimeout); }
   }
   async restore(): Promise<CheckpointResult> {
-    const owner = crypto.randomUUID();
+    const owner = crypto.randomUUID(); let state: CheckpointState | null = null;
     try {
-      const previous = await this.store.read(), record = previous?.candidate ?? previous?.confirmed;
-      if (!previous || !record) return { state: "rebuild_required", reason: "checkpoint_missing" };
-      if (["preparing", "restoring"].includes(previous.phase)) return { state: "blocked", reason: "checkpoint_not_idle" };
-      const state = await this.change(previous, owner, { phase: "restoring" }); return this.restoreRecord(state, owner, copy(record));
-    } catch { return this.failure(owner, true); }
+      const previous = await this.store.read();
+      if (!previous) return { state: "rebuild_required", reason: "checkpoint_missing" };
+      // An unfinished capture never falls back to its older confirmed record.
+      const record = previous.phase === "confirmed" ? previous.confirmed : previous.candidate;
+      if (!record) return { state: "uncertain", reason: "checkpoint_candidate_missing" };
+      // Legacy records gain an index fence only after full record validation.
+      try { await this.validateRecord(record); }
+      catch { return { state: "rebuild_required", reason: "checkpoint_validation_failed" }; }
+      if (previous.index && await bridgeHash(canonical(await this.manifest(previous.index))) !== record.manifestHash)
+        return { state: "rebuild_required", reason: "checkpoint_validation_failed" };
+      const index = { indexEpoch: record.manifest.indexEpoch, indexRevision: record.manifest.indexRevision, sources: copy(record.manifest.sources) };
+      state = await this.change(previous, owner, { phase: "restoring", index, candidate: copy(record) });
+      return await this.restoreRecord(state, copy(record));
+    } catch (error) { return this.failure(state, true, error instanceof CheckpointTimeout); }
   }
+
 }
 const TTL = 30 * 86400000;
 const integer = (value: number) => Number.isSafeInteger(value) && value >= 0;
@@ -138,8 +177,9 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])]));
   return value;
 }
+class CheckpointTimeout extends Error {}
 async function bounded<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("checkpoint_timeout")), 60000); })]); }
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new CheckpointTimeout("checkpoint_timeout")), 60000); })]); }
   finally { clearTimeout(timer); }
 }

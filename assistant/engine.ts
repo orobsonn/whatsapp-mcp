@@ -3,7 +3,7 @@ import type { OriginFence } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { sourceTextHash } from "./sources";
 import { z } from "zod";
-import type { CheckpointPlan, SourceStamp } from "./checkpoints";
+import type { CheckpointPlan, CheckpointState, SourceStamp } from "./checkpoints";
 import type { RebuildState } from "./rebuild";
 export type Ref = { id: string; version: number; hash: string };
 export type EnginePermit = { source: SourceFence; origin?: OriginFence };
@@ -41,6 +41,9 @@ export class CogneeEngine implements EnginePort {
   private quarantined = false;
   private activeEpoch: string | null = null;
   private rebuilding = false;
+  private maintaining = false;
+  private maintenanceReturned = false;
+  private maintenanceEffects = new Set<Promise<unknown>>();
   private scope: Readonly<{ installationId: string; generation: string }>;
   constructor(scope: { installationId: string; generation: string }, private store: EngineStore, private container: ContainerPort,
     private guard: EngineGuard, private clock = Date.now) { this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation }); }
@@ -111,22 +114,37 @@ export class CogneeEngine implements EnginePort {
    * never a model tool, URL or caller-supplied command. Persisted gate survives DO restart. */
   async maintain<T>(operation: (plan: CheckpointPlan | null) => Promise<{ value: T; restored?: CheckpointPlan }>, recovering = false): Promise<T | { state: "blocked" | "uncertain" | "rebuild_required"; reason: string }> {
     if (this.busy) return { state: "blocked", reason: "busy" }; this.busy = true; this.activeEpoch = null;
+    this.maintaining = true; this.maintenanceReturned = false;
     try {
       const active = await this.store.get<Active>("active");
-      if (active) { await this.stop(active); if (!recovering) return { state: "blocked", reason: "restart_uncertain" }; }
+      if (active && !recovering) return { state: "blocked", reason: "restart_uncertain" };
       const meta = await this.store.get<Meta>("index");
       if (!recovering && (!meta?.epoch || !meta.sources || meta.lost || !this.container.running)) return { state: "rebuild_required", reason: "index_lost" };
-      await this.store.put("maintenance", true); await this.container.deny();
       const outcome = await operation(meta?.epoch && meta.sources ? { indexEpoch: meta.epoch, indexRevision: meta.revision, sources: JSON.parse(JSON.stringify(meta.sources)) } : null);
       if (outcome.restored) {
-        if (!this.container.running) throw 0;
-        await this.store.put("index", { namespace: JSON.stringify(this.scope), revision: outcome.restored.indexRevision, epoch: outcome.restored.indexEpoch,
-          sources: outcome.restored.sources, indexState: "checkpoint_confirmed", lost: false } satisfies Meta);
-        await this.store.put("quarantine", false); await this.store.put("maintenance", false); this.quarantined = false;
+        const checkpoint = await this.store.get<CheckpointState>("checkpoint"), current = await this.store.get<Meta>("index");
+        if (!this.container.running || checkpoint?.phase !== "confirmed" || !checkpoint.confirmed ||
+          checkpoint.confirmed.manifest.indexEpoch !== outcome.restored.indexEpoch || checkpoint.confirmed.manifest.indexRevision !== outcome.restored.indexRevision ||
+          current?.epoch !== outcome.restored.indexEpoch || current.revision !== outcome.restored.indexRevision || current.lost ||
+          await this.store.get<boolean>("maintenance") !== false || await this.store.get<boolean>("quarantine") !== false) throw 0;
+        // Persistent publication belongs to the checkpoint store's owner/epoch
+        // transaction. The lifecycle envelope must never rewrite its result.
+        this.quarantined = false;
       }
       return outcome.value;
-    } catch { await this.stop().catch(() => {}); return { state: "uncertain", reason: "checkpoint_operation_uncertain" }; }
-    finally { this.busy = false; }
+    } catch { return { state: "uncertain", reason: "checkpoint_operation_uncertain" }; }
+    finally { this.maintenanceReturned = true; this.releaseMaintenance(); }
+  }
+  private releaseMaintenance() {
+    if (this.maintenanceReturned && !this.maintenanceEffects.size) { this.maintaining = false; this.busy = false; }
+  }
+  /** The underlying promise outlives a caller's timeout. Keep physical lifecycle
+   * exclusion until it settles; a timed-out destroy cannot race a fresh boot. */
+  async checkpointEffect<T>(effect: () => Promise<T>): Promise<T> {
+    if (!this.busy || !this.maintaining) throw new Error("checkpoint_fenced");
+    const pending = effect(); this.maintenanceEffects.add(pending);
+    try { return await pending; }
+    finally { this.maintenanceEffects.delete(pending); this.releaseMaintenance(); }
   }
   async authorize(epoch: string): Promise<{ token: string; period: string; mode?: "replay_only" } | null> {
     if (!epoch || epoch !== this.activeEpoch) return null;
