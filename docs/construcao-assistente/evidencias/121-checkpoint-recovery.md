@@ -1,6 +1,6 @@
 # #121 — recuperação explícita de checkpoint interrompido
 
-Implementação local em 26/10/2026, sobre `f601dd4`/v0.32.0, para integrar após112/45/46. Nenhuma API paga, snapshot cloud, deploy, reset de ledger/orçamento, WhatsApp ou Calendar foi chamado por esta entrega. O caso cloud que motivou a issue é evidência do coordenador: candidato novo persistido, confirmação antiga e maintenance=true depois de interrupção. Esta nota não declara a instalação cloud recuperada.
+Implementação local em 26/10/2026, sobre `f601dd4`/v0.32.0, rebaseado sobre a v0.33.0; a prova cloud compõe o código112. Nenhuma API paga, snapshot cloud, deploy, reset de ledger/orçamento, WhatsApp ou Calendar foi chamado por esta entrega. O caso cloud que motivou a issue é evidência do coordenador: candidato novo persistido, confirmação antiga e maintenance=true depois de interrupção. A recuperação cloud executada pelo coordenador está registrada abaixo.
 
 ## Correção
 
@@ -37,7 +37,13 @@ A configuração de testes inclui o novo teste nativo na suíte assistant-runtim
 
 Revisão independente do coordenador leu controller, adapter físico, store transacional, maintain e contraprovas; não encontrou blocker. Sua execução independente confirmou core 69/69 e native 10/10 antes do caso adicional. O caso adicional mudou somente teste; o código de produção permaneceu congelado depois da revisão.
 
-A integração cloud na mesma instalação sintética, sem reset, permanece com o coordenador e é gate de fechamento da issue. Os testes locais não provam recuperação cloud nem comportamento real do serviço de snapshots.
+## Prova cloud do coordenador
+
+O código121 integrado ao112 foi publicado no Worker sintético isolado, versão571d3a80-02a5-40a7-aa89-2f83100e9db0. A recuperação explícita levou14,87s e confirmou o MESMO candidate03339ec2… de5439701bytes, com as mesmas nove fontes e revisão do índice. O checkpoint antigo de duas fontes não foi usado. Não houve reset de geração, novo snapshot ou reingest.
+
+Os recibos completos permaneceram228 e o custo comprometido do período permaneceu3692microUSD antes/depois; a recuperação não chamou modelo. A evidência curada está em121-checkpoint-cloud.json. O Container estava parado antes do deploy/restore, e o estado recuperado era o restoring legado sem checkpoint.index que motivou a issue. Esta é prova do serviço Cloudflare real naquele cenário sintético, não piloto de atendimento nem prova de histórico real.
+
+O coordenador também integrou121+112, preservou EngineStore.transaction/tickets e executou98 testes dirigidos +check sem falhas. CI no commit de entrega e release minor continuam gates antes do fechamento.
 
 ## Limites
 
