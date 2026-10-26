@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes,createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import {createOperatorLog,waitForOperator} from "./assistant-operator-local.mjs";
+import {createOperatorLog,waitForOperator,postOperatorCommand} from "./assistant-operator-local.mjs";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),".."),commands={affinity:"installation.affinity",plan:"installation.retention_plan",bootstrap:"installation.retention_bootstrap"};
 async function privateRead(path){const stat=await lstat(path);if(!stat.isFile()||stat.isSymbolicLink()||stat.mode&0o077||stat.size>65536)throw Error("private_config");return JSON.parse(await readFile(path,"utf8"));}
 async function privateCreate(path,body){const file=await open(path,"wx",0o600);try{await file.writeFile(body);await file.sync();}finally{await file.close();}}
@@ -34,7 +34,7 @@ export async function main(args=process.argv.slice(2)){
   let failed=false;child.stdout.on("data",log.capture);child.stderr.on("data",log.capture);child.once("error",()=>{failed=true;});child.once("exit",()=>{failed=true;});
   if(!await waitForOperator(port,{signal:controller.signal,failed:()=>failed})||expires<=Date.now())throw Error("installation_operator_start_failed");
   let result;
-  try{const response=await fetch("http://127.0.0.1:"+port+"/command",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(commands[action]),redirect:"error",signal:AbortSignal.any([controller.signal,AbortSignal.timeout(40000)])});const reader=response.body?.getReader();if(!reader)throw Error("response");let size=0,text="";const decoder=new TextDecoder("utf-8",{fatal:true});try{for(;;){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>2097152)throw Error("response_limit");text+=decoder.decode(part.value,{stream:true});}text+=decoder.decode();}finally{await reader.cancel().catch(()=>{});}result={command:commands[action],status:response.status,result:JSON.parse(text)};}
+  try{const response=await postOperatorCommand(port,token,commands[action],{signal:controller.signal,maxResponseBytes:2097152});result={command:commands[action],status:response.status,result:response.result};}
   catch{result={command:commands[action],state:"uncertain",reason:"inspect_same_installation_and_configured_seal_before_repeating"};}
   // Save the exact RPC result so affinity feeds the existing pin-affinity CLI.
   const bytes=JSON.stringify(result.result??result)+"\n";await output.writeFile(bytes);await output.sync();console.log(JSON.stringify({state:"private_result_saved",sha256:createHash("sha256").update(bytes).digest("hex")}));if(result.state==="uncertain"||result.status!==200)process.exitCode=1;

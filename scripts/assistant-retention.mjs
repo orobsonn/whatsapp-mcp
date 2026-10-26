@@ -6,7 +6,7 @@ import { randomBytes,randomUUID,createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { build } from "esbuild";
-import {createOperatorLog,waitForOperator} from "./assistant-operator-local.mjs";
+import {createOperatorLog,waitForOperator,postOperatorCommand} from "./assistant-operator-local.mjs";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),".."),digest=value=>createHash("sha256").update(JSON.stringify(value)).digest("hex");
 // Compile the repository's actual typed codec, including TypeScript parameter
 // properties unsupported by Node's strip-only loader. No copied parser.
@@ -40,8 +40,8 @@ async function withOperator(options,run) {
   if(!await waitForOperator(port,{signal:interrupted.signal,failed:()=>failed}))throw Error("operator_start_failed");
   await run(async command=>{
    if(config.vars.RETENTION_OPERATOR_EXPIRES<=Date.now())throw Error("operator_expired_resume_same_operation");
-   const response=await fetch("http://127.0.0.1:"+port+"/command",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(command),signal:AbortSignal.any([AbortSignal.timeout(40000),interrupted.signal]),redirect:"error"});
-   const reader=response.body?.getReader();if(!reader)throw Error("operator_missing_response");const decoder=new TextDecoder("utf-8",{fatal:true});let text="",bytes=0;for(;;){const part=await reader.read();if(part.done)break;bytes+=part.value.length;if(bytes>262144){await reader.cancel();throw Error("operator_response_limit");}text+=decoder.decode(part.value,{stream:true});}text+=decoder.decode();const result=JSON.parse(text);if(!response.ok||result?.state==="uncertain")throw Error("operator_uncertain_resume_same_operation");return result;
+   const response=await postOperatorCommand(port,token,command,{signal:interrupted.signal,maxResponseBytes:262144});
+   const result=response.result;if(!response.ok||result?.state==="uncertain")throw Error("operator_uncertain_resume_same_operation");return result;
   });
  }finally{try{if(child?.__retentionInterrupt){process.removeListener("SIGINT",child.__retentionInterrupt);process.removeListener("SIGTERM",child.__retentionInterrupt);}if(child&&child.exitCode===null){if(!child.killed)child.kill("SIGTERM");await Promise.race([new Promise(done=>child.once("exit",done)),new Promise(done=>setTimeout(done,1000))]);if(child.exitCode===null)child.kill("SIGKILL");}}finally{try{await log?.close();}finally{await rm(directory,{recursive:true,force:true});}}}
 }
