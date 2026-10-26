@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-25
+
+### Added
+- Runtime oficial Flue com perfis isolados, sessões SQLite duráveis e prova integrada em workerd.
+
 ## [0.27.0] - 2026-10-25
 
 ### Added
