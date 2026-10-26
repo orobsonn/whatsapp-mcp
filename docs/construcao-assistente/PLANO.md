@@ -74,7 +74,7 @@ Separação revisada adversarialmente: #79 controla subchamadas, #39 executa ima
 
 ## Complementos antes do piloto
 
-- [ ] [91 · Reconstrução somente com recibos existentes](https://github.com/orobsonn/whatsapp-mcp/issues/91) — depende de #40/#79.
+- [x] [91 · Reconstrução somente com recibos existentes](https://github.com/orobsonn/whatsapp-mcp/issues/91) — depende de #40/#79.
 - [x] [93 · Comandos persistentes do dono](https://github.com/orobsonn/whatsapp-mcp/issues/93) — depende de #31/#35/#38; antecede #44/#46.
 - [x] [96 · Fundação oficial Flue e persistência real](https://github.com/orobsonn/whatsapp-mcp/issues/96) — depende de #28/#39; antecede #44.
 

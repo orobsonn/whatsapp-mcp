@@ -40,12 +40,19 @@ function boundedResult(raw: unknown) {
   }
   return engineSchema.parse(raw);
 }
-function ownActor(actor: TrustedActor): TrustedActor {
+export function ownActor(actor: TrustedActor): TrustedActor {
   if (actor.kind === "owner" || actor.kind === "extractor") return Object.freeze({ kind: actor.kind });
   const copy = { kind: actor.kind, provider: actor.provider, address: actor.address, conversationId: actor.conversationId,
     conversationKind: actor.conversationKind, action: actor.action, ...(actor.mandateId ? { mandateId: actor.mandateId } : {}) };
   if ([copy.provider, copy.address, copy.conversationId, copy.action, copy.mandateId ?? ""].some((value) => typeof value !== "string" || value.length > 256)) throw new Error("retrieval_actor");
   return Object.freeze(copy);
+}
+export function normalizeRetrievalInput(input: RetrievalInput) {
+  if (!input || typeof input.query !== "string" || input.query.length > 2048 || (input.entities && input.entities.length > 8) ||
+    (input.projectId !== undefined && (typeof input.projectId !== "string" || input.projectId.length > 256))) throw new Error("retrieval_input");
+  const request = inputSchema.parse(input);
+  if (new TextEncoder().encode(request.query).length > 2048 || !request.query.trim() || tokens(request.query).length > 32) throw new Error("retrieval_input");
+  return request;
 }
 // Outputs are fenced observations, never permission to publish or execute.
 // Coverage describes this bounded authorized pack, not the existence of facts.
@@ -75,16 +82,15 @@ export class Retrieval {
     }
     return { score, linked };
   }
+  async scoreOriginal(source: SourceRead, input: RetrievalInput) {
+    const request = normalizeRetrievalInput(input), terms = tokens(request.query), words = new Set(tokens(source.text ?? ""));
+    const gaps: string[] = []; let relations = { score: 0, linked: false };
+    try { relations = await this.relationScore(source, terms, request.entities ?? [], reason => gaps.push(reason)); } catch { gaps.push("relation_unavailable"); }
+    return { score: terms.filter(term => words.has(term)).length + relations.score * 2, linked: !request.entities?.length || relations.linked, gaps };
+  }
   async search(actor: TrustedActor, input: RetrievalInput): Promise<RetrievalResult> {
-    // Bound scalars/arrays before UTF-8 allocations or deep parser copies.
-    if (!input || typeof input.query !== "string" || input.query.length > 2048 || (input.entities && input.entities.length > 8) ||
-      (input.projectId !== undefined && (typeof input.projectId !== "string" || input.projectId.length > 256))) throw new Error("retrieval_input");
-    let request: z.infer<typeof inputSchema>;
-    try { request = inputSchema.parse(input); } catch { throw new Error("retrieval_input"); }
-    actor = ownActor(actor);
-    if (new TextEncoder().encode(request.query).length > 2048 || !request.query.trim()) throw new Error("retrieval_input");
+    const request = normalizeRetrievalInput(input); actor = ownActor(actor);
     const terms = tokens(request.query);
-    if (terms.length > 32) throw new Error("retrieval_input");
     const gaps = new Set<string>(), gap = (reason: string) => { gaps.add(reason); };
     const coverage = { inventoryComplete: true, engine: "not_run", gaps: [] as string[] };
     let engineReceipt: EngineReceipt | undefined;
