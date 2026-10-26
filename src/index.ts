@@ -459,3 +459,4 @@ export default {
 };
 
 export { CaptureReader } from "./assistant-source-reader";
+export { CaptureMediaReader } from "./assistant-media-reader";

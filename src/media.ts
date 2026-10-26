@@ -288,20 +288,25 @@ export async function getMedia(env: Env, id: string): Promise<MediaView> {
 export async function readMedia(
   env: Env,
   id: string,
+  maxBytes?: number,
 ): Promise<{ metadata: MediaView; bytes: Uint8Array }> {
+  // Host-only cap: RPC/browser inputs cannot raise the per-kind limit.
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1))
+    throw new AppError("invalid_media_limit");
   const fence = currentFence(env);
   const m = await row(env, id, fence);
+  const cap = Math.min(mediaLimit(m.kind), maxBytes ?? mediaLimit(m.kind));
   if (
     m.state !== "ready" ||
     !m.object_key ||
     !m.sha256 ||
     m.size == null ||
-    m.size > mediaLimit(m.kind)
+    m.size > cap
   )
     throw new AppError("media_not_ready", 409);
   const object = await env.MEDIA.get(m.object_key);
   if (!object) throw new AppError("media_missing", 404);
-  const bytes = await readBounded(object.body, mediaLimit(m.kind));
+  const bytes = await readBounded(object.body, cap);
   if (bytes.length !== m.size || (await sha256(bytes)) !== m.sha256)
     throw new AppError("media_integrity_failed", 409);
   const latest = await row(env, id, fence);
