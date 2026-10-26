@@ -1,8 +1,10 @@
 import type { CogneeContainer } from "./container";
 import type { SnapshotReader } from "./origin-guard";
-// Optional, host-only inference bindings. No messaging/action credentials.
+// Host-only configuration. No outgoing messaging/action credentials.
 export interface AssistantEnv {
   DB?: D1Database;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_BOT_INSTANCE?: string;
   BRIDGE_SECRET?: string;
   BRIDGE_SOURCE_EPOCH?: string;
   BRIDGE_SOURCE_GENERATION?: string;

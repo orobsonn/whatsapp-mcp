@@ -7,7 +7,7 @@ import type { Env } from "../src/env";
 
 const owner = { sub: "synthetic-assistant-owner", epoch: "assistant-mcp-epoch" };
 function setup() {
-  const rpc = { source: vi.fn(), control: vi.fn(), query: vi.fn() };
+  const rpc = { source: vi.fn(), control: vi.fn(), query: vi.fn(), telegramLink: vi.fn() };
   const settings: Env = Object.assign({ ...env, PUBLIC_ORIGIN: "https://assistant-mcp.invalid", OWNER_SUB: owner.sub,
     INSTALLATION_EPOCH: owner.epoch, CONNECTION_GENERATION: "capture-generation", MAINTENANCE: "false",
     ASSISTANT_INSTALLATION_ID: "assistant-installation", ASSISTANT_GENERATION: "assistant-generation" }, { ASSISTANT_OWNER: rpc });
@@ -36,13 +36,13 @@ it("refuses wrong owner, epoch, maintenance and origin before reaching the assis
   expect((await mcpFetch(request("tools/list", {}, "https://other.invalid"), settings, owner)).status).toBe(403);
   expect(rpc.source).not.toHaveBeenCalled(); expect(rpc.control).not.toHaveBeenCalled(); expect(rpc.query).not.toHaveBeenCalled();
 });
-it("exposes the three assistant families through the authenticated HTTP MCP boundary", async () => {
+it("exposes the authenticated assistant families through the authenticated HTTP MCP boundary", async () => {
   const { settings } = setup();
   const response = await mcpFetch(request("tools/list"), settings, owner);
   expect(response.status).toBe(200);
   const body = await response.json() as { result?: { tools?: { name: string }[] } };
   expect(body.result?.tools?.filter(t => t.name.startsWith("assistente_")).map(t => t.name).sort())
-    .toEqual(["assistente_consultar", "assistente_controlar", "assistente_fonte"]);
+    .toEqual(["assistente_consultar", "assistente_controlar", "assistente_fonte", "assistente_telegram"]);
 });
 it("forwards only a typed command and host affinity, never principal or namespace from model input", async () => {
   const { settings, rpc } = setup();
