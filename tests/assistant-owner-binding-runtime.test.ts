@@ -23,11 +23,12 @@ async function start() {
     durableObjects: Object.fromEntries(config.durable_objects.bindings.map((binding: { name: string; class_name: string }) =>
       [binding.name, { className: binding.class_name, useSQLite: true }])),
     bindings: { INSTALLATION_ID: affinity.installationId, OPERATIONAL_GENERATION: affinity.generation,
-      BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration },
+      BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration,
+      TELEGRAM_BOT_INSTANCE: "synthetic_bot", TELEGRAM_WEBHOOK_SECRET: "synthetic-telegram-webhook-secret-for-tests" },
     outboundService: () => { outbound++; throw new Error("network_forbidden"); },
   }, { name: "owner-binding-probe", modules: true, compatibilityDate: "2026-10-25",
     script: `export default {async fetch(request,env){try{const {method,affinity,input}=await request.json();
-      if(!['source','control','query'].includes(method))return new Response(null,{status:400});
+      if(!['source','control','query','telegramLink'].includes(method))return new Response(null,{status:400});
       return Response.json(await env.OWNER[method](affinity,input));}catch{return Response.json({error:'binding_rejected'},{status:403});}}};`,
     serviceBindings: { OWNER: { name: "owner-receiver", entrypoint: "OwnerAssistant", props: {} } },
   }] }), resourcePersistencePath: join(scratch, "state") });
@@ -51,10 +52,19 @@ test("official bundle exports the named owner capability and preserves command r
   for (const key of Object.keys(affinity) as (keyof typeof affinity)[]) {
     expect((await call("source", command, { ...affinity, [key]: "foreign" })).status).toBe(403);
   }
+  for (const extra of [{ role: "owner" }, { sub: "synthetic-owner" }, { namespace: "foreign" }, { userId: "101" }, { chatId: "101" }]) {
+    expect((await call("telegramLink", { kind: "telegram_link.status", ...extra })).status).toBe(403);
+  }
+  for (const key of Object.keys(affinity) as (keyof typeof affinity)[])
+    expect((await call("telegramLink", { kind: "telegram_link.status" }, { ...affinity, [key]: "foreign" })).status).toBe(403);
+  const begin = { kind: "telegram_link.begin", operationId: "bound-telegram-begin", expectedRevision: 0 };
+  const linked = await call("telegramLink", begin);
+  expect(linked).toMatchObject({ status: 200, body: { kind: "telegram_link.begin", state: "issued", revision: 0 } });
   const first = await call("source", command);
   expect(first).toMatchObject({ status: 200, body: { revision: 1, version: 1, shadow: true } });
   await runtime.dispose(); await start();
   expect(await call("source", command)).toEqual(first);
+  expect(await call("telegramLink", begin)).toEqual(linked);
   const rows = await call("query", { kind: "sources" });
   expect(rows.body).toMatchObject({ items: [{ origin: "owner_note", revision: 1 }], coverage: "end_of_listing" });
   expect(JSON.stringify(rows.body)).not.toContain("Synthetic owner note");

@@ -6,6 +6,7 @@ import { OwnerControl } from "./control";
 import { SourceAccess } from "./access";
 import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
+import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -19,6 +20,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand): Promise<unknown>;
   source(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   control(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   query(expected: OwnerAffinity, input: unknown): Promise<unknown>;
@@ -85,6 +87,10 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     if (!this.env.DB || Object.keys(actual).some(key => actual[key as keyof OwnerAffinity] !== expected[key as keyof OwnerAffinity]))
       throw new Error("owner_binding_affinity");
     return actual;
+  }
+  async telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand) {
+    const scope = this.#affinity(expected);
+    return new TelegramLink(this.env.DB!, scope, this.env.TELEGRAM_BOT_INSTANCE!, this.env.TELEGRAM_WEBHOOK_SECRET!).execute(command);
   }
   async source(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);

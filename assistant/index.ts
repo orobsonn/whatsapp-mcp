@@ -1,5 +1,6 @@
 import type { AssistantEnv } from "./env";
 import { receiveCapture } from "./ingress";
+import { receiveTelegram } from "./telegram-webhook";
 export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
@@ -20,6 +21,9 @@ export default {
 
     if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
       return receiveCapture(request, env);
+
+    if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")
+      return receiveTelegram(request, env);
 
     // Deny by default. Request content cannot grant an effect capability.
     return Response.json({ error: "shadow_only" }, { status: 403, headers });
