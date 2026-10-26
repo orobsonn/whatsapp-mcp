@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-25
+
+### Added
+- Continuação persistente da busca canônica com cobertura atual, retomada de páginas e leitura manual durante pausa.
+
 ## [0.29.0] - 2026-10-25
 
 ### Added
