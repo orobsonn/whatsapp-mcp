@@ -1,3 +1,4 @@
+import type { OwnerAssistantRPC } from "../assistant/mcp";
 export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
@@ -29,6 +30,7 @@ export interface Env {
   ZAPI_CLIENT_TOKEN?: string;
   WEBHOOK_SECRET?: string;
   ASSISTANT_READER_SECRET?: string;
+  ASSISTANT_OWNER?: OwnerAssistantRPC;
   ASSISTANT_INGRESS?: Pick<Fetcher, "fetch">;
   ASSISTANT_BRIDGE_SECRET?: string;
   ASSISTANT_INSTALLATION_ID?: string;
