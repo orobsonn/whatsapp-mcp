@@ -22,3 +22,9 @@ Revisão adversarial prévia do coordenador exigiu falha fechada quando qualquer
 ## Fonte oficial consultada
 
 Google, [Events:list](https://developers.google.com/workspace/calendar/api/v3/reference/events/list): método GET sem corpo; timeMin/timeMax RFC3339 com offset; paginação por nextPageToken, inclusive páginas vazias; escopos somente leitura e projeção parcial fields. A implementação evita freeBusy.query porque esse endpoint exige POST.
+
+## Refinamento após revisão adversarial — fuso e milissegundos
+
+`Events.list.timeZone` é fuso da resposta, não uma exigência de que timeMin/timeMax usem o mesmo offset. Consultas UTC e offsets diferentes continuam válidas. A proposta agora apresenta start/end em ISO UTC e localStart/localEnd normalizados por Intl no fuso escolhido, incluindo o offset real; isso desambigua DST sem apresentar um horário civil inexistente. A repetição02:30 em Europe/Berlin conserva as duas ocorrências pelos offsets+02/+01; um instante02:30+01 durante o avanço de março aparece corretamente03:30+02.
+
+Google ignora milissegundos nos bounds. A consulta expande timeMin para o segundo anterior e timeMax para o seguinte quando fracionários, depois recorta conflitos no intervalo exato solicitado. Assim, evento no último meio segundo não é omitido com falsa ausência de conflito. Novas contraprovas de normalização e fracionamento foram escritas; execução está sob coordenação da suíte integrada para evitar concorrência pesada na VPS. Nenhuma chamada real/paga neste refinamento.

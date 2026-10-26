@@ -7,6 +7,12 @@ import { connectorAuthority, ConnectorAccess, readJson, type ReadFetch } from ".
 const id = z.string().min(1).max(256), instant = z.iso.datetime({ offset: true });
 const timezone = z.string().min(1).max(128).refine(value => { try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; } catch { return false; } });
 const window = { start: instant, end: instant, timeZone: timezone };
+function civilInstant(value: string, timeZone: string) {
+  const at = new Date(value), parts = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone, calendar: "iso8601", numberingSystem: "latn", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "longOffset" }).formatToParts(at).map(part => [part.type, part.value]));
+  const offset = parts.timeZoneName === "GMT" ? "Z" : parts.timeZoneName.replace(/^GMT/, "");
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.${String(at.getUTCMilliseconds()).padStart(3, "0")}${offset}`;
+}
 export const calendarQuery = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("calendar.availability"), ...window }).strict(),
   z.object({ kind: z.literal("calendar.propose"), ...window, recipients: z.array(z.email().max(254)).min(1).max(20), title: z.string().min(1).max(256) }).strict(),
@@ -45,7 +51,11 @@ export class CalendarReader {
           if (Date.now() >= deadline) throw new Error("calendar_deadline");
           if (!await this.access.current(actor, fences[index])) throw new Error("source_changed");
           const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.calendarId)}/events`);
-          url.search = new URLSearchParams({ timeMin: query.start, timeMax: query.end, timeZone: query.timeZone, singleEvents: "true", orderBy: "startTime", maxResults: "100",
+          // Google ignores fractional seconds in bounds. Expand outwards, then
+          // clip observed events to the exact requested interval below.
+          const timeMin = begin % 1000 ? new Date(Math.floor(begin / 1000) * 1000).toISOString() : query.start;
+          const timeMax = end % 1000 ? new Date(Math.ceil(end / 1000) * 1000).toISOString() : query.end;
+          url.search = new URLSearchParams({ timeMin, timeMax, timeZone: query.timeZone, singleEvents: "true", orderBy: "startTime", maxResults: "100",
             fields: "items(status,transparency,start,end),nextPageToken", ...(nextPageToken ? { pageToken: nextPageToken } : {}) }).toString();
           const value = page.parse(await readJson(url, { Authorization: `Bearer ${this.token}`, Accept: "application/json" }, this.request, 262144, Math.max(1, Math.min(8000, deadline - Date.now()))));
           pages++;
@@ -80,7 +90,8 @@ export class CalendarReader {
     // Final coherent D1 proof is mandatory even for partial/error/empty results,
     // after hashing and every remote await that could race with withdrawal.
     if (!await this.access.currentMany(actor, fences)) return { state: "unavailable", reason: "source_changed", coverage: { complete: false }, availability: "unknown" };
-    return query.kind === "calendar.propose" ? { ...result, hash, proposal: { kind: "calendar_proposal", title: query.title, start: query.start, end: query.end,
+    return query.kind === "calendar.propose" ? { ...result, hash, proposal: { kind: "calendar_proposal", title: query.title,
+      start: new Date(begin).toISOString(), end: new Date(end).toISOString(), localStart: civilInstant(query.start, query.timeZone), localEnd: civilInstant(query.end, query.timeZone),
       timeZone: query.timeZone, recipients: [...new Set(query.recipients)], recipientsOrigin: "authenticated_owner_input", execution: "unconfirmed", reservation: "not_created" } } : { ...result, hash };
   }
 }
