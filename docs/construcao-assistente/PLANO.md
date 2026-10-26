@@ -42,7 +42,7 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [x] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39, #70.
 - [x] [42 · Selecionar recorte e apresentar linguagem sustentada](https://github.com/orobsonn/whatsapp-mcp/issues/42) — requisito 7; antecedentes: #41, #37.
 - [x] [43 · Agrupar mensagens e recuperar contexto após pausa](https://github.com/orobsonn/whatsapp-mcp/issues/43) — requisito 5; antecedentes: #34, #36, #35.
-- [ ] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #36, #37, #42, #43, #79, #93, #96, #100.
+- [x] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #36, #37, #42, #43, #79, #93, #96, #100.
 - [ ] [45 · Registrar respostas, pendências e silêncios em sombra](https://github.com/orobsonn/whatsapp-mcp/issues/45) — requisito 10; antecedentes: #44.
 - [ ] [46 · Ensinar contexto e dirigir assistente pelo MCP](https://github.com/orobsonn/whatsapp-mcp/issues/46) — requisito 11; antecedentes: #35, #38, #31, #45, #93.
 - [ ] [47 · Vincular Telegram privado do dono](https://github.com/orobsonn/whatsapp-mcp/issues/47) — requisito 14; antecedentes: #28, #46.

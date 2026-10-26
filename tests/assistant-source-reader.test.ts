@@ -36,6 +36,14 @@ it("authenticates a nominal read-only entrypoint and refuses arbitrary input", a
   await expect(reader().readSnapshot({ ...request(), sourceId: "x".repeat(257) })).rejects.toThrow("reader_invalid_input");
   await expect(reader().readSnapshot({ ...request(), sourceKind: "arbitrary" })).rejects.toThrow("reader_invalid_input");
 });
+it("bootstraps only current installation affinity through the named reader capability", async () => {
+  expect(await reader().installationAffinity({ secret })).toEqual({ observation: "capture_installation_affinity", state: "available", fence: { epoch: "reader-e", generation: "reader-g" } });
+  await expect(reader().installationAffinity({ secret: "invalid" })).rejects.toThrow("reader_denied");
+  await expect(reader().installationAffinity({ secret, sourceEpoch: "invented" })).rejects.toThrow("reader_invalid_input");
+  await expect(reader().installationAffinity({ secret, sql: "SELECT *" })).rejects.toThrow("reader_invalid_input");
+  expect(await reader({ ...settings(), MAINTENANCE: "true" }).installationAffinity({ secret })).toEqual({ observation: "capture_installation_affinity", state: "blocked", reason: "reader_unavailable" });
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
 
 it("reads current content and conversation watermark without requiring a known author", async () => {
   const snapshot = await reader().readSnapshot(request());
@@ -114,6 +122,20 @@ it("uses the live encrypted connection generation instead of raw pending runtime
   const snapshot = await reader(configuration).readSnapshot({ ...request(), sourceGeneration: generation });
   expect(snapshot).toMatchObject({ state: "available", sourceGeneration: generation, content: { text: "Synthetic captured content" } });
   expect(JSON.stringify(snapshot)).not.toMatch(/synthetic-token|synthetic-client|5511000000000/);
+  expect(await reader(configuration).installationAffinity({ secret })).toEqual({ observation: "capture_installation_affinity", state: "available", fence: { epoch: "reader-e", generation } });
+  const affinity = JSON.stringify(await reader(configuration).installationAffinity({ secret }));
+  expect(affinity).not.toMatch(/synthetic-token|synthetic-client|5511000000000|instanceId|cipher|ENCRYPTION_KEY/);
+});
+
+it("refuses a connection generation or pause changed during the bootstrap recheck", async () => {
+  for (const field of ["CONNECTION_GENERATION", "MAINTENANCE", "ASSISTANT_READER_SECRET"] as const) {
+    const configuration = settings(); let reads = 0;
+    Object.defineProperty(configuration, field, { configurable: true, enumerable: true, get: () => {
+      reads++; return reads > (field === "ASSISTANT_READER_SECRET" ? 3 : 1) ? field === "MAINTENANCE" ? "true" : "changed" : field === "MAINTENANCE" ? "false" : field === "CONNECTION_GENERATION" ? "reader-g" : secret;
+    } });
+    if (field === "ASSISTANT_READER_SECRET") await expect(reader(configuration).installationAffinity({ secret })).rejects.toThrow("reader_denied");
+    else expect(await reader(configuration).installationAffinity({ secret })).toMatchObject({ state: "blocked" });
+  }
 });
 
 it("uses the per-conversation watermark index", async () => {
