@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-26
+
+### Added
+- Diário obrigatório e atômico de decisões em sombra, com pendências, incertezas e revalidação das fontes (#45).
+
 ## [0.32.0] - 2026-10-25
 
 ### Added
