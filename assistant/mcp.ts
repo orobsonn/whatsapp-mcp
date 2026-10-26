@@ -7,7 +7,7 @@ import { SourceAccess } from "./access";
 import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { DecisionJournal } from "./decisions";
-import { engineName } from "./container";
+import { hostConfiguredSearch } from "./configured-search";
 import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 import { FollowUps } from "./followups";
 import { githubQuery, GitHubReader } from "./connectors/github";
@@ -122,10 +122,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       if (!this.env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" };
       return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), this.env.CALENDAR_READ_ACCESS_TOKEN).execute({ kind: "owner" }, query);
     }
-    const origin = this.env.CAPTURE_READER && this.env.BRIDGE_SECRET
-      ? new OriginGuard(this.env.DB!, () => scope, this.env.CAPTURE_READER, this.env.BRIDGE_SECRET) : undefined;
-    const semantic = this.env.COGNEE ? { mode: "required" as const,
-      engine: this.env.COGNEE.get(this.env.COGNEE.idFromName(engineName(scope.installationId, scope.generation))) } : undefined;
+    const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
     const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic });
     return new OwnerQueries(this.env.DB!, scope, origin, journal).execute(input);
   }
