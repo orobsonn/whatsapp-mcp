@@ -2,6 +2,12 @@
 
 Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; ainda não há homologação integrada do produto. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
 
+## Atualização — cron natural pausado no código 6171513
+
+O Root instalou somente código `6171513` no Worker próprio, versão `06ac6ec5`, com ACK e readback integral. Flags shadow/paused, mídia/resumos desabilitados, cinco namespaces/markers de secrets, imagem, exposição e cron foram preservados. A CI 40415132411 da base exata passou com 1277 gerais/63 nativos, tipos, builds e auditoria. Nenhuma nova migração ou ativação de modelo foi feita nesta atualização.
+
+A falha real de descoberta kindNULL foi reproduzida e corrigida em `5dceec9`. Duas coletas posteriores observaram ciclos naturais completed em minutos distintos, revisão única no período, avanço de cursor/stream/inbox e lacuna conversation_kind_unobserved estável. As tabelas de efeitos pagos e finanças próprias permaneceram vazias; sem tick manual ou operador local do scheduler. [Evidência #53/#56](evidencias/53-56-natural-cron-vps.md) conserva hashes privados e invariantes booleanos, sem dados/contagens pessoais. Isso comprova continuidade pausada; inferência/Flue cloud sem pausa, canais e homologação completa do piloto continuam pendentes. Os checkpoints anteriores abaixo conservam o estado conhecido em cada etapa.
+
 ## Checkpoint atual — captura, bootstrap e mídia
 
 A composição agora inclui a extração canônica26 (CI40408838148 verde em3bffd33:1227 gerais/63 nativos), o destinatário sem histórico #126 e três correções reproduzidas: captura de conversa com tipo ainda desconhecido, bootstrap do primeiro índice não vazio e normalização do scope de autorização. Estes últimos deltas foram revisados e têm contraprovas locais; exigem CI integrada no novo HEAD antes da publicação. Nenhuma dessas issues foi fechada por esses resultados parciais.
