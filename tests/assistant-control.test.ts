@@ -15,6 +15,8 @@ import jobs from "../assistant/migrations/0005_job_ledger.sql?raw";
 import controls from "../assistant/migrations/0007_source_controls.sql?raw";
 // @ts-expect-error Raw SQL.
 import commands from "../assistant/migrations/0012_owner_commands.sql?raw";
+// @ts-expect-error Raw SQL.
+import fupProvenance from "../assistant/migrations/0019_fup_provenance.sql?raw";
 let scope: { installationId: string; generation: string }, control: OwnerControl, owner: SourceController, sourceId: string;
 const statement = (sql: string, ...values: (string | number | null)[]) => env.DB.prepare(sql).bind(scope.installationId, scope.generation, ...values);
 const execute = (command: Record<string, unknown>) => control.execute(command as OwnerCommand);
@@ -25,7 +27,7 @@ const mandate = (operationId = "mandate-create") => ({ kind: "mandate.put", oper
 const fup = (operationId = "fup-create") => ({ kind: "fup.put", operationId, id: "fup", expectedVersion: 0,
   conversationId: "chat", policyRevision: 1, source: { id: sourceId, revision: 1 }, purpose: "Retorno sintético", dueAt: 2000, timezone: "UTC", precision: "exact", state: "scheduled" });
 beforeEach(async () => {
-  for (const sql of [sources, policies, work, jobs, controls, commands]) await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
+  for (const sql of [sources, policies, work, jobs, controls, commands, fupProvenance]) await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
   scope = { installationId: crypto.randomUUID(), generation: "g1" };
   control = new OwnerControl(env.DB, scope, { kind: "owner" }, () => 1000);
   owner = new SourceController(env.DB, scope, { kind: "owner" }, () => 1000);

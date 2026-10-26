@@ -16,6 +16,8 @@ import { bridgeHash } from "../assistant/ingress";
 import type { SemanticEnginePort, SearchTicket, EngineSearchOutcome } from "../assistant/engine";
 import { RetrievalRuns } from "../assistant/retrieval-runs";
 import { DecisionJournal } from "../assistant/decisions";
+import { OwnerControl } from "../assistant/control";
+import { FollowUps } from "../assistant/followups";
 
 const root = resolve(import.meta.dirname, "..");
 const scope = { installationId: "synthetic-episodes", generation: "g1" };
@@ -478,8 +480,8 @@ async function followUp(during: () => Promise<void> = async () => {}) {
   const previous = await controller(); await previous.host.queue.fail(lease, "synthetic_previous", now);
   await db.batch([
     db.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind) VALUES(?,?,'fup-target','private')").bind(scope.installationId, scope.generation),
-    db.prepare(`INSERT INTO assistant_follow_ups(installation_id,generation,id,version,source_id,source_revision,origin,conversation_id,purpose,timezone,next_evaluation_at)
-      VALUES(?,?,'fup',1,'source',1,'owner_request','fup-target','Synthetic follow up','UTC',0)`).bind(scope.installationId, scope.generation),
+    db.prepare(`INSERT INTO assistant_follow_ups(installation_id,generation,id,version,source_id,source_revision,origin,conversation_id,purpose,timezone,next_evaluation_at,due_at,precision,state)
+      VALUES(?,?,'fup',1,'source',1,'owner_request','fup-target','Synthetic follow up','UTC',0,0,'exact','scheduled')`).bind(scope.installationId, scope.generation),
     db.prepare("INSERT INTO assistant_fup_occurrences(installation_id,generation,id,follow_up_id,follow_up_version,due_at) VALUES(?,?,'occurrence','fup',1,0)").bind(scope.installationId, scope.generation),
   ]);
   const queue = new JobQueue(db, scope), job = await queue.enqueue({ kind: "follow_up", dedupeKey: "fup", sourceId: "source", sourceRevision: 1, request: "Synthetic question", runtime: "flue", subject: { kind: "fup_occurrence", occurrenceId: "occurrence", followUpId: "fup", followUpVersion: 1 } }, now);
@@ -513,6 +515,34 @@ test("a current FUP completes the guarded publication plan within real D1 limits
   await db.prepare("UPDATE assistant_follow_ups SET state='cancelled' WHERE id='fup'").run();
   expect(await diary.get(entry.id)).toMatchObject({ freshness: "stale" });
 
+});
+test("owner FUP due admission crosses real Flue and the mandatory journal exactly once without closing its obligation",async()=>{
+  await worker.dispose();await bootstrap(nativeWorker("due-fup-49"));
+  await db.prepare("CREATE TABLE synthetic_model_calls(body TEXT NOT NULL)").run();
+  await new JobQueue(db,scope).fail(lease,"previous",now);
+  const owner=new OwnerControl(db,{...scope,sourceEpoch:"test-epoch",sourceGeneration:"test-origin"},{kind:"owner"},()=>now);
+  await owner.execute({kind:"policy.put",operationId:"fup-policy",id:"fup-target",expectedRevision:0,conversationKind:"private"});
+  await owner.execute({kind:"mission.put",operationId:"mission",id:"mission",expectedRevision:0,objective:"Synthetic review",source:{id:"source",revision:1},state:"active"});
+  await owner.execute({kind:"fup.put",operationId:"due-fup",id:"due-fup",expectedVersion:0,conversationId:"fup-target",policyRevision:1,source:{id:"source",revision:1},mission:{id:"mission",revision:1},purpose:"Synthetic question",dueAt:100,timezone:"UTC",precision:"exact",state:"scheduled"});
+  const due=new FollowUps(db,scope,{clock:()=>now}),item=(await due.admitDue()).items[0];
+  expect(item).toMatchObject({state:"admitted"});
+  const queue=new JobQueue(db,scope),claimed=(await queue.claim(now,90000))!,search=new RetrievalRuns(db,scope,{clock:()=>now});
+  const evaluationInput=JSON.parse((await queue.ledger(claimed.id))!.request_json).input;
+  expect(evaluationInput).toContain("Condition (none_explicit; not proven satisfied)");
+  let progress=await search.start({kind:"owner"},"due-search",{query:evaluationInput});
+  for(let i=0;progress.state==="pending"&&i<10;i++)progress=await search.step({kind:"owner"},{runId:progress.runId,stepId:`due-${i}`,expectedCheckpoint:progress.checkpoint});
+  await new InferenceBudget(db,{...scope,period:"synthetic-period"}).configure(1000);
+  const host=new EpisodeController(db,{...scope,period:"synthetic-period"},search,async()=>{throw new Error("native_callback_only");},{...DEFAULT_BROKER_CONFIG,chatCeiling:5},{clock:()=>now});
+  const episode=await host.prepare(claimed,"owner",progress.runId),before=await db.batch([db.prepare("SELECT * FROM assistant_follow_ups"),db.prepare("SELECT * FROM assistant_fup_occurrences"),db.prepare("SELECT * FROM assistant_missions")]);
+  expect((await runtimeCall("/dispatch",{episodeId:episode.id})).body.state).toBe("accepted");
+  const published=(await runtimeCall("/read",{episodeId:episode.id})).body;
+  expect(published).toMatchObject({state:"shadow_completed",proposal:{execution:"unconfirmed"}});
+  expect(await new DecisionJournal(db,scope,{kind:"owner"},{clock:()=>10000}).get(published.decisionId)).toMatchObject({phase:"proposed",freshness:"current",subject:{kind:"fup_occurrence",occurrenceId:item.occurrenceId}});
+  expect(await due.get("due-fup")).toMatchObject({obligationState:"scheduled",evaluationState:"shadow_completed"});
+  const after=await db.batch([db.prepare("SELECT * FROM assistant_follow_ups"),db.prepare("SELECT * FROM assistant_fup_occurrences"),db.prepare("SELECT * FROM assistant_missions")]);
+  expect(after.map(r=>r.results)).toEqual(before.map(r=>r.results));
+  expect((await due.admitDue()).items[0].jobId).toBe(item.jobId);
+  expect(await db.prepare("SELECT COUNT(*) FROM synthetic_model_calls").first("COUNT(*)")).toBe(1);
 });
 test("journal freshness rechecks mandate expiry after awaits rather than using its first clock sample", async () => {
   const { host, runId, nominal } = await followUp();

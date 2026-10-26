@@ -3,6 +3,7 @@ import type { SourceScope } from "./sources";
 import type { TrustedActor, AccessGuard } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger } from "./command-ledger";
+import { fupInstant, prepareFupProvenance } from "./followups";
 const id = z.string().min(1).max(256), version = z.number().int().min(0).max(2147483646);
 const time = z.number().int().nonnegative().safe(), revision = version.refine(n => n > 0);
 const reference = z.object({ id, revision }).strict();
@@ -24,7 +25,8 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
   z.object({ ...base, kind: z.literal("fup.put"), conversationId: id, policyRevision: revision, source: reference,
     project: reference.optional(), mission: reference.optional(), recipientId: id.optional(),
     mandate: z.object({ id, version: revision }).strict().optional(), purpose: z.string().min(1).max(2048),
-    dueAt: time.optional(), windowEnd: time.optional(), timezone: id.default("UTC"), precision: z.enum(["unset", "exact", "day", "window"]).default("unset"),
+    dueAt: z.union([time,z.string().max(40)]).optional(), windowEnd: z.union([time,z.string().max(40)]).optional(), timezone: id.default("UTC"), precision: z.enum(["unset", "exact", "day", "window"]).default("unset"),
+    candidate: z.object({batchKey:id,claimIndex:z.number().int().min(0).max(31)}).strict().optional(),
     condition: z.string().min(1).max(2048).optional(), recurrenceLimit: z.number().int().min(1).max(100).default(1),
     state: z.enum(["scheduled", "awaiting_condition", "awaiting_approval"]).default("awaiting_approval") }).strict(),
   z.object({ ...base, kind: z.literal("fup.pause"), expectedVersion: revision }).strict(),
@@ -32,7 +34,7 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
 ]);
 export type OwnerCommand = z.input<typeof ownerCommandSchema>;
 type RevisionKind = "mission.put" | "mission.set_state" | "policy.put";
-export type CommandReceipt = { operationId: string; id: string; shadow: true } & (
+export type CommandReceipt = { operationId: string; id: string; shadow: true; fupProvenance?: 1 } & (
   { kind: RevisionKind; revision: number; version?: never } |
   { kind: Exclude<OwnerCommand["kind"], RevisionKind>; version: number; revision?: never });
 const ns = "installation_id=? AND generation=?";
@@ -59,6 +61,10 @@ function command(input: unknown) {
     if (result.kind === "policy.put" && result.conversationKind === "private" && result.groupMode !== "ignore") throw 0;
     if (result.kind === "fup.put") {
       new Intl.DateTimeFormat("en", { timeZone: result.timezone });
+      if ((typeof result.dueAt === "string" || typeof result.windowEnd === "string") && typeof (input as Record<string,unknown>).timezone !== "string") throw 0;
+      if(result.dueAt!==undefined)result.dueAt=fupInstant(result.dueAt,result.timezone);
+      if(result.windowEnd!==undefined)result.windowEnd=fupInstant(result.windowEnd,result.timezone);
+      if((result.precision==="window")!==(result.windowEnd!==undefined))throw 0;
       if ((result.state === "scheduled" && result.dueAt === undefined) || (result.dueAt === undefined) !== (result.precision === "unset") || (result.windowEnd !== undefined && (result.dueAt === undefined || result.windowEnd < result.dueAt)) || (result.state === "awaiting_condition" && !result.condition)) throw 0;
     }
     return result;
@@ -89,6 +95,9 @@ export class OwnerControl {
       ...("expectedRevision" in item ? { revision: next } : { version: next }) } as CommandReceipt;
     const conditions: string[] = [], values: Value[] = [];
     const require = (sql: string, ...binds: Value[]) => { conditions.push(sql); values.push(...binds); };
+    const provenance=item.kind==="fup.put"?await prepareFupProvenance(this.db,this.scope,item as Parameters<typeof prepareFupProvenance>[2]):null;
+    if(provenance)result.fupProvenance=1;
+    if(provenance)require(provenance.guard.sql,...provenance.guard.values);
     const table = item.kind.startsWith("mission.") ? "assistant_missions" : item.kind === "policy.put" ? "assistant_conversation_policies" : item.kind === "project.put" ? "assistant_projects" : item.kind.startsWith("mandate.") ? "assistant_mandates" : "assistant_follow_ups";
     const resourceKey = item.kind === "policy.put" ? "conversation_id" : "id";
     if (expected === 0) require(`NOT EXISTS(SELECT 1 FROM ${table} WHERE ${ns} AND ${resourceKey}=?)`, ...this.keys(), item.id);
@@ -164,11 +173,13 @@ export class OwnerControl {
         conversation_id,purpose,due_at,window_end,timezone,precision,condition_text,mandate_id,mandate_version,
         recurrence_limit,state,next_evaluation_at) SELECT ?,?,?,?,?,?,?,?,?,'owner_request',?,?,?,?,?,?,?,?,?,?,?,? WHERE $gate`,
         ...this.keys(), item.id, next, item.mission?.id ?? null, item.project?.id ?? null, item.recipientId ?? null, item.source.id, item.source.revision,
-        item.conversationId, item.purpose, item.dueAt ?? null, item.windowEnd ?? null, item.timezone, item.precision, item.condition ?? null, item.mandate?.id ?? null, item.mandate?.version ?? null, item.recurrenceLimit, item.state, item.dueAt ?? now));
+        item.conversationId, item.purpose, item.dueAt as number ?? null, item.windowEnd as number ?? null, item.timezone, item.precision, item.condition ?? null, item.mandate?.id ?? null, item.mandate?.version ?? null, item.recurrenceLimit, item.state, item.dueAt as number ?? now));
       else batch.push(gated(`INSERT INTO assistant_follow_ups SELECT installation_id,generation,id,?,mission_id,project_id,
         recipient_id,source_id,source_revision,origin,conversation_id,purpose,due_at,window_end,timezone,precision,
         condition_text,reason,external_event_ref,mandate_id,mandate_version,recurrence_limit,?,next_evaluation_at
         FROM assistant_follow_ups WHERE ${ns} AND id=? AND version=? AND $gate`, next, item.kind === "fup.pause" ? "paused" : "cancelled", ...this.keys(), item.id, item.expectedVersion));
+      if(provenance)batch.push(gated(`INSERT INTO assistant_fup_provenance SELECT ?,?,?,?,?,? WHERE $gate`,...this.keys(),item.id,next,item.operationId,JSON.stringify(provenance.body)));
+      else batch.push(gated(`INSERT INTO assistant_fup_provenance SELECT installation_id,generation,fup_id,?,?,body_json FROM assistant_fup_provenance WHERE ${ns} AND fup_id=? AND version=? AND $gate`,next,item.operationId,...this.keys(),item.id,item.expectedVersion));
       // Preserve paid truth. Only live work is invalidated; ledgers and receipts
       // are never deleted or rewritten, including an executor's late answer.
       batch.push(gated(`UPDATE assistant_jobs SET state='cancelled',lease_until=NULL,last_error='work_superseded' WHERE ${ns} AND state IN ('pending','processing') 

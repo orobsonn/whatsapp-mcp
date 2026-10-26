@@ -9,6 +9,7 @@ import { bridgeHash } from "./ingress";
 import { DecisionJournal } from "./decisions";
 import { engineName } from "./container";
 import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
+import { FollowUps } from "./followups";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -16,6 +17,7 @@ export type OwnerAffinity = z.infer<typeof ownerAffinitySchema>;
 const listKind = z.enum(["sources", "projects", "missions", "policies", "mandates", "follow_ups", "decisions"]);
 export const ownerQuerySchema = z.union([
   z.object({ kind: z.literal("source"), id }).strict(),
+  z.object({ kind: z.literal("follow_up"), id }).strict(),
   z.object({ kind: z.literal("decision"), id: z.string().min(1).max(2048) }).strict(),
   z.object({ kind: listKind, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(50).default(20) }).strict(),
 ]);
@@ -48,6 +50,7 @@ export class OwnerQueries {
     private readonly journal?: OwnerJournalReader) { this.scope = Object.freeze({ ...scope }); }
   async execute(input: unknown): Promise<unknown> {
     const query = ownerQuerySchema.parse(input), keys = [this.scope.installationId, this.scope.generation];
+    if(query.kind==="follow_up")return new FollowUps(this.db,this.scope,{origin:this.origin}).get(query.id);
     if (query.kind === "source") {
       const access = new SourceAccess(this.db, this.scope), actor = { kind: "owner" } as const;
       const first = await access.read(actor, query.id);

@@ -21,6 +21,8 @@ import admissions from "../assistant/migrations/0007_source_controls.sql?raw";
 import commands from "../assistant/migrations/0012_owner_commands.sql?raw";
 // @ts-expect-error Raw SQL.
 import core from "../assistant/migrations/0016_owner_core.sql?raw";
+// @ts-expect-error Raw SQL.
+import fupProvenance from "../assistant/migrations/0019_fup_provenance.sql?raw";
 let scope: {
     installationId: string;
     generation: string;
@@ -35,7 +37,7 @@ const write = (value: unknown) => (owner as SourceController & {
 const mission = (operationId = "mission-create", id = "mission") => ({ kind: "mission.put", operationId, id, expectedRevision: 0, objective: "Synthetic objective", source: { id: "", revision: 1 } });
 beforeEach(async () => {
     scope = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "epoch", sourceGeneration: "current" };
-    for (const schema of [sources, policies, work, jobs, inbox, origins, admissions, commands, core])
+    for (const schema of [sources, policies, work, jobs, inbox, origins, admissions, commands, core, fupProvenance])
         await env.DB.batch(schema.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
     owner = new SourceController(env.DB, scope, { kind: "owner" }, () => 1000);
     control = new OwnerControl(env.DB, scope, { kind: "owner" }, () => 1000);
