@@ -7,7 +7,7 @@ import { SourceAccess } from "./access";
 import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { DecisionJournal } from "./decisions";
-import { engineName } from "./container";
+import { hostConfiguredSearch } from "./configured-search";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -98,10 +98,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    const origin = this.env.CAPTURE_READER && this.env.BRIDGE_SECRET
-      ? new OriginGuard(this.env.DB!, () => scope, this.env.CAPTURE_READER, this.env.BRIDGE_SECRET) : undefined;
-    const semantic = this.env.COGNEE ? { mode: "required" as const,
-      engine: this.env.COGNEE.get(this.env.COGNEE.idFromName(engineName(scope.installationId, scope.generation))) } : undefined;
+    const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
     const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic });
     return new OwnerQueries(this.env.DB!, scope, origin, journal).execute(input);
   }
