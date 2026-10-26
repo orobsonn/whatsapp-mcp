@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issues #27–43, #69, #70 e #79/#91/#93/#96/#100 concluídas, com CI/revisão e releases v0.7.0–v0.30.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
+Goal ativo desde 25/10/2026. Issues #27–45, #69, #70 e #79/#91/#93/#96/#100/#114/#121 concluídas, com CI/revisão e releases v0.7.0–v0.34.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
 
 ## Método
 
@@ -49,3 +49,11 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 ## Regras de conclusão
 
 Não confundir release com deploy, fixture com homologação real, recurso sem credencial com canal pronto, ou teste de laboratório com implementação. Fechar issue somente com critérios cumpridos e evidência no commit integrado. Impedimentos de credenciais/canal serão estados explícitos; seguir engenharia independente antes de envolver dono. Goal só termina quando produto estiver pronto para piloto sombra e não houver trabalho de engenharia necessário restante.
+
+## Registros preservados da construção em 25/10/2026
+
+Os acessos e testes de canal abaixo são históricos; não comprovam credenciais ou homologação transferidas para a VPS. O diário #45 e a recuperação #121 já foram integrados e publicados; #46 continua em preparação para uma release posterior à #112.
+
+- #44: runtime Flue integrado e revisão adversarial concluídos; 39 testes Flue/workerd passaram novamente no commit integrado, incluindo reinício, ACK perdido, orçamento e pausa. PRs #117/#118 aprovados em CI; release v0.32.0 publicada e issue fechada. Diário obrigatório #45 ainda falta; não é prova de canal ou inferência real nesta rodada.
+- #46: core e gateway HTTP commitados em 5ab9a85, com 81 testes dirigidos e revisão independente sem bloqueador. Exclusão funciona offline e continua preservada após retomada; retirada remota bloqueia texto antes da materialização local; afinidade host confere cada chamada. O binding real entre dois Workers locais passou com restart/recibo preservado; diário #45, binding cloud e homologação do cliente real seguem pendentes; issue continua aberta.
+- #47/#48: bot `@robson_assistente_sombra_bot` criado pelo Chrome autorizado; getMe confirmou identidade e tópicos privados ativos. Teste controlado enviado pela própria conta chegou a getUpdates com thread. Token somente em arquivo local0600 fora Git/D1; vínculo administrativo MCP e webhook ainda não configurados. A observação da conta do dono não ativa permissão no produto.
