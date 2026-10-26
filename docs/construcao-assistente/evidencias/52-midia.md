@@ -72,3 +72,11 @@ Plano e fixtures sintéticos preparados somente em `/tmp/assistant52-cloud-probe
 - [PDFDocument: parser real e contagem de páginas](https://pdf-lib.js.org/docs/api/classes/pdfdocument).
 - [Cloudflare: memória por isolate e limitesCPU](https://developers.cloudflare.com/workers/platform/limits/).
 - [Cloudflare: serviços separados e RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/).
+
+## Composição VPS com #45/#46/#112/#121 — 26/10/2026
+
+A integração preservou ranking/packHash/prova semânticos, referências de mídia e o diário obrigatório. A primeira CI da composição40320659169 encontrou fixtures da base antiga: episódio sem subject45 e tentativa de corrigir captura WhatsApp pela API exclusiva owner_note46. As fixtures agora usam owner_request nominal e correção pelo CaptureMaterializer/versionamento da origem. Citações OCR inválidas são recusadas na etapa model (com uma chamada sintética comprovada e diário model_uncertain); publicação positiva é relida pelo DecisionJournal atual com model_extraction.
+
+Contraprova nova reproduziu cobertura falsamente sem lacuna quando OCR autorizado ficava fora do top1. A consulta bounded de existência usa o inventário autorizado EXATO do run, após o gate de cobertura; repete o gate depois dos awaits e conserva media_semantic_unsearched nas saídas pending/no_matches/ready. OCR privado fora do inventário não afeta a lacuna do interlocutor. Não altera limites de índice, ranking ou recibos financeiros.
+
+Validação dirigida na árvore integrada:31/31 testes de mídia e TypeScript aprovados. Teste RED do gap:1falha/1passado; o caso negativo privado já passava. Nenhuma chamada externa, modelo pago ou segredo usado. CI integrada completa e homologação cloud continuam pendentes; os resultados locais não homologam a qualidade da extração nem o limite de CPU cloud do parser.
