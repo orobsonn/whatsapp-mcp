@@ -108,6 +108,14 @@ export class CogneeModelBroker {
     return this.db.prepare(`SELECT state,response_json,actual_units FROM assistant_model_receipts WHERE ${ns} AND operation_key=?`)
       .bind(...this.keys(), key).first<Receipt>();
   }
+  private async currentReceipt(key: string, hash: string, token: string, expected: Receipt, additional?: AccessGuard) {
+    const permit = await this.permit(token), guard = this.access.guard(owner, permit.fence, this.clock());
+    // Last local snapshot: a purged body cannot escape from an earlier JS copy
+    // while its unrelated anchor source/permit remains active.
+    return this.db.prepare(`SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
+      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) ${additional ? `AND (${additional.sql})` : ""}`)
+      .bind(...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...(additional?.values ?? [])).first<{ response_json: string }>();
+  }
   private async requestKey(fence: SourceFence, request: { path: ModelPath; body: string }) {
     const configHash = await this.configHash, requestHash = await bridgeHash([configHash, request.path, request.body]);
     const key = "cognee:" + await bridgeHash([...this.keys(), fence.source.id, fence.source.revision,
@@ -118,12 +126,12 @@ export class CogneeModelBroker {
    * never calls recover(), budget methods or the network adapter. */
   async replay(token: string, path: string, payload: unknown): Promise<Result> {
     const request = Object.freeze(normalize(path, payload, this.config)), permit = await this.permit(token);
-    const { key } = await this.requestKey(permit.fence, request), row = await this.receipt(key);
+    const { key, requestHash } = await this.requestKey(permit.fence, request), row = await this.receipt(key);
     if (!row || row.state !== "complete" || row.actual_units === null || row.response_json === null) return { state: "blocked", operationKey: key };
     let body: unknown;
     try { body = JSON.parse(response(request, row.response_json)); }
     catch { return { state: "blocked", operationKey: key }; }
-    await this.permit(token);
+    if (!await this.currentReceipt(key, requestHash, token, row)) return { state: "blocked", operationKey: key };
     return { state: "complete", operationKey: key, body };
   }
   private async recover(key: string, hash: string, token: string): Promise<Result> {
@@ -136,8 +144,8 @@ export class CogneeModelBroker {
         .bind(...this.keys(), key).run();
     } catch { return { state: "uncertain", operationKey: key }; }
     // Settlement preserves paid truth; returning content still needs a current permit/source.
-    await this.permit(token);
-    return { state: "complete", operationKey: key, body: JSON.parse(row.response_json!) };
+    const current = await this.currentReceipt(key, hash, token, row);
+    return current ? { state: "complete", operationKey: key, body: JSON.parse(current.response_json) } : { state: "uncertain", operationKey: key };
   }
   private async uncertainAdmission(key: string): Promise<Result> {
     // A failed latch write still returns no body and performs no adapter call.
@@ -156,8 +164,9 @@ export class CogneeModelBroker {
       if (!host) return this.uncertainAdmission(key);
       const result = await this.db.batch([...host.statements, this.db.prepare(`SELECT 1 WHERE ${host.guard.sql}`).bind(...host.guard.values)]);
       if (result.at(-1)!.results.length !== 1) return this.uncertainAdmission(key);
-      await this.permit(token);
-      return { state: "complete", operationKey: key, body: JSON.parse(response(request, row.response_json)) };
+      const current = await this.currentReceipt(key, hash, token, row, host.guard);
+      if (!current) return this.uncertainAdmission(key);
+      return { state: "complete", operationKey: key, body: JSON.parse(response(request, current.response_json)) };
     } catch { return this.uncertainAdmission(key); }
   }
   async invoke(token: string, path: string, payload: unknown, jobAlias?: string): Promise<Result> {
@@ -199,8 +208,14 @@ export class CogneeModelBroker {
       if (safeInteger(result.actualUnits)) knownActual = result.actualUnits;
       if (result.status !== 200 || knownActual === undefined) throw 0;
       const body = response(request, result.body);
-      await this.db.prepare(`UPDATE assistant_model_receipts SET state='response_ready',response_json=?,actual_units=?
-        WHERE ${ns} AND operation_key=? AND state='attempting'`).bind(body, knownActual, ...this.keys(), key).run();
+      const saved = await this.db.prepare(`UPDATE assistant_model_receipts SET state='response_ready',response_json=?,actual_units=?
+        WHERE ${ns} AND operation_key=? AND state='attempting' RETURNING operation_key`).bind(body, knownActual, ...this.keys(), key).all();
+      // A retention purge can remove the payload receipt while an already paid
+      // attempt is in flight. Never recreate it; keep financial truth in #37.
+      if (saved.results.length !== 1) {
+        await this.budget.settle(key, requestHash, knownActual);
+        return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key };
+      }
     } catch {
       await Promise.allSettled([
         this.db.prepare(`UPDATE assistant_model_receipts SET state='uncertain',actual_units=? WHERE ${ns} AND operation_key=? AND state='attempting'`).bind(knownActual ?? null, ...this.keys(), key).run(),

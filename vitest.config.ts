@@ -9,7 +9,7 @@ export default defineConfig({
         compatibilityDate: "2026-10-19",
         compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
         d1Databases: ["DB"],
-        r2Buckets: ["MEDIA"],
+        r2Buckets: ["MEDIA", "ARTIFACTS"],
         kvNamespaces: ["OAUTH_KV"],
         bindings: {
           TEST_MIGRATIONS: migrations,

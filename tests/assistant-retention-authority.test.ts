@@ -73,7 +73,7 @@ test("bootstrap discovers withdrawn sources in every generation without reading 
 });
 test("withdraw records external authority first, blocks reads and prevents a new generation recreating the same origin", async () => {
   const { core } = await initialized(), guard = sourceRetirementGuard(scope.installationId, { lookup: core.lookup.bind(core), record: async (installationId, keys) => {
-    expect(await env.DB.prepare("SELECT status FROM assistant_sources WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("status")).toBe("active"); return core.record(installationId, keys);
+    expect(await env.DB.prepare("SELECT status FROM assistant_sources WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("status")).toBe("withdrawn"); return core.record(installationId, keys);
   } });
   const controller = new SourceController(env.DB, scope, owner, () => 100, guard), source = await controller.create({ originKey: "retire", text: "Synthetic original", occurredAt: 1 });
   await controller.withdraw(source.id, 1);
@@ -86,7 +86,7 @@ test("stale revision and missing authority cannot silently claim withdrawal or a
   await expect(controller.withdraw(source.id, 2)).rejects.toThrow("source_revision_conflict"); expect(await core.lookup(scope.installationId, await retirementKeys(scope.installationId, "owner_note", "still-active", source.id))).toMatchObject({ blocked: [] });
   const unavailable = sourceRetirementGuard(scope.installationId, { lookup: async () => ({ state: "unavailable" }), record: async () => ({ state: "unavailable" }) });
   await expect(new SourceController(env.DB, scope, owner, () => 100, unavailable).withdraw(source.id, 1)).rejects.toThrow("retention_authority_unavailable");
-  expect(await new SourceAccess(env.DB, scope).read(owner, source.id)).not.toBeNull();
+  expect(await new SourceAccess(env.DB, scope).read(owner, source.id)).toBeNull();
   expect(() => configuredRetirementGuard({ INSTALLATION_ID: scope.installationId, RETENTION_AUTHORITY_REQUIRED: "true" })).toThrow("retention_authority_unconfigured");
   expect(() => configuredRetirementGuard({ INSTALLATION_ID: scope.installationId, RETENTION_AUTHORITY_REQUIRED: "tru" })).toThrow("retention_authority_configuration");
   const affinity = { ...scope, sourceEpoch: "e", sourceGeneration: "g" }, rpc = new OwnerAssistant(createExecutionContext(), { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: "e", BRIDGE_SOURCE_GENERATION: "g", RETENTION_AUTHORITY_REQUIRED: "true" });
@@ -94,8 +94,8 @@ test("stale revision and missing authority cannot silently claim withdrawal or a
 });
 test("public command replay after D1 ACK loss keeps the original receipt and durable retirement", async () => {
   const { core } = await initialized(), guard = sourceRetirementGuard(scope.installationId, core), legacy = new SourceController(env.DB, scope, owner, () => 100, guard), source = await legacy.create({ originKey: "lost-ack", text: "Synthetic original", occurredAt: 1 });
-  const batch = env.DB.batch.bind(env.DB); let fail = true;
-  const db = { prepare: env.DB.prepare.bind(env.DB), batch: async (statements: D1PreparedStatement[]) => { const result = await batch(statements); if (fail) { fail = false; throw new Error("synthetic ACK lost"); } return result; } } as D1Database;
+  const batch = env.DB.batch.bind(env.DB); let count = 0;
+  const db = { prepare: env.DB.prepare.bind(env.DB), batch: async (statements: D1PreparedStatement[]) => { const result = await batch(statements); if (++count === 2) throw new Error("synthetic ACK lost"); return result; } } as D1Database;
   const controller = new SourceController(db, scope, owner, () => 100, guard), command = { kind: "source.withdraw", operationId: "retire-ack", id: source.id, expectedRevision: 1 };
   await expect(controller.execute(command)).rejects.toThrow("synthetic ACK lost");
   expect(await controller.execute(command)).toMatchObject({ id: source.id, revision: 2, operationId: "retire-ack" });

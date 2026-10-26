@@ -40,4 +40,7 @@ export interface AssistantEnv {
   RETENTION_AUTHORITY?: DurableObjectNamespace<RetentionAuthority>;
   RETENTION_AUTHORITY_REQUIRED?: string;
   RETENTION_BOOTSTRAP_SEAL?: string;
+  ARTIFACTS?: R2Bucket;
+  ARTIFACTS_INSTALLATION_ID?: string;
+  ARTIFACTS_GENERATION?: string;
 }

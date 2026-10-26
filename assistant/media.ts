@@ -113,12 +113,15 @@ export class MediaContext {
       const parsed: unknown = JSON.parse(result.body); knownActual = mediaUsage(parsed);
       // Preserve financial truth even for incomplete/refusal/malformed output.
       mediaOutput(parsed, admission.pages);
-      await this.sql(`UPDATE assistant_media_receipts SET state='response_ready',response_json=?,actual_units=? WHERE ${ns} AND operation_key=? AND state='attempting'`, result.body, knownActual, ...this.keys(), key).run();
+      const saved = await this.sql(`UPDATE assistant_media_receipts SET state='response_ready',response_json=?,actual_units=? WHERE ${ns} AND operation_key=? AND state='attempting' RETURNING operation_key`, result.body, knownActual, ...this.keys(), key).all();
+      if (saved.results.length !== 1) { await this.budget.settle(key, requestHash, knownActual); return pending("media_retired", key); }
     } catch {
       await Promise.allSettled([this.sql(`UPDATE assistant_media_receipts SET state='uncertain',actual_units=? WHERE ${ns} AND operation_key=? AND state='attempting'`, knownActual, ...this.keys(), key).run(), knownActual === null ? this.budget.uncertain(key) : this.budget.settle(key, requestHash, knownActual)]);
       return pending("media_uncertain", key);
     } finally { clearTimeout(timer); abort.abort(); }
-    return this.finish(actor, parent, origin, key, configHash, media.hash, (await this.receipt(key))!);
+    const persisted = await this.receipt(key);
+    if (!persisted) { if (knownActual !== null) await this.budget.settle(key, requestHash, knownActual); return pending("media_retired", key); }
+    return this.finish(actor, parent, origin, key, configHash, media.hash, persisted);
   }
   private async finish(actor: TrustedActor, parent: RetrievedSource, origin: OriginFence, key: string, configHash: string, blobHash: string, receipt: Receipt): Promise<Outcome> {
     if (!receipt.request_hash || receipt.actual_units === null) return pending("media_uncertain", key);

@@ -3,6 +3,7 @@ import type { TrustedActor } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger, type CommandValue } from "./command-ledger";
 import type { SourceRetirementGuard } from "./retention-authority";
+import { WithdrawalBarrier } from "./retention-barrier";
 export type SourceScope = Readonly<{
     installationId: string;
     generation: string;
@@ -83,13 +84,12 @@ export class SourceController {
     private statement = (query: string, ...values: CommandValue[]) => this.db.prepare(query).bind(...values);
     private plain: Statement = (query, ...values) => this.statement(query.replaceAll("$gate", "1"), ...values);
     private keys() { return [this.scope.installationId, this.scope.generation]; }
-    private async retirementCheck(id: string, expected: number, retire = false) {
+    private async retirementCheck(id: string, expected: number) {
         if (!this.retirement) return;
         const row = await this.statement(`SELECT origin,origin_key,revision,status FROM assistant_sources WHERE installation_id=? AND generation=? AND id=?`, ...this.keys(), id)
             .first<{ origin: string; origin_key: string; revision: number; status: string }>();
         if (!row || row.revision !== expected || row.status !== 'active') throw new Error("source_revision_conflict");
-        if (retire) await this.retirement.withdraw(row.origin, row.origin_key, id);
-        else await this.retirement.allow(row.origin, row.origin_key, id);
+        await this.retirement.allow(row.origin, row.origin_key, id);
     }
     private async prepared(input: SourceInput) {
         integer(input.occurredAt);
@@ -175,7 +175,7 @@ export class SourceController {
       AND revision=? AND status='active' AND $gate RETURNING id,revision,current_version AS version`, ...values, ...this.keys(), id, expected), this.change(s, id, expected, kind, now)];
     }
     async changeAudience(id: string, expected: number, visibility: Audience) { this.owner(); audience(visibility); return this.update(id, expected, "access_changed", "audience=?", [visibility]); }
-    async withdraw(id: string, expected: number) { this.owner(); integer(expected, 1); await this.retirementCheck(id, expected, true); return this.update(id, expected, "withdrawn", "status='withdrawn'", []); }
+    async withdraw(id: string, expected: number) { this.owner(); integer(expected, 1); const now = this.clock(); integer(now); return new WithdrawalBarrier(this.db, this.scope, this.retirement).direct(id, expected, now); }
     private async update(id: string, expected: number, kind: string, assignment: string, values: string[]) {
         integer(expected, 1);
         const now = this.clock();
@@ -188,12 +188,18 @@ export class SourceController {
     }
     async execute(input: unknown): Promise<SourceCommandReceipt> {
         this.owner(); // Zod owns nested scalars synchronously, before hashing yields.
-        const item = sourceCommandSchema.parse(input), ledger = new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item));
+        const item = sourceCommandSchema.parse(input), requestHash = await bridgeHash(item), ledger = new CommandLedger(this.db, this.scope, item.operationId, requestHash);
         const previous = await ledger.recover<SourceCommandReceipt>();
         if (previous)
             return previous;
         const now = this.clock();
         integer(now);
+        if (item.kind === 'source.withdraw') {
+            const barrier = new WithdrawalBarrier(this.db, this.scope, this.retirement), ref = await barrier.begin(item.id, item.expectedRevision, item.operationId, requestHash, now);
+            const result: SourceCommandReceipt = { ...ref, operationId: item.operationId, kind: item.kind, shadow: true };
+            await this.db.batch([ledger.admit(result, now, `EXISTS(SELECT 1 FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=? AND operation_id=? AND request_hash=?)`, [...this.keys(), item.id, item.operationId, requestHash]), barrier.finish(item.id, item.operationId, requestHash)]);
+            const receipt = await ledger.recover<SourceCommandReceipt>(); if (!receipt) throw new Error("retention_withdraw_uncertain"); return receipt;
+        }
         const s: Statement = (query, ...values) => ledger.statement(query, ...values);
         let batch: D1PreparedStatement[];
         if (item.kind === 'source.create') {
@@ -215,7 +221,7 @@ export class SourceController {
             const row = await this.statement(`SELECT id,revision,current_version AS version FROM assistant_sources WHERE installation_id=? AND generation=? AND id=?`, ...this.keys(), item.id).first<SourceRef>();
             if (!row)
                 throw new Error("source_revision_conflict");
-            await this.retirementCheck(item.id, item.expectedRevision, item.kind === 'source.withdraw');
+            await this.retirementCheck(item.id, item.expectedRevision);
             const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' ? 1 : 0), shadow: true };
             // A future expectedRevision must not make a previously read version
             // valid after somebody else's correction wins before this batch.
@@ -223,7 +229,7 @@ export class SourceController {
             if (item.kind === 'source.correct')
                 batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now));
             else
-                batch.push(...this.updatePlan(s, item.id, item.expectedRevision, item.kind === 'source.withdraw' ? 'withdrawn' : 'access_changed', item.kind === 'source.withdraw' ? "status='withdrawn'" : "audience=?", item.kind === 'source.withdraw' ? [] : [item.audience], now));
+                batch.push(...this.updatePlan(s, item.id, item.expectedRevision, 'access_changed', "audience=?", [item.audience], now));
         }
         await this.db.batch(batch);
         const receipt = await ledger.recover<SourceCommandReceipt>();

@@ -18,6 +18,8 @@ import { Evaluation, evaluationQuery } from "./evaluation";
 import { assistantHealth } from "./health";
 import { configuredRetirementGuard } from "./retention-authority";
 import { AssistantExport } from "./retention";
+import { RetentionPurge, purgeCommand } from "./retention-purge";
+import { RetentionObjects, objectCommand } from "./retention-objects";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -37,6 +39,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand): Promise<unknown>;
   telegramReview(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   evaluate(expected: OwnerAffinity, command: unknown): Promise<unknown>;
@@ -123,6 +126,11 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   async source(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
     return new SourceController(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).execute(input);
+  }
+  async retention(expected: OwnerAffinity, raw: unknown) {
+    const scope = this.#affinity(expected), input = z.union([purgeCommand, objectCommand]).parse(raw);
+    if (input.kind === "source.purge") return new RetentionPurge(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).advance(input);
+    return new RetentionObjects(this.env, scope, { kind: "owner" }).collect(input);
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);

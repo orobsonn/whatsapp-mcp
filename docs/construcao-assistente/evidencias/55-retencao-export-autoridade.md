@@ -2,6 +2,8 @@
 
 Implementação local, sem deploy, dados reais, chamada paga ou ativação de retenção. A issue permanece aberta: purga, coleta de R2, restauração selada e homologação de recuperação ainda são etapas separadas.
 
+Atualização da etapa B: a retirada agora bloqueia D1 atomicamente **antes** de registrar o DO, fechando a janela de indisponibilidade entre os dois. O texto abaixo preserva a evidência da etapa A isolada; o contrato corrente e as contraprovas estão em [barreira e purga](55-retencao-purga.md).
+
 ## Contrato implementado
 
 `AssistantExport.page` exige ator owner copiado antes da primeira leitura. O catálogo vem de `sqlite_master`, com nomes/colunas validados pelo host; o chamador não escolhe SQL nem tabela. Exporta todas as tabelas `assistant_*` da instalação/geração, incluindo corpos, metadados e estado operacional. As duas tabelas financeiras de #37 são exportadas em **todas** as gerações e períodos da instalação, conservando reservas incertas e custos liquidados. Não exporta o arquivo original de WhatsApp nem outros namespaces.

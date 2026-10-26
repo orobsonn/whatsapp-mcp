@@ -7,7 +7,7 @@ const chunkBytes = 24576;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const stateSchema = z.object({ version: z.literal(2), scope: digest, schema: digest, table: z.number().int().nonnegative().safe(),
   row: z.number().int().safe().nullable(), offset: z.number().int().nonnegative().safe(), hash: digest.nullable() }).strict();
-const financial = new Set(["assistant_budget_accounts", "assistant_budget_reservations"]);
+const installationWide = new Set(["assistant_budget_accounts", "assistant_budget_reservations", "assistant_retention_barriers"]);
 type CursorState = z.infer<typeof stateSchema>;
 const encode = (bytes: Uint8Array) => {
   let binary = "";
@@ -59,10 +59,10 @@ export class AssistantExport {
     let encodedBytes = 0;
     while (state.table < catalog.tables.length && parts.length < input.limit) {
       const table = catalog.tables[state.table];
-      const installationWide = financial.has(table);
-      const stored = await this.db.prepare(`SELECT rowid AS __export_row,* FROM ${table} WHERE installation_id=? ${installationWide ? "" : "AND generation=?"}
+      const allGenerations = installationWide.has(table);
+      const stored = await this.db.prepare(`SELECT rowid AS __export_row,* FROM ${table} WHERE installation_id=? ${allGenerations ? "" : "AND generation=?"}
         AND (? IS NULL OR rowid${state.offset ? "=" : ">"}?) ORDER BY rowid LIMIT 1`)
-        .bind(this.scope.installationId, ...(installationWide ? [] : [this.scope.generation]), state.row, state.row).first<Record<string, unknown> & { __export_row: number }>();
+        .bind(this.scope.installationId, ...(allGenerations ? [] : [this.scope.generation]), state.row, state.row).first<Record<string, unknown> & { __export_row: number }>();
       if (!stored) {
         if (state.offset) throw new Error("export_changed");
         state = { ...state, table: state.table + 1, row: null }; continue;

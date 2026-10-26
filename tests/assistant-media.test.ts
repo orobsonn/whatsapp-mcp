@@ -22,6 +22,7 @@ import { MediaContext } from '../assistant/media';
 import { SourceController } from '../assistant/sources';
 import { SourceAccess } from '../assistant/access';
 import { InferenceBudget } from '../assistant/budget';
+import { RetentionPurge } from '../assistant/retention-purge';
 import { OriginGuard } from '../assistant/origin-guard';
 import { CaptureMaterializer } from '../assistant/materialize';
 // @ts-expect-error Vite glob assets.
@@ -64,6 +65,21 @@ it('withdrawal during inference retains cost and releases no stale evidence', as
   expect((await context.interpret(owner, sourceId)).state).toBe('pending');
   expect((await new InferenceBudget(env.DB, scope).status()).committed).toBe(70);
   expect(await context.read(owner, { id: sourceId } as never)).toBeNull();
+});
+it('a late OCR answer after payload purge settles usage without restoring receipts or artifacts', async () => {
+  const budget = new InferenceBudget(env.DB, scope); await budget.configure(600000);
+  const guard = { allow: async () => {}, withdraw: async () => {} };
+  port.mockImplementation(async () => {
+    await new SourceController(env.DB,scope,owner,Date.now,guard).withdraw(sourceId,1);
+    const retention = new RetentionPurge(env.DB,scope,owner,Date.now,guard);
+    let result: {state:string} = {state:'pending'};
+    for(let step=0;step<10 && result.state==='pending';step++)result=await retention.advance({kind:'source.purge',operationId:'ocr-purge',sourceId});
+    expect(result.state).toBe('complete');
+    return {status:200,body:response()};
+  });
+  expect(await context.interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_retired'});
+  expect((await budget.status()).committed).toBe(70); expect(port).toHaveBeenCalledTimes(1);
+  for(const table of ['assistant_media_receipts','assistant_media_artifacts'])expect(await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE installation_id=? AND generation=?`).bind(scope.installationId,scope.generation).first('n')).toBe(0);
 });
 import { Retrieval } from '../assistant/retrieval';
 import { RetrievalRuns } from '../assistant/retrieval-runs';

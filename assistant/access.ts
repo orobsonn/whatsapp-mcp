@@ -40,7 +40,8 @@ export class SourceAccess {
     if (actor.kind === "extractor") return null;
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) return null;
     const keys = [this.scope.installationId, this.scope.generation, ...(id === null ? [] : [id]), expectedRevision ?? null, expectedRevision ?? null];
-    const current = `s.installation_id=? AND s.generation=?${id === null ? '' : ' AND s.id=?'} AND (? IS NULL OR s.revision=?) AND s.status='active'`;
+    const current = `s.installation_id=? AND s.generation=?${id === null ? '' : ' AND s.id=?'} AND (? IS NULL OR s.revision=?) AND s.status='active'
+      AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=s.installation_id AND (b.source_id=s.id OR (b.origin=s.origin AND b.origin_key=s.origin_key)))`;
 
     if (actor.kind === "owner") {
       return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}`, values: keys };
@@ -54,6 +55,7 @@ export class SourceAccess {
         LEFT JOIN assistant_provider_identities i ON i.installation_id=s.installation_id AND i.generation=s.generation AND i.provider=? AND i.address=?
         LEFT JOIN assistant_sources proof ON proof.installation_id=i.installation_id AND proof.generation=i.generation AND proof.id=i.proof_source_id
           AND proof.status='active' AND proof.revision=i.proof_source_revision
+          AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=proof.installation_id AND (b.source_id=proof.id OR (b.origin=proof.origin AND b.origin_key=proof.origin_key)))
         LEFT JOIN assistant_mandates m ON m.installation_id=s.installation_id AND m.generation=s.generation AND m.id=?
           AND m.version=(SELECT MAX(latest.version) FROM assistant_mandates latest WHERE latest.installation_id=m.installation_id
             AND latest.generation=m.generation AND latest.id=m.id)
