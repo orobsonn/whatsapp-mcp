@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issues #27–43, #69, #70 e #79/#91/#93/#96/#100 concluídas, com CI/revisão e releases v0.7.0–v0.30.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
+Goal ativo desde 25/10/2026. Issues #27–43, #69, #70 e #79/#91/#93/#96/#100/#114 concluídas, com CI/revisão e releases v0.7.0–v0.31.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
 
 ## Método
 
@@ -43,9 +43,15 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 - #42: quatro casos novos com modelo real; originais preservados em 4/4, foco válido em 3/4 e fallback no outro; repetição sem chamadas novas. PRs #101/#102, v0.25.0.
 - #93: comandos internos do dono, 21 testes D1, PRs #105/#106, v0.27.0; integração autenticada ainda pertence a #46.
 - #96: Flue oficial em workerd, 7/7 testes, auditoria completa sem vulnerabilidades, PRs #107/#108 e v0.28.0; não equivale a integração do agente #44.
-- #114: reader binário restrito de imagem/PDF, 21 casos novos e 683 testes locais; revisão independente sem achados, em integração. Sem decoder/OCR nem binding cloud ativado.
+- #114: reader binário restrito de imagem/PDF, 21 casos novos e 683 testes locais; revisão independente sem achados, PRs #115/#116 e v0.31.0. Sem decoder/OCR nem binding cloud ativado.
 - A captura existente tem opt-in próprio: cobertura de todos privados da assistente ainda precisa ser integrada em #43/#56, com exclusões e lacunas honestas.
 
 ## Regras de conclusão
 
 Não confundir release com deploy, fixture com homologação real, recurso sem credencial com canal pronto, ou teste de laboratório com implementação. Fechar issue somente com critérios cumpridos e evidência no commit integrado. Impedimentos de credenciais/canal serão estados explícitos; seguir engenharia independente antes de envolver dono. Goal só termina quando produto estiver pronto para piloto sombra e não houver trabalho de engenharia necessário restante.
+
+## Integrações em construção
+
+- #44: runtime Flue integrado e revisão adversarial concluídos; 39 testes Flue/workerd passaram novamente no commit integrado, incluindo reinício, ACK perdido, orçamento e pausa. PR #117 em CI. Diário obrigatório #45 ainda falta; não é prova de canal ou inferência real nesta rodada.
+- #46: core e gateway HTTP commitados em d2a4667, com 81 testes dirigidos e revisão independente sem bloqueador. Exclusão funciona offline e continua preservada após retomada; retirada remota bloqueia texto antes da materialização local; afinidade host confere cada chamada. Diário #45, export/binding e homologação real seguem pendentes; issue continua aberta.
+- #47/#48: bot `@robson_assistente_sombra_bot` criado pelo Chrome autorizado; getMe confirmou identidade e tópicos privados ativos. Teste controlado enviado pela própria conta chegou a getUpdates com thread. Token somente em arquivo local0600 fora Git/D1; vínculo administrativo MCP e webhook ainda não configurados. A observação da conta do dono não ativa permissão no produto.
