@@ -50,3 +50,11 @@ O coordenador também integrou121+112, preservou EngineStore.transaction/tickets
 Não se promete cancelar uma operação remota já em andamento. A proteção é impedir outro lifecycle concorrente na mesma instância e impedir efeitos/commit posteriores de um owner antigo. Reinício real elimina a execução antiga; o estado persistido precisa ser recuperado explicitamente.
 
 Recuperação não reconstrói nem rekeya operações/modelos incertos. Candidato sem handle ou inválido exige tratamento explícito/rebuild, conservando o bloqueio do estado interrompido; nunca troca silenciosamente para uma confirmação antiga. Os contratos de tickets/EngineStore adicionados por112 precisam ser preservados no merge; esta branch não os substitui.
+
+## Retomada VPS — bloqueio da release v0.34.0
+
+A falha do run CI40315100926 era uma disputa de prazo na contraprova do diário45: a fixture aplicava25ms também ao caso que precisa concluir a revalidação remota com escrita D1 antes de negar no batch local. O retorno unavailable continuava suprimindo a proposta; não havia prova de bypass. Revisão adversarial independente confirmou que stale deve continuar obrigatório no teste de política, enquanto indisponibilidade/timeout conservam unavailable.
+
+A fixture agora usa o prazo normal4000ms para setup saudável e para a corrida de política. Os casos withdrawn/offline/hung conservam25ms na leitura negativa; o setup saudável não usa esse prazo artificial. A corrida também verifica que o callback executou e incrementou a revisão pelo número exato de mutações. Nenhum código de produção ou política de supressão foi alterado. Validação dirigida na VPS:24/24 testes do diário passaram antes do isolamento adicional do setup. CI do HEAD corrigido continua obrigatória antes de merge/tag/fechamento.
+
+Verificação de acessos: GitHub autenticado após liberar rede; token do perfil Cloudflare pessoal inválido, login por dispositivo iniciado. Credenciais/probes privados do Mac ausentes e Docker não instalado. Nenhuma chamada de modelo paga nesta correção; ledger anterior e reservas incertas preservados.
