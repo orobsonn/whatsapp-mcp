@@ -3,6 +3,7 @@ import type { TrustedActor, SourceFence } from "../access";
 import type { SourceScope } from "../sources";
 import { bridgeHash } from "../ingress";
 import { connectorAuthority, ConnectorAccess, readJson, type ReadFetch } from "./read-only";
+import type { CalendarTokenSource, CalendarTokenResult } from "./calendar-oauth";
 
 const id = z.string().min(1).max(256), instant = z.iso.datetime({ offset: true });
 const timezone = z.string().min(1).max(128).refine(value => { try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; } catch { return false; } });
@@ -27,7 +28,7 @@ type Busy = { start: string; end: string };
 export class CalendarReader {
   private readonly calendars: z.infer<typeof calendarConfiguration>[];
   private readonly access: ConnectorAccess;
-  constructor(db: D1Database, scope: SourceScope, calendars: unknown, private readonly token: string | undefined,
+  constructor(db: D1Database, scope: SourceScope, calendars: unknown, private readonly token: string | CalendarTokenSource | undefined,
     private readonly request: ReadFetch = request => fetch(request), private readonly clock = Date.now) {
     this.calendars = z.array(calendarConfiguration).min(1).max(5).parse(calendars);
     if (new Set(this.calendars.map(item => item.id)).size !== this.calendars.length || new Set(this.calendars.map(item => item.calendarId)).size !== this.calendars.length) throw new Error("calendar_configuration");
@@ -42,6 +43,13 @@ export class CalendarReader {
       if (!fence) return { state: "unavailable", reason: "source_denied", coverage: { complete: false }, availability: "unknown" };
       fences.push(fence);
     }
+    let credential: CalendarTokenResult;
+    try { credential = typeof this.token === "function" ? await this.token() : { state: "ready", accessToken: this.token, expiresAt: Date.now() + 3600000 }; }
+    catch { return { state: "unavailable", dependency: "calendar_read_oauth", coverage: { complete: false }, availability: "unknown" }; }
+    if (credential.state !== "ready") return { state: credential.state, dependency: "calendar_read_oauth", coverage: { complete: false }, availability: "unknown" };
+    if (!credential.accessToken || /[\u0000-\u0020\u007f]/.test(credential.accessToken) || !Number.isSafeInteger(credential.expiresAt) || credential.expiresAt <= Date.now())
+      return { state: "unavailable", dependency: "calendar_read_oauth", coverage: { complete: false }, availability: "unknown" };
+    if (!await this.access.currentMany(actor, fences)) return { state: "unavailable", reason: "source_changed", coverage: { complete: false }, availability: "unknown" };
     const begin = Date.parse(query.start), end = Date.parse(query.end), gaps = new Set<string>(), intervals: Busy[] = [], deadline = Date.now() + 12000;
     let pages = 0, completedCalendars = 0;
     for (let index = 0; index < this.calendars.length; index++) {
@@ -57,7 +65,7 @@ export class CalendarReader {
           const timeMax = end % 1000 ? new Date(Math.ceil(end / 1000) * 1000).toISOString() : query.end;
           url.search = new URLSearchParams({ timeMin, timeMax, timeZone: query.timeZone, singleEvents: "true", orderBy: "startTime", maxResults: "100",
             fields: "items(status,transparency,start,end),nextPageToken", ...(nextPageToken ? { pageToken: nextPageToken } : {}) }).toString();
-          const value = page.parse(await readJson(url, { Authorization: `Bearer ${this.token}`, Accept: "application/json" }, this.request, 262144, Math.max(1, Math.min(8000, deadline - Date.now()))));
+          const value = page.parse(await readJson(url, { Authorization: `Bearer ${credential.accessToken}`, Accept: "application/json" }, this.request, 262144, Math.max(1, Math.min(8000, deadline - Date.now()))));
           pages++;
           for (const item of value.items) {
             if (item.status === "cancelled" || item.transparency === "transparent") continue;

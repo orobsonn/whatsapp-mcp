@@ -2,6 +2,7 @@ import type { CogneeContainer } from "./container";
 import type { MediaReader } from "./media";
 import type { PdfAdmissionReader } from "./media-admission";
 import type { SnapshotReader } from "./origin-guard";
+import type { CalendarOAuth } from "./connectors/calendar-oauth";
 // Host-only owner Telegram notifications; never WhatsApp or Calendar write credentials.
 export interface AssistantEnv {
   DB?: D1Database;
@@ -23,5 +24,12 @@ export interface AssistantEnv {
   GITHUB_READ_REPOSITORIES?: string;
   GITHUB_READ_TOKEN?: string;
   CALENDAR_READ_CALENDARS?: string;
-  CALENDAR_READ_ACCESS_TOKEN?: string;
+  CALENDAR_OAUTH?: DurableObjectNamespace<CalendarOAuth>;
+  CALENDAR_OAUTH_CONFIGURATION_VERSION?: string;
+  CALENDAR_OAUTH_SECRET_EPOCH?: string;
+  CALENDAR_OAUTH_CREDENTIAL_GENERATION?: string;
+  CALENDAR_OAUTH_CLIENT_ID?: string;
+  CALENDAR_OAUTH_CLIENT_SECRET?: string;
+  CALENDAR_OAUTH_REFRESH_TOKEN?: string;
+  CALENDAR_OAUTH_ENCRYPTION_KEY?: string;
 }

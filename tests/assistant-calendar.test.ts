@@ -119,6 +119,20 @@ test("owner-only support and credential setup fail closed before reading the cal
   await controller.changeAudience(authorization.sourceId, 1, "public");
   expect(await reader.execute(owner, query)).toMatchObject({ state: "unavailable", availability: "unknown" }); expect(request).not.toHaveBeenCalled();
 });
+test("lazy OAuth refresh occurs only after canonical authorization and withdrawal during refresh blocks all Calendar GET", async () => {
+  const request = vi.fn(async () => Response.json({ items: [] })), provider = vi.fn(async () => {
+    await controller.withdraw(authorization.sourceId, 1); return { state: "ready" as const, accessToken: "synthetic-refreshed-token", expiresAt: Date.now() + 3600000 };
+  });
+  const reader = new CalendarReader(env.DB, scope, config(), provider, request);
+  expect(await reader.execute({ kind: "extractor" }, query)).toMatchObject({ state: "unavailable" }); expect(provider).not.toHaveBeenCalled();
+  expect(await reader.execute(owner, query)).toMatchObject({ state: "unavailable", reason: "source_changed", availability: "unknown" });
+  expect(provider).toHaveBeenCalledTimes(1); expect(request).not.toHaveBeenCalled();
+});
+test("OAuth binding failure remains an explicit gap without calling Calendar or exposing an exception", async () => {
+  const request = vi.fn(async () => Response.json({ items: [] })), provider = async () => { throw new Error("synthetic-private-provider-error"); };
+  expect(await new CalendarReader(env.DB, scope, config(), provider, request).execute(owner, query)).toEqual({ state: "unavailable", dependency: "calendar_read_oauth", coverage: { complete: false }, availability: "unknown" });
+  expect(request).not.toHaveBeenCalled();
+});
 test("the authenticated RPC reports OAuth missing and exposes configured GET reads without granting write capability", async () => {
   const affinity = { ...scope, sourceEpoch: "capture-e", sourceGeneration: "capture-g" }, settings = { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration };
   expect(await new OwnerAssistant(createExecutionContext(), settings).query(affinity, query)).toMatchObject({ state: "pending_configuration", dependency: "calendar_read" });
@@ -126,7 +140,9 @@ test("the authenticated RPC reports OAuth missing and exposes configured GET rea
   expect(await new OwnerAssistant(createExecutionContext(), configured).query(affinity, query)).toMatchObject({ dependency: "calendar_read_oauth" });
   const network = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ items: [] }));
   try {
-    const rpc = new OwnerAssistant(createExecutionContext(), { ...configured, CALENDAR_READ_ACCESS_TOKEN: "synthetic-token" });
+    const credential = vi.fn(async () => ({ state: "ready" as const, accessToken: "synthetic-token", expiresAt: Date.now() + 3600000 }));
+    const rpc = new OwnerAssistant(createExecutionContext(), { ...configured, CALENDAR_OAUTH_CONFIGURATION_VERSION: "1", CALENDAR_OAUTH_SECRET_EPOCH: "synthetic-epoch",
+      CALENDAR_OAUTH: { idFromName: (name: string) => name, get: () => ({ token: credential }) } as unknown as import("../assistant/env").AssistantEnv["CALENDAR_OAUTH"] });
     expect(await rpc.query(affinity, query)).toMatchObject({ origin: "calendar", audience: "owner", availability: "no_conflict_observed" });
     await expect(rpc.query({ ...affinity, generation: "foreign" }, query)).rejects.toThrow("owner_binding_affinity");
     expect(network).toHaveBeenCalledTimes(1); expect((network.mock.calls[0][0] as Request).method).toBe("GET");

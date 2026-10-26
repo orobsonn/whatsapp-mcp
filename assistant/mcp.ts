@@ -13,6 +13,7 @@ import { createTelegramReview } from "./telegram";
 import { FollowUps } from "./followups";
 import { githubQuery, GitHubReader } from "./connectors/github";
 import { calendarQuery, CalendarReader } from "./connectors/calendar";
+import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -126,7 +127,12 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     }
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") {
       if (!this.env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" };
-      return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), this.env.CALENDAR_READ_ACCESS_TOKEN).execute({ kind: "owner" }, query);
+      if (!this.env.CALENDAR_OAUTH) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
+      const expected = oauthAffinity.safeParse({ installationId: scope.installationId, generation: scope.generation,
+        configurationVersion: Number(this.env.CALENDAR_OAUTH_CONFIGURATION_VERSION), secretEpoch: this.env.CALENDAR_OAUTH_SECRET_EPOCH });
+      if (!expected.success) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
+      const token = () => this.env.CALENDAR_OAUTH!.get(this.env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(expected.data))).token(expected.data);
+      return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), token).execute({ kind: "owner" }, query);
     }
     const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
     const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic });
