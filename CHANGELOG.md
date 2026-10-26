@@ -4,6 +4,30 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-26
+
+### Added
+- Controlador de missões e FUPs versionados pelo comando autenticado do dono, com procedência atribuída, condição explícita, horário/fuso validados e avaliação sombra única por ocorrência (#49).
+- Consulta separa estado do compromisso e estado da avaliação. Reagendamento/cancelamento invalidam trabalho antigo; ACK perdido e reinício recuperam o mesmo job/recibo, sem nova tentativa ou encerramento automático do compromisso.
+
+### Validation
+
+Critérios de #49 rastreados na [evidência do controlador](docs/construcao-assistente/evidencias/49-missoes-followups.md):
+
+| Critério | Comportamento e prova |
+| --- | --- |
+| ac-12.231 | Pedido do dono ou candidato atribuído conserva fonte, revisão, autor, quote e condição; sugestão não concede autoridade. [D1/procedência](tests/assistant-followups.test.ts). |
+| ac-12.232 | Reagendar invalida a ocorrência/job da versão anterior. [D1/reagendamento](tests/assistant-followups.test.ts). |
+| ac-12.233 | Cancelar a missão bloqueia seus filhos, inclusive na corrida com admissão, preservando trabalhos de outra missão. [D1/cancelamento](tests/assistant-followups.test.ts). |
+| ac-12.234 | Offset e fuso IANA/DST são conferidos; vencimento gera uma avaliação sombra, com replay da mesma identidade e compromisso intacto. [D1/fusos](tests/assistant-followups.test.ts), [Flue nativo/diário](tests/assistant-episodes.test.ts), [binding nominal](tests/assistant-owner-binding-runtime.test.ts). |
+
+A base integrada `6171513` passou na [CI 40415132411](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40415132411): 1277 testes gerais, 63 nativos, 4 OAuth, 9 quota e 33 instalação/operadores; tipos, ambos builds e auditoria sem vulnerabilidades. O [smoke cloud de 32 passos](docs/construcao-assistente/evidencias/56-cloud-bridge-and-owner-smoke-vps.md) comprovou a capability nominal, CRUD/replay/CAS e limpeza sintética, sem modelo ou envio; não substitui a prova de vencimento no Flue nativo.
+
+### Notes
+- Esta minor corresponde à entrega de engenharia da #49. A composição preserva trabalho integrado das demais entregas #46–48, #50–57 e #126, cujos critérios e homologações continuam separados; sua presença no código não conclui essas issues.
+- Cliente MCP autenticado/refresh da #46, Telegram/Google próprios, continuidade operacional, mídia e homologação completa de #53/#56/#57 permanecem com gates explícitos nas [evidências da VPS](docs/construcao-assistente/ANDAMENTO-VPS.md). A preparação desta versão não prova esses gates nem prontidão do piloto.
+- Envios automáticos de WhatsApp e escrita Calendar pela assistente permanecem desabilitados. Nenhum dado real, segredo, custo ou tentativa incerta é apagado ou reiniciado por esta versão.
+
 ## [0.35.0] - 2026-10-26
 
 ### Added
