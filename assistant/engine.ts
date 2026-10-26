@@ -47,6 +47,9 @@ export const searchTicketSchema = z.object({alias:z.string().min(1).max(256),req
 export function parseSearchTicket(input:unknown):SearchTicket {return searchTicketSchema.parse(input);}
 export class CogneeEngine implements EnginePort {
   private busy = false;
+  private submitOwner: symbol | null = null;
+  private submitReturned = false;
+  private submitEffects = new Set<Promise<unknown>>();
   private quarantined = false;
   private activeEpoch: string | null = null;
   private rebuilding = false;
@@ -119,18 +122,48 @@ export class CogneeEngine implements EnginePort {
     const receipt = await this.store.get<Receipt>(`receipt:${ticket.operationId}`);
     return receipt?.state === "complete" && receipt.operationId===ticket.operationId && receipt.indexRevision===ticket.indexRevision && await this.ticketCurrent(ticket) && await this.coverageValid(row.input.coverage) ? receipt as EngineSearchOutcome : {state:"uncertain",reason:row.state === "prepared" ? "not_submitted" : "engine_operation_uncertain",operationId:ticket.operationId};
   }
+  private async submitBlocked(ticket: SearchTicket, store = this.store): Promise<string | null> {
+    if (!await this.ticketCurrent(ticket, store)) return "index_changed";
+    if (await store.get<Active>("active")) return "restart_uncertain";
+    if (await store.get<boolean>("maintenance")) return "checkpoint_pending";
+    if (this.quarantined || await store.get<boolean>("quarantine")) return "index_lost";
+    return this.container.running ? null : "index_lost";
+  }
+  private releaseSubmit(owner: symbol) {
+    if (this.submitOwner === owner && this.submitReturned && !this.submitEffects.size) {
+      this.submitOwner = null; this.busy = false;
+    }
+  }
+  private async submitEffect<T>(owner: symbol, effect: () => Promise<T>): Promise<T> {
+    if (this.submitOwner !== owner) throw new Error("submit_fenced");
+    const pending = effect(); this.submitEffects.add(pending);
+    try { return await pending; }
+    finally { this.submitEffects.delete(pending); this.releaseSubmit(owner); }
+  }
   async submit(ticket: SearchTicket): Promise<EngineSearchOutcome> {
-    const row = await this.ticketRecord(ticket);
-    if (!row || !this.store.transaction) return {state:"blocked",reason:"ticket_denied"};
-    if (!await this.ticketCurrent(ticket)) return {state:"blocked",reason:"index_changed",operationId:ticket.operationId};
-    if (!await this.guard.check(row.input.actor,row.input.permits) || !await this.coverageValid(row.input.coverage)) return {state:"blocked",reason:"source_denied",operationId:ticket.operationId};
-    const claimed = await this.store.transaction(async store => {
-      const key="search-ticket:"+await bridgeHash([this.scope,ticket.alias]), current=await store.get<TicketRecord>(key);
-      if (!current || current.state !== "prepared" || !await this.ticketCurrent(ticket,store)) return false;
-      await store.put(key,{...current,state:"attempting"}); return true;
-    });
-    if (!claimed) return this.lookupTicket(ticket);
-    return this.run("/search",{query:row.input.query,allowedSources:row.input.allowedSources,limit:row.input.limit},row.input.actor,row.input.permits,undefined,undefined,{ticket,coverage:row.input.coverage}) as Promise<EngineSearchOutcome>;
+    // Acquire before the first await and hand the same ownership into run.
+    // A refused concurrent caller never releases the active owner's lock.
+    if (this.busy) return {state:"blocked",reason:"busy"};
+    const owner = Symbol("semantic-submit"); this.busy = true; this.submitOwner = owner; this.submitReturned = false;
+    try {
+      const row = await this.ticketRecord(ticket);
+      if (!row || !this.store.transaction) return {state:"blocked",reason:"ticket_denied"};
+      ticket = row.ticket; // Own the parsed identity across all subsequent awaits.
+      if (!await this.guard.check(row.input.actor,row.input.permits) || !await this.coverageValid(row.input.coverage)) return {state:"blocked",reason:"source_denied",operationId:ticket.operationId};
+      const blocked = await this.submitBlocked(ticket);
+      if (blocked) return {state:"blocked",reason:blocked,operationId:ticket.operationId};
+      const key="search-ticket:"+await bridgeHash([this.scope,ticket.alias]);
+      const claimed = await this.store.transaction(async store => {
+        const current=await store.get<TicketRecord>(key);
+        if (!current || JSON.stringify(current.ticket) !== JSON.stringify(ticket) || current.state !== "prepared") return {claimed:false};
+        // Recheck every operational gate at the last point before admission.
+        const reason = await this.submitBlocked(ticket,store);
+        if (reason) return {claimed:false,reason};
+        await store.put(key,{...current,state:"attempting"}); return {claimed:true};
+      });
+      if (!claimed.claimed) return claimed.reason ? {state:"blocked",reason:claimed.reason,operationId:ticket.operationId} : this.lookupTicket(ticket);
+      return await this.run("/search",{query:row.input.query,allowedSources:row.input.allowedSources,limit:row.input.limit},row.input.actor,row.input.permits,undefined,undefined,{ticket,coverage:row.input.coverage},owner) as EngineSearchOutcome;
+    } finally { this.submitReturned = true; this.releaseSubmit(owner); }
   }
   async search(input: EngineSearch): Promise<EngineSearchOutcome> {
     try {
@@ -232,8 +265,8 @@ export class CogneeEngine implements EnginePort {
     // deny/revoke/storage failed. A new DO can only reconcile, never re-admit it.
     try { await this.container.destroy(); if (!this.container.running) await this.store.put("active", null); } catch { /* Quarantine remains. */ }
   }
-  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof}): Promise<unknown> {
-    const nested = !!rebuildEpoch && this.busy && this.rebuilding;
+  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof}, submitOwner?: symbol): Promise<unknown> {
+    const nested = (!!rebuildEpoch && this.busy && this.rebuilding) || (!!submitOwner && this.busy && this.submitOwner === submitOwner);
     if (this.busy && !nested) return { state: "blocked", reason: "busy" }; if (!nested) this.busy = true;
     let active: Active | undefined, timer: ReturnType<typeof setTimeout> | undefined; const controller = new AbortController();
     const write = (key: string, value: unknown) => rebuildEpoch ? this.store.putFenced ? this.store.putFenced(key, value, rebuildEpoch, rebuildOwner!) : Promise.reject(new Error("rebuild_fenced")) : this.store.put(key, value);
@@ -269,7 +302,8 @@ export class CogneeEngine implements EnginePort {
       await write("active", active); this.activeEpoch = active.epoch; await this.container.intercept(active.epoch);
       if (rebuildEpoch && !await this.authorize(active.epoch)) throw new Error("rebuild_fenced");
       const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("engine_timeout")); }, 250000); });
-      const value = await Promise.race([this.container.request(path, { operationId, ...wire }, controller.signal), deadline]);
+      const request = () => this.container.request(path, { operationId, ...wire }, controller.signal);
+      const value = await Promise.race([submitOwner ? this.submitEffect(submitOwner,request) : request(), deadline]);
       if (!await this.authorize(active.epoch)) { if (!rebuildEpoch) await this.stop(active); return { state: "blocked", reason: "source_denied", operationId }; }
       if (bytes(value) > 65536 || !(value as { ok: boolean }).ok) throw 0;
       const result = (value as { result: unknown }).result;

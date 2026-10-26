@@ -296,16 +296,27 @@ export class RetrievalRuns {
     if("reason" in request) return failed(request.reason==="capacity"?"not_run_capacity":"unavailable",["semantic_unsearched"],{configuration:this.semanticConfiguration(),state:request.reason==="capacity"?"not_run_capacity":"inventory_changed"});
     if(!request.input.allowedSources.length)return {engine:"complete",gaps:[],candidates:[],binding:{configuration:this.semanticConfiguration(),state:"empty_inventory",manifestHash:request.proof.manifestHash},pending:false};
     let row=(await this.semanticRow(run.id))!;
-    if(!row.ticket_json && !row.outcome_json){
+    // Only metadata-only preparation refusal is recoverable without a ticket.
+    // The proof/request are reconstructed above; the stable alias is unchanged.
+    const prepareBlocked = (value:string|null) => value === JSON.stringify({state:"blocked",reason:"semantic_prepare_blocked"});
+    if(!row.ticket_json && (!row.outcome_json || prepareBlocked(row.outcome_json))){
       const raw=await this.options.semantic!.engine.prepare(run.id,request.input);
       let prepared: {state:"prepared";ticket:SearchTicket}|{state:"blocked";reason:string}={state:"blocked",reason:"semantic_prepare_blocked"};
       try {if(new TextEncoder().encode(JSON.stringify(raw)).length>4096)throw 0;if(raw.state==="prepared") {const ticket=parseSearchTicket(raw.ticket);if(ticket.alias!==run.id || ticket.requestHash!==await bridgeHash(request.input))throw 0;prepared={state:"prepared",ticket};}}catch{/* No rejected metadata crosses this boundary. */}
       const gate=await this.proofGuard(request.proof);
-      await this.statement(`UPDATE assistant_retrieval_semantic SET ticket_json=?,outcome_json=? WHERE ${ns} AND run_id=? AND ticket_json IS NULL AND outcome_json IS NULL AND ${gate.sql}`,prepared.state==="prepared"?JSON.stringify(prepared.ticket):null,prepared.state==="blocked"?JSON.stringify(prepared):null,...this.keys(),run.id,...gate.values).run();
+      await this.statement(`UPDATE assistant_retrieval_semantic SET ticket_json=?,outcome_json=? WHERE ${ns} AND run_id=? AND ticket_json IS NULL AND (outcome_json IS NULL OR outcome_json=?) AND ${gate.sql}`,prepared.state==="prepared"?JSON.stringify(prepared.ticket):null,prepared.state==="blocked"?JSON.stringify(prepared):null,...this.keys(),run.id,JSON.stringify({state:"blocked",reason:"semantic_prepare_blocked"}),...gate.values).run();
       row=(await this.semanticRow(run.id))!;
     }
     if(row.ticket_json){
       const observed=await this.options.semantic!.engine.lookupTicket(JSON.parse(row.ticket_json));
+      // A generic blocked result is not evidence of no attempt. Only the same
+      // current ticket's strict prepared lookup can reopen a pre-admission refusal.
+      const ticket=parseSearchTicket(JSON.parse(row.ticket_json));
+      if(observed.state==="uncertain" && observed.reason==="not_submitted" && observed.operationId===ticket.operationId && row.outcome_json===JSON.stringify({state:"blocked",reason:"semantic_blocked"})) {
+        const gate=await this.proofGuard(request.proof);
+        await this.statement(`UPDATE assistant_retrieval_semantic SET outcome_json=NULL WHERE ${ns} AND run_id=? AND ticket_json=? AND outcome_json=? AND ${gate.sql}`,...this.keys(),run.id,row.ticket_json,row.outcome_json,...gate.values).run();
+        row=(await this.semanticRow(run.id))!;
+      }
       if(observed.state==="complete" || (observed.state==="blocked")) {await this.saveSemantic(run,request.proof,observed);row=(await this.semanticRow(run.id))!;}
       if(!row.outcome_json)return failed("pending",["semantic_pending"],{ticket:JSON.parse(row.ticket_json!),configuration:this.semanticConfiguration()},true);
       // Current engine epoch/revision is checked even for a persisted receipt.

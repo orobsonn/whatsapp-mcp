@@ -341,3 +341,60 @@ it("blocks a prepared ticket on index mutation without rekey or search", async (
   expect(await engine.submit(prepared.ticket)).toMatchObject({ state: "blocked", reason: "index_changed" });
   expect(port.request).not.toHaveBeenCalled();
 });
+
+it("keeps a cold submit prepared without wake, permit or search, then admits the same ticket once warm",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();const prepared=await engine.prepare("cold",search);
+  if(prepared.state!=="prepared")throw new Error("ticket missing");
+  await port.destroy();vi.mocked(port.request).mockClear();vi.mocked(port.start).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked"});
+  expect(await engine.lookupTicket(prepared.ticket)).toMatchObject({state:"uncertain",reason:"not_submitted"});
+  expect(port.request).not.toHaveBeenCalled();expect(port.start).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+  Object.defineProperty(port,"running",{value:true,configurable:true});
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"complete"});
+  expect(vi.mocked(port.request).mock.calls.filter(([path])=>path==="/search")).toHaveLength(1);
+});
+it("owns exclusion before the first preflight await until search finishes",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();const prepared=await engine.prepare("lock",search);
+  if(prepared.state!=="prepared")throw new Error("ticket missing");
+  const get=store.get;let entered!:()=>void,release!:()=>void,held=true;const waiting=new Promise<void>(resolve=>{entered=resolve;}),hold=new Promise<void>(resolve=>{release=resolve;});
+  store.get=async<T>(key:string)=>{if(held&&key.startsWith("search-ticket:")){held=false;entered();await hold;}return get<T>(key);};
+  const pending=engine.submit(prepared.ticket);await waiting;
+  expect(await engine.maintain(async()=>{throw new Error("must not enter");})).toMatchObject({state:"blocked",reason:"busy"});
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked",reason:"busy"});
+  expect(await engine.search(search)).toMatchObject({state:"blocked",reason:"busy"});
+  release();expect(await pending).toMatchObject({state:"complete"});
+});
+it.each(["maintenance","quarantine","active","cold"])("revalidates %s at the final submit CAS without spending the ticket",async gate=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();const prepared=await engine.prepare("last-gate",search);
+  if(prepared.state!=="prepared")throw new Error("ticket missing");
+  const transaction=store.transaction;store.transaction=async operation=>{
+    if(gate==="cold")Object.defineProperty(port,"running",{value:false,configurable:true});
+    else data.set(gate,gate==="active"?{epoch:"other",token:"other"}:true);
+    return transaction!(operation);
+  };
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked"});
+  expect([...data].filter(([key])=>key.startsWith("search-ticket:")).map(([,value])=>(value as {state:string}).state)).toEqual(["prepared"]);
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+});
+
+it("retains submit ownership after deadline until the physical search promise settles",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();const prepared=await engine.prepare("late-physical",search);
+  if(prepared.state!=="prepared")throw new Error("ticket missing");
+  let release!:()=>void,entered=false;const hold=new Promise<void>(resolve=>{release=resolve;});
+  vi.mocked(port.request).mockImplementation(async path=>{if(path!=="/search")throw new Error("unexpected path");entered=true;await hold;return {ok:false};});
+  vi.useFakeTimers();const pending=engine.submit(prepared.ticket);
+  await vi.waitFor(()=>expect(entered).toBe(true),{timeout:5000});
+  await vi.advanceTimersByTimeAsync(250001);expect(await pending).toMatchObject({state:"uncertain"});
+  expect(await engine.maintain(async()=>{throw new Error("must not enter");},true)).toMatchObject({state:"blocked",reason:"busy"});
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked",reason:"busy"});
+  release();await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked",reason:"index_changed"});
+});
+
+it("owns a canonical ticket identity regardless of caller property order",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();const prepared=await engine.prepare("canonical-ticket",search);
+  if(prepared.state!=="prepared")throw new Error("ticket missing");
+  const reordered=Object.fromEntries(Object.entries(prepared.ticket).reverse()) as typeof prepared.ticket;
+  expect(await engine.submit(reordered)).toMatchObject({state:"complete",operationId:prepared.ticket.operationId});
+});

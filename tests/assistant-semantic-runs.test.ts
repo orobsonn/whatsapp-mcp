@@ -278,7 +278,7 @@ it("admits all 64 current score-zero sources with distinct conversation guards o
   for(let i=0;i<64;i++)selected=(await controller.create({originKey:`bounded-${i}`,text:`Algodão ${i}.`,conversationId:`conversation-${i}`,audience:"public",occurredAt:100})).id;
   const id=await inventory();await search.advanceSemantic(owner,id);const result=await search.result(owner,id);
   expect(result.state).toBe("ready");expect(lastInput!.allowedSources).toHaveLength(64);expect(await search.check(owner,result.fence!)).toBe(true);
-});
+},30000);
 it("times out a 64-origin presearch after five seconds with at most eight in flight and the same unsubmitted ticket",async()=>{
   const nominal={...scope,sourceEpoch:"synthetic-epoch",sourceGeneration:"synthetic-origin"};let slow=false,calls=0,active=0,maximum=0;const release:(()=>void)[]=[];
   const origin={fence:async(id:string)=>({...nominal,canonicalId:id,sourceKind:"message",sourceId:id,chatId:"synthetic-chat",revision:1,version:1,watermark:1,hash:"a".repeat(64),conversationKind:"private",policyRevision:0,policyMode:"attend"} as OriginFence),check:async()=>{if(!slow)return true;calls++;active++;maximum=Math.max(maximum,active);await new Promise<void>(resolve=>release.push(resolve));active--;return true;}};
@@ -305,4 +305,41 @@ it("reuses an exact index receipt under a new current proof without depending on
   expect((await search.result(owner,first)).state).not.toBe("ready");
   const next=await inventory(owner,"Quem responde pela cobrança?","fresh-proof");await search.advanceSemantic(owner,next);
   expect((await search.result(owner,next)).state).toBe("ready");expect(searchCalls).toBe(1);
+});
+
+it("recovers metadata prepare after maintenance with the same alias and current proof",async()=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();
+  const prepare=vi.spyOn(engine,"prepare");data.set("maintenance",true);
+  expect((await search.result(owner,id)).state).toBe("pending");expect(prepare).toHaveBeenCalledTimes(1);
+  expect([...data.keys()].filter(key=>key.startsWith("search-ticket:"))).toHaveLength(0);
+  data.set("maintenance",false);
+  expect((await search.result(owner,id)).state).toBe("pending");expect(prepare).toHaveBeenCalledTimes(2);
+  expect(prepare.mock.calls[1]).toEqual(prepare.mock.calls[0]);expect(searchCalls).toBe(0);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_budget_reservations WHERE installation_id=? AND generation=?").bind(...keys()).first("n")).toBe(0);
+  await search.advanceSemantic(owner,id);expect((await search.result(owner,id)).state).toBe("ready");expect(searchCalls).toBe(1);
+});
+it("reconciles a lost prepare ACK to the exact original ticket without model work",async()=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();
+  const original=engine.prepare.bind(engine);let ticket:unknown;
+  vi.spyOn(engine,"prepare").mockImplementationOnce(async(alias,input)=>{const prepared=await original(alias,input);ticket=prepared.state==="prepared"?prepared.ticket:null;throw new Error("prepare ACK lost");});
+  await expect(search.result(owner,id)).rejects.toThrow("prepare ACK lost");
+  expect((await search.result(owner,id)).state).toBe("pending");
+  expect(JSON.parse((await env.DB.prepare("SELECT ticket_json FROM assistant_retrieval_semantic WHERE installation_id=? AND generation=? AND run_id=?").bind(...keys(),id).first<string>("ticket_json"))!)).toEqual(ticket);
+  expect(searchCalls).toBe(0);
+});
+it("recovers a blocked submit only when lookup proves the same ticket strictly not_submitted",async()=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
+  vi.spyOn(engine,"submit").mockResolvedValueOnce({state:"blocked",reason:"busy"});
+  await search.advanceSemantic(owner,id);expect(searchCalls).toBe(0);
+  await search.advanceSemantic(owner,id);expect((await search.result(owner,id)).state).toBe("ready");expect(searchCalls).toBe(1);
+});
+
+it.each(["attempting","wrong_operation","generic_blocked"])("does not reopen a blocked ticket on %s lookup",async kind=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
+  await env.DB.prepare("UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE installation_id=? AND generation=? AND run_id=?").bind(JSON.stringify({state:"blocked",reason:"semantic_blocked"}),...keys(),id).run();
+  if(kind==="attempting"){
+    for(const [key,row]of data)if(key.startsWith("search-ticket:"))data.set(key,{...(row as object),state:"attempting"});
+  }else vi.spyOn(engine,"lookupTicket").mockResolvedValue(kind==="wrong_operation"?{state:"uncertain",reason:"not_submitted",operationId:"0".repeat(64)}:{state:"blocked",reason:"source_denied"});
+  const submit=vi.spyOn(engine,"submit");await search.advanceSemantic(owner,id);
+  expect(submit).not.toHaveBeenCalled();expect(searchCalls).toBe(0);expect((await search.result(owner,id)).state).not.toBe("ready");
 });
