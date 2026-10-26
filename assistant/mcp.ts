@@ -10,12 +10,14 @@ import { DecisionJournal } from "./decisions";
 import { engineName } from "./container";
 import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 import { FollowUps } from "./followups";
+import { githubQuery, GitHubReader } from "./connectors/github";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
 export type OwnerAffinity = z.infer<typeof ownerAffinitySchema>;
 const listKind = z.enum(["sources", "projects", "missions", "policies", "mandates", "follow_ups", "decisions"]);
 export const ownerQuerySchema = z.union([
+  githubQuery,
   z.object({ kind: z.literal("source"), id }).strict(),
   z.object({ kind: z.literal("follow_up"), id }).strict(),
   z.object({ kind: z.literal("decision"), id: z.string().min(1).max(2048) }).strict(),
@@ -51,6 +53,7 @@ export class OwnerQueries {
   async execute(input: unknown): Promise<unknown> {
     const query = ownerQuerySchema.parse(input), keys = [this.scope.installationId, this.scope.generation];
     if(query.kind==="follow_up")return new FollowUps(this.db,this.scope,{origin:this.origin}).get(query.id);
+    if (query.kind === "github.list" || query.kind === "github.read") return { state: "pending_configuration", dependency: "github_read" };
     if (query.kind === "source") {
       const access = new SourceAccess(this.db, this.scope), actor = { kind: "owner" } as const;
       const first = await access.read(actor, query.id);
@@ -107,6 +110,12 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
+    const query = ownerQuerySchema.parse(input);
+    if (query.kind === "github.list" || query.kind === "github.read") {
+      if (!this.env.GITHUB_READ_REPOSITORIES) return { state: "pending_configuration", dependency: "github_read" };
+      return new GitHubReader(this.env.DB!, scope, JSON.parse(this.env.GITHUB_READ_REPOSITORIES), this.env.GITHUB_READ_TOKEN).execute({ kind: "owner" }, query);
+    }
+
     const origin = this.env.CAPTURE_READER && this.env.BRIDGE_SECRET
       ? new OriginGuard(this.env.DB!, () => scope, this.env.CAPTURE_READER, this.env.BRIDGE_SECRET) : undefined;
     const semantic = this.env.COGNEE ? { mode: "required" as const,

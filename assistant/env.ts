@@ -18,4 +18,6 @@ export interface AssistantEnv {
   CAPTURE_READER?: SnapshotReader;
   CAPTURE_MEDIA_READER?: MediaReader;
   MEDIA_PDF_PARSER?: PdfAdmissionReader;
+  GITHUB_READ_REPOSITORIES?: string;
+  GITHUB_READ_TOKEN?: string;
 }
