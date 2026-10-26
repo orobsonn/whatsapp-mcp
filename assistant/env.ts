@@ -7,6 +7,7 @@ import type { RetentionAuthority } from "./retention-authority";
 // Host-only owner Telegram notifications; never WhatsApp or Calendar write credentials.
 export interface AssistantEnv {
   DB?: D1Database;
+  ARTIFACTS?: R2Bucket;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_BOT_INSTANCE?: string;
   TELEGRAM_BOT_TOKEN?: string;

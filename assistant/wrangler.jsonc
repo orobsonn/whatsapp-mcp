@@ -7,6 +7,8 @@
   "preview_urls": false,
   "migrations": [{ "tag": "flue-runtime-v1", "new_sqlite_classes": ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] }],
   // Local/dry-run configuration only. No production routes, bindings, or secrets.
+  // scripts/assistant-install.mjs renders a private, staged installation config.
+  // ASSISTANT_INSTALL_CONFIG is host-only and validated before the Flue build.
   // CogneeContainer/CogneeBroker are exported but remain unbound here.
   // Isolated homologation must explicitly configure durable_object scheduling,
   // image alias cognee, SQLite DO binding COGNEE and its own DB/namespace/secrets.
