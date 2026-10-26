@@ -6,6 +6,7 @@ import { randomBytes,randomUUID,createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { build } from "esbuild";
+import {createOperatorLog,waitForOperator} from "./assistant-operator-local.mjs";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),".."),digest=value=>createHash("sha256").update(JSON.stringify(value)).digest("hex");
 // Compile the repository's actual typed codec, including TypeScript parameter
 // properties unsupported by Node's strip-only loader. No copied parser.
@@ -27,21 +28,22 @@ async function freePort(){const server=createServer();await new Promise((done,re
 // explicit remote service, never --remote (which uploads the operator).
 export const operatorArgv=(config,port)=>[join(root,"node_modules/wrangler/bin/wrangler.js"),"dev","--config",config,"--ip","127.0.0.1","--port",String(port),"--show-interactive-dev-session","false"];
 async function withOperator(options,run) {
- const installed=JSON.parse(await privateRead(options["--installed"],65536)),affinity=JSON.parse(await privateRead(options["--affinity"],4096)),directory=await mkdtemp(join(tmpdir(),"assistant-retention-operator-"));let child;
+ const installed=JSON.parse(await privateRead(options["--installed"],65536)),affinity=JSON.parse(await privateRead(options["--affinity"],4096)),directory=await mkdtemp(join(tmpdir(),"assistant-retention-operator-"));let child,log;
  try{
   const token=randomBytes(32).toString("hex"),port=await freePort(),config=await operatorConfig(installed,affinity,port,token,Date.now()+900000);
+  const state=resolve(options["--state"]);await privateDir(state);log=await createOperatorLog(join(state,randomUUID()+".worker.private.log"));
   await createPrivate(join(directory,"wrangler.json"),JSON.stringify(config));await createPrivate(join(directory,".dev.vars"),"RETENTION_OPERATOR_TOKEN="+token+"\n");
   child=spawn(process.execPath,operatorArgv(join(directory,"wrangler.json"),port),{cwd:root,stdio:["ignore","pipe","pipe"],env:{...process.env,WRANGLER_SEND_METRICS:"false"}});
   // Provider/config logs stay private and bounded. Never echo them or URLs,
   // headers, secrets, data rows or the ephemeral capability to the terminal.
-  const interrupted=new AbortController();const interrupt=()=>{interrupted.abort();child?.kill("SIGTERM");};process.once("SIGINT",interrupt);process.once("SIGTERM",interrupt);child.__retentionInterrupt=interrupt;let output="",ready=false,failed=false;const capture=chunk=>{output=(output+chunk.toString()).slice(-32768);if(output.includes("127.0.0.1:"+port))ready=true;};child.stdout.on("data",capture);child.stderr.on("data",capture);child.once("error",()=>{failed=true;});child.once("exit",()=>{failed=true;});
-  const startup=Date.now()+45000;while(!ready&&!failed&&!interrupted.signal.aborted&&Date.now()<startup)await new Promise(done=>setTimeout(done,50));if(!ready||failed)throw Error("operator_start_failed");
+  const interrupted=new AbortController();const interrupt=()=>{interrupted.abort();child?.kill("SIGTERM");};process.once("SIGINT",interrupt);process.once("SIGTERM",interrupt);child.__retentionInterrupt=interrupt;let failed=false;child.stdout.on("data",log.capture);child.stderr.on("data",log.capture);child.once("error",()=>{failed=true;});child.once("exit",()=>{failed=true;});
+  if(!await waitForOperator(port,{signal:interrupted.signal,failed:()=>failed}))throw Error("operator_start_failed");
   await run(async command=>{
    if(config.vars.RETENTION_OPERATOR_EXPIRES<=Date.now())throw Error("operator_expired_resume_same_operation");
    const response=await fetch("http://127.0.0.1:"+port+"/command",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(command),signal:AbortSignal.any([AbortSignal.timeout(40000),interrupted.signal]),redirect:"error"});
    const reader=response.body?.getReader();if(!reader)throw Error("operator_missing_response");const decoder=new TextDecoder("utf-8",{fatal:true});let text="",bytes=0;for(;;){const part=await reader.read();if(part.done)break;bytes+=part.value.length;if(bytes>262144){await reader.cancel();throw Error("operator_response_limit");}text+=decoder.decode(part.value,{stream:true});}text+=decoder.decode();const result=JSON.parse(text);if(!response.ok||result?.state==="uncertain")throw Error("operator_uncertain_resume_same_operation");return result;
   });
- }finally{if(child?.__retentionInterrupt){process.removeListener("SIGINT",child.__retentionInterrupt);process.removeListener("SIGTERM",child.__retentionInterrupt);}if(child&&child.exitCode===null){if(!child.killed)child.kill("SIGTERM");await Promise.race([new Promise(done=>child.once("exit",done)),new Promise(done=>setTimeout(done,1000))]);if(child.exitCode===null)child.kill("SIGKILL");}await rm(directory,{recursive:true,force:true});}
+ }finally{try{if(child?.__retentionInterrupt){process.removeListener("SIGINT",child.__retentionInterrupt);process.removeListener("SIGTERM",child.__retentionInterrupt);}if(child&&child.exitCode===null){if(!child.killed)child.kill("SIGTERM");await Promise.race([new Promise(done=>child.once("exit",done)),new Promise(done=>setTimeout(done,1000))]);if(child.exitCode===null)child.kill("SIGKILL");}}finally{try{await log?.close();}finally{await rm(directory,{recursive:true,force:true});}}}
 }
 async function operation(options,kind){const directory=resolve(options["--state"]);await privateDir(directory);const path=join(directory,kind+".operation.json");let value;try{value=JSON.parse(await privateRead(path,8192));}catch(error){if(error.code!=="ENOENT")throw error;value={schema:1,kind,operationId:kind+":"+randomUUID(),bundle:resolve(options["--bundle"]),nextStep:0};await createPrivate(path,JSON.stringify(value));}if(value.schema!==1||value.kind!==kind||value.bundle!==resolve(options["--bundle"])||typeof value.operationId!=="string")throw Error("operation_conflict");return {value,save:()=>replacePrivate(path,JSON.stringify(value))};}
 async function snapshot(options,rpc){const {value,save}=await operation(options,"snapshot");let existing=[];try{existing=(await privateRead(value.bundle)).trimEnd().split("\n").filter(Boolean).map(line=>JSON.parse(line));}catch(error){if(error.code!=="ENOENT")throw error;await createPrivate(value.bundle,"");}if(existing.at(-1)?.kind==="manifest"){const local=await verifyBundle(value.bundle);if(local.manifest.operationId!==value.operationId)throw Error("snapshot_operation_conflict");const remote=await rpc({kind:"snapshot.seal",operationId:value.operationId});if(remote.manifest?.seal!==local.manifest.seal)throw Error("snapshot_authority_conflict");return {state:"sealed_bundle_existing",operationId:value.operationId,authority:"private_remote_receipt"};}
