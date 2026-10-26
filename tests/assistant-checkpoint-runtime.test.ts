@@ -23,6 +23,7 @@ beforeAll(() => {
 import {DurableObject} from 'cloudflare:workers';
 import {makeCheckpointStore} from ${JSON.stringify(join(root, "assistant/container.ts"))};
 import {CheckpointController} from ${JSON.stringify(join(root, "assistant/checkpoints.ts"))};
+import {CogneeEngine} from ${JSON.stringify(join(root, "assistant/engine.ts"))};
 const scope=${JSON.stringify(scope)};
 export class Probe extends DurableObject {
  async fetch(request){const input=await request.json();const storage=this.ctx.storage;
@@ -31,6 +32,25 @@ export class Probe extends DurableObject {
   const wrapped=input.rollback?{get:(...a)=>storage.get(...a),transaction:fn=>storage.transaction(tx=>{let writes=0;return fn({get:(...a)=>tx.get(...a),put:async(...a)=>{if(++writes===3)throw new Error('synthetic_rollback');return tx.put(...a)}})})}:storage;
   const store=makeCheckpointStore(wrapped,scope);
   try{
+   if(input.op.startsWith('engine')){
+    const fence={...scope,actor:'owner',source:{id:'source',revision:1,version:1,hash:'a'.repeat(64),audience:'owner',origin:'owner_note',conversationId:null,projectId:null},policy:null,identity:null,mandate:null};
+    const search={actor:{kind:'owner'},permits:[{source:fence}],query:'Synthetic query',allowedSources:[{id:'source',version:1,hash:'a'.repeat(64)}],limit:2};
+    const increment=key=>storage.transaction(async tx=>{await tx.put(key,((await tx.get(key))??0)+1)});
+    const engineStore={get:key=>storage.get(key),put:(key,value)=>storage.put(key,value),transaction:async action=>{
+      let claimed=false;const result=await storage.transaction(tx=>action({get:key=>tx.get(key),list:options=>tx.list(options),put:async(key,value)=>{
+       if(key.startsWith('search-ticket:')&&value.state==='attempting'){if(input.rollbackClaim)throw new Error('rollback_claim');claimed=true}await tx.put(key,value);
+      }}));if(claimed&&input.ackLostClaim)throw new Error('claim_ack_lost');return result;
+    }};
+    const port={running:true,start:async()=>{throw new Error('unexpected_wake')},destroy:async()=>{},deny:async()=>{},intercept:async()=>{},request:async(path,body)=>{
+      if(path!=='/search')throw new Error('unexpected_path');await increment('effectCalls');return {ok:true,result:{candidates:[{...body.allowedSources[0],via:['chunks'],relationCount:0}],missing:[]}};
+    }};
+    const guard={check:async()=>true,issue:async()=>{await increment('permitCalls');if(input.holdPermit)await new Promise(resolve=>setTimeout(resolve,50));return 'synthetic-permit'},revoke:async()=>{}};
+    const engine=new CogneeEngine(scope,engineStore,port,guard,()=>100);
+    if(input.op==='enginePrepare')return Response.json(await engine.prepare(input.alias,search));
+    if(input.op==='engineSubmit')return Response.json(await engine.submit(input.ticket));
+    if(input.op==='engineLookup')return Response.json(await engine.lookupTicket(input.ticket));
+    if(input.op==='engineSearch')return Response.json(await engine.search(search));
+   }
    if(input.op==='cas')return Response.json({accepted:await store.compareAndSet(input.revision,input.next)});
    if(input.op==='restore'){
     const previous=await store.read(), record=previous.candidate??previous.confirmed;let snapshots=0;
@@ -107,4 +127,40 @@ test("a claim ACK lost before commit remains closed and a later explicit recover
   expect((await call({ op: "restore", ackLost: "before_claim" })).data).toMatchObject({ result: { state: "uncertain" }, snapshots: 0 });
   expect((await call({ op: "read" })).data).toEqual(input.data);
   expect((await call({ op: "restore" })).data).toMatchObject({ result: { state: "checkpoint_confirmed", id: input.next.confirmed.id }, snapshots: 0 });
+});
+
+async function engineTickets() {
+  await call({ op: "seed", data: { index: { namespace: JSON.stringify(scope), epoch: "synthetic-index", revision: "a".repeat(64), sources: [], lost: false, indexState: "checkpoint_confirmed" } } });
+  const first=(await call({op:"enginePrepare",alias:"original"})).data,second=(await call({op:"enginePrepare",alias:"another"})).data;
+  expect(first.state).toBe("prepared");expect(second.state).toBe("prepared");expect(first.ticket.operationId).toBe(second.ticket.operationId);
+  return {first:first.ticket,second:second.ticket};
+}
+test("native DO metadata migration preserves legacy shared-operation uncertainty across restart and direct search",async()=>{
+  const {first,second}=await engineTickets(),state=(await call({op:"read"})).data;
+  for(const [key,value]of Object.entries(state))if(key.startsWith("search-ticket:")&&(value as any).ticket.alias==="original")(value as any).state="attempting";
+  await call({op:"seed",data:state});await worker.dispose();worker=start();
+  expect((await call({op:"engineLookup",ticket:second})).data).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect((await call({op:"engineSubmit",ticket:second})).data).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect((await call({op:"engineSearch"})).data).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  const stored=(await call({op:"read"})).data;expect(stored.permitCalls??0).toBe(0);expect(stored.effectCalls??0).toBe(0);
+  expect(stored["search-operation:"+first.operationId]).toMatchObject({alias:"original",requestHash:first.requestHash});
+});
+test.each(["rollback","ack_lost"])("native operation and ticket claims survive %s with the correct effect boundary",async mode=>{
+  const {first,second}=await engineTickets();
+  expect((await call({op:"engineSubmit",ticket:first,rollbackClaim:mode==="rollback",ackLostClaim:mode==="ack_lost"})).status).toBe(409);
+  const before=(await call({op:"read"})).data;expect(before.permitCalls??0).toBe(0);expect(before.effectCalls??0).toBe(0);
+  expect(!!before["search-operation:"+first.operationId]).toBe(mode==="ack_lost");
+  await worker.dispose();worker=start();
+  expect((await call({op:"engineSubmit",ticket:second})).data.state).toBe(mode==="ack_lost"?"uncertain":"complete");
+  const after=(await call({op:"read"})).data;expect(after.effectCalls??0).toBe(mode==="ack_lost"?0:1);
+});
+test("native SQLite admits one physical search for concurrent aliases and shares only its exact completed receipt",async()=>{
+  const {first,second}=await engineTickets();
+  const results=await Promise.all([call({op:"engineSubmit",ticket:first,holdPermit:true}),call({op:"engineSubmit",ticket:second,holdPermit:true})]);
+  expect(results.some(result=>result.data.state==="complete")).toBe(true);
+  const state=(await call({op:"read"})).data;expect(state.permitCalls).toBe(1);expect(state.effectCalls).toBe(1);
+  expect((await call({op:"engineLookup",ticket:first})).data).toMatchObject({state:"complete",operationId:first.operationId});
+  expect((await call({op:"engineLookup",ticket:second})).data).toMatchObject({state:"complete",operationId:first.operationId});
+  expect((await call({op:"engineSubmit",ticket:second})).data.state).toBe("complete");
+  expect((await call({op:"read"})).data.effectCalls).toBe(1);
 });

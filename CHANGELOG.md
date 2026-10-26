@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-26
+
+### Added
+- Busca semântica persistente no contexto dos episódios, com inventário autorizado completo, ranking rastreável e lacunas explícitas acima da capacidade comprovada (#112).
+
+### Fixed
+- Preparação recusada retoma o mesmo alias sem efeitos; submit frio conserva o ticket existente. Operações compartilhadas entre aliases preservam incerteza e impedem nova execução após restart ou perda de ACK (#112).
+- Callback real do runtime conserva a configuração semântica e só reconcilia o recibo exato sob autorização atual (#112).
+
 ## [0.34.0] - 2026-10-26
 
 ### Added

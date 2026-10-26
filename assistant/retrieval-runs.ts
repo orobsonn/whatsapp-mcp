@@ -1,13 +1,28 @@
 import { SourceAccess, type AccessGuard, type AccessRow, type TrustedActor } from "./access";
 import type { SourceScope } from "./sources";
-import { Retrieval, normalizeRetrievalInput, ownActor, type RetrievalInput, type RetrievedSource } from "./retrieval";
-import type { OriginGuard, OriginFence } from "./origin-guard";
+import { Retrieval, normalizeRetrievalInput, ownActor, type RetrievalInput, type RetrievedSource, validateEngineResult } from "./retrieval";
+import { checkOriginsWithin, type OriginGuard, type OriginFence } from "./origin-guard";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
+import { z } from "zod";
+import { searchTicketSchema, parseSearchTicket, type EngineSearch, type SearchTicket, type SemanticEnginePort } from "./engine";
 import { bridgeHash } from "./ingress";
+const semanticConfigurationSchema=z.object({version:z.literal("rrf-60-v1"),mode:z.enum(["required","lexical_fallback"])}).strict();
+const semanticRef=z.object({id:z.string().min(1).max(256),version:z.number().int().positive().max(2147483647),hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+const semanticBinding=z.discriminatedUnion("state",[
+  z.object({state:z.literal("searched"),ticket:searchTicketSchema,configuration:semanticConfigurationSchema,
+    receipt:z.object({operationId:z.string().regex(/^[a-f0-9]{64}$/),indexRevision:z.union([z.literal("empty"),z.string().regex(/^[a-f0-9]{64}$/)]),indexState:z.enum(["needs_checkpoint","checkpoint_confirmed"])}).strict(),
+    candidates:z.array(semanticRef.extend({via:z.array(z.enum(["chunks","graph"])).min(1).max(2),relationCount:z.number().int().nonnegative().max(1000000)}).strict()).max(10),missing:z.array(semanticRef).max(64)}).strict(),
+  z.object({state:z.enum(["not_run_capacity","inventory_changed"]),configuration:semanticConfigurationSchema}).strict(),
+  z.object({state:z.enum(["blocked","uncertain"]),ticket:searchTicketSchema,configuration:semanticConfigurationSchema}).strict(),
+  z.object({state:z.literal("invalid_or_unavailable"),ticket:searchTicketSchema.nullable(),configuration:semanticConfigurationSchema}).strict(),
+  z.object({state:z.literal("empty_inventory"),manifestHash:z.string().regex(/^[a-f0-9]{64}$/),configuration:semanticConfigurationSchema}).strict(),
+]);
+/** Shared strict host/episode contract. No rejected engine metadata is carried. */
+export const semanticRankingSchema=z.object({engine:z.enum(["complete","partial","not_run_capacity","unavailable"]),gaps:z.array(z.enum(["semantic_unsearched","index_missing","semantic_pending","inventory_changed"])).max(4),binding:semanticBinding}).strict();
 type ReadCoverageFence = { kind: "owner_read"; chatId: string; snapshot: string };
 type SearchScope = SourceScope & { sourceEpoch?: string; sourceGeneration?: string };
 type Selected = { id: string; revision: number; version: number; hash: string };
-export type SearchFence = Readonly<SourceScope & { runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; selected: Selected[]; allowedPackHash: string; purpose: "automation" | "owner_read" }>;
+export type SearchFence = Readonly<SourceScope & { runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; selected: Selected[]; allowedPackHash: string; purpose: "automation" | "owner_read"; ranking?: z.infer<typeof semanticRankingSchema> }>;
 export type SearchResult = { state: "pending" | "ready" | "waiting_context"; sources: RetrievedSource[]; coverage: { inventoryComplete: boolean; engine: string; gaps: string[] }; fence?: SearchFence };
 export type SearchProgress = { runId: string; checkpoint: number; state: "pending" | "ready" | "waiting_context"; gaps: string[] };
 type Run = { id: string; actor_json: string; request_json: string; request_hash: string; run_token: string; checkpoint: number; state: SearchProgress["state"];
@@ -15,11 +30,19 @@ type Run = { id: string; actor_json: string; request_json: string; request_hash:
 type Step = { token: string; request_hash: string; page_json: string; state: string; lease_until: number; lease_generation: number; result_json: string | null };
 type InventoryRow = AccessRow & { fingerprint: string; inboxes: string };
 type Item = { id: string; fingerprint: string; score: number; linked: number; state: string; origin: OriginFence | null; conversation: ConversationFence | ReadCoverageFence | null };
-type Options = { clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read" };
+export type CoverageProof = { scope: SearchScope; runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; purpose: "automation" | "owner_read"; configuration: {version:string;mode:"required"|"lexical_fallback"}; inputHash:string; manifestHash: string };
+type SemanticRow = { proof_json:string; ticket_json:string|null;outcome_json:string|null };
+type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read" };
 const ns = "installation_id=? AND generation=?";
 const baseGaps = ["index_capacity", "index_missing"];
 const identifier = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256;
 const hashId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+// Keep SQL expression depth logarithmic when the complete 64-source proof
+// contains distinct conversation fences (D1 rejects a left-deep AND chain).
+function balancedAnd(parts:string[]):string {
+  if(!parts.length)return "1";if(parts.length===1)return `(${parts[0]})`;
+  const middle=Math.floor(parts.length/2);return `(${balancedAnd(parts.slice(0,middle))} AND ${balancedAnd(parts.slice(middle))})`;
+}
 function compressed(sql: string, values: AccessGuard["values"]): AccessGuard {
   let index = 0;
   return { sql: `EXISTS(SELECT 1 FROM (SELECT ? value) search_guard_args WHERE ${sql.replace(/\?/g, () => `json_extract(search_guard_args.value,'$[${index++}]')`)})`, values: [JSON.stringify(values)] };
@@ -36,7 +59,8 @@ export class RetrievalRuns {
   private readonly limits: { pageSize: number; maxEvaluations: number; maxSteps: number };
   constructor(private readonly db: D1Database, scope: SearchScope, options: Options = {}) {
     if (!identifier(scope.installationId) || !identifier(scope.generation) || ((scope.sourceEpoch !== undefined || scope.sourceGeneration !== undefined) && (!identifier(scope.sourceEpoch) || !identifier(scope.sourceGeneration)))) throw new Error("retrieval_run_scope");
-    this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation, ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) }); this.options = Object.freeze({ ...options }); this.clock = options.clock ?? Date.now;
+    this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation, ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) }); this.options = Object.freeze({ ...options, ...(options.semantic ? {semantic:Object.freeze({...options.semantic})} : {}) }); this.clock = options.clock ?? Date.now;
+    if (options.semantic && !["required","lexical_fallback"].includes(options.semantic.mode)) throw new Error("retrieval_run_configuration");
     this.purpose = options.purpose ?? "automation"; if (!["automation","owner_read"].includes(this.purpose)) throw new Error("retrieval_run_purpose");
     this.access = new SourceAccess(db, this.scope, this.clock); this.scorer = new Retrieval(db, this.scope);
     this.limits = { pageSize: options.pageSize ?? 64, maxEvaluations: options.maxEvaluations ?? 4096, maxSteps: options.maxSteps ?? 80 };
@@ -75,12 +99,14 @@ export class RetrievalRuns {
     if (value.snapshot === "unobserved") return this.readAbsence(value.chatId);
     const query=this.readCoverageQuery(value.chatId); return {sql:`EXISTS(SELECT 1 FROM (${query.sql}) WHERE snapshot=?)`,values:[...query.values,value.snapshot]};
   }
+  private semanticConfiguration() { return {version:"rrf-60-v1",mode:this.options.semantic!.mode}; }
   private keys() { return [this.scope.installationId, this.scope.generation]; }
   private statement(sql: string, ...values: (string | number | null)[]) { return this.db.prepare(sql).bind(...values); }
   private async load(actor: TrustedActor, id: string): Promise<Run> {
     if (!hashId(id)) throw new Error("retrieval_run_denied");
     const row = await this.statement(`SELECT * FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND actor_json=?`, ...this.keys(), id, JSON.stringify(actor)).first<Run>();
-    if (!row || (JSON.stringify(JSON.parse(row.request_json).scope) !== JSON.stringify(this.scope) || JSON.parse(row.request_json).purpose !== this.purpose)) throw new Error("retrieval_run_denied"); return row;
+    if (!row || (JSON.stringify(JSON.parse(row.request_json).scope) !== JSON.stringify(this.scope) || JSON.parse(row.request_json).purpose !== this.purpose)) throw new Error("retrieval_run_denied");
+    if (JSON.stringify(JSON.parse(row.request_json).semantic) !== JSON.stringify(this.options.semantic ? this.semanticConfiguration() : undefined)) throw new Error("retrieval_run_configuration"); return row;
   }
   private inventory(actor: TrustedActor, run: Run, now: number) { return this.access.inventory(actor, JSON.parse(run.request_json).input.projectId, now, { ...this.scope, includePaused: this.purpose === "owner_read" }); }
   private progress(run: Run): SearchProgress {
@@ -88,7 +114,7 @@ export class RetrievalRuns {
   }
   async start(actor: TrustedActor, key: string, input: RetrievalInput): Promise<SearchProgress> {
     actor = ownActor(actor); if (actor.kind === "extractor" || (this.purpose === "owner_read" && actor.kind !== "owner") || !identifier(key)) throw new Error("retrieval_run_denied");
-    const request = { input: normalizeRetrievalInput(input), scope: this.scope, purpose: this.purpose, limits: this.limits }, actorJson = JSON.stringify(actor);
+    const request = { input: normalizeRetrievalInput(input), scope: this.scope, purpose: this.purpose, limits: this.limits, ...(this.options.semantic ? {semantic:this.semanticConfiguration()} : {}) }, actorJson = JSON.stringify(actor);
     const id = await bridgeHash([this.keys(), actorJson, key]), requestHash = await bridgeHash(request);
     await this.statement(`INSERT INTO assistant_retrieval_runs(installation_id,generation,id,actor_json,request_json,request_hash,run_token,page_size,max_steps,max_evaluations)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, ...this.keys(), id, actorJson, JSON.stringify(request), requestHash, crypto.randomUUID(), this.limits.pageSize, this.limits.maxSteps, this.limits.maxEvaluations).run();
@@ -192,30 +218,157 @@ export class RetrievalRuns {
       AND NOT EXISTS(SELECT 1 FROM assistant_retrieval_items i WHERE i.installation_id=r.installation_id AND i.generation=r.generation AND i.run_id=r.id AND (i.state<>'ready' OR NOT EXISTS(SELECT 1 FROM current c WHERE c.id=i.source_id AND c.fingerprint=i.fingerprint))))`,
       values: [...current.values, ...this.keys(), run.id, run.run_token, run.request_hash, run.actor_json, run.checkpoint, JSON.stringify(this.scope), this.purpose] };
   }
+  private semanticRow(runId:string) { return this.statement(`SELECT * FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=?`,...this.keys(),runId).first<SemanticRow>(); }
+  /** Internal host proof. Rebuild from canonical inventory on every admission,
+   * including cache hits; caller SQL/authority is never accepted. */
+  async proofGuard(proof:CoverageProof): Promise<AccessGuard> {
+    try {
+      if (!this.options.semantic || JSON.stringify(proof.scope)!==JSON.stringify(this.scope) || proof.purpose!==this.purpose || JSON.stringify(proof.configuration)!==JSON.stringify(this.semanticConfiguration())) throw 0;
+      const actor=ownActor(JSON.parse(proof.actor)),run=await this.load(actor,proof.runId);
+      if (run.run_token!==proof.runToken || run.request_hash!==proof.requestHash || run.checkpoint!==proof.checkpoint || run.actor_json!==proof.actor) throw 0;
+      const coverage=this.coverage(actor,run,this.clock());
+      const rows=await this.statement(`SELECT source_id,fingerprint,conversation_json FROM assistant_retrieval_items WHERE ${ns} AND run_id=? ORDER BY source_id`,...this.keys(),run.id).all<{source_id:string;fingerprint:string;conversation_json:string|null}>();
+      if (rows.results.length>64 || await bridgeHash(rows.results.map(row=>[row.source_id,row.fingerprint]))!==proof.manifestHash) throw 0;
+      const allowed=rows.results.map(row=>{const ref=JSON.parse(row.fingerprint);return {id:ref[0],version:ref[2],hash:ref[3]};});
+      if(await bridgeHash([actor,JSON.parse(run.request_json).input.query,allowed,10])!==proof.inputHash)throw 0;
+      const locals=[...new Set(rows.results.map(row=>row.conversation_json).filter((value):value is string=>!!value))].map(value=>this.contextGuard(JSON.parse(value)));
+      return compressed(balancedAnd([coverage.sql,`EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND proof_json=?)`,...locals.map(local=>local.sql)]),[...coverage.values,...this.keys(),run.id,JSON.stringify(proof),...locals.flatMap(local=>local.values)]);
+    } catch {return {sql:"0",values:[]};}
+  }
+  async checkProof(proof:CoverageProof) {
+    const guard=await this.proofGuard(proof);
+    if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`,...guard.values).first()) return false;
+    const rows=await this.statement(`SELECT origin_json FROM assistant_retrieval_items WHERE ${ns} AND run_id=?`,...this.keys(),proof.runId).all<{origin_json:string|null}>();
+    const origins=rows.results.filter(row=>row.origin_json).map(row=>JSON.parse(row.origin_json!) as OriginFence);
+    if(!await checkOriginsWithin(origins,fence=>this.options.origin ? this.options.origin.check(fence) : Promise.resolve(false)))return false;
+    const fresh=await this.proofGuard(proof); return !!await this.statement(`SELECT 1 WHERE ${fresh.sql}`,...fresh.values).first();
+  }
+  private async semanticRequest(actor:TrustedActor,run:Run):Promise<{proof:CoverageProof;input:EngineSearch}|{reason:"capacity"|"stale"}> {
+    const inventory=this.inventory(actor,run,this.clock());
+    const rows=await this.statement(`WITH current AS (${inventory.sql}) SELECT c.*,i.origin_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint ORDER BY c.id LIMIT 65`,...inventory.values,...this.keys(),run.id).all<InventoryRow & {origin_json:string|null}>();
+    if(rows.results.length>64) {
+      const gate=this.coverage(actor,run,this.clock());
+      await this.statement(`INSERT INTO assistant_retrieval_semantic(installation_id,generation,run_id,proof_json) SELECT ?,?,?,? WHERE ${gate.sql} ON CONFLICT DO NOTHING`,...this.keys(),run.id,JSON.stringify({state:"not_run_capacity",checkpoint:run.checkpoint,configuration:this.semanticConfiguration()}),...gate.values).run();
+      return {reason:"capacity"};
+    }
+    const proof:CoverageProof={scope:this.scope,runId:run.id,runToken:run.run_token,requestHash:run.request_hash,checkpoint:run.checkpoint,actor:run.actor_json,purpose:this.purpose,configuration:this.semanticConfiguration(),inputHash:await bridgeHash([actor,JSON.parse(run.request_json).input.query,rows.results.map(row=>({id:row.id,version:row.version,hash:row.content_hash})),10]),manifestHash:await bridgeHash(rows.results.map(row=>[row.id,row.fingerprint]))};
+    const input:EngineSearch={query:JSON.parse(run.request_json).input.query,limit:10,actor,coverage:proof,allowedSources:[],permits:[]};
+    for(const row of rows.results){const source=this.access.fromRow(actor,row);input.allowedSources.push({id:source.id,version:source.fence.source.version,hash:source.fence.source.hash});input.permits.push({source:source.fence,...(row.origin_json ? {origin:JSON.parse(row.origin_json)} : {})});}
+    const gate=this.coverage(actor,run,this.clock());
+    await this.statement(`INSERT INTO assistant_retrieval_semantic(installation_id,generation,run_id,proof_json) SELECT ?,?,?,? WHERE ${gate.sql} ON CONFLICT DO NOTHING`,...this.keys(),run.id,JSON.stringify(proof),...gate.values).run();
+    const prior=await this.semanticRow(run.id);
+    return prior?.proof_json===JSON.stringify(proof) && await this.checkProof(proof) ? {proof,input} : {reason:"stale"};
+  }
+  /** Scheduler presearch hook. May take the engine deadline; never run inside
+   * an episode lease. Persistent ticket/claim survives process death. */
+  async advanceSemantic(actor:TrustedActor,runId:string):Promise<void> {
+    actor=ownActor(actor);const run=await this.load(actor,runId);
+    if(!this.options.semantic || run.state!=="ready") return;
+    const outcome=await this.semanticOutcome(actor,run);
+    if(outcome.engine!=="pending")return;
+    const row=await this.semanticRow(run.id);
+    if(!row?.ticket_json || row.outcome_json) return;
+    const ticket=JSON.parse(row.ticket_json) as SearchTicket;
+    // Only EngineStore's durable prepared->attempting CAS can admit effects.
+    const result=await this.options.semantic.engine.submit(ticket);
+    await this.saveSemantic(run,JSON.parse(row.proof_json),result);
+  }
+  private async saveSemantic(run:Run,proof:CoverageProof,outcome:unknown) {
+    const gate=await this.proofGuard(proof),row=await this.semanticRow(run.id);
+    let safe:unknown={state:"blocked",reason:"semantic_invalid_result"};
+    try {
+      if(new TextEncoder().encode(JSON.stringify(outcome)).length>65536)throw 0;
+      const state=(outcome as {state?:string}).state;
+      if(state==="complete"){
+        const refs=await this.statement(`SELECT fingerprint FROM assistant_retrieval_items WHERE ${ns} AND run_id=? ORDER BY source_id LIMIT 65`,...this.keys(),run.id).all<{fingerprint:string}>();
+        const allowed=refs.results.map(row=>{const ref=JSON.parse(row.fingerprint);return {id:ref[0],version:ref[2],hash:ref[3]};});
+        const result=validateEngineResult(outcome,allowed,10),ticket=parseSearchTicket(JSON.parse(row!.ticket_json!));
+        if(result.operationId!==ticket.operationId || result.indexRevision!==ticket.indexRevision)throw 0;
+        safe=result;
+      }else if(state==="blocked" || state==="uncertain") safe={state,reason:state==="blocked"?"semantic_blocked":"semantic_uncertain"};
+    }catch{/* Rejected data stays outside the persistent ranking and episode. */}
+    // A concurrent refusal cannot hide the exact validated receipt forever.
+    // This only reconciles completed work; it never reopens or resubmits a ticket.
+    await this.statement(`UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE ${ns} AND run_id=? AND ticket_json IS ? AND (outcome_json IS NULL OR ((json_extract(outcome_json,'$.state')='uncertain' OR outcome_json=?) AND ?='complete')) AND ${gate.sql}`,JSON.stringify(safe),...this.keys(),run.id,row?.ticket_json ?? null,JSON.stringify({state:"blocked",reason:"semantic_blocked"}),(safe as {state:string}).state,...gate.values).run();
+  }
+  private async semanticOutcome(actor:TrustedActor,run:Run):Promise<{engine:string;gaps:string[];candidates:string[];binding:unknown;pending:boolean}> {
+    const fallback=this.options.semantic!.mode==="lexical_fallback";
+    const failed=(engine:string,gaps:string[],binding:unknown=null,pending=false)=>({engine,gaps,candidates:[] as string[],binding,pending:pending||!fallback});
+    const request=await this.semanticRequest(actor,run);
+    if("reason" in request) return failed(request.reason==="capacity"?"not_run_capacity":"unavailable",["semantic_unsearched"],{configuration:this.semanticConfiguration(),state:request.reason==="capacity"?"not_run_capacity":"inventory_changed"});
+    if(!request.input.allowedSources.length)return {engine:"complete",gaps:[],candidates:[],binding:{configuration:this.semanticConfiguration(),state:"empty_inventory",manifestHash:request.proof.manifestHash},pending:false};
+    let row=(await this.semanticRow(run.id))!;
+    // Only metadata-only preparation refusal is recoverable without a ticket.
+    // The proof/request are reconstructed above; the stable alias is unchanged.
+    const prepareBlocked = (value:string|null) => value === JSON.stringify({state:"blocked",reason:"semantic_prepare_blocked"});
+    if(!row.ticket_json && (!row.outcome_json || prepareBlocked(row.outcome_json))){
+      const raw=await this.options.semantic!.engine.prepare(run.id,request.input);
+      let prepared: {state:"prepared";ticket:SearchTicket}|{state:"blocked";reason:string}={state:"blocked",reason:"semantic_prepare_blocked"};
+      try {if(new TextEncoder().encode(JSON.stringify(raw)).length>4096)throw 0;if(raw.state==="prepared") {const ticket=parseSearchTicket(raw.ticket);if(ticket.alias!==run.id || ticket.requestHash!==await bridgeHash(request.input))throw 0;prepared={state:"prepared",ticket};}}catch{/* No rejected metadata crosses this boundary. */}
+      const gate=await this.proofGuard(request.proof);
+      await this.statement(`UPDATE assistant_retrieval_semantic SET ticket_json=?,outcome_json=? WHERE ${ns} AND run_id=? AND ticket_json IS NULL AND (outcome_json IS NULL OR outcome_json=?) AND ${gate.sql}`,prepared.state==="prepared"?JSON.stringify(prepared.ticket):null,prepared.state==="blocked"?JSON.stringify(prepared):null,...this.keys(),run.id,JSON.stringify({state:"blocked",reason:"semantic_prepare_blocked"}),...gate.values).run();
+      row=(await this.semanticRow(run.id))!;
+    }
+    if(row.ticket_json){
+      const observed=await this.options.semantic!.engine.lookupTicket(JSON.parse(row.ticket_json));
+      // A generic blocked result is not evidence of no attempt. Only the same
+      // current ticket's strict prepared lookup can reopen a pre-admission refusal.
+      const ticket=parseSearchTicket(JSON.parse(row.ticket_json));
+      if(observed.state==="uncertain" && observed.reason==="not_submitted" && observed.operationId===ticket.operationId && row.outcome_json===JSON.stringify({state:"blocked",reason:"semantic_blocked"})) {
+        const gate=await this.proofGuard(request.proof);
+        await this.statement(`UPDATE assistant_retrieval_semantic SET outcome_json=NULL WHERE ${ns} AND run_id=? AND ticket_json=? AND outcome_json=? AND ${gate.sql}`,...this.keys(),run.id,row.ticket_json,row.outcome_json,...gate.values).run();
+        row=(await this.semanticRow(run.id))!;
+      }
+      if(observed.state==="complete" || (observed.state==="blocked")) {await this.saveSemantic(run,request.proof,observed);row=(await this.semanticRow(run.id))!;}
+      if(!row.outcome_json)return failed("pending",["semantic_pending"],{ticket:JSON.parse(row.ticket_json!),configuration:this.semanticConfiguration()},true);
+      // Current engine epoch/revision is checked even for a persisted receipt.
+      if(observed.state!=="complete")return failed("unavailable",["semantic_unsearched"],{ticket:JSON.parse(row.ticket_json!),configuration:this.semanticConfiguration(),state:observed.state==="blocked"?"blocked":"uncertain"});
+    }
+    if(!await this.checkProof(request.proof))return failed("unavailable",["inventory_changed"]);
+    try {
+      const response=validateEngineResult(JSON.parse(row.outcome_json!),request.input.allowedSources,10),ticket=JSON.parse(row.ticket_json!) as SearchTicket;
+      if(response.operationId!==ticket.operationId || response.indexRevision!==ticket.indexRevision)throw 0;
+      const binding={state:"searched",ticket,configuration:this.semanticConfiguration(),receipt:{operationId:response.operationId,indexRevision:response.indexRevision,indexState:response.indexState},candidates:response.result.candidates,missing:response.result.missing};
+      return response.result.missing.length ? failed("partial",["index_missing","semantic_unsearched"],binding) : {engine:"complete",gaps:[],candidates:response.result.candidates.map(ref=>ref.id),binding,pending:false};
+    } catch{return failed("unavailable",["semantic_unsearched"],{ticket:row.ticket_json?JSON.parse(row.ticket_json):null,configuration:this.semanticConfiguration(),state:"invalid_or_unavailable"});}
+  }
   async result(actor: TrustedActor, runId: string): Promise<SearchResult> {
     actor = ownActor(actor); const run = await this.load(actor, runId), coverage = this.coverage(actor, run, this.clock());
     const unavailable = (gap: string, complete = false): SearchResult => ({ state: run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations || run.state === "waiting_context" || complete ? "waiting_context" : "pending", sources: [] as RetrievedSource[], coverage: { inventoryComplete: complete, engine: "not_run_capacity", gaps: [...baseGaps, gap] } });
     if (!await this.statement(`SELECT 1 WHERE ${coverage.sql}`, ...coverage.values).first()) return unavailable(run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : run.state === "waiting_context" ? "origin_unavailable" : "inventory_changed");
+    const semantic=this.options.semantic ? await this.semanticOutcome(actor,run) : null;
+    if(semantic?.pending) return {state:"pending",sources:[],coverage:{inventoryComplete:true,engine:semantic.engine,gaps:semantic.gaps}};
     const current = this.inventory(actor, run, this.clock());
-    const rows = await this.statement(`WITH current AS (${current.sql}) SELECT c.*,i.origin_json,i.conversation_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint WHERE i.state='ready' AND i.linked=1 AND i.score>0 ORDER BY i.score DESC,c.id LIMIT ?`, ...current.values, ...this.keys(), run.id, JSON.parse(run.request_json).input.limit).all<InventoryRow & { origin_json: string | null; conversation_json: string | null }>();
-    if (!rows.results.length) return unavailable("no_matches", true);
+    const rows = await this.statement(`WITH current AS (${current.sql}) SELECT c.*,i.origin_json,i.conversation_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint WHERE i.state='ready' AND i.linked=1 AND (i.score>0 OR c.id IN (SELECT value FROM json_each(?))) ORDER BY i.score DESC,c.id LIMIT 74`, ...current.values, ...this.keys(), run.id, JSON.stringify(semantic?.candidates ?? [])).all<InventoryRow & { origin_json: string | null; conversation_json: string | null }>();
+    if (!rows.results.length) return {state:"waiting_context",sources:[],coverage:{inventoryComplete:true,engine:semantic?.engine ?? "not_run_capacity",gaps:[...(semantic?.gaps ?? baseGaps),"no_matches"]}};
+    if(semantic){
+      const lexical=rows.results; // SQL order is the lexical lane; score-zero rows receive no lexical rank.
+      const scores=await this.statement(`SELECT source_id,score FROM assistant_retrieval_items WHERE ${ns} AND run_id=?`,...this.keys(),run.id).all<{source_id:string;score:number}>();
+      const positive=new Set(scores.results.filter(row=>row.score>0).map(row=>row.source_id));
+      const lane=lexical.filter(row=>positive.has(row.id));
+      const rank=(id:string)=>{const l=lane.findIndex(row=>row.id===id),m=semantic.candidates.indexOf(id);return (l<0?0:1/(60+l+1))+(m<0?0:1/(60+m+1));};
+      rows.results.sort((a,b)=>rank(b.id)-rank(a.id)||a.id.localeCompare(b.id));
+    }
+    rows.results.splice(JSON.parse(run.request_json).input.limit);
     const sources: RetrievedSource[] = []; let bytes = 0;
     const selected: Selected[] = [];
+    const selectedOrigins=rows.results.filter(row=>row.origin_json).map(row=>JSON.parse(row.origin_json!) as OriginFence);
+    if(!await checkOriginsWithin(selectedOrigins,fence=>this.options.origin ? this.options.origin.check(fence) : Promise.resolve(false)))return unavailable("origin_unavailable");
     for (const row of rows.results) {
       const source = this.access.fromRow(actor, row); bytes += new TextEncoder().encode(source.text ?? "").length;
       if (bytes > 65536) return unavailable("context_bytes_limit", true);
       const origin = row.origin_json ? JSON.parse(row.origin_json) as OriginFence : undefined;
-      if (origin && (!this.options.origin || !await this.options.origin.check(origin))) return unavailable("origin_unavailable");
       if (row.conversation_json) { const guard = this.contextGuard(JSON.parse(row.conversation_json)); if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`, ...guard.values).first()) return unavailable("conversation_changed"); }
       sources.push({ ...source, ...(origin ? { origin } : {}) });
       selected.push({ id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash });
     }
-    const selectedJson = JSON.stringify(selected), packHash = await bridgeHash([run.request_hash, run.actor_json, selected]);
+    const selectedJson = JSON.stringify(selected), ranking=semantic ? semanticRankingSchema.parse({engine:semantic.engine,gaps:semantic.gaps,binding:semantic.binding}) : null, packHash = await bridgeHash([run.request_hash, run.actor_json, selected,...(ranking ? [ranking] : [])]);
     const fresh = this.coverage(actor, run, this.clock());
-    const saved = await this.statement(`UPDATE assistant_retrieval_runs SET pack_json=?,pack_hash=? WHERE ${ns} AND id=? AND ${fresh.sql} RETURNING id`, selectedJson, packHash, ...this.keys(), run.id, ...fresh.values).all();
+    const savePack=this.statement(`UPDATE assistant_retrieval_runs SET pack_json=?,pack_hash=? WHERE ${ns} AND id=? AND ${fresh.sql} ${ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""} RETURNING id`,selectedJson,packHash,...this.keys(),run.id,...fresh.values,...(ranking ? [...this.keys(),run.id,JSON.stringify(ranking)] : []));
+    const saved = ranking ? (await this.db.batch([this.statement(`UPDATE assistant_retrieval_semantic SET ranking_json=? WHERE ${ns} AND run_id=? AND ${fresh.sql}`,JSON.stringify(ranking),...this.keys(),run.id,...fresh.values),savePack])).at(-1)! : await savePack.all();
     if (!saved.results.length) return unavailable("inventory_changed");
-    const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose });
-    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: "not_run_capacity", gaps: baseGaps.slice() } };
+    const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose, ...(ranking ? {ranking} : {}) });
+    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: semantic?.gaps ?? baseGaps.slice() } };
   }
   guard(actor: TrustedActor, fence: SearchFence, now = this.clock()): AccessGuard {
     actor = ownActor(actor);
@@ -226,19 +379,22 @@ export class RetrievalRuns {
     const projected = this.access.inventory(actor, undefined, now, { ...this.scope, includePaused: this.purpose === "owner_read" });
     const inventory = { sql: `SELECT * FROM (${projected.sql}) WHERE ((SELECT json_extract(request_json,'$.input.projectId') FROM assistant_retrieval_runs WHERE ${ns} AND id=?) IS NULL OR project_id=(SELECT json_extract(request_json,'$.input.projectId') FROM assistant_retrieval_runs WHERE ${ns} AND id=?))`, values: [...projected.values, ...this.keys(), run.id, ...this.keys(), run.id] };
     const coverage = this.coverage(actor, run, now, inventory);
-    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=?)`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected)]);
+    if (!!fence.ranking !== !!this.options.semantic) return {sql:"0",values:[]};
+    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);
   }
   async check(actor: TrustedActor, fence: SearchFence): Promise<boolean> {
     actor = ownActor(actor);
     const snapshot = this.guard(actor, fence, this.clock());
     if (snapshot.sql === "0") return false;
-    fence = { installationId: fence.installationId, generation: fence.generation, runId: fence.runId, runToken: fence.runToken, requestHash: fence.requestHash, checkpoint: fence.checkpoint, actor: fence.actor, allowedPackHash: fence.allowedPackHash, purpose: fence.purpose, selected: fence.selected.map(({ id, revision, version, hash }) => ({ id, revision, version, hash })) };
+    fence = { installationId: fence.installationId, generation: fence.generation, runId: fence.runId, runToken: fence.runToken, requestHash: fence.requestHash, checkpoint: fence.checkpoint, actor: fence.actor, allowedPackHash: fence.allowedPackHash, purpose: fence.purpose, ...(fence.ranking ? {ranking:fence.ranking} : {}), selected: fence.selected.map(({ id, revision, version, hash }) => ({ id, revision, version, hash })) };
     const guard = this.guard(actor, fence, this.clock()); if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`, ...guard.values).first()) return false;
     const rows = await this.statement(`SELECT origin_json,conversation_json FROM assistant_retrieval_items WHERE ${ns} AND run_id=? AND source_id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`, ...this.keys(), fence.runId, JSON.stringify(fence.selected)).all<{ origin_json: string | null; conversation_json: string | null }>();
+    const origins=rows.results.filter(row=>row.origin_json).map(row=>JSON.parse(row.origin_json!) as OriginFence);
+    if(!await checkOriginsWithin(origins,fence=>this.options.origin ? this.options.origin.check(fence) : Promise.resolve(false)))return false;
     for (const row of rows.results) {
-      if (row.origin_json && (!this.options.origin || !await this.options.origin.check(JSON.parse(row.origin_json)))) return false;
       if (row.conversation_json) { const local = this.contextGuard(JSON.parse(row.conversation_json)); if (!await this.statement(`SELECT 1 WHERE ${local.sql}`, ...local.values).first()) return false; }
     }
+    if(this.options.semantic){const run=await this.load(actor,fence.runId),semantic=await this.semanticOutcome(actor,run);if(semantic.pending)return false;const ranking=semanticRankingSchema.safeParse({engine:semantic.engine,gaps:semantic.gaps,binding:semantic.binding});if(!ranking.success || JSON.stringify(fence.ranking)!==JSON.stringify(ranking.data))return false;}
     const fresh = this.guard(actor, fence, this.clock()); return !!await this.statement(`SELECT 1 WHERE ${fresh.sql}`, ...fresh.values).first();
   }
 }
