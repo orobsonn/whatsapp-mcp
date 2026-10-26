@@ -143,10 +143,11 @@ const workFrom = `FROM assistant_jobs j JOIN assistant_fup_occurrences o ON o.in
  AND j.source_id=f.source_id AND j.source_revision=f.source_revision
  JOIN assistant_sources s ON s.installation_id=f.installation_id AND s.generation=f.generation AND s.id=f.source_id AND s.revision=f.source_revision AND s.status='active' AND s.current_version IS NOT NULL
  LEFT JOIN assistant_missions m ON m.installation_id=f.installation_id AND m.generation=f.generation AND m.id=f.mission_id`;
-const workLive = `j.kind='follow_up' AND j.state IN ('pending','processing') AND o.state IN ('pending','blocked') AND f.state IN ('scheduled','awaiting_condition','awaiting_approval')
+const workIntent = `j.kind='follow_up' AND o.state IN ('pending','blocked') AND f.state IN ('scheduled','awaiting_condition','awaiting_approval')
  AND f.version=(SELECT MAX(version) FROM assistant_follow_ups latest WHERE latest.installation_id=f.installation_id AND latest.generation=f.generation AND latest.id=f.id)
  AND (f.mission_id IS NULL OR m.state='active') AND (f.mandate_id IS NULL OR EXISTS(SELECT 1 FROM assistant_mandates grant_ WHERE grant_.installation_id=f.installation_id AND grant_.generation=f.generation AND grant_.id=f.mandate_id
  AND grant_.version=f.mandate_version AND grant_.version=(SELECT MAX(version) FROM assistant_mandates latest WHERE latest.installation_id=grant_.installation_id AND latest.generation=grant_.generation AND latest.id=grant_.id) AND grant_.status='active' AND grant_.issued_at<=? AND grant_.expires_at>?))`;
+const workLive = `j.state IN ('pending','processing') AND ${workIntent}`;
 /** Null always denies a follow_up job, including a missing occurrence. This is
  * an evaluation fence, never a delegation: awaiting approval stays unapproved. */
 export async function captureWorkFence(db: D1Database, scope: SourceScope, job: { id: string; kind: "follow_up" }, now = Date.now()): Promise<WorkFence | null> {
@@ -159,10 +160,14 @@ export async function captureWorkFence(db: D1Database, scope: SourceScope, job: 
 }
 /** Compose this predicate into the same mutation that admits/publishes a result.
  * Lease, complete source-pack ACL and conversation/origin fences remain separate. */
-export function workGuard(fence: WorkFence, now = Date.now()): AccessGuard {
+function workPredicate(fence: WorkFence, now: number, live: boolean): AccessGuard {
   if (!fence || fence.kind !== "follow_up" || !Number.isSafeInteger(now) || now < 0) return { sql: "0", values: [] };
   const copy = { ...fence };
   return { sql: `EXISTS(SELECT 1 ${workFrom} WHERE ${scoped("j")} AND j.id=? AND o.id=? AND o.state=? AND f.id=? AND f.version=? AND f.state=? AND f.source_id=? AND f.source_revision=?
-      AND f.mission_id IS ? AND m.revision IS ? AND f.mandate_id IS ? AND f.mandate_version IS ? AND ${workLive})`,
+      AND f.mission_id IS ? AND m.revision IS ? AND f.mandate_id IS ? AND f.mandate_version IS ? AND ${live ? workLive : workIntent})`,
     values: [copy.installationId, copy.generation, copy.jobId, copy.occurrenceId, copy.occurrenceState, copy.followUpId, copy.version, copy.state, copy.sourceId, copy.sourceRevision, copy.missionId, copy.missionRevision, copy.mandateId, copy.mandateVersion, now, now] };
 }
+
+export const workGuard = (fence: WorkFence, now = Date.now()): AccessGuard => workPredicate(fence, now, true);
+/** Current intent/permissions after computation; executor completion alone is not staleness. */
+export const workIntentGuard = (fence: WorkFence, now = Date.now()): AccessGuard => workPredicate(fence, now, false);

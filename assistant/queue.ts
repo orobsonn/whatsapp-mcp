@@ -1,3 +1,5 @@
+import { decisionSubject, type DecisionSubject } from "./agent/contracts";
+import { seedDecisionJob } from "./decisions";
 import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
@@ -12,7 +14,7 @@ export type Ledger = {
   request_hash: string; request_json: string; admitted_lease_generation: number | null; state: "prepared" | "attempting" | "uncertain" | "complete";
 };
 export type NewJob = {
-  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue";
+  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue"; subject?: DecisionSubject;
 };
 export type RuntimeGuardPlan = { guard: AccessGuard; statements: D1PreparedStatement[] };
 export type RuntimeJobGuard = (lease: Readonly<JobLease>, now: number) => Promise<AccessGuard | RuntimeGuardPlan | null>;
@@ -49,7 +51,9 @@ export class JobQueue {
     return JSON.stringify(["assistant-shadow", this.scope.installationId, this.scope.generation, id, hash]);
   }
   async enqueue(input: NewJob, now: number): Promise<Job> {
-    input = Object.freeze({ ...input });
+    input = Object.freeze({ ...input, ...(input.subject ? { subject: decisionSubject.parse(input.subject) } : {}) });
+    if (input.runtime === "flue" && !input.subject) throw new Error("decision_subject_required");
+    if (input.subject && (input.runtime !== "flue" || (input.kind === "follow_up") !== (input.subject.kind === "fup_occurrence"))) throw new Error("decision_subject_invalid");
     integer(now); integer(input.sourceRevision, 1); integer(input.maxAttempts ?? 3, 1);
     if (!input.dedupeKey || input.dedupeKey.length > 256 || !input.sourceId || typeof input.request !== "string" || (input.runtime !== undefined && input.runtime !== "flue")) {
       throw new Error("invalid_job_request");
@@ -60,13 +64,13 @@ export class JobQueue {
     const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
     if (chatId && !conversation) throw new Error("conversation_not_ready");
     const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,
-      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime } : {}) });
+      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     await this.db.batch([
-      this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts)
-        VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
-      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3),
+      this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts,occurrence_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
+      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null),
       this.raw(`INSERT INTO assistant_job_ledger(installation_id,generation,job_id,request_hash,request_json)
         SELECT installation_id,generation,id,?,? FROM assistant_jobs
         WHERE installation_id=? AND generation=? AND dedupe_key=? ON CONFLICT DO NOTHING`, hash, request,
@@ -76,6 +80,7 @@ export class JobQueue {
       ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
       WHERE j.installation_id=? AND j.generation=? AND j.dedupe_key=?`, input.dedupeKey).first<Job & { request_hash: string }>();
     if (!row || row.request_hash !== hash) throw new Error("dedupe_request_conflict");
+    if (input.runtime === "flue") await seedDecisionJob(this.db, this.scope, row.id, now);
     return row;
   }
   async claim(now: number, leaseMs = 30000): Promise<JobLease | null> {
@@ -126,6 +131,8 @@ export class JobQueue {
         const runtime = await this.runtimeGuard(lease, now);
         if (!runtime) return null;
         const current = "guard" in runtime ? runtime.guard : runtime;
+        guard.sql += ` AND EXISTS(SELECT 1 FROM assistant_decision_jobs WHERE installation_id=? AND generation=? AND job_id=? AND request_hash=? AND subject_json=?)`;
+        guard.values.push(this.scope.installationId, this.scope.generation, lease.id, ledger.request_hash, JSON.stringify(decisionSubject.parse((JSON.parse(ledger.request_json) as {subject: unknown}).subject)));
         if ("guard" in runtime) statements.push(...runtime.statements);
         guard.sql = `(${guard.sql}) AND (${current.sql})`; guard.values.push(...current.values);
       }
@@ -222,10 +229,12 @@ export class JobQueue {
     if (!auth) return null;
     const statement = this.raw(`UPDATE assistant_jobs SET state='shadow_completed',lease_until=NULL,last_error=NULL
       WHERE installation_id=? AND generation=? AND id=? AND ${liveLease} AND source_id=? AND source_revision=?
-      AND ${auth.guard.sql} ${additional ? `AND (${additional.sql})` : ""} AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id
+      AND ${auth.guard.sql} ${JSON.parse(auth.ledger.request_json).runtime === "flue" ? `AND EXISTS(SELECT 1 FROM assistant_shadow_decisions d JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id
+        WHERE d.installation_id=assistant_jobs.installation_id AND d.generation=assistant_jobs.generation AND d.job_id=assistant_jobs.id AND d.request_hash=? AND d.lease_generation=assistant_jobs.lease_generation
+        AND d.binding_hash=e.binding_hash AND d.proposal_json=e.result_json AND d.publication_nonce=e.search_nonce AND d.publication_nonce IS NOT NULL)` : ""} ${additional ? `AND (${additional.sql})` : ""} AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id
       AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='complete'
       AND l.request_hash=? AND l.request_json=?) RETURNING id`,
-    this.scope.installationId, this.scope.generation, lease.id, lease.lease_generation, now, lease.source_id, lease.source_revision, ...auth.guard.values, ...(additional?.values ?? []),
+    this.scope.installationId, this.scope.generation, lease.id, lease.lease_generation, now, lease.source_id, lease.source_revision, ...auth.guard.values, ...(JSON.parse(auth.ledger.request_json).runtime === "flue" ? [auth.ledger.request_hash] : []), ...(additional?.values ?? []),
     auth.ledger.request_hash, auth.ledger.request_json);
     return { statements: auth.statements, statement, guard: this.jobGuard(lease, auth, now, "complete") };
   }
