@@ -34,6 +34,8 @@ O script gera temporariamente um Worker **local**, em `127.0.0.1`/porta aleatór
 
 O processo e os arquivos efêmeros são removidos em `finally`; SIGINT/SIGTERM encerram o filho. Operation IDs e progresso de CLI ficam no diretório privado persistido para reconciliar a mesma operação. Não apagar esses recibos depois de timeout. O script não faz deploy, migração, ativação implícita, chamada de modelo ou limpeza de OAuth.
 
+O argv usa `wrangler dev` sem `--local` e sem `--remote`: o primeiro desabilitaria remote:true, e o segundo publicaria o operador em preview. Somente o SERVICE OwnerAssistant é remoto; os DOs da autoridade continuam internos ao Worker remoto. A regressão Node confere esses argumentos, separadamente da futura prova cloud do transporte.
+
 Os caminhos abaixo são exemplos de arquivos privados, sem credenciais literais:
 
 ```sh

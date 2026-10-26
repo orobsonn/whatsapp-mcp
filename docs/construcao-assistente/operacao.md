@@ -63,6 +63,26 @@ node scripts/assistant-install.mjs pin-affinity --manifest /caminho/privado/mani
 
 Esses comandos não provisionam Cloudflare. O primeiro cria uma chave nova apenas se não houver estado anterior e grava aliases privados: BRIDGE_SECRET no host; ASSISTANT_READER_SECRET e ASSISTANT_BRIDGE_SECRET no Archive. Repetição reencontra a mesma chave; estado parcial exige reconciliação, nunca geração substituta automática. `pin-affinity` aceita somente a resposta estreita disponível, conserva valores em arquivo privado e emite apenas hash/estado. O CLI registra honestamente que um arquivo fornecido não prova sozinho execução do binding: a verificação live do coordenador continua obrigatória. Epoch/generation diferente não sobrescreve o pin. Rotação ou nova geração exigem plano próprio e preservação das tentativas incertas.
 
+## Bootstrap operacional por serviço nominal
+
+Após revisar CI, versão e bindings reais do Worker próprio já publicado, o operador local pode chamar três comandos estreitos. O arquivo instalado fornece somente installationId/generation esperados; sourceEpoch ainda não precisa existir para esta primeira prova. O segredo da ponte permanece no ambiente do Worker: o comando affinity nunca recebe uma chave no corpo.
+
+```sh
+node scripts/assistant-install-ops.mjs affinity --installedconfig /caminho/privado/assistant.wrangler.jsonc --output /caminho/privado/rpc-affinity.json
+node scripts/assistant-install.mjs pin-affinity --manifest /caminho/privado/manifest.json --input /caminho/privado/rpc-affinity.json --output local/assistant-build/install
+node scripts/assistant-install-ops.mjs plan --installedconfig /caminho/privado/assistant.wrangler.jsonc --output /caminho/privado/retention-plan.json
+# Provisionar seletivamente RETENTION_BOOTSTRAP_SEAL com o seal observado, por canal privado.
+node scripts/assistant-install-ops.mjs bootstrap --installedconfig /caminho/privado/assistant.wrangler.jsonc --output /caminho/privado/retention-bootstrap.json
+```
+
+O plano usa o inventário D1 vivo de todas as gerações, sem ler corpos de fontes. O helper existente revalida o plano antes de selar; schema/autoridade indisponíveis nunca significam inventário vazio. Bootstrap exige FLUE_EPISODES_ENABLED=shadow, ROUTINES_ENABLED=off, ROUTINES_PAUSED=true, TELEGRAM_SUMMARIES_ENABLED=false e o selo externo de64hex configurado. Uma autoridade nova ainda unsealed é o estado esperado, não um pré-requisito circular. Este comando não ativa geração, scheduler, captura, modelo ou envios.
+
+O CLI inicia Worker local em loopback/porta aleatória com token fresco em arquivo0600 e validade de até15min. Ele recebe somente o binding SERVICE remoto OwnerAssistant do serviço fixo personal-assistant-shadow, sem DO/D1/R2 ou URL de destino arbitrária. O RPC installation não é exposto como tool MCP, HTTP público ou capacidade de conteúdo. Resultados exatos, inclusive plano/afinidade e respostas incertas, ficam somente no novo arquivo0600 sob diretório privado; stdout contém apenas estado/hash. O resultado affinity alimenta diretamente pin-affinity. Output existente recusa sobrescrita. Após timeout, inspecionar a mesma instalação e selo; não trocar geração/namespace/selo para ocultar incerteza.
+
+O comando usa `wrangler dev` com remote:true apenas no SERVICE. Não passar `--local`: ele desabilita os bindings remotos. Não passar `--remote`: ele publica o operador em preview. A correção também vale para o CLI de retenção #55. DO remoto não é usado pelo processo local; o serviço Worker remoto chama seus próprios DOs. [Limites de desenvolvimento local Cloudflare](https://developers.cloudflare.com/workers/local-development/).
+
+Validação local do codec, guards e transporte simulado é separada da homologação cloud: a execução real desse operador, os bindings e a ausência de capacidades de envio ainda precisam de prova na instalação publicada.
+
 ## Saúde, pausa e recuperação
 
 `GET /health` continua mínimo e não revela dados de instalação. A consulta autenticada `assistant.health` verifica metadados D1/tabelas necessárias, afinidade por named RPC, afinidade ARTIFACTS dos dois marcadores privados, head de objeto sentinela no prefixo próprio assistant-artifacts/v1 e estado sealed da autoridade externa. Não lê corpo de arquivo/mensagem, não chama modelo, não aquece Container e não faz refresh OAuth. Marcadores ausentes ou diferentes impedem a sonda R2 e mantêm infraestrutura pending. Marcadores coincidentes não atestam a identidade real do bucket: conferir binding pela API Cloudflare. Inventário de tabelas é distinto da prova completa de migrações. Recibo do host scheduler também é distinto de cron cloud homologado. Ausência de evento novo não é falha, e zero eventos não vira 100% de cobertura.

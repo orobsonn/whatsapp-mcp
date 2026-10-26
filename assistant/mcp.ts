@@ -16,7 +16,7 @@ import { calendarQuery, CalendarReader } from "./connectors/calendar";
 import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
 import { Evaluation, evaluationQuery } from "./evaluation";
 import { assistantHealth } from "./health";
-import { configuredRetirementGuard } from "./retention-authority";
+import { configuredRetirementGuard, retirementBootstrapPlan, bootstrapRetirementAuthority } from "./retention-authority";
 import { AssistantExport } from "./retention";
 import { RetentionPurge, purgeCommand } from "./retention-purge";
 import { RetentionObjects, objectCommand } from "./retention-objects";
@@ -27,6 +27,10 @@ import { restoreCommand } from "./retention-restore-contract";
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
 export type OwnerAffinity = z.infer<typeof ownerAffinitySchema>;
+export const installationAffinitySchema = z.object({ installationId: id, generation: id }).strict();
+export type InstallationAffinity = z.infer<typeof installationAffinitySchema>;
+export const installationCommand = z.enum(["installation.affinity", "installation.retention_plan", "installation.retention_bootstrap"]);
+export type InstallationCommand = z.infer<typeof installationCommand>;
 const listKind = z.enum(["sources", "projects", "missions", "policies", "mandates", "follow_ups", "decisions"]);
 export const ownerQuerySchema = z.union([
   githubQuery,
@@ -42,6 +46,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
   retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand): Promise<unknown>;
   telegramReview(expected: OwnerAffinity, command: unknown): Promise<unknown>;
@@ -109,6 +114,36 @@ export class OwnerQueries {
 /** Only the authenticated MCP Worker receives this named binding. Public fetch
  * and Flue profiles never receive a route or capability to these controls. */
 export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements OwnerAssistantRPC {
+  /** Operational named capability: source affinity and a sealed authority do not
+   * exist yet on first install. Neither is inferred or required for bootstrap. */
+  async installation(expected: InstallationAffinity, raw: InstallationCommand) {
+    const input = installationCommand.parse(raw), wanted = installationAffinitySchema.parse(expected);
+    const db = this.env.DB;
+    const current = () => {
+      const actual = installationAffinitySchema.parse({ installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION });
+      if (!db || this.env.DB !== db || actual.installationId !== wanted.installationId || actual.generation !== wanted.generation) throw new Error("installation_binding_affinity");
+      return actual;
+    };
+    const scope = current();
+    if (input === "installation.affinity") {
+      const reader = this.env.CAPTURE_READER, secret = this.env.BRIDGE_SECRET;
+      if (!reader?.installationAffinity || !secret) throw new Error("installation_capture_unconfigured");
+      const result = await reader.installationAffinity({ secret });
+      current(); if (reader !== this.env.CAPTURE_READER || secret !== this.env.BRIDGE_SECRET) throw new Error("installation_capture_changed");
+      return z.union([
+        z.object({ observation: z.literal("capture_installation_affinity"), state: z.literal("available"), fence: z.object({ epoch: id, generation: id }).strict() }).strict(),
+        z.object({ observation: z.literal("capture_installation_affinity"), state: z.literal("blocked"), reason: z.enum(["reader_unavailable", "reader_changed"]) }).strict(),
+      ]).parse(result);
+    }
+    if (input === "installation.retention_plan") { const result = await retirementBootstrapPlan(this.env.DB!, scope); current(); return result; }
+    const seal = this.env.RETENTION_BOOTSTRAP_SEAL, authority = this.env.RETENTION_AUTHORITY;
+    const staged = () => {
+      if (this.env.FLUE_EPISODES_ENABLED !== "shadow" || this.env.ROUTINES_ENABLED !== "off" || this.env.ROUTINES_PAUSED !== "true" || this.env.TELEGRAM_SUMMARIES_ENABLED !== "false" || typeof seal !== "string" || !/^[a-f0-9]{64}$/.test(seal) || this.env.RETENTION_BOOTSTRAP_SEAL !== seal || this.env.RETENTION_AUTHORITY !== authority) throw new Error("installation_bootstrap_not_staged");
+    };
+    staged();
+    const result = await bootstrapRetirementAuthority({ DB: db, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, RETENTION_AUTHORITY: authority, RETENTION_BOOTSTRAP_SEAL: seal });
+    current(); staged(); return result;
+  }
   #affinity(input: unknown) {
     const expected = ownerAffinitySchema.parse(input), actual = ownerAffinitySchema.parse({
       installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION,

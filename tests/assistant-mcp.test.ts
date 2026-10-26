@@ -7,7 +7,7 @@ import type { Env } from "../src/env";
 
 const owner = { sub: "synthetic-assistant-owner", epoch: "assistant-mcp-epoch" };
 function setup() {
-  const rpc = { source: vi.fn(), control: vi.fn(), query: vi.fn(), telegramLink: vi.fn(), telegramReview: vi.fn(), evaluate: vi.fn() };
+  const rpc = { installation: vi.fn(), source: vi.fn(), control: vi.fn(), query: vi.fn(), telegramLink: vi.fn(), telegramReview: vi.fn(), evaluate: vi.fn() };
   const settings: Env = Object.assign({ ...env, PUBLIC_ORIGIN: "https://assistant-mcp.invalid", OWNER_SUB: owner.sub,
     INSTALLATION_EPOCH: owner.epoch, CONNECTION_GENERATION: "capture-generation", MAINTENANCE: "false",
     ASSISTANT_INSTALLATION_ID: "assistant-installation", ASSISTANT_GENERATION: "assistant-generation" }, { ASSISTANT_OWNER: rpc });
@@ -27,6 +27,7 @@ it("does not infer owner capability from an Env binding alone", async () => {
   try { expect((await client.listTools()).tools.filter(t => t.name.startsWith("assistente_"))).toEqual([]); }
   finally { await client.close(); await server.close(); }
   expect(rpc.control).not.toHaveBeenCalled();
+  expect(rpc.installation).not.toHaveBeenCalled();
 });
 it("refuses wrong owner, epoch, maintenance and origin before reaching the assistant", async () => {
   const { settings, rpc } = setup();

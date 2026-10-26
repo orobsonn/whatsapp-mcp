@@ -23,12 +23,15 @@ export async function operatorConfig(installed,affinity,port,token,expires,worke
  return {name:"assistant-retention-operator-local",main:workerPath,account_id:installed.account_id,compatibility_date:"2026-10-26",compatibility_flags:["nodejs_compat"],workers_dev:false,preview_urls:false,observability:{enabled:false},services:[{binding:"OWNER",service:"personal-assistant-shadow",entrypoint:"OwnerAssistant",remote:true}],vars:{...fields,RETENTION_OPERATOR_EXPIRES:String(expires),RETENTION_OPERATOR_PORT:String(port)}};
 }
 async function freePort(){const server=createServer();await new Promise((done,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",done);});const port=server.address().port;await new Promise(done=>server.close(done));return port;}
+// --local disables remote:true bindings; retain local execution with the one
+// explicit remote service, never --remote (which uploads the operator).
+export const operatorArgv=(config,port)=>[join(root,"node_modules/wrangler/bin/wrangler.js"),"dev","--config",config,"--ip","127.0.0.1","--port",String(port),"--show-interactive-dev-session","false"];
 async function withOperator(options,run) {
  const installed=JSON.parse(await privateRead(options["--installed"],65536)),affinity=JSON.parse(await privateRead(options["--affinity"],4096)),directory=await mkdtemp(join(tmpdir(),"assistant-retention-operator-"));let child;
  try{
   const token=randomBytes(32).toString("hex"),port=await freePort(),config=await operatorConfig(installed,affinity,port,token,Date.now()+900000);
   await createPrivate(join(directory,"wrangler.json"),JSON.stringify(config));await createPrivate(join(directory,".dev.vars"),"RETENTION_OPERATOR_TOKEN="+token+"\n");
-  child=spawn(process.execPath,[join(root,"node_modules/wrangler/bin/wrangler.js"),"dev","--config",join(directory,"wrangler.json"),"--ip","127.0.0.1","--port",String(port),"--local","--show-interactive-dev-session","false"],{cwd:root,stdio:["ignore","pipe","pipe"],env:{...process.env,WRANGLER_SEND_METRICS:"false"}});
+  child=spawn(process.execPath,operatorArgv(join(directory,"wrangler.json"),port),{cwd:root,stdio:["ignore","pipe","pipe"],env:{...process.env,WRANGLER_SEND_METRICS:"false"}});
   // Provider/config logs stay private and bounded. Never echo them or URLs,
   // headers, secrets, data rows or the ephemeral capability to the terminal.
   const interrupted=new AbortController();const interrupt=()=>{interrupted.abort();child?.kill("SIGTERM");};process.once("SIGINT",interrupt);process.once("SIGTERM",interrupt);child.__retentionInterrupt=interrupt;let output="",ready=false,failed=false;const capture=chunk=>{output=(output+chunk.toString()).slice(-32768);if(output.includes("127.0.0.1:"+port))ready=true;};child.stdout.on("data",capture);child.stderr.on("data",capture);child.once("error",()=>{failed=true;});child.once("exit",()=>{failed=true;});
