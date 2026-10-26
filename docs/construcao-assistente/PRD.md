@@ -10,6 +10,8 @@ O marco entregue é um produto integrado pronto para observação em sombra. Dec
 
 Cada issue concluída recebe release minor, conforme pedido atual, com evidência de teste e revisão. Issues só fecham após entrega comprovada. Sem copiar dados, configuração ou código do Elo. Sem instalar o harness; adotar seu padrão de issues, planejamento, revisão e evidência.
 
+Atualização de produto em 26/10: MCP e assistente também devem iniciar conversas com destinatários sem histórico, inclusive números novos, e permitir envios para vários destinatários. Jornadas, lacunas e critérios em [envio proativo](ENVIO-PROATIVO.md). Desenvolver essa capacidade não altera por si só o isolamento deste marco sombra; a ativação de envios reais permanece pendente de definição do dono.
+
 ## Arquitetura proposta pela engenharia
 
 - Worker da assistente separado do MCP atual: sem credenciais Z-API e sem capacidade de escrita de agenda. O arquivo/manual atual continua operando. Controle de sombra não depende somente de prompt ou feature flag.

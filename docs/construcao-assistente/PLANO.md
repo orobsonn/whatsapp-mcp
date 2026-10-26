@@ -3,6 +3,8 @@
 > Execução autorizada pelo dono até piloto sombra. Procedimento do claude-harness consultado e aplicado sem instalação. Engenharia pode ajustar mecanismos preservando critérios e registrar a razão.
 
 **Goal:** entregar instalação integrada e verificável pronta para observação em sombra.
+
+Pedido adicional de 26/10: iniciar conversas sem histórico e disparos pelo MCP e pela assistente. Contrato e revisão em [envio proativo](ENVIO-PROATIVO.md); novas issues [#126](https://github.com/orobsonn/whatsapp-mcp/issues/126), [#127](https://github.com/orobsonn/whatsapp-mcp/issues/127) e [#128](https://github.com/orobsonn/whatsapp-mcp/issues/128). Essas entregas ampliam o produto; ativar envios reais continua separado do isolamento e aceite do piloto sombra.
 **Architecture:** Worker isolado, D1/R2 canônicos, projeção Cognee recuperável, Flue por episódio, controle autenticado e filas persistentes.
 **Tech Stack:** TypeScript, Workers, D1, R2, Durable Objects, Flue, Cognee/Python Container.
 **Spec:** [PRD](PRD.md), [revisão adversarial](REVISAO-PLANO.md).
