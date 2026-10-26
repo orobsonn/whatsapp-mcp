@@ -9,6 +9,7 @@ export interface AssistantEnv {
   INSTALLATION_ID?: string;
   OPERATIONAL_GENERATION?: string;
   OPENAI_API_KEY?: string;
+  FLUE_EPISODES_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   CAPTURE_READER?: SnapshotReader;
 }
