@@ -1,6 +1,44 @@
 // Shared local diagnostics only. No Cloudflare URLs, credentials or commands.
 import {open,lstat,realpath} from "node:fs/promises";
 import {dirname,resolve} from "node:path";
+import {request as httpRequest} from "node:http";
+/** Node fetch adds Sec-Fetch-Mode:cors, which the operator correctly denies.
+ * This fixed loopback transport sends neither browser headers nor arbitrary URLs.
+ * A timeout after dispatch stays uncertain: one request, never an automatic retry. */
+export async function postOperatorCommand(port,token,command,{signal,timeoutMs=40000,maxResponseBytes=2097152}={}){
+ if(!Number.isSafeInteger(port)||port<1024||port>65535||typeof token!=="string"||!/^[a-f0-9]{64}$/.test(token)||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>40000||!Number.isSafeInteger(maxResponseBytes)||maxResponseBytes<1||maxResponseBytes>2097152)throw Error("operator_transport_parameters");
+ if(signal?.aborted)throw Error("operator_aborted");
+ const encoded=JSON.stringify(command);if(typeof encoded!=="string")throw Error("operator_command_json");
+ const body=Buffer.from(encoded);if(!body.length||body.length>16777216)throw Error("operator_command_limit");
+ const deadline=Date.now()+timeoutMs;
+ return new Promise((resolve,reject)=>{
+  let request,response,timer,settled=false;
+  const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener("abort",aborted);if(error){response?.destroy();request?.destroy();reject(Error(error));}else resolve(result);};
+  const aborted=()=>finish("operator_aborted_uncertain");
+  signal?.addEventListener("abort",aborted,{once:true});
+  if(signal?.aborted){finish("operator_aborted");return;}
+  timer=setTimeout(()=>finish("operator_timeout_uncertain"),timeoutMs);
+  try{
+   request=httpRequest({hostname:"127.0.0.1",family:4,port,path:"/command",method:"POST",agent:false,headers:{Authorization:"Bearer "+token,"Content-Type":"application/json","Content-Length":body.length}},incoming=>{
+    response=incoming;if(settled){response.destroy();return;}
+    if(Date.now()>=deadline){finish("operator_timeout_uncertain");return;}
+    if(!Number.isInteger(response.statusCode)||response.statusCode<200||response.statusCode>=600){finish("operator_response_status");return;}
+    if(response.statusCode>=300&&response.statusCode<400){finish("operator_redirect_denied_uncertain");return;}
+    if(Number(response.headers["content-length"]??0)>maxResponseBytes){finish("operator_response_limit_uncertain");return;}
+    const parts=[];let bytes=0;
+    response.on("data",part=>{if(settled)return;bytes+=part.length;if(bytes>maxResponseBytes){finish("operator_response_limit_uncertain");return;}parts.push(part);});
+    response.once("aborted",()=>finish("operator_response_aborted_uncertain"));response.once("error",()=>finish("operator_response_unknown"));
+    response.once("end",()=>{
+     if(settled)return;if(signal?.aborted||Date.now()>=deadline){finish("operator_timeout_uncertain");return;}
+     try{const result=JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(Buffer.concat(parts)));finish(null,{status:response.statusCode,ok:response.statusCode>=200&&response.statusCode<300,result});}catch{finish("operator_response_invalid_uncertain");}
+    });
+   });
+   request.once("error",()=>finish("operator_request_unknown"));
+   if(signal?.aborted||Date.now()>=deadline){finish("operator_aborted_uncertain");return;}
+   request.end(body);
+  }catch{finish("operator_request_unknown");}
+ });
+}
 export async function createOperatorLog(path){
  const parent=dirname(resolve(path)),info=await lstat(parent);
  if(!info.isDirectory()||info.isSymbolicLink()||info.mode&0o077||await realpath(parent)!==parent)throw Error("private_operator_log_directory");
