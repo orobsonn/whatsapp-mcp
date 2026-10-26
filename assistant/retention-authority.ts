@@ -3,6 +3,9 @@ import { z } from "zod";
 import { bridgeHash } from "./ingress";
 import type { AssistantEnv } from "./env";
 import type { SourceScope } from "./sources";
+import { SnapshotAuthorityCore, restoreReservation } from "./retention-snapshot-authority";
+import { verifyManifest } from "./retention-snapshot-contract";
+import { namespaceOccupied } from "./retention-namespace";
 const digest = z.string().regex(/^[a-f0-9]{64}$/), label = z.string().min(1).max(256);
 const hashes = z.array(digest).min(1).max(128);
 const manifestSchema = z.object({ installationId: label, generation: label, sourceCount: z.number().int().min(0).max(10000), sourceInventoryHash: digest,
@@ -36,6 +39,9 @@ export class RetentionAuthorityCore {
     const value=await store.get<unknown>("retired:"+key);
     if(value!==undefined&&value!==true)throw new Error("retention_authority_corrupt");
     return value===true;
+  }
+  async status(store: Pick<RetirementStore, "get"> = this.store) {
+    const state = await this.read(store); return state?.phase === "sealed" ? { state: "sealed" as const, revision: state.revision } : { state: "unavailable" as const };
   }
   async begin(raw: unknown) {
     const manifest = manifestSchema.parse(raw); this.expected(manifest.installationId);
@@ -88,16 +94,38 @@ export class RetentionAuthorityCore {
 export function retentionAuthorityName(installationId: string) { return JSON.stringify(["assistant-retention-authority-v1", label.parse(installationId)]); }
 /** Private named binding only; a second arbitrary DO cannot own independent tombstones. */
 export class RetentionAuthority extends DurableObject<AssistantEnv> {
+  private storage(): RetirementStore { return { get: key => this.ctx.storage.get(key), transaction: action => this.ctx.storage.transaction(store => action({ get: key => store.get(key), put: (key, value) => store.put(key, value) })) }; }
   private core() {
     const installationId = label.parse(this.env.INSTALLATION_ID);
     if (!this.env.RETENTION_AUTHORITY || this.ctx.id.toString() !== this.env.RETENTION_AUTHORITY.idFromName(retentionAuthorityName(installationId)).toString()) throw new Error("retention_authority_instance");
-    return new RetentionAuthorityCore({ get: key => this.ctx.storage.get(key), transaction: action => this.ctx.storage.transaction(store => action({ get: key => store.get(key), put: (key, value) => store.put(key, value) })) }, installationId, this.env.RETENTION_BOOTSTRAP_SEAL);
+    return new RetentionAuthorityCore(this.storage(), installationId, this.env.RETENTION_BOOTSTRAP_SEAL);
   }
+  private snapshots() { const core = this.core(); return new SnapshotAuthorityCore(this.storage(), label.parse(this.env.INSTALLATION_ID), store => core.status(store)); }
   begin(manifest: RetirementManifest) { return this.core().begin(manifest); }
   append(seal: string, page: number, keys: string[]) { return this.core().append(seal, page, keys); }
   seal(seal: string) { return this.core().seal(seal); }
   lookup(installationId: string, keys: string[]) { return this.core().lookup(installationId, keys); }
   record(installationId: string, keys: string[]) { return this.core().record(installationId, keys); }
+  snapshotObserve() { return this.snapshots().observe(); }
+  snapshotReceipt(operationId: string) { return this.snapshots().snapshotReceipt(operationId); }
+  async recordSnapshot(raw: unknown) {
+    const snapshots = this.snapshots(), manifest = await verifyManifest(raw), prior = await snapshots.snapshotReceipt(manifest.operationId);
+    if (prior) { if (prior.seal !== manifest.seal) throw new Error("snapshot_authority_conflict"); return prior; }
+    if (!this.env.DB || manifest.namespace.generation !== this.env.OPERATIONAL_GENERATION) throw new Error("snapshot_authority_affinity");
+    const local = await this.env.DB.prepare(`SELECT s.seal FROM assistant_retention_snapshot_sessions s JOIN assistant_retention_installation_gate g ON g.installation_id=s.installation_id AND g.token=s.token
+      WHERE s.installation_id=? AND s.generation=? AND s.operation_id=? AND s.state IN ('sealing','sealed') AND s.seal=? AND g.state='quiescing' AND g.target_generation IS NULL AND g.mutation_revision=s.mutation_revision AND g.financial_revision=s.financial_revision
+      AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=s.installation_id AND application_state<>'applied' AND operation IN ('withdraw','access'))`).bind(manifest.namespace.installationId, manifest.namespace.generation, manifest.operationId, manifest.seal).first();
+    if (!local) throw new Error("snapshot_quiescence_proof_required"); return snapshots.recordSnapshot(manifest);
+  }
+  restoreTicket(operationId: string) { return this.snapshots().restoreTicket(operationId); }
+  async reserveRestore(raw: unknown) {
+    const input = restoreReservation.parse(raw), snapshots = this.snapshots(), prior = await snapshots.restoreTicket(input.operationId);
+    if (prior) return snapshots.reserveRestore(input);
+    if (!this.env.DB || input.currentGeneration !== this.env.OPERATIONAL_GENERATION || input.targetGeneration !== this.env.RETENTION_RESTORE_GENERATION) throw new Error("restore_external_generation_configuration");
+    const gate = await this.env.DB.prepare("SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='quiescing' AND token=? AND target_generation=?").bind(this.env.INSTALLATION_ID!, input.quiescenceToken, input.targetGeneration).first();
+    const occupied = await namespaceOccupied(this.env.DB, { installationId: this.env.INSTALLATION_ID!, generation: input.targetGeneration });
+    if (!gate || occupied) throw new Error("restore_new_external_generation_required"); return snapshots.reserveRestore(input);
+  }
   fetch() { return Promise.resolve(new Response("forbidden", { status: 403 })); }
 }
 export function sourceRetirementGuard(installationId: string, authority: RetirementAuthorityPort): SourceRetirementGuard {

@@ -2,12 +2,13 @@ import { z } from "zod";
 import { bridgeHash } from "./ingress";
 import type { TrustedActor } from "./access";
 import type { SourceScope } from "./sources";
+import { canonicalSnapshotTables, financialTables } from "./retention-snapshot-contract";
 
 const chunkBytes = 24576;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const stateSchema = z.object({ version: z.literal(2), scope: digest, schema: digest, table: z.number().int().nonnegative().safe(),
   row: z.number().int().safe().nullable(), offset: z.number().int().nonnegative().safe(), hash: digest.nullable() }).strict();
-const installationWide = new Set(["assistant_budget_accounts", "assistant_budget_reservations", "assistant_retention_barriers"]);
+const installationWide = new Set(["assistant_budget_accounts", "assistant_budget_reservations", "assistant_retention_barriers", "assistant_retention_installation_gate", "assistant_retention_runtime_hold", "assistant_retention_active_generation"]);
 type CursorState = z.infer<typeof stateSchema>;
 const encode = (bytes: Uint8Array) => {
   let binary = "";
@@ -22,7 +23,7 @@ const cursor = (value: CursorState) => encode(new TextEncoder().encode(JSON.stri
 export class AssistantExport {
   private readonly scope: Readonly<SourceScope>;
   private catalogCache?: { tables: string[]; hash: string };
-  constructor(private readonly db: D1Database, scope: SourceScope, private readonly actor: TrustedActor) {
+  constructor(private readonly db: D1Database, scope: SourceScope, private readonly actor: TrustedActor, private readonly purpose: "all" | "canonical_snapshot_candidate" = "all") {
     this.scope = Object.freeze({ ...scope });
     this.actor = Object.freeze({ ...actor });
     if (![scope.installationId, scope.generation].every(value => typeof value === "string" && value.length > 0 && value.length <= 256 && value.trim() === value && !/[\x00-\x1f\x7f]/.test(value))) throw new Error("export_namespace");
@@ -31,9 +32,11 @@ export class AssistantExport {
   private async catalog() {
     // The archive Worker has two transport tables using this prefix. They belong
     // to its source namespace, never to the assistant's restorable DB catalog.
-    const rows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors') ORDER BY name LIMIT 129")
+    const catalogRows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors') ORDER BY name LIMIT 129")
       .all<{ name: string; sql: string }>()).results;
-    if (rows.length > 128 || rows.some(row => !/^assistant_[a-z0-9_]+$/.test(row.name) || /WITHOUT\s+ROWID/i.test(row.sql))) throw new Error("export_schema_unsupported");
+    if (catalogRows.length > 128 || catalogRows.some(row => !/^assistant_[a-z0-9_]+$/.test(row.name) || /WITHOUT\s+ROWID/i.test(row.sql))) throw new Error("export_schema_unsupported");
+    const rows = this.purpose === "all" ? catalogRows : catalogRows.filter(row => canonicalSnapshotTables.has(row.name) || financialTables.has(row.name));
+    if (this.purpose !== "all" && [...canonicalSnapshotTables, ...financialTables].some(name => !rows.some(row => row.name === name))) throw new Error("snapshot_schema_incomplete");
     const hash = await bridgeHash(rows);
     if (this.catalogCache?.hash === hash) return this.catalogCache;
     const metadata = rows.length ? await this.db.batch(rows.map(row => this.db.prepare(`PRAGMA table_info("${row.name}")`))) : [];
@@ -43,6 +46,13 @@ export class AssistantExport {
     });
     if (unsupported.length) throw new Error("export_schema_unsupported:" + unsupported.join(","));
     return this.catalogCache = { tables: rows.map(row => row.name), hash };
+  }
+  async snapshotMetadata() {
+    this.owner(); if (this.purpose !== "canonical_snapshot_candidate") throw new Error("snapshot_export_purpose");
+    const catalog = await this.catalog(), results = await this.db.batch(catalog.tables.map(table => this.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE installation_id=? ${installationWide.has(table) ? "" : "AND generation=?"}`).bind(this.scope.installationId, ...(installationWide.has(table) ? [] : [this.scope.generation]))));
+    const counts = Object.fromEntries(results.map((result, index) => [catalog.tables[index], z.object({ n: z.number().int().nonnegative().safe() }).parse(result.results[0]).n]));
+    if (Object.values(counts).reduce((sum, count) => sum + count, 0) > 100000) throw new Error("snapshot_capacity");
+    return { tables: catalog.tables, schemaHash: catalog.hash, counts };
   }
   async page(raw: unknown = {}) {
     this.owner();
@@ -87,7 +97,7 @@ export class AssistantExport {
       state = { ...state, row, offset: end === bytes.length ? 0 : end, hash: end === bytes.length ? null : hash };
     }
     const complete = state.table === catalog.tables.length;
-    return { schema: 2, namespace: this.scope, financialScope: "installation_all_generations_all_periods", schemaHash: catalog.hash, parts, coverage: complete ? "end_of_listing" : "page",
+    return { schema: 2, ...(this.purpose === "all" ? {} : { purpose: this.purpose }), namespace: this.scope, financialScope: "installation_all_generations_all_periods", schemaHash: catalog.hash, parts, coverage: complete ? "end_of_listing" : "page",
       consistency: "live_paginated_not_snapshot", ...(complete ? {} : { nextCursor: cursor(state) }) };
   }
 }

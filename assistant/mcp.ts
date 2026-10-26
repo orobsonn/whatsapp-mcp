@@ -20,6 +20,9 @@ import { configuredRetirementGuard } from "./retention-authority";
 import { AssistantExport } from "./retention";
 import { RetentionPurge, purgeCommand } from "./retention-purge";
 import { RetentionObjects, objectCommand } from "./retention-objects";
+import { retentionServices, assertRestoredGeneration } from "./retention-runtime";
+import { snapshotCommand } from "./retention-snapshot";
+import { restoreCommand } from "./retention-restore-contract";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -128,9 +131,11 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     return new SourceController(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).execute(input);
   }
   async retention(expected: OwnerAffinity, raw: unknown) {
-    const scope = this.#affinity(expected), input = z.union([purgeCommand, objectCommand]).parse(raw);
+    const scope = this.#affinity(expected), input = z.union([purgeCommand, objectCommand, snapshotCommand, restoreCommand]).parse(raw);
     if (input.kind === "source.purge") return new RetentionPurge(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).advance(input);
-    return new RetentionObjects(this.env, scope, { kind: "owner" }).collect(input);
+    if (input.kind === "object.collect") return new RetentionObjects(this.env, scope, { kind: "owner" }).collect(input);
+    const services = retentionServices(this.env, scope);
+    return input.kind.startsWith("snapshot.") ? services.snapshot.execute(input) : services.restore().execute(input);
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
@@ -142,6 +147,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
+    await assertRestoredGeneration(this.env, false);
     const query = ownerQuerySchema.parse(input);
     if (query.kind === "assistant.health") return assistantHealth(this.env, { kind: "owner" });
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure") {

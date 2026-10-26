@@ -12,6 +12,7 @@ import build from "./cognee/build-fingerprint.json";
 import { RebuildController, validIndexProof, type RebuildState, type RebuildStore } from "./rebuild";
 import type { SourceStamp } from "./checkpoints";
 import { z } from "zod";
+import { assertRestoredGeneration } from "./retention-runtime";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -347,8 +348,8 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
     return this.engine;
   }
   fetch() { return Promise.resolve(deny()); }
-  ingest(input: EngineIngest) { return this.host().ingest(input); }
-  async ingestReceipt(input: EngineIngest, indexEpoch: string) { const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
+  async ingest(input: EngineIngest) { const host=this.host(); await assertRestoredGeneration(this.env); return host.ingest(input); }
+  async ingestReceipt(input: EngineIngest, indexEpoch: string) { await assertRestoredGeneration(this.env); const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
   /** Host-only metadata: no source bodies, broker tokens or snapshot handles. */
   async lifecycleState() {
     this.host(); const index = await this.ctx.storage.get<IndexMetadata>("index"), checkpoint = await this.checkpointStore().read();
@@ -357,28 +358,32 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
       maintenance:!!await this.ctx.storage.get<boolean>("maintenance"),quarantine:!!await this.ctx.storage.get<boolean>("quarantine"),
       checkpoint: record ? {id:record.id,epoch:record.manifest.indexEpoch,revision:record.manifest.indexRevision,phase:checkpoint!.phase} : null };
   }
-  search(input: EngineSearch) { return this.host().search(input); }
-  lookup(id: string) { return this.host().lookup(id); }
-  prepare(alias:string,input:EngineSearch) { return this.host().prepare(alias,input); }
-  submit(ticket:SearchTicket) { return this.host().submit(ticket); }
-  lookupTicket(ticket:SearchTicket) { return this.host().lookupTicket(ticket); }
-  authorize(epoch: string) { return epoch ? this.host().authorize(epoch) : Promise.resolve(null); }
-  rebuildBegin(expectedIndexEpoch: string, sources: SourceStamp[]) {
+  async search(input: EngineSearch) { const host=this.host(); await assertRestoredGeneration(this.env); return host.search(input); }
+  async lookup(id: string) { const host=this.host(); await assertRestoredGeneration(this.env); return host.lookup(id); }
+  async prepare(alias:string,input:EngineSearch) { const host=this.host(); await assertRestoredGeneration(this.env); return host.prepare(alias,input); }
+  async submit(ticket:SearchTicket) { const host=this.host(); await assertRestoredGeneration(this.env); return host.submit(ticket); }
+  async lookupTicket(ticket:SearchTicket) { const host=this.host(); await assertRestoredGeneration(this.env); return host.lookupTicket(ticket); }
+  async authorize(epoch: string) { if(!epoch)return null; const host=this.host(); await assertRestoredGeneration(this.env); return host.authorize(epoch); }
+  async rebuildBegin(expectedIndexEpoch: string, sources: SourceStamp[]) {
+    this.host(); await assertRestoredGeneration(this.env);
     try { sources = JSON.parse(JSON.stringify(sources)) as SourceStamp[]; }
     catch { return Promise.resolve({ state: "blocked" as const, reason: "rebuild_input" }); }
     return this.host().rebuildExclusive(async () => (await this.rebuilds()).begin(expectedIndexEpoch, sources));
   }
-  rebuildStep(indexEpoch: string, cursor: number) {
+  async rebuildStep(indexEpoch: string, cursor: number) {
+    this.host(); await assertRestoredGeneration(this.env);
     return this.host().rebuildExclusive(async () => (await this.rebuilds()).step(indexEpoch, cursor));
   }
-  rebuildRecover(indexEpoch: string) {
+  async rebuildRecover(indexEpoch: string) {
+    this.host(); await assertRestoredGeneration(this.env);
     return this.host().rebuildExclusive(async () => (await this.rebuilds()).recover(indexEpoch));
   }
   async rebuildStatus() {
     this.host(); const state = await this.ctx.storage.get<RebuildState>("rebuild");
     return state ? { state: state.phase, indexEpoch: state.indexEpoch, next: state.next, reason: state.reason ?? null } : { state: "missing" };
   }
-  checkpoint(expected?: {indexEpoch:string;indexRevision:string}) {
+  async checkpoint(expected?: {indexEpoch:string;indexRevision:string}) {
+    this.host(); await assertRestoredGeneration(this.env);
     return this.host().maintain<CheckpointResult>(async plan => {
       if(expected && (!plan || plan.indexEpoch!==expected.indexEpoch || plan.indexRevision!==expected.indexRevision))return {value:{state:"blocked",reason:"index_changed"}};
       if (!plan) return { value: { state: "rebuild_required", reason: "index_lost" } };
@@ -386,7 +391,8 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
       return { value: result, ...(result.state === "checkpoint_confirmed" ? { restored: state!.confirmed!.manifest } : {}) };
     });
   }
-  restoreCheckpoint(expected?: {checkpointId:string;indexEpoch:string;indexRevision:string}) {
+  async restoreCheckpoint(expected?: {checkpointId:string;indexEpoch:string;indexRevision:string}) {
+    this.host(); await assertRestoredGeneration(this.env);
     return this.host().maintain<CheckpointResult>(async () => {
       if(expected){
         const state=await this.checkpointStore().read(),record=state?.phase==="restoring"?state.candidate??state.confirmed:state?.confirmed,index=await this.ctx.storage.get<IndexMetadata>("index");
