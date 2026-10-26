@@ -1,4 +1,4 @@
-import { SourceAccess, type SourceFence, type TrustedActor } from "./access";
+import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
 export type JobKind = "extraction" | "reasoning" | "follow_up" | "review" | "maintenance";
@@ -12,8 +12,10 @@ export type Ledger = {
   request_hash: string; request_json: string; admitted_lease_generation: number | null; state: "prepared" | "attempting" | "uncertain" | "complete";
 };
 export type NewJob = {
-  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number;
+  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue";
 };
+export type RuntimeGuardPlan = { guard: AccessGuard; statements: D1PreparedStatement[] };
+export type RuntimeJobGuard = (lease: Readonly<JobLease>, now: number) => Promise<AccessGuard | RuntimeGuardPlan | null>;
 const liveLease = `state='processing' AND lease_generation=? AND lease_until>?`;
 async function digest(value: string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))))
@@ -29,7 +31,7 @@ export class JobQueue {
   private readonly scope: JobScope;
   private readonly actor: TrustedActor;
   private readonly access: SourceAccess;
-  constructor(private readonly db: D1Database, scope: JobScope, actor: TrustedActor = { kind: "owner" }) {
+  constructor(private readonly db: D1Database, scope: JobScope, actor: TrustedActor = { kind: "owner" }, private readonly runtimeGuard?: RuntimeJobGuard) {
     if (!scope.installationId || !scope.generation) throw new Error("unconfigured_job_scope");
     if ((scope.sourceEpoch !== undefined || scope.sourceGeneration !== undefined) &&
       [scope.sourceEpoch, scope.sourceGeneration].some(value => typeof value !== "string" || !value || value.length > 256)) throw new Error("unconfigured_job_origin");
@@ -49,7 +51,7 @@ export class JobQueue {
   async enqueue(input: NewJob, now: number): Promise<Job> {
     input = Object.freeze({ ...input });
     integer(now); integer(input.sourceRevision, 1); integer(input.maxAttempts ?? 3, 1);
-    if (!input.dedupeKey || input.dedupeKey.length > 256 || !input.sourceId || typeof input.request !== "string") {
+    if (!input.dedupeKey || input.dedupeKey.length > 256 || !input.sourceId || typeof input.request !== "string" || (input.runtime !== undefined && input.runtime !== "flue")) {
       throw new Error("invalid_job_request");
     }
     const source = await this.access.read(this.actor, input.sourceId, input.sourceRevision, now);
@@ -58,7 +60,7 @@ export class JobQueue {
     const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
     if (chatId && !conversation) throw new Error("conversation_not_ready");
     const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,
-      input: input.request, actor: this.actor, fence: source.fence, conversation });
+      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     await this.db.batch([
@@ -113,11 +115,20 @@ export class JobQueue {
     const ledger = await this.ledger(lease.id);
     if (!ledger || await digest(ledger.request_json) !== ledger.request_hash) return null;
     try {
-      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null };
+      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null; runtime?: string };
       if (request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision
         || request.fence.source.id !== lease.source_id || request.fence.source.revision !== lease.source_revision) return null;
       const chatId = request.actor.kind === "interlocutor" ? request.actor.conversationId : request.fence.source.conversationId;
       const guard = this.access.guard(request.actor, request.fence, now);
+      const statements: D1PreparedStatement[] = [];
+      if (request.runtime !== undefined) {
+        if (request.runtime !== "flue" || !this.runtimeGuard) return null;
+        const runtime = await this.runtimeGuard(lease, now);
+        if (!runtime) return null;
+        const current = "guard" in runtime ? runtime.guard : runtime;
+        if ("guard" in runtime) statements.push(...runtime.statements);
+        guard.sql = `(${guard.sql}) AND (${current.sql})`; guard.values.push(...current.values);
+      }
       if (chatId) {
         const conversation = request.conversation;
         if (!conversation || conversation.installationId !== this.scope.installationId || conversation.generation !== this.scope.generation || conversation.chatId !== chatId) return null;
@@ -129,21 +140,47 @@ export class JobQueue {
           guard.values.push(this.scope.installationId, this.scope.generation, request.sourceId, conversation.sourceEpoch, conversation.sourceGeneration);
         }
       }
-      return { ledger, guard };
+      return { ledger, guard, statements };
     } catch { return null; } // Legacy/malformed requests cannot acquire new authority.
   }
-  async admit(lease: JobLease, now: number) {
+  async admissionPlan(lease: JobLease, now: number) {
     lease = Object.freeze({ ...lease }); integer(now);
     const auth = await this.authorization(lease, now);
     if (!auth) return null;
-    return this.raw(`UPDATE assistant_job_ledger SET state='attempting',admitted_lease_generation=?
+    const statement = this.raw(`UPDATE assistant_job_ledger SET state='attempting',admitted_lease_generation=?
       WHERE installation_id=? AND generation=? AND job_id=? AND state='prepared' AND request_hash=? AND request_json=? AND EXISTS(
         SELECT 1 FROM assistant_jobs WHERE assistant_jobs.installation_id=assistant_job_ledger.installation_id
         AND assistant_jobs.generation=assistant_job_ledger.generation AND assistant_jobs.id=job_id
         AND source_id=? AND source_revision=? AND ${liveLease} AND ${auth.guard.sql})
       RETURNING request_hash,request_json,admitted_lease_generation,state`,
     lease.lease_generation, this.scope.installationId, this.scope.generation, lease.id, auth.ledger.request_hash, auth.ledger.request_json,
-    lease.source_id, lease.source_revision, lease.lease_generation, now, ...auth.guard.values).first<Ledger>();
+    lease.source_id, lease.source_revision, lease.lease_generation, now, ...auth.guard.values);
+    return { statements: auth.statements, statement, executionGuard: this.jobGuard(lease, auth, now, "attempting") };
+  }
+  async admissionStatement(lease: JobLease, now: number): Promise<D1PreparedStatement | null> {
+    const plan = await this.admissionPlan(lease, now);
+    // A caller must not accidentally omit a transactional authority prelude.
+    return plan && !plan.statements.length ? plan.statement : null;
+  }
+  async admit(lease: JobLease, now: number) {
+    const plan = await this.admissionPlan(lease, now); if (!plan) return null;
+    if (!plan.statements.length) return plan.statement.first<Ledger>();
+    return (await this.db.batch([...plan.statements, plan.statement])).at(-1)!.results[0] as Ledger | undefined ?? null;
+  }
+  private jobGuard(lease: JobLease, auth: { ledger: Ledger; guard: AccessGuard }, now: number, state: "attempting" | "complete" | null): AccessGuard {
+    return { sql: `EXISTS(SELECT 1 FROM assistant_jobs j JOIN assistant_job_ledger l
+      ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
+      JOIN (SELECT json(?) AS p) args WHERE j.installation_id=json_extract(p,'$.i') AND j.generation=json_extract(p,'$.g')
+      AND j.id=json_extract(p,'$.id') AND j.state='processing' AND j.lease_generation=json_extract(p,'$.lease')
+      AND j.lease_until>json_extract(p,'$.now') AND l.request_hash=json_extract(p,'$.hash')
+      ${state === "attempting" ? "AND l.state='attempting' AND l.admitted_lease_generation=j.lease_generation" : state === "complete" ? "AND l.state='complete'" : ""} AND (${auth.guard.sql}))`,
+      values: [JSON.stringify({ i: this.scope.installationId, g: this.scope.generation, id: lease.id,
+        lease: lease.lease_generation, now, hash: auth.ledger.request_hash }), ...auth.guard.values] };
+  }
+  async isAuthorized(lease: JobLease, now: number) {
+    const auth = await this.authorization(lease, now); if (!auth) return false;
+    const guard = this.jobGuard(lease, auth, now, null), statement = this.raw(`SELECT 1 WHERE ${guard.sql}`, ...guard.values);
+    return (await this.db.batch([...auth.statements, statement])).at(-1)!.results.length === 1;
   }
   async isCurrent(lease: JobLease, now: number) {
     return !!await this.statement(`SELECT id FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=? AND ${liveLease}`,
@@ -161,7 +198,7 @@ export class JobQueue {
     await this.statement(`UPDATE assistant_job_ledger SET state='uncertain' WHERE installation_id=? AND generation=?
       AND job_id=? AND state='attempting' AND admitted_lease_generation=?`, lease.id, lease.lease_generation).run();
   }
-  async complete(lease: JobLease, result: string, now: number) {
+  async recordResult(lease: JobLease, result: string, now: number) {
     integer(now);
     if (typeof result !== "string" || new TextEncoder().encode(result).length > 32768) throw new Error("invalid_job_result");
     // Receipts may arrive late. Only the job publication is conditional on current lease/source.
@@ -174,18 +211,30 @@ export class JobQueue {
         AND EXISTS(SELECT 1 FROM assistant_job_receipts r WHERE r.installation_id=assistant_job_ledger.installation_id
         AND r.generation=assistant_job_ledger.generation AND r.job_id=assistant_job_ledger.job_id)`, lease.id),
     ]);
+  }
+  async complete(lease: JobLease, result: string, now: number) {
+    await this.recordResult(lease, result, now);
     return this.publish(lease, now);
   }
-  async publish(lease: JobLease, now: number) {
+  async publicationPlan(lease: JobLease, now: number, additional?: AccessGuard) {
     lease = Object.freeze({ ...lease }); integer(now);
     const auth = await this.authorization(lease, now);
-    if (!auth) return false;
-    return !!await this.statement(`UPDATE assistant_jobs SET state='shadow_completed',lease_until=NULL,last_error=NULL
+    if (!auth) return null;
+    const statement = this.raw(`UPDATE assistant_jobs SET state='shadow_completed',lease_until=NULL,last_error=NULL
       WHERE installation_id=? AND generation=? AND id=? AND ${liveLease} AND source_id=? AND source_revision=?
-      AND ${auth.guard.sql} AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id
+      AND ${auth.guard.sql} ${additional ? `AND (${additional.sql})` : ""} AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id
       AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='complete'
       AND l.request_hash=? AND l.request_json=?) RETURNING id`,
-    lease.id, lease.lease_generation, now, lease.source_id, lease.source_revision, ...auth.guard.values,
-    auth.ledger.request_hash, auth.ledger.request_json).first();
+    this.scope.installationId, this.scope.generation, lease.id, lease.lease_generation, now, lease.source_id, lease.source_revision, ...auth.guard.values, ...(additional?.values ?? []),
+    auth.ledger.request_hash, auth.ledger.request_json);
+    return { statements: auth.statements, statement, guard: this.jobGuard(lease, auth, now, "complete") };
+  }
+  async publicationStatement(lease: JobLease, now: number): Promise<D1PreparedStatement | null> {
+    const plan = await this.publicationPlan(lease, now); return plan && !plan.statements.length ? plan.statement : null;
+  }
+  async publish(lease: JobLease, now: number) {
+    const plan = await this.publicationPlan(lease, now); if (!plan) return false;
+    if (!plan.statements.length) return !!await plan.statement.first();
+    return (await this.db.batch([...plan.statements, plan.statement])).at(-1)!.results.length === 1;
   }
 }

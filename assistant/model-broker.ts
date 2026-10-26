@@ -1,11 +1,17 @@
 import { z } from "zod";
 import { InferenceBudget, type BudgetScope } from "./budget";
-import { SourceAccess, type SourceFence } from "./access";
+import { SourceAccess, type AccessGuard, type SourceFence } from "./access";
 import { bridgeHash } from "./ingress";
 export type ModelPath = "/v1/chat/completions" | "/v1/embeddings";
 export type BrokerConfig = { extractionConfig: string; priceVersion: string; chatModel: string; embeddingModel: string;
   maxOutputTokens: number; chatCeiling: number; embeddingCeiling: number };
 export type ModelAdapter = (request: Readonly<{ path: ModelPath; body: string; signal: AbortSignal }>) => Promise<{ status: number; body: string; actualUnits: number }>;
+// Host-only admission. Statements and the model receipt share one transaction;
+// callers supply no SQL through messages, Flue metadata or model responses.
+export interface ModelAdmission {
+  prepare(request: Readonly<{ key: string; hash: string; recovered: boolean }>): Promise<{ guard: AccessGuard; statements: D1PreparedStatement[] } | null>;
+  uncertain(): Promise<void>;
+}
 type Result = { state: string; body?: unknown; operationKey?: string };
 type Receipt = { state: string; response_json: string | null; actual_units: number | null };
 const owner = { kind: "owner" } as const;
@@ -69,7 +75,7 @@ export class CogneeModelBroker {
   private readonly budget: InferenceBudget;
   private readonly access: SourceAccess;
   constructor(private readonly db: D1Database, scope: BudgetScope, config: BrokerConfig,
-    private readonly adapter: ModelAdapter, private readonly clock = Date.now) {
+    private readonly adapter: ModelAdapter, private readonly clock = Date.now, private readonly admission?: ModelAdmission) {
     this.scope = Object.freeze({ ...scope }); this.config = Object.freeze({ ...config });
     if (!Object.values(this.config).every(value => typeof value === "number" || (typeof value === "string" && value.length > 0 && value.length <= 256)) ||
       !safeInteger(config.maxOutputTokens, 1) || config.maxOutputTokens > 6000 || !safeInteger(config.chatCeiling, 1) || !safeInteger(config.embeddingCeiling, 1)) throw new Error("broker_invalid_configuration");
@@ -133,30 +139,57 @@ export class CogneeModelBroker {
     await this.permit(token);
     return { state: "complete", operationKey: key, body: JSON.parse(row.response_json!) };
   }
+  private async uncertainAdmission(key: string): Promise<Result> {
+    // A failed latch write still returns no body and performs no adapter call.
+    // The host's persistent exclusive call slot remains occupied for recovery.
+    await this.admission?.uncertain();
+    return { state: "uncertain", operationKey: key };
+  }
+  private async recoveredAdmission(key: string, hash: string, token: string, request: { path: ModelPath; body: string }): Promise<Result> {
+    try {
+      const row = await this.receipt(key);
+      if (!row || row.state !== "complete" || row.actual_units === null || row.response_json === null) return this.uncertainAdmission(key);
+      const settled = await this.db.prepare(`SELECT 1 FROM assistant_budget_reservations WHERE ${ns} AND operation_key=? AND request_hash=? AND state='settled' AND actual_units=?`)
+        .bind(...this.keys(), key, hash, row.actual_units).first();
+      if (!settled) return this.uncertainAdmission(key);
+      const host = await this.admission!.prepare({ key, hash, recovered: true });
+      if (!host) return this.uncertainAdmission(key);
+      const result = await this.db.batch([...host.statements, this.db.prepare(`SELECT 1 WHERE ${host.guard.sql}`).bind(...host.guard.values)]);
+      if (result.at(-1)!.results.length !== 1) return this.uncertainAdmission(key);
+      await this.permit(token);
+      return { state: "complete", operationKey: key, body: JSON.parse(response(request, row.response_json)) };
+    } catch { return this.uncertainAdmission(key); }
+  }
   async invoke(token: string, path: string, payload: unknown, jobAlias?: string): Promise<Result> {
     const request = Object.freeze(normalize(path, payload, this.config));
     if (jobAlias !== undefined && (typeof jobAlias !== "string" || jobAlias.length > 256)) throw new Error("broker_invalid_request");
     const permit = await this.permit(token), { key, requestHash, configHash } = await this.requestKey(permit.fence, request);
-    if (await this.receipt(key)) return this.recover(key, requestHash, token);
+    if (await this.receipt(key)) return this.admission ? this.recoveredAdmission(key, requestHash, token, request) : this.recover(key, requestHash, token);
     let reserved;
     try { reserved = await this.budget.reserve(key, requestHash, path === "/v1/embeddings" ? this.config.embeddingCeiling : this.config.chatCeiling); }
     catch (error) {
       if (error instanceof Error && ["budget_exhausted", "budget_blocked"].includes(error.message)) throw new Error("broker_budget_exhausted");
-      return { state: "uncertain", operationKey: key };
+      return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key };
     }
     // The reservation CAS owns the sole attempt. A prior reservation is never a retry permit.
-    if (!reserved.created) return this.recover(key, requestHash, token);
+    if (!reserved.created) return this.admission ? this.recoveredAdmission(key, requestHash, token, request) : this.recover(key, requestHash, token);
     const guard = this.access.guard(owner, permit.fence, this.clock());
     let admitted;
     try {
-      admitted = await this.db.prepare(`INSERT INTO assistant_model_receipts
+      const host = this.admission ? await this.admission.prepare({ key, hash: requestHash, recovered: false }) : null;
+      if (this.admission && !host) return this.uncertainAdmission(key);
+      const statement = this.db.prepare(`INSERT INTO assistant_model_receipts
         (installation_id,generation,operation_key,request_hash,source_id,source_revision,config_hash,state,created_at)
         SELECT ?,?,?,?,?,?,?,'attempting',? WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM assistant_model_permits
-          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ON CONFLICT DO NOTHING RETURNING operation_key`)
+          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`)
         .bind(...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
-          ...guard.values, ...this.keys(), permit.tokenHash, configHash, this.clock()).all();
-    } catch { return { state: "uncertain", operationKey: key }; }
-    if (admitted.results.length !== 1) throw new Error("broker_denied");
+          ...guard.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? []));
+      admitted = host ? (await this.db.batch([...host.statements, statement])).at(-1)! : await statement.all();
+    } catch { return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key }; }
+    if (admitted.results.length !== 1) {
+      if (this.admission) return this.uncertainAdmission(key);
+      throw new Error("broker_denied");
+    }
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, knownActual: number | undefined;
     try {
       const deadline = new Promise<never>((_resolve, reject) => {
@@ -173,8 +206,9 @@ export class CogneeModelBroker {
         this.db.prepare(`UPDATE assistant_model_receipts SET state='uncertain',actual_units=? WHERE ${ns} AND operation_key=? AND state='attempting'`).bind(knownActual ?? null, ...this.keys(), key).run(),
         knownActual === undefined ? this.budget.uncertain(key) : this.budget.settle(key, requestHash, knownActual),
       ]);
-      return { state: "uncertain", operationKey: key };
+      return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key };
     } finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
-    return this.recover(key, requestHash, token);
+    const recovered = await this.recover(key, requestHash, token);
+    return this.admission && recovered.state !== "complete" ? this.uncertainAdmission(key) : recovered;
   }
 }

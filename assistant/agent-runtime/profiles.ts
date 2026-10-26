@@ -2,10 +2,11 @@
 import { useInitialData, useModel } from "@flue/runtime";
 import * as v from "valibot";
 
-const seed = v.strictObject({ installationId: v.string(), generation: v.string(), jobId: v.string() });
+const seed = v.union([v.strictObject({ installationId: v.string(), generation: v.string(), jobId: v.string() }),
+  v.strictObject({ bindingId: v.pipe(v.string(), v.regex(/^[a-f0-9]{64}$/)) })]);
 function configure() {
   useInitialData<v.InferOutput<typeof seed>>();
-  // Deliberately unregistered in production until #44 supplies a fenced broker.
+  // Only a host binding can resolve this provider; initialData grants no power.
   useModel("assistant-host/shadow", { compaction: false });
 }
 export function OwnerRuntime() { configure(); return "Owner shadow runtime. No operational tools or delegation."; }

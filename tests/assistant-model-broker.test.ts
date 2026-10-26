@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
-import { CogneeModelBroker, type BrokerConfig, type ModelAdapter } from "../assistant/model-broker";
+import { CogneeModelBroker, type BrokerConfig, type ModelAdapter, type ModelAdmission } from "../assistant/model-broker";
 import { SourceController } from "../assistant/sources";
 import { InferenceBudget, type BudgetScope } from "../assistant/budget";
 // @ts-expect-error Vite raw SQL.
@@ -248,4 +248,61 @@ it("rechecks source withdrawal after reading the persistent replay response", as
     } });
   });
   await expect(broker.replay(token, path, payload())).rejects.toThrow("broker_denied"); expect(adapter).toHaveBeenCalledTimes(1);
+});
+it("reserves the exact request before atomically admitting the host slot and model receipt", async () => {
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS synthetic_admission(id TEXT PRIMARY KEY)").run();
+  const admission: ModelAdmission = { async prepare({ key }) {
+    expect((await budget.status()).committed).toBe(5);
+    return { statements: [env.DB.prepare("INSERT INTO synthetic_admission VALUES(?)").bind(key)],
+      guard: { sql: "EXISTS(SELECT 1 FROM synthetic_admission WHERE id=?)", values: [key] } };
+  }, async uncertain() { throw new Error("unexpected_uncertainty"); } };
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now, admission);
+  adapter.mockImplementation(async () => {
+    expect(await env.DB.prepare("SELECT id FROM synthetic_admission").first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT operation_key FROM assistant_model_receipts WHERE installation_id=? AND state='attempting'").bind(scope.installationId).first()).not.toBeNull();
+    return { status: 200, body: '{"choices":[{"message":{"content":"synthetic answer"}}]}', actualUnits: 3 };
+  });
+  expect((await broker.invoke(await permit(), path, payload())).state).toBe("complete");
+  expect(adapter).toHaveBeenCalledTimes(1);
+});
+it.each(["null", "throw", "false"])("host admission %s preserves the reservation, latches and calls no adapter", async mode => {
+  const latch = vi.fn(async () => {});
+  const admission: ModelAdmission = { async prepare() {
+    if (mode === "throw") throw new Error("synthetic_lost_ack");
+    return mode === "null" ? null : { statements: [], guard: { sql: "0=1", values: [] } };
+  }, uncertain: latch };
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now, admission);
+  expect((await broker.invoke(await permit(), path, payload())).state).toBe("uncertain");
+  expect(latch).toHaveBeenCalledTimes(1); expect(adapter).not.toHaveBeenCalled();
+  expect((await budget.status()).committed).toBe(5);
+});
+it("a recovered complete receipt still requires host admission without reserve/settle; replay never invokes host admission", async () => {
+  const token = await permit(); await broker.invoke(token, path, payload());
+  const latch = vi.fn(async () => {}), hook = vi.fn(async () => ({ statements: [], guard: { sql: "0=1", values: [] } }));
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now, { prepare: hook, uncertain: latch });
+  const reserve = vi.spyOn(InferenceBudget.prototype, "reserve"), settle = vi.spyOn(InferenceBudget.prototype, "settle");
+  expect(await broker.invoke(token, path, payload())).toMatchObject({ state: "uncertain" });
+  expect(hook).toHaveBeenCalledTimes(1); expect(latch).toHaveBeenCalledTimes(1);
+  expect(reserve).not.toHaveBeenCalled(); expect(settle).not.toHaveBeenCalled();
+  expect((await broker.replay(token, path, payload())).state).toBe("complete");
+  expect(hook).toHaveBeenCalledTimes(1); expect(adapter).toHaveBeenCalledTimes(1);
+});
+it("a lost atomic admission ACK preserves attempting truth, latches and performs zero adapter calls", async () => {
+  const latch = vi.fn(async () => {}), batch = env.DB.batch.bind(env.DB);
+  const token = await permit();
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now,
+    { async prepare() { return { statements: [], guard: { sql: "1=1", values: [] } }; }, uncertain: latch });
+  vi.spyOn(env.DB, "batch").mockImplementation(async statements => { await batch(statements); throw new Error("synthetic_ack_lost"); });
+  expect((await broker.invoke(token, path, payload())).state).toBe("uncertain");
+  expect(adapter).not.toHaveBeenCalled(); expect(latch).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare("SELECT state FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("state")).toBe("attempting");
+});
+it("a lost settlement ACK also latches the episode despite preserving the paid receipt", async () => {
+  const latch = vi.fn(async () => {}), settle = InferenceBudget.prototype.settle;
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now,
+    { async prepare() { return { statements: [], guard: { sql: "1=1", values: [] } }; }, uncertain: latch });
+  vi.spyOn(InferenceBudget.prototype, "settle").mockImplementation(async function(this: InferenceBudget, ...args) { await settle.apply(this, args); throw new Error("synthetic_settlement_ack"); });
+  expect((await broker.invoke(await permit(), path, payload())).state).toBe("uncertain");
+  expect(adapter).toHaveBeenCalledTimes(1); expect(latch).toHaveBeenCalledTimes(1);
+  expect((await budget.status()).committed).toBe(3);
 });
