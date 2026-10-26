@@ -79,3 +79,7 @@ Separação revisada adversarialmente: #79 controla subchamadas, #39 executa ima
 - [x] [96 · Fundação oficial Flue e persistência real](https://github.com/orobsonn/whatsapp-mcp/issues/96) — depende de #28/#39; antecede #44.
 
 A busca #41 limita cada operação a um lote autorizado. A continuação por inventário maior foi registrada na [issue #100](https://github.com/orobsonn/whatsapp-mcp/issues/100) como entrega própria, obrigatória antes do piloto; não há promessa de cobertura completa a partir de um único lote.
+
+- [ ] [112 · Busca semântica persistente no contexto final](https://github.com/orobsonn/whatsapp-mcp/issues/112) — depende de #44/#100/#39; obrigatória antes de #57. Reutiliza o motor e o broker, com identidade de operação conhecida antes do RPC e prova do inventário autorizado.
+
+- [ ] [114 · Leitura nominal de mídia capturada](https://github.com/orobsonn/whatsapp-mcp/issues/114) — depende de #69/#33; antecede #52. Capacidade somente de leitura, limitada a imagem/PDF de 2 MiB, sem acesso genérico ao R2.
