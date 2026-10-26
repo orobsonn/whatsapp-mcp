@@ -17,6 +17,10 @@ export interface AssistantEnv {
   OPERATIONAL_GENERATION?: string;
   OPENAI_API_KEY?: string;
   FLUE_EPISODES_ENABLED?: string;
+  ROUTINES_ENABLED?: string;
+  ROUTINES_PAUSED?: string;
+  TELEGRAM_SUMMARIES_ENABLED?: string;
+  MEDIA_CONTEXT_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   SEMANTIC_SEARCH_MODE?: string;
   CAPTURE_READER?: SnapshotReader;

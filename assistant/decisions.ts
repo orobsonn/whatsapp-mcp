@@ -119,6 +119,13 @@ export class DecisionJournal {
       LEFT JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id WHERE d.installation_id=? AND d.generation=?`;
   }
   private viewKeys() { return [...keys(this.scope), ...keys(this.scope), ...keys(this.scope)]; }
+  /** Metadata only, all phases, no paginated prefix or remote-content claim. */
+  async metadataCounts(): Promise<Record<string, number>> {
+    this.owner(); const counts: Record<string, number> = Object.fromEntries(journalPhase.options.map(phase => [phase, 0]));
+    const rows = await this.sql(`WITH items AS(${this.view()}) SELECT phase,COUNT(*) n FROM items GROUP BY phase`, ...this.viewKeys()).all<{ phase: string; n: number }>();
+    for (const row of rows.results) counts[journalPhase.safeParse(row.phase).success ? row.phase : "failed"] += row.n;
+    return counts;
+  }
   async list(input: { cursor?: string; limit?: number; conversationId?: string; state?: JournalPhase } = {}) {
     this.owner();
     const owned = z.object({ cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(50).default(20), conversationId: z.string().min(1).max(256).optional(), state: journalPhase.optional() }).strict().parse(input);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dailySummarySchema } from "./routines";
 import type { AccessGuard } from "./access";
 import { DecisionJournal } from "./decisions";
 import type { AssistantEnv } from "./env";
@@ -37,7 +38,7 @@ export class TelegramBotApi implements TelegramApi {
  }
  async inspect(){const me=await this.call("getMe",{}) as {is_bot?:boolean;username?:string;has_topics_enabled?:boolean};return me.is_bot===true&&me.username?.toLowerCase()===this.bot.toLowerCase()&&me.has_topics_enabled===true;}
  async createTopic(chat:string,name:string){const result=await this.call("createForumTopic",{chat_id:chat,name}) as {message_thread_id?:number;name?:string};if(result.name!==name)throw new Error("telegram_topic_mismatch");return positive.parse(result.message_thread_id);}
- async send(chat:string,thread:number,text:string,buttons:Buttons){const result=await this.call("sendMessage",{chat_id:chat,message_thread_id:thread,text,protect_content:true,reply_markup:{inline_keyboard:buttons}}) as {message_id?:number;message_thread_id?:number;chat?:{id?:number;type?:string}};
+ async send(chat:string,thread:number,text:string,buttons:Buttons){const result=await this.call("sendMessage",{chat_id:chat,message_thread_id:thread,text,protect_content:true,...(buttons.length?{reply_markup:{inline_keyboard:buttons}}:{})}) as {message_id?:number;message_thread_id?:number;chat?:{id?:number;type?:string}};
   if(String(result.chat?.id)!==chat||result.chat?.type!=="private"||result.message_thread_id!==thread)throw new Error("telegram_message_mismatch");return positive.parse(result.message_id);}
  async answer(id:string){if(await this.call("answerCallbackQuery",{callback_query_id:id,text:"Revisão registrada em modo sombra."})!==true)throw new Error("telegram_answer_unavailable");}
 }
@@ -48,7 +49,7 @@ const ns="installation_id=? AND generation=? AND bot_instance=?";
 /** Host capability only: authenticated named binding, scheduler, secret webhook.
  * No text is interpreted as control, and no callback authorizes an external act. */
 export class TelegramReview {
- constructor(private db:D1Database,private scope:OwnerAffinity,private bot:string,private secret:string,private api:TelegramApi,private journal:ReviewJournal,private clock=Date.now){
+ constructor(private db:D1Database,private scope:OwnerAffinity,private bot:string,private secret:string,private api:TelegramApi,private journal:ReviewJournal,private clock=Date.now,private hostEffectGuard?:()=>AccessGuard){
   this.scope=Object.freeze({...scope});if(!/^[A-Za-z][A-Za-z0-9_]{4,63}$/.test(bot)||!/^[A-Za-z0-9_-]{32,256}$/.test(secret))throw new Error("telegram_unconfigured");
  }
  private keys(){return [this.scope.installationId,this.scope.generation,this.bot];}
@@ -110,12 +111,32 @@ export class TelegramReview {
   const buttons:Buttons=[[{text:"Registrar revisão",callback_data:await this.capability(notice,"reviewed")},{text:"Aprovar simulação",callback_data:await this.capability(notice,"simulated")}]];
   if(await bridgeHash(buttons[0][0].callback_data)!==notice.review_hash||await bridgeHash(buttons[0][1].callback_data)!==notice.simulate_hash){await this.sql(`UPDATE assistant_telegram_notifications SET state='cancelled' WHERE ${ns} AND id=? AND state='prepared'`,...this.keys(),id).run();return {id,state:"cancelled"};}
   const token=crypto.randomUUID();
-  const admitted=await this.journal.admitReview(notice.decision_id,notice.proposal_hash,guard=>[this.sql(`UPDATE assistant_telegram_notifications SET state='attempting',attempt_token=? WHERE ${ns} AND id=? AND state='prepared' AND proposal_hash=? AND expires_at>? AND ${guard.sql} AND ${link.sql} AND ${topic.sql} RETURNING id`,token,...this.keys(),id,notice.proposal_hash,this.clock(),...guard.values,...link.values,...topic.values)]);
+  const admitted=await this.journal.admitReview(notice.decision_id,notice.proposal_hash,guard=>{const effect=this.hostEffectGuard?.()??{sql:"1",values:[]};return [this.sql(`UPDATE assistant_telegram_notifications SET state='attempting',attempt_token=? WHERE ${ns} AND id=? AND state='prepared' AND proposal_hash=? AND expires_at>? AND ${guard.sql} AND ${link.sql} AND ${topic.sql} AND ${effect.sql} RETURNING id`,token,...this.keys(),id,notice.proposal_hash,this.clock(),...guard.values,...link.values,...topic.values,...effect.values)];});
   if(!admitted?.[0].results.length){await this.failPreflight(id);return {id,state:"blocked"};}
   // No asynchronous preparation after the final Journal+Link admission.
   try{const message=positive.parse(await this.api.send(fence.chatId,notice.thread_id,body,buttons));await this.sql(`UPDATE assistant_telegram_notifications SET state='sent',message_id=? WHERE ${ns} AND id=? AND state='attempting' AND attempt_token=?`,message,...this.keys(),id,token).run();}
   catch{await this.sql(`UPDATE assistant_telegram_notifications SET state='uncertain' WHERE ${ns} AND id=? AND state='attempting' AND attempt_token=?`,...this.keys(),id,token).run();}
   return {id,state:(await this.notice(id))!.state};
+ }
+ /** Typed host summary: no fabricated owner note/proposal or arbitrary text. */
+ async publishDailySummary(reviewId:string):Promise<{state:string}>{
+  const today=new Date(this.clock()).toISOString().slice(0,10),fence=await this.fence(),link=this.gate(fence),keys=this.keys();
+  const row=await this.sql(`SELECT payload_json,payload_hash,period FROM assistant_routine_reviews WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND id=?`,this.scope.installationId,this.scope.generation,this.scope.sourceEpoch,this.scope.sourceGeneration,reviewId).first<{payload_json:string;payload_hash:string;period:string}>();
+  if(!row||row.period!==today)return {state:"stale"};const summary=dailySummarySchema.parse(JSON.parse(row.payload_json));if(await bridgeHash(summary)!==row.payload_hash)return {state:"blocked"};
+  const topic=await this.sql(`SELECT thread_id FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='summaries' AND fence_json=? AND state='ready'`,...keys,fence.linkRevision,JSON.stringify(fence)).first<{thread_id:number}>();if(!topic)return {state:"topic_unavailable"};
+  await this.sql(`UPDATE assistant_telegram_summaries SET state='cancelled' WHERE ${ns} AND period<>? AND state='prepared'`,...keys,today).run();
+  await this.sql(`INSERT INTO assistant_telegram_summaries(installation_id,generation,bot_instance,review_id,period,payload_hash,fence_json,thread_id,state) SELECT ?,?,?,?,?,?,?,?,'prepared' WHERE ${link.sql} ON CONFLICT DO NOTHING`,...keys,reviewId,today,row.payload_hash,JSON.stringify(fence),topic.thread_id,...link.values).run();
+  const prior=await this.sql(`SELECT state,fence_json FROM assistant_telegram_summaries WHERE ${ns} AND review_id=?`,...keys,reviewId).first<{state:string;fence_json:string}>();if(!prior)return {state:"blocked"};if(prior.state!=="prepared")return {state:prior.state};if(prior.fence_json!==JSON.stringify(fence))return {state:"link_changed"};
+  const prepared=await this.sql(`UPDATE assistant_telegram_summaries SET preflights=preflights+1 WHERE ${ns} AND review_id=? AND state='prepared' AND preflights<3 AND ${link.sql} RETURNING review_id`,...keys,reviewId,...link.values).all();if(!prepared.results.length)return {state:"blocked"};
+  try{if(!await this.api.inspect())throw 0;}catch{await this.sql(`UPDATE assistant_telegram_summaries SET state=CASE WHEN preflights=3 THEN 'failed' ELSE state END WHERE ${ns} AND review_id=? AND state='prepared'`,...keys,reviewId).run();return {state:"blocked"};}
+  const body=`[Sombra · Relatório acumulado]\nSnapshot: ${new Date(summary.snapshotAt).toISOString()}; contagens cumulativas desta geração, não apenas do dia.\nPausa no snapshot: ${summary.paused?"ativa":"inativa"}; conversas pausadas: ${summary.pausedConversations}.\nSilêncios registrados: ${summary.journal.silence??0}; não avaliados: ${summary.journal.not_evaluated??0}; pendentes: ${summary.journal.pending??0}; incertos: ${summary.journal.uncertain??0}.\nLacunas: ${summary.gaps}; retornos bloqueados/pausados: ${summary.blockedFollowUps}.\nOrçamento: ${{available:"disponível",blocked:"bloqueado",exhausted:"esgotado",unconfigured:"não configurado"}[summary.budget.state]}; comprometido nesta geração US$${(summary.budget.committedMicroUsd/1e6).toFixed(6)}, incluindo US$${(summary.budget.uncertainMicroUsd/1e6).toFixed(6)} incertos.\nContagens do diário até o snapshot; vigência do conteúdo não revalidada. Relações canônicas ainda incompletas.`;
+  const effect=this.hostEffectGuard?.()??{sql:"1",values:[]},token=crypto.randomUUID(),admitted=await this.sql(`UPDATE assistant_telegram_summaries SET state='attempting',attempt_token=? WHERE ${ns} AND review_id=? AND state='prepared' AND fence_json=? AND payload_hash=? AND period=? AND ${link.sql}
+   AND EXISTS(SELECT 1 FROM assistant_routine_reviews WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND id=? AND payload_hash=? AND period=?)
+   AND EXISTS(SELECT 1 FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='summaries' AND thread_id=? AND state='ready' AND fence_json=?) AND ${effect.sql} RETURNING review_id`,token,...keys,reviewId,JSON.stringify(fence),row.payload_hash,today,...link.values,this.scope.installationId,this.scope.generation,this.scope.sourceEpoch,this.scope.sourceGeneration,reviewId,row.payload_hash,today,...keys,fence.linkRevision,topic.thread_id,JSON.stringify(fence),...effect.values).all();
+  if(!admitted.results.length)return {state:"blocked"};
+  try{const message=positive.parse(await this.api.send(fence.chatId,topic.thread_id,body,[]));await this.sql(`UPDATE assistant_telegram_summaries SET state='sent',message_id=? WHERE ${ns} AND review_id=? AND state='attempting' AND attempt_token=?`,message,...keys,reviewId,token).run();}
+  catch{await this.sql(`UPDATE assistant_telegram_summaries SET state='uncertain' WHERE ${ns} AND review_id=? AND state='attempting' AND attempt_token=?`,...keys,reviewId,token).run();}
+  return {state:(await this.sql(`SELECT state FROM assistant_telegram_summaries WHERE ${ns} AND review_id=?`,...keys,reviewId).first<string>("state"))!};
  }
  async receiveCallback(input:unknown):Promise<string>{
   const update=parseCallback(input);if(!update)return "unsupported";
@@ -146,11 +167,11 @@ function parseCallback(input:unknown){
 }
 
 /** Product wiring only. Neither raw tokens nor this capability enter tools. */
-export async function createTelegramReview(env:AssistantEnv,scope:OwnerAffinity){
+export async function createTelegramReview(env:AssistantEnv,scope:OwnerAffinity,hostEffectGuard?:()=>AccessGuard){
  if(!env.DB||!env.TELEGRAM_WEBHOOK_SECRET||!env.TELEGRAM_BOT_INSTANCE)throw new Error("telegram_unconfigured");
  const {origin,semantic}=hostConfiguredSearch(env,"owner_read");
  const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic});
  // Rotating either credential invalidates old buttons/prepared notifications.
  const key=await bridgeHash(["telegram-review-credentials-v1",env.TELEGRAM_WEBHOOK_SECRET,env.TELEGRAM_BOT_TOKEN??"unconfigured"]);
- return new TelegramReview(env.DB,scope,env.TELEGRAM_BOT_INSTANCE,key,new TelegramBotApi(env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_BOT_INSTANCE),journal);
+ return new TelegramReview(env.DB,scope,env.TELEGRAM_BOT_INSTANCE,key,new TelegramBotApi(env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_BOT_INSTANCE),journal,Date.now,hostEffectGuard);
 }
