@@ -287,7 +287,9 @@ export class RetrievalRuns {
         safe=result;
       }else if(state==="blocked" || state==="uncertain") safe={state,reason:state==="blocked"?"semantic_blocked":"semantic_uncertain"};
     }catch{/* Rejected data stays outside the persistent ranking and episode. */}
-    await this.statement(`UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE ${ns} AND run_id=? AND (outcome_json IS NULL OR (json_extract(outcome_json,'$.state')='uncertain' AND ?='complete')) AND ${gate.sql}`,JSON.stringify(safe),...this.keys(),run.id,(safe as {state:string}).state,...gate.values).run();
+    // A concurrent refusal cannot hide the exact validated receipt forever.
+    // This only reconciles completed work; it never reopens or resubmits a ticket.
+    await this.statement(`UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE ${ns} AND run_id=? AND ticket_json IS ? AND (outcome_json IS NULL OR ((json_extract(outcome_json,'$.state')='uncertain' OR outcome_json=?) AND ?='complete')) AND ${gate.sql}`,JSON.stringify(safe),...this.keys(),run.id,row?.ticket_json ?? null,JSON.stringify({state:"blocked",reason:"semantic_blocked"}),(safe as {state:string}).state,...gate.values).run();
   }
   private async semanticOutcome(actor:TrustedActor,run:Run):Promise<{engine:string;gaps:string[];candidates:string[];binding:unknown;pending:boolean}> {
     const fallback=this.options.semantic!.mode==="lexical_fallback";

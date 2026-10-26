@@ -343,3 +343,37 @@ it.each(["attempting","wrong_operation","generic_blocked"])("does not reopen a b
   const submit=vi.spyOn(engine,"submit");await search.advanceSemantic(owner,id);
   expect(submit).not.toHaveBeenCalled();expect(searchCalls).toBe(0);expect((await search.result(owner,id)).state).not.toBe("ready");
 });
+
+it("reconciles the exact complete receipt after a concurrent busy refusal without repeating submit",async()=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
+  let enter!:()=>void,release!:()=>void;const entered=new Promise<void>(resolve=>{enter=resolve;}),hold=new Promise<void>(resolve=>{release=resolve;});
+  mutate=async()=>{enter();await hold;};
+  const submit=vi.spyOn(engine,"submit"),first=search.advanceSemantic(owner,id);await entered;
+  await search.advanceSemantic(owner,id);
+  expect(await env.DB.prepare("SELECT outcome_json FROM assistant_retrieval_semantic WHERE installation_id=? AND generation=? AND run_id=?").bind(...keys(),id).first("outcome_json")).toBe(JSON.stringify({state:"blocked",reason:"semantic_blocked"}));
+  release();await first;
+  expect((await search.result(owner,id)).state).toBe("ready");
+  await search.advanceSemantic(owner,id);expect((await search.result(owner,id)).state).toBe("ready");
+  expect(searchCalls).toBe(1);expect(submit).toHaveBeenCalledTimes(2);
+});
+
+it("reconciles a persisted busy refusal from the exact existing receipt without calling submit again",async()=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
+  const ticket=JSON.parse((await env.DB.prepare("SELECT ticket_json FROM assistant_retrieval_semantic WHERE installation_id=? AND generation=? AND run_id=?").bind(...keys(),id).first<string>("ticket_json"))!);
+  expect(await engine.submit(ticket)).toMatchObject({state:"complete"});
+  await env.DB.prepare("UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE installation_id=? AND generation=? AND run_id=?").bind(JSON.stringify({state:"blocked",reason:"semantic_blocked"}),...keys(),id).run();
+  const submit=vi.spyOn(engine,"submit");
+  search=new RetrievalRuns(env.DB,scope,{clock,semantic:{mode:"required",engine}});
+  expect((await search.result(owner,id)).state).toBe("ready");await search.advanceSemantic(owner,id);
+  expect(submit).not.toHaveBeenCalled();expect(searchCalls).toBe(1);
+});
+it.each(["operation","revision"])("refuses a completed receipt with wrong %s after a busy refusal",async kind=>{
+  selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
+  const ticket=JSON.parse((await env.DB.prepare("SELECT ticket_json FROM assistant_retrieval_semantic WHERE installation_id=? AND generation=? AND run_id=?").bind(...keys(),id).first<string>("ticket_json"))!);
+  const source=(await new SourceAccess(env.DB,scope,clock).read(owner,selected))!;
+  await env.DB.prepare("UPDATE assistant_retrieval_semantic SET outcome_json=? WHERE installation_id=? AND generation=? AND run_id=?").bind(JSON.stringify({state:"blocked",reason:"semantic_blocked"}),...keys(),id).run();
+  vi.spyOn(engine,"lookupTicket").mockResolvedValue({state:"complete",operationId:kind==="operation"?"0".repeat(64):ticket.operationId,indexRevision:kind==="revision"?"b".repeat(64):ticket.indexRevision,indexState:"needs_checkpoint",result:{candidates:[{id:selected,version:source.fence.source.version,hash:source.fence.source.hash,via:["chunks"],relationCount:0}],missing:[]}});
+  const submit=vi.spyOn(engine,"submit");await search.advanceSemantic(owner,id);
+  expect((await search.result(owner,id)).state).not.toBe("ready");expect(submit).not.toHaveBeenCalled();expect(searchCalls).toBe(0);
+  expect(await env.DB.prepare("SELECT outcome_json FROM assistant_retrieval_semantic WHERE installation_id=? AND generation=? AND run_id=?").bind(...keys(),id).first("outcome_json")).toBe(JSON.stringify({state:"blocked",reason:"semantic_blocked"}));
+});

@@ -17,3 +17,11 @@ GREEN: 71/71 casos dirigidos Engine + RetrievalRuns semânticos, 56,19s, incluin
 Direção revisada adversarialmente pelo coordenador antes da implementação: preservar alias/hash/prova, recuperar ACK pelo mesmo ticket, impedir interleaving de lifecycle, checar gates ao último ponto antes da CAS e reter exclusão após timeout físico. O código continua sujeito à revisão final e integração com #121, cuja manutenção/checkpoint usa a implementação mais recente da main.
 
 Nenhuma chamada paga, novo recurso cloud, deploy, envio WhatsApp, escrita Calendar ou alteração no Elo. Custo incremental de inferência desta correção: US$0; não altera o histórico financeiro existente. #112 permanece aberta até qualidade e recuperação cloud integradas, CI e release correspondentes.
+
+## Contraprova da revisão final: recusa concorrente e recibo completo
+
+O revisor independente `review_release` encontrou um bloqueio adicional: A já está `attempting`; B recebe `busy` e persiste `blocked/semantic_blocked`; A termina a busca, mas o WHERE antigo não permitia reconciliar esse estado com o recibo completo. RED reproduzido com o request de A retido por uma promise: uma busca concluída, resultado ainda `pending` (1 falha, 33 casos omitidos, 7,10s).
+
+A correção permite somente `blocked/semantic_blocked` → `complete` já validado, com operationId e indexRevision do ticket, `ticket_json` exato na atualização e `proofGuard` SQL vigente. Não altera estado do ticket nem executa novo submit. Recusa tardia não pode rebaixar recibo já completo. Casos dirigidos incluem concorrência real, reconciliação após restart usando recibo já existente e rejeição de recibos com operationId/revisão errados.
+
+GREEN adicional: 4/4 dirigidos (13,12s), TypeScript aprovado. Revisão independente do patch aprovada por `review_release`; integração e CI permanecem responsabilidade do coordenador. Custo incremental de inferência continua US$0.
