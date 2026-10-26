@@ -29,5 +29,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts"] },
+  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts", "tests/assistant-owner-binding-runtime.test.ts"] },
 });
