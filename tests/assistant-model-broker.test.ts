@@ -146,13 +146,14 @@ it("keeps a lost reservation acknowledgement uncertain without submitting", asyn
 });
 it("preserves a response whose persistence acknowledgement was lost", async () => {
   const token = await permit(), prepare = env.DB.prepare.bind(env.DB);
+  let injected = false;
   const fault = vi.spyOn(env.DB, "prepare").mockImplementation(sql => {
     const statement = prepare(sql); if (!sql.startsWith("UPDATE assistant_model_receipts SET state='response_ready'")) return statement;
     return new Proxy(statement, { get(target, property) {
       if (property === "bind") return (...values: unknown[]) => {
         const bound = target.bind(...values);
         return new Proxy(bound, { get(value, key) {
-          if (key === "run") return async () => { await value.run(); throw new Error("synthetic response acknowledgement lost"); };
+          if (key === "all") return async () => { await value.all(); injected = true; throw new Error("synthetic response acknowledgement lost"); };
           const method = Reflect.get(value, key); return typeof method === "function" ? method.bind(value) : method;
         } });
       };
@@ -160,6 +161,8 @@ it("preserves a response whose persistence acknowledgement was lost", async () =
     } });
   });
   expect((await broker.invoke(token, path, payload())).state).toBe("uncertain"); fault.mockRestore();
+  expect(injected).toBe(true);
+  expect(await env.DB.prepare("SELECT state,response_json,actual_units FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first()).toEqual({ state: "response_ready", response_json: '{"choices":[{"message":{"content":"synthetic answer"}}]}', actual_units: 3 });
   expect((await broker.invoke(token, path, payload())).state).toBe("complete");
   expect(adapter).toHaveBeenCalledTimes(1); expect((await budget.status()).committed).toBe(3);
 });

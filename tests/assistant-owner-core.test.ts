@@ -51,11 +51,13 @@ it("persists original source receipts through edits, withdrawal, restart and a s
     await write({ kind: "source.withdraw", operationId: "withdraw", id: created.id, expectedRevision: 2 });
     owner = new SourceController(env.DB, scope, { kind: "owner" }, () => 9999);
     expect(await write(source())).toEqual(created);
-    expect(await write(source("after-withdraw"))).toMatchObject({ id: created.id, revision: 1, version: 1 });
+    await expect(write(source("after-withdraw"))).rejects.toThrow("source_retired");
+    expect(await sql("SELECT operation_id FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id='after-withdraw'").first()).toBeNull();
+    expect(await write(source("second-alias"))).toMatchObject({ id: created.id, revision: 1, version: 1 });
     expect(await new SourceAccess(env.DB, scope).read({ kind: "owner" }, created.id)).toBeNull();
     expect((await sql("SELECT kind FROM assistant_source_changes WHERE installation_id=? AND generation=? ORDER BY revision").all()).results).toEqual([{ kind: "created" }, { kind: "corrected" }, { kind: "withdrawn" }]);
 });
-it.each(["source.correct", "source.change_audience", "source.withdraw"])("recovers %s ACK loss without another mutation", async (kind) => {
+it.each(["source.correct", "source.change_audience"])("recovers %s ACK loss without another mutation", async (kind) => {
     const created = await write(source()), command = { kind, operationId: "change", id: created.id, expectedRevision: 1, ...(kind === "source.correct" ? { text: "Changed", occurredAt: 100 } : kind === "source.change_audience" ? { audience: "public" } : {}) };
     const batch = env.DB.batch.bind(env.DB), fault = vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => { await batch(statements); throw new Error("lost ACK"); });
     await expect(write(command)).rejects.toThrow();
@@ -64,6 +66,44 @@ it.each(["source.correct", "source.change_audience", "source.withdraw"])("recove
     expect(result.revision).toBe(2);
     expect(await write(command)).toEqual(result);
     expect(await sql("SELECT revision FROM assistant_sources WHERE installation_id=? AND generation=?").first("revision")).toBe(2);
+});
+it.each([1, 2])("recovers source.withdraw ACK loss after committed phase %s without another mutation", async phase => {
+    const created = await write(source()), command = { kind: "source.withdraw", operationId: "withdraw", id: created.id, expectedRevision: 1 };
+    const batch = env.DB.batch.bind(env.DB); let calls = 0, injected = false;
+    const fault = vi.spyOn(env.DB, "batch").mockImplementation(async statements => {
+        const current = ++calls, result = await batch(statements);
+        if (current === phase) { injected = true; throw new Error("lost withdrawal ACK"); }
+        return result;
+    });
+    try {
+        // The first phase has its own exact barrier proof; the final receipt
+        // phase is recovered by the next command invocation after restart.
+        if (phase === 1) expect(await write(command)).toMatchObject({ revision: 2, version: 1 });
+        else await expect(write(command)).rejects.toThrow("lost withdrawal ACK");
+    } finally { fault.mockRestore(); }
+    expect(injected).toBe(true);
+    owner = new SourceController(env.DB, scope, { kind: "owner" }, () => 9999);
+    const receipt = await write(command);
+    expect(receipt).toEqual({ kind: "source.withdraw", operationId: "withdraw", id: created.id, revision: 2, version: 1, shadow: true });
+    expect(await write(command)).toEqual(receipt);
+    expect(await sql("SELECT revision,status FROM assistant_sources WHERE installation_id=? AND generation=?").first()).toEqual({ revision: 2, status: "withdrawn" });
+    expect((await sql("SELECT kind FROM assistant_source_changes WHERE installation_id=? AND generation=? ORDER BY revision").all()).results).toEqual([{ kind: "created" }, { kind: "withdrawn" }]);
+    expect(await sql("SELECT operation_id,base_revision,source_version,state FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=?", created.id).first()).toEqual({ operation_id: "withdraw", base_revision: 1, source_version: 1, state: "retired" });
+});
+it.each([1, 2])("rolls back source.withdraw phase %s and resumes the original barrier without another revision", async phase => {
+    const created = await write(source()), command = { kind: "source.withdraw", operationId: "withdraw", id: created.id, expectedRevision: 1 };
+    const batch = env.DB.batch.bind(env.DB); let calls = 0, injected = false;
+    const fault = vi.spyOn(env.DB, "batch").mockImplementation(statements => {
+        if (++calls === phase) { injected = true; return batch([...statements, env.DB.prepare("SELECT * FROM missing_withdrawal_phase")]); }
+        return batch(statements);
+    });
+    try { await expect(write(command)).rejects.toThrow(); } finally { fault.mockRestore(); }
+    expect(injected).toBe(true);
+    expect(await sql("SELECT operation_id FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id='withdraw'").first()).toBeNull();
+    expect(await sql("SELECT revision,status FROM assistant_sources WHERE installation_id=? AND generation=?").first()).toEqual(phase === 1 ? { revision: 1, status: "active" } : { revision: 2, status: "withdrawn" });
+    expect(await sql("SELECT state FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=?", created.id).first()).toEqual(phase === 1 ? null : { state: "pending_withdraw" });
+    expect(await write(command)).toMatchObject({ revision: 2, version: 1 });
+    expect(await sql("SELECT COUNT(*) n FROM assistant_source_changes WHERE installation_id=? AND generation=? AND kind='withdrawn'").first("n")).toBe(1);
 });
 it("deduplicates concurrent creates/aliases, rejects conflicting hashes and never executes source text", async () => {
     const results = await Promise.all([write(source()), write(source()), write(source("alias"))]);
@@ -249,7 +289,7 @@ it("recovers a create commit with a lost ACK and retains the original attributio
     expect(await sql("SELECT audience FROM assistant_sources WHERE installation_id=? AND generation=?").first("audience")).toBe("owner");
 });
 
-it.each(["source.correct", "source.change_audience", "source.withdraw"])("does not persist a stale version receipt when %s anticipates a concurrent revision", async kind => {
+it.each(["source.correct", "source.change_audience"])("does not persist a stale version receipt when %s anticipates a concurrent revision", async kind => {
     const created = await write(source());
     const request = { kind, operationId: "anticipated", id: created.id, expectedRevision: 2,
         ...(kind === "source.correct" ? { text: "Third version", occurredAt: 120 } : kind === "source.change_audience" ? { audience: "public" } : {}) };
@@ -265,6 +305,23 @@ it.each(["source.correct", "source.change_audience", "source.withdraw"])("does n
     const result = await write(request);
     expect(result).toMatchObject({ revision: 3, version: kind === "source.correct" ? 3 : 2 });
     expect(await write(request)).toEqual(result);
+});
+it("captures the exact version in the withdrawal CAS when the anticipated revision becomes current", async () => {
+    const created = await write(source()), request = { kind: "source.withdraw", operationId: "anticipated", id: created.id, expectedRevision: 2 };
+    const batch = env.DB.batch.bind(env.DB); let injected = false;
+    const fault = vi.spyOn(env.DB, "batch").mockImplementationOnce(async statements => {
+        fault.mockRestore();
+        await owner.correct(created.id, 1, { text: "Concurrent correction", occurredAt: 110 });
+        injected = true;
+        return batch(statements);
+    });
+    const receipt = await write(request);
+    expect(injected).toBe(true);
+    expect(receipt).toMatchObject({ revision: 3, version: 2 });
+    expect(await write(request)).toEqual(receipt);
+    expect(await sql("SELECT revision,current_version,status FROM assistant_sources WHERE installation_id=? AND generation=?").first()).toEqual({ revision: 3, current_version: 2, status: "withdrawn" });
+    expect(await sql("SELECT operation_id,base_revision,source_version FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=?", created.id).first()).toEqual({ operation_id: "anticipated", base_revision: 2, source_version: 2 });
+    expect((await sql("SELECT revision,version,kind FROM assistant_source_changes WHERE installation_id=? AND generation=? ORDER BY revision").all()).results).toEqual([{ revision: 1, version: 1, kind: "created" }, { revision: 2, version: 2, kind: "corrected" }, { revision: 3, version: 2, kind: "withdrawn" }]);
 });
 it("checks the observed conversation kind in the current origin namespace and repairs a mismatched legacy policy", async () => {
     await sql("INSERT INTO assistant_origin_conversations VALUES(?,?,?,'old','chat',10,'private','available')", scope.sourceEpoch).run();
