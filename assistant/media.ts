@@ -8,6 +8,7 @@ import type { CaptureMediaResult } from "../src/assistant-media-reader";
 import { admitMedia, type MediaAdmission, type PdfAdmissionReader } from "./media-admission";
 import { MEDIA_MODEL_CONFIG, mediaPayload, mediaOutput, mediaUsage, type MediaModelPort } from "./media-model";
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
+import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
 export interface MediaReader { readBoundedMedia(input: { secret: string; sourceEpoch: string; sourceGeneration: string; chatId: string; mediaId: string; expectedMessageVersion: number; expectedMediaVersion: number; expectedBlobHash: string }): Promise<CaptureMediaResult> }
 type Options = { origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; pdfParser?: PdfAdmissionReader; timeoutMs?: number };
 type Outcome = { state: "complete"; evidence: MediaEvidence; coverage: { complete: boolean; unreadablePages: number[] } } | { state: "pending"; reason: string; operationKey?: string } | { state: "existing_audio"; source: RetrievedSource };
@@ -98,16 +99,17 @@ export class MediaContext {
     if (!await this.fresh(actor, parent, origin)) return pending("media_origin_changed", key);
     try { const reserved = await this.budget.reserve(key, requestHash, MEDIA_MODEL_CONFIG.ceilingUnits); if (!reserved.created) return pending("media_reservation_uncertain", key); }
     catch { return pending("media_budget_unavailable", key); }
-    const guard = this.access.guard(actor, parent.fence, this.clock());
+    const guard = this.access.guard(actor, parent.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     try {
       if (!await this.fresh(actor, parent, origin)) { await this.budget.settle(key, requestHash, 0); return pending("media_origin_changed", key); }
-      const admitted = await this.sql(`UPDATE assistant_media_receipts SET state='attempting',request_hash=? WHERE ${ns} AND operation_key=? AND state='prepared' AND ${guard.sql} RETURNING operation_key`, requestHash, ...this.keys(), key, ...guard.values).all();
+      const admitted = await this.sql(`UPDATE assistant_media_receipts SET state='attempting',request_hash=? WHERE ${ns} AND operation_key=? AND state='prepared' AND ${guard.sql} AND ${execution.sql} RETURNING operation_key`, requestHash, ...this.keys(), key, ...guard.values, ...execution.values).all();
       if (admitted.results.length !== 1) return pending("media_admission_uncertain", key);
     } catch { return pending("media_admission_uncertain", key); }
     const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, knownActual: number | null = null;
     try {
       // A withdrawal after admission must still prevent sending its body.
       if (!await this.fresh(actor, parent, origin)) { await this.budget.settle(key, requestHash, 0); return pending("media_origin_changed", key); }
+      await assertRetentionExecution(this.db, this.scope);
       const result = await Promise.race([this.options.model({ body, signal: abort.signal }), new Promise<never>((_, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("media_timeout")); }, this.timeout); })]);
       if (typeof result.body !== "string" || new TextEncoder().encode(result.body).length > 262144 || result.status !== 200) throw 0;
       const parsed: unknown = JSON.parse(result.body); knownActual = mediaUsage(parsed);

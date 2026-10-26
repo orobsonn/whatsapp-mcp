@@ -1,7 +1,7 @@
 import { env, createExecutionContext } from "cloudflare:test";
 import { MediaPdfParser } from "../assistant/pdf-parser";
 const pdfParser = new MediaPdfParser(createExecutionContext(), {});
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import { admitMedia } from "../assistant/media-admission";
 const png = () => Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='), c => c.charCodeAt(0));
@@ -58,6 +58,34 @@ it('reserves before inference, persists receipt and reuses without inference whi
 it('budget0 calls no endpoint', async () => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(0);
   expect((await context.interpret(owner, sourceId)).state).toBe('pending'); expect(port).not.toHaveBeenCalled();
+});
+afterEach(() => vi.restoreAllMocks());
+it.each(['hold', 'generation'])('restore %s after OCR reservation prevents its adapter attempt and preserves commitment', async kind => {
+  const budget = new InferenceBudget(env.DB, scope); await budget.configure(600000);
+  const reserve = InferenceBudget.prototype.reserve;
+  vi.spyOn(InferenceBudget.prototype, 'reserve').mockImplementation(async function (this: InferenceBudget, ...args) {
+    const reserved = await reserve.apply(this, args);
+    if (kind === 'hold') await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,100)").bind(scope.installationId).run();
+    else await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,'next',?,?,'activate',1)").bind(scope.installationId, 'a'.repeat(64), 'b'.repeat(64)).run();
+    return reserved;
+  });
+  expect((await context.interpret(owner, sourceId)).state).toBe('pending'); expect(port).not.toHaveBeenCalled();
+  expect((await budget.status()).committed).toBe(530000);
+  expect(await env.DB.prepare("SELECT state FROM assistant_media_receipts WHERE installation_id=?").bind(scope.installationId).first('state')).toBe('prepared');
+});
+it('restore hold after OCR receipt admission prevents its adapter without resetting the reservation', async () => {
+  const budget = new InferenceBudget(env.DB, scope); await budget.configure(600000);
+  const prepare = env.DB.prepare.bind(env.DB); let injected = false;
+  const db = { prepare: (sql: string) => {
+    const statement = prepare(sql); if (!sql.includes("UPDATE assistant_media_receipts SET state='attempting'")) return statement;
+    const wrap = (current: D1PreparedStatement): D1PreparedStatement => new Proxy(current, { get(value, key) {
+      if (key === 'bind') return (...args: unknown[]) => wrap(value.bind(...args));
+      if (key === 'all') return async () => { const result = await value.all(); injected = true; await prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,100)").bind(scope.installationId).run(); return result; };
+      const item = Reflect.get(value, key, value); return typeof item === 'function' ? item.bind(value) : item;
+    } }); return wrap(statement);
+  }, batch: env.DB.batch.bind(env.DB) } as D1Database;
+  expect((await new MediaContext(db, scope, options).interpret(owner, sourceId)).state).toBe('pending');
+  expect(injected).toBe(true); expect(port).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(530000);
 });
 it('withdrawal during inference retains cost and releases no stale evidence', async () => {
   await new InferenceBudget(env.DB, scope).configure(600000);

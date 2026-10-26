@@ -2,6 +2,7 @@ import { z } from "zod";
 import { InferenceBudget, type BudgetScope } from "./budget";
 import { SourceAccess, type AccessGuard, type SourceFence } from "./access";
 import { bridgeHash } from "./ingress";
+import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
 export type ModelPath = "/v1/chat/completions" | "/v1/embeddings";
 export type BrokerConfig = { extractionConfig: string; priceVersion: string; chatModel: string; embeddingModel: string;
   maxOutputTokens: number; chatCeiling: number; embeddingCeiling: number };
@@ -88,10 +89,10 @@ export class CogneeModelBroker {
     const source = await this.access.read(owner, sourceId, revision); if (!source) throw new Error("broker_denied");
     const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), value => value.toString(16).padStart(2, "0")).join("");
     const tokenHash = await bridgeHash(token), configHash = await this.configHash;
-    const guard = this.access.guard(owner, source.fence, this.clock());
+    const guard = this.access.guard(owner, source.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     const inserted = await this.db.prepare(`INSERT INTO assistant_model_permits
-      SELECT ?,?,?,?,?,?,? WHERE ? > ? AND ${guard.sql} RETURNING token_hash`)
-      .bind(...this.keys(), tokenHash, sourceId, JSON.stringify(source.fence), configHash, expiresAt, expiresAt, this.clock(), ...guard.values).all();
+      SELECT ?,?,?,?,?,?,? WHERE ? > ? AND ${guard.sql} AND ${execution.sql} RETURNING token_hash`)
+      .bind(...this.keys(), tokenHash, sourceId, JSON.stringify(source.fence), configHash, expiresAt, expiresAt, this.clock(), ...guard.values, ...execution.values).all();
     if (inserted.results.length !== 1) throw new Error("broker_denied"); return token;
   }
   private async permit(token: string): Promise<{ tokenHash: string; fence: SourceFence }> {
@@ -109,12 +110,12 @@ export class CogneeModelBroker {
       .bind(...this.keys(), key).first<Receipt>();
   }
   private async currentReceipt(key: string, hash: string, token: string, expected: Receipt, additional?: AccessGuard) {
-    const permit = await this.permit(token), guard = this.access.guard(owner, permit.fence, this.clock());
+    const permit = await this.permit(token), guard = this.access.guard(owner, permit.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     // Last local snapshot: a purged body cannot escape from an earlier JS copy
     // while its unrelated anchor source/permit remains active.
     return this.db.prepare(`SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
-      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) ${additional ? `AND (${additional.sql})` : ""}`)
-      .bind(...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...(additional?.values ?? [])).first<{ response_json: string }>();
+      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) AND (${execution.sql}) ${additional ? `AND (${additional.sql})` : ""}`)
+      .bind(...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...execution.values, ...(additional?.values ?? [])).first<{ response_json: string }>();
   }
   private async requestKey(fence: SourceFence, request: { path: ModelPath; body: string }) {
     const configHash = await this.configHash, requestHash = await bridgeHash([configHash, request.path, request.body]);
@@ -182,17 +183,17 @@ export class CogneeModelBroker {
     }
     // The reservation CAS owns the sole attempt. A prior reservation is never a retry permit.
     if (!reserved.created) return this.admission ? this.recoveredAdmission(key, requestHash, token, request) : this.recover(key, requestHash, token);
-    const guard = this.access.guard(owner, permit.fence, this.clock());
+    const guard = this.access.guard(owner, permit.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     let admitted;
     try {
       const host = this.admission ? await this.admission.prepare({ key, hash: requestHash, recovered: false }) : null;
       if (this.admission && !host) return this.uncertainAdmission(key);
       const statement = this.db.prepare(`INSERT INTO assistant_model_receipts
         (installation_id,generation,operation_key,request_hash,source_id,source_revision,config_hash,state,created_at)
-        SELECT ?,?,?,?,?,?,?,'attempting',? WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM assistant_model_permits
+        SELECT ?,?,?,?,?,?,?,'attempting',? WHERE ${guard.sql} AND ${execution.sql} AND EXISTS(SELECT 1 FROM assistant_model_permits
           WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`)
         .bind(...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
-          ...guard.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? []));
+          ...guard.values, ...execution.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? []));
       admitted = host ? (await this.db.batch([...host.statements, statement])).at(-1)! : await statement.all();
     } catch { return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key }; }
     if (admitted.results.length !== 1) {
@@ -201,6 +202,7 @@ export class CogneeModelBroker {
     }
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, knownActual: number | undefined;
     try {
+      await assertRetentionExecution(this.db, this.scope);
       const deadline = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => { controller.abort(); reject(new Error("broker_timeout")); }, 45000);
       });

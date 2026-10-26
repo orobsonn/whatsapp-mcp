@@ -47,6 +47,17 @@ async function event(sequence=1,previousSequence=0,id="message",text="Synthetic 
  snapshots.set("message:"+id,{observation:"capture_snapshot",state:"available",sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:"message",sourceId:id,chatId:"chat",sourceVersion:1,watermark:sequence,conversationKind:kind,access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:"text",text,authorId:author,authorName:"Synthetic author",fromMe,occurredAt:now,messageId:id,messageVersion:1}});
  const response=await receiveCapture(new Request("https://synthetic.invalid/internal/capture",{method:"POST",headers:{Authorization:`Bearer ${secret}`},body:JSON.stringify({protocol:1,...scope,sequence,previousSequence,chatId:"chat",sourceId:id,sourceKind:"message",operation:"upsert",recordedAt:now})}),settings);expect(response.status).toBe(200);
 }
+it("restore hold stops the scheduler before capture processing, dispatch or inference while metadata ingress stays available",async()=>{
+ await query("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,?)",scope.installationId,now).run(); await event();
+ expect(await scheduler().tick()).toMatchObject({state:"blocked",gap:"restore_runtime_paused"}); expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ expect(await query("SELECT application_state FROM assistant_capture_inbox WHERE installation_id=? AND generation=?",...keys()).first("application_state")).toBe("pending");
+ expect(await query("SELECT COUNT(*) n FROM assistant_routine_cycles WHERE installation_id=? AND generation=?",...keys()).first("n")).toBe(0);
+});
+it("restore hold arriving after scheduler episode preparation prevents native dispatch through the shared runtime host",async()=>{
+ const prepare=EpisodeController.prototype.prepare;
+ const prepared=vi.spyOn(EpisodeController.prototype,"prepare").mockImplementation(async function(this:EpisodeController,...args){const episode=await prepare.apply(this,args);await query("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,?)",scope.installationId,now).run();return episode;});
+ await event();expect((await scheduler().tick()).state).toBe("uncertain");expect(prepared).toHaveBeenCalledTimes(1);expect(dispatches).toBe(0);expect(modelCalls).toBe(0);
+});
 it("runs the concrete capture-to-presearch-to-Flue-to-journal pipeline once for two cron calls",async()=>{
  await event();const results=await Promise.all([scheduler().tick(),scheduler().tick()]);
  expect(results.some(r=>r.state==="complete")).toBe(true);expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
@@ -178,6 +189,18 @@ it("keeps physical exclusion after the verification deadline until the real TCP 
  const pending=engine.indexPreflight(expected);await vi.waitFor(()=>expect(engine._port.verify).toHaveBeenCalledTimes(1),{timeout:5000});await vi.advanceTimersByTimeAsync(60001);
  expect(await pending).toMatchObject({state:"unavailable",reason:"index_verification_unavailable"});expect(await engine.indexPreflight(expected)).toMatchObject({state:"unavailable"});expect(engine._port.verify).toHaveBeenCalledTimes(1);expect(engine._noWrite).not.toHaveBeenCalled();
  engine._beforeVerify(async()=>{});release();await vi.waitFor(async()=>expect(await engine.indexPreflight(expected)).toMatchObject({state:"verified"}),{timeout:5000});expect(engine._state.checkpoint.phase).toBe("confirmed");
+});
+it("restore hold denies Core preflight without remote verification or changing lifecycle metadata",async()=>{
+ const engine=semanticEngine();await populatedPrivate(engine);const before=structuredClone(engine._state);
+ await query("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,?)",scope.installationId,now).run();
+ expect(await engine.indexPreflight({indexEpoch:before.index.epoch,indexRevision:before.index.revision})).toMatchObject({state:"unavailable",reason:"restore_execution_blocked"});
+ expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();expect(engine._state).toEqual(before);expect(modelCalls).toBe(0);
+});
+it("restore hold arriving during Core verification prevents publishing a ready preflight",async()=>{
+ const engine=semanticEngine();await populatedPrivate(engine);const before=structuredClone(engine._state);
+ engine._beforeVerify(async()=>{await query("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,?)",scope.installationId,now).run();});
+ expect(await engine.indexPreflight({indexEpoch:before.index.epoch,indexRevision:before.index.revision})).toMatchObject({state:"unavailable"});
+ expect(engine._port.verify).toHaveBeenCalledTimes(1);expect(engine._noWrite).not.toHaveBeenCalled();expect(engine._state).toEqual(before);expect(modelCalls).toBe(0);
 });
 it("bounds all global origin checks by one deadline and six in flight without queuing late work",async()=>{
  const engine=semanticEngine(),owner=new SourceController(env.DB,scope,{kind:"owner"},()=>now),access=new SourceAccess(env.DB,scope);

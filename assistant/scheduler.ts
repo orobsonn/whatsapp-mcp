@@ -12,7 +12,10 @@ import { episodeDriver } from "./agent-runtime/driver";
 import { jobRequest,type DecisionSubject } from "./agent/contracts";
 import { JobQueue } from "./queue";
 import { InferenceBudget } from "./budget";
-import { createOpenAIAdapter,DEFAULT_BROKER_CONFIG } from "./model-transport";
+import { DEFAULT_BROKER_CONFIG } from "./model-transport";
+import { runtimeHost } from "./agent-runtime/runtime";
+import { assertRestoredGeneration } from "./retention-runtime";
+import { retentionExecutionGuard } from "./retention-execution";
 import type { ModelAdapter } from "./model-broker";
 import { MediaContext } from "./media";
 import { createMediaModelPort } from "./media-model";
@@ -32,13 +35,14 @@ export class AssistantScheduler {
  }
  private sql(query:string,...values:(string|number|null)[]){return this.env.DB!.prepare(query).bind(...values);}
  private keys(){return scopeKeys(this.scope);}
- private owned(cycle:RoutineCycle){return {sql:`EXISTS(SELECT 1 FROM assistant_routine_state WHERE ${originScopeSql} AND owner_token=? AND state='running' AND lease_until>?)`,values:[...this.keys(),cycle.owner,this.clock()]};}
+ private owned(cycle:RoutineCycle){const execution=retentionExecutionGuard(this.scope);return {sql:`EXISTS(SELECT 1 FROM assistant_routine_state WHERE ${originScopeSql} AND owner_token=? AND state='running' AND lease_until>?) AND (${execution.sql})`,values:[...this.keys(),cycle.owner,this.clock(),...execution.values]};}
  private item(id:string){return this.sql(`SELECT * FROM assistant_routine_items WHERE ${originScopeSql} AND id=?`,...this.keys(),id).first<Item>();}
  private async update(cycle:RoutineCycle,id:string,sql:string,values:(string|number|null)[]=[]){const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_items SET ${sql},updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql}`,...values,this.clock(),...this.keys(),id,...owner.values).run();}
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
  private async configuration(){return bridgeHash(["routines-v1",this.scope,DEFAULT_BROKER_CONFIG,this.env.SEMANTIC_SEARCH_MODE??(this.env.COGNEE?"required":"lexical")]);}
  async tick(){
   if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";
+  try{await assertRestoredGeneration(this.env);}catch(error){const known=["restore_runtime_paused","restore_generation_inactive","restore_generation_seal_required","canonical_writers_quiesced"];return {state:"blocked",gap:error instanceof Error&&known.includes(error.message)?error.message:"restore_runtime_unavailable"};}
   let cycle=await this.routines.begin(paused),reconcileOnly=false;
   if(!cycle){cycle=await this.routines.reconcileBegin(paused);reconcileOnly=!!cycle;}
   if(!cycle){await this.routines.daily(paused);return {state:"busy_or_already_reviewed"};}
@@ -213,7 +217,7 @@ export class AssistantScheduler {
  private async process(cycle:RoutineCycle,item:Item,reconcileOnly:boolean):Promise<string>{
   const binding=JSON.parse(item.binding_json) as Binding;if(await bridgeHash(binding)!==item.binding_hash||binding.configuration!==await this.configuration()){await this.update(cycle,item.id,"state='blocked',last_gap='configuration_or_binding_changed'");return "blocked";}
   if(!this.env.OPENAI_API_KEY||this.env.FLUE_EPISODES_ENABLED!=="shadow")return this.gap(cycle,item.id,"episode_unconfigured");
-  const configured=hostConfiguredSearch(this.env,"automation",this.clock),host=new EpisodeController(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},configured.search,this.options.model??createOpenAIAdapter(this.env.OPENAI_API_KEY),DEFAULT_BROKER_CONFIG,{purpose:"automation",clock:this.clock});
+  const configured=hostConfiguredSearch(this.env,"automation",this.clock),host=runtimeHost(this.env,"automation",{clock:this.clock,model:this.options.model});
   // Lookup existing job/episode before considering a new source fence or lease.
   if(item.job_id){const existing=await this.existingEpisode(cycle,item,host,reconcileOnly);if(existing)return existing;}
   if(reconcileOnly&&item.run_id){
@@ -227,7 +231,7 @@ export class AssistantScheduler {
   if(!reconcileOnly)try{const budget=await new InferenceBudget(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)}).status();if(budget.blocked||budget.committed>=budget.cap)return this.gap(cycle,item.id,"budget_blocked");}catch{return this.gap(cycle,item.id,"budget_unconfigured");}
   if(configured.origin&&this.env.MEDIA_CONTEXT_ENABLED==="true"&&this.env.CAPTURE_MEDIA_READER){
    const origin=await configured.origin.fence(source.id);if(origin?.sourceKind==="media"){
-    await this.routines.phase(cycle,"media",item.id);const media=new MediaContext(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},{origin:configured.origin,reader:this.env.CAPTURE_MEDIA_READER,secret:this.env.BRIDGE_SECRET!,model:createMediaModelPort(this.env.OPENAI_API_KEY),pdfParser:this.env.MEDIA_PDF_PARSER},this.clock);
+    await this.routines.phase(cycle,"media",item.id);const model=createMediaModelPort(this.env.OPENAI_API_KEY),media=new MediaContext(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},{origin:configured.origin,reader:this.env.CAPTURE_MEDIA_READER,secret:this.env.BRIDGE_SECRET!,model:async request=>{await assertRestoredGeneration(this.env);return model(request);},pdfParser:this.env.MEDIA_PDF_PARSER},this.clock);
     if(reconcileOnly){if(!await media.read(binding.actor,{...source,origin}))return "uncertain";}
     else{const result=await media.interpret(binding.actor,source.id);if(result.state==="pending")return this.gap(cycle,item.id,result.reason,result.reason.includes("uncertain"));}
    }

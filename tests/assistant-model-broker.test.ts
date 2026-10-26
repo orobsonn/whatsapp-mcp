@@ -31,6 +31,40 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const permit = () => broker.issuePermit(sourceId, 1, 200);
+it.each(["hold", "generation"])("restore %s after reservation prevents a new broker adapter attempt without freeing its commitment", async kind => {
+  const token = await permit(), reserve = InferenceBudget.prototype.reserve;
+  vi.spyOn(InferenceBudget.prototype, "reserve").mockImplementation(async function (this: InferenceBudget, ...args) {
+    const reserved = await reserve.apply(this, args);
+    if (kind === "hold") await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','g2',1,100)").bind(scope.installationId).run();
+    else await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,'g2',?,?,'activate',1)").bind(scope.installationId, "a".repeat(64), "b".repeat(64)).run();
+    return reserved;
+  });
+  await expect(broker.invoke(token, path, payload())).rejects.toThrow("broker_denied");
+  expect(adapter).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(config.chatCeiling);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+});
+it("restore hold after broker receipt admission prevents the adapter and preserves uncertainty", async () => {
+  const token = await permit(), prepare = env.DB.prepare.bind(env.DB); let injected = false;
+  const db = { prepare: (sql: string) => {
+    const statement = prepare(sql); if (!sql.includes("INSERT INTO assistant_model_receipts")) return statement;
+    const wrap = (current: D1PreparedStatement): D1PreparedStatement => new Proxy(current, { get(value, key) {
+      if (key === "bind") return (...args: unknown[]) => wrap(value.bind(...args));
+      if (key === "all") return async () => { const result = await value.all(); injected = true; await prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','g2',1,100)").bind(scope.installationId).run(); return result; };
+      const item = Reflect.get(value, key, value); return typeof item === "function" ? item.bind(value) : item;
+    } }); return wrap(statement);
+  }, batch: env.DB.batch.bind(env.DB) } as D1Database;
+  expect(await new CogneeModelBroker(db, scope, config, adapter, () => now).invoke(token, path, payload())).toMatchObject({ state: "uncertain" });
+  expect(injected).toBe(true); expect(adapter).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(config.chatCeiling);
+});
+it("restore hold during an already admitted provider attempt preserves its late actual settlement and returns no body", async () => {
+  const token = await permit(); adapter.mockImplementation(async () => {
+    await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','g2',1,100)").bind(scope.installationId).run();
+    return { status: 200, body: '{"choices":[{"message":{"content":"synthetic late answer"}}]}', actualUnits: 3 };
+  });
+  expect(await broker.invoke(token, path, payload())).toMatchObject({ state: "uncertain" }); expect(adapter).toHaveBeenCalledTimes(1);
+  expect((await budget.status()).committed).toBe(3);
+  expect(await env.DB.prepare("SELECT state FROM assistant_budget_reservations WHERE installation_id=?").bind(scope.installationId).first("state")).toBe("settled");
+});
 it("deduplicates different job aliases and equivalent payload ordering with persistent receipts", async () => {
   const first = await broker.invoke(await permit(), path, payload(), "job-one");
   const restarted = new CogneeModelBroker(env.DB, scope, config, adapter, () => now);
