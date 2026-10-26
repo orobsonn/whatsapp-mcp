@@ -85,6 +85,22 @@ test("financial reservations include old generations and periods while unrelated
   expect(records.filter(row => row.table === "assistant_budget_reservations").map(row => row.record)).toEqual([expect.objectContaining({ generation: "old-financial", state: "uncertain", ceiling_units: 40 })]);
   expect(JSON.stringify(records)).not.toContain("other-money");
 });
+test("installation-wide restore diagnostics survive a generation change without exporting another installation", async () => {
+  for (const installation of [scope.installationId, "unrelated-private-installation"]) {
+    await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,?,?,1,?)").bind(installation, "restore-operation", "restored-generation", 1).run();
+    await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,?,?,?,?,1)").bind(installation, "restored-generation", "a".repeat(64), "b".repeat(64), "activation-command").run();
+  }
+  const records: { table: string; record: Record<string, unknown> }[] = []; let cursor: string | undefined;
+  do { const page = await archive.page({ cursor }); records.push(...page.parts.map(part => ({ table: part.table, record: JSON.parse(new TextDecoder().decode(bytes(part.data))) }))); cursor = page.nextCursor; } while (cursor);
+  expect(records.filter(row => row.table === "assistant_retention_runtime_hold").map(row => row.record)).toEqual([expect.objectContaining({ installation_id: scope.installationId, active: 1, target_generation: "restored-generation" })]);
+  expect(records.filter(row => row.table === "assistant_retention_active_generation").map(row => row.record)).toEqual([expect.objectContaining({ installation_id: scope.installationId, generation: "restored-generation" })]);
+  expect(JSON.stringify(records)).not.toContain("unrelated-private-installation");
+});
+test("an unknown installation-only table is still rejected instead of receiving implicit global scope", async () => {
+  await env.DB.prepare("CREATE TABLE assistant_export_unknown_installation_scope(installation_id TEXT,body TEXT)").run();
+  try { await expect(archive.page()).rejects.toThrow("export_schema_unsupported:assistant_export_unknown_installation_scope"); }
+  finally { await env.DB.prepare("DROP TABLE assistant_export_unknown_installation_scope").run(); }
+});
 test("schema columns cannot shadow the internal row cursor", async () => {
   await env.DB.prepare("CREATE TABLE assistant_export_shadow(installation_id TEXT,generation TEXT,rowid TEXT,body TEXT)").run();
   try { await expect(archive.page()).rejects.toThrow("export_schema_unsupported"); }

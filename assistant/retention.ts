@@ -42,7 +42,7 @@ export class AssistantExport {
     const metadata = rows.length ? await this.db.batch(rows.map(row => this.db.prepare(`PRAGMA table_info("${row.name}")`))) : [];
     const unsupported = metadata.flatMap((result, index) => {
       const names = new Set(result.results.map(row => z.object({ name: z.string() }).parse(row).name.toLowerCase()));
-      return !["installation_id", "generation"].every(name => names.has(name)) || ["rowid", "_rowid_", "oid", "__export_row"].some(name => names.has(name)) ? [rows[index].name] : [];
+      return !names.has("installation_id") || (!installationWide.has(rows[index].name) && !names.has("generation")) || ["rowid", "_rowid_", "oid", "__export_row"].some(name => names.has(name)) ? [rows[index].name] : [];
     });
     if (unsupported.length) throw new Error("export_schema_unsupported:" + unsupported.join(","));
     return this.catalogCache = { tables: rows.map(row => row.name), hash };
