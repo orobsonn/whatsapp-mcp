@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-25
+
+### Added
+- Episódios Flue isolados em sombra, com contexto autorizado, orçamento persistente, retomada e revalidação de saída (#44).
+
 ## [0.31.0] - 2026-10-25
 
 ### Added
