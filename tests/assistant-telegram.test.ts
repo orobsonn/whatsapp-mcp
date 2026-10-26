@@ -1,10 +1,11 @@
-import { env } from "cloudflare:test";
+import { env,createExecutionContext } from "cloudflare:test";
 import { beforeEach,afterEach,expect,it,vi } from "vitest";
 import { TelegramReview,TelegramBotApi,type TelegramApi } from "../assistant/telegram";
 import { receiveTelegram } from "../assistant/telegram-webhook";
 import { TelegramLink } from "../assistant/telegram-auth";
 import type { DecisionJournal } from "../assistant/decisions";
 import { bridgeHash } from "../assistant/ingress";
+import { OwnerAssistant } from "../assistant/mcp";
 // @ts-expect-error SQL.
 import linkSchema from "../assistant/migrations/0018_telegram_owner_link.sql?raw";
 // @ts-expect-error SQL.
@@ -41,9 +42,44 @@ async function notify(key="notice",topic="pending"){
  const result=await review.execute({kind:"notification.prepare",operationId:key,topic,decisionId:"decision-1",expiresAt:now+10000}) as {id:string};return result.id;
 }
 async function sent(){await setup();const id=await notify();expect(await review.execute({kind:"notification.dispatch",id})).toEqual({id,state:"sent"});return id;}
+async function hold(){await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,100) ON CONFLICT DO NOTHING").bind(scope.installationId).run();}
 function callback(action=0){const wire=vi.mocked(api.send).mock.calls[0];return {update_id:100,callback_query:{id:"query-100",from:{id:101,is_bot:false},chat_instance:"synthetic-private",data:wire[3][0][action].callback_data,message:{message_id:200,date:Math.floor(now/1000),message_thread_id:wire[1],chat:{id:101,type:"private"}}}};}
 it("requires completed linking rather than an observed ID",async()=>{
  await expect(review.execute({kind:"topics.ensure"})).rejects.toThrow("telegram_unlinked");expect(api.createTopic).not.toHaveBeenCalled();
+});
+it("restore hold during topic inspection prevents every new topic effect",async()=>{
+ await activate();vi.mocked(api.inspect).mockImplementation(async()=>{await hold();return true;});
+ await review.execute({kind:"topics.ensure"});expect(api.createTopic).not.toHaveBeenCalled();
+ expect(await query("SELECT COUNT(*) n FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND state='attempting'").first("n")).toBe(0);
+});
+it("owner RPC Telegram factory rechecks restore after provider inspection without creating a remote topic",async()=>{
+ await activate();const network=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{expect(String(url).endsWith("/getMe")).toBe(true);await hold();return Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}});});
+ const rpc=new OwnerAssistant(createExecutionContext(),{DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,TELEGRAM_BOT_INSTANCE:bot,TELEGRAM_WEBHOOK_SECRET:secret,TELEGRAM_BOT_TOKEN:"123456789:synthetic_token_12345678901234567890"});
+ expect(await rpc.telegramReview(scope,{kind:"topics.ensure"})).toMatchObject({mode:"shadow"});expect(network).toHaveBeenCalledTimes(1);
+ expect(await query("SELECT COUNT(*) n FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND state='ready'").first("n")).toBe(0);
+});
+it.each(["hold","generation"])("restore %s during notice admission prevents Telegram send",async kind=>{
+ await setup();const id=await notify();beforeAdmission=async()=>{if(kind==="hold")await hold();else await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,'next',?,?,'activate',1)").bind(scope.installationId,"a".repeat(64),"b".repeat(64)).run();};
+ expect(await review.execute({kind:"notification.dispatch",id})).toEqual({id,state:"blocked"});expect(api.send).not.toHaveBeenCalled();
+});
+it("restore hold after notice latch preserves uncertainty without calling or retrying the Telegram send",async()=>{
+ await setup();const id=await notify(),admit=vi.mocked(journal.admitReview).getMockImplementation()!;
+ vi.mocked(journal.admitReview).mockImplementation(async(...args)=>{const result=await admit(...args);await hold();return result;});
+ expect(await review.execute({kind:"notification.dispatch",id})).toEqual({id,state:"uncertain"});expect(api.send).not.toHaveBeenCalled();
+ await env.DB.prepare("DELETE FROM assistant_retention_runtime_hold WHERE installation_id=?").bind(scope.installationId).run();
+ expect(await review.execute({kind:"notification.dispatch",id})).toEqual({id,state:"uncertain"});expect(api.send).not.toHaveBeenCalled();
+});
+it("restore hold after topic latch preserves its uncertainty without creating a topic",async()=>{
+ await activate();const prepare=env.DB.prepare.bind(env.DB);let injected=false;
+ const db={prepare:(sql:string)=>{const statement=prepare(sql);if(!sql.includes("UPDATE assistant_telegram_topics SET state='attempting'"))return statement;
+  const wrap=(current:D1PreparedStatement):D1PreparedStatement=>new Proxy(current,{get(value,key){if(key==="bind")return(...args:unknown[])=>wrap(value.bind(...args));if(key==="all")return async()=>{const result=await value.all();if(result.results.length&&!injected){injected=true;await hold();}return result;};const item=Reflect.get(value,key,value);return typeof item==="function"?item.bind(value):item;}});return wrap(statement);},batch:env.DB.batch.bind(env.DB)} as D1Database;
+ review=new TelegramReview(db,scope,bot,secret,api,journal,()=>now);await review.execute({kind:"topics.ensure"});expect(injected).toBe(true);expect(api.createTopic).not.toHaveBeenCalled();
+ expect(await query("SELECT state FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND slot='general'").first("state")).toBe("uncertain");
+});
+it("restore hold during callback admission denies a new acknowledgement without changing the review",async()=>{
+ const id=await sent(),update=callback();beforeAdmission=hold;
+ expect(await review.receiveCallback(update)).toBe("denied");expect(api.answer).not.toHaveBeenCalled();
+ expect(await query("SELECT review_state FROM assistant_telegram_notifications WHERE installation_id=? AND generation=? AND bot_instance=? AND id=?",id).first("review_state")).toBe("pending");
 });
 it("persists exactly four private topic IDs across restart and never recreates them",async()=>{
  await setup();expect(vi.mocked(api.createTopic).mock.calls.map(call=>call[1])).toEqual(["Geral","Resumos","Pendências","Missões e retornos"]);
@@ -124,6 +160,11 @@ it.each(["fetch","body"])("bounds a hung %s even when the transport ignores Abor
  const fetcher=vi.fn(async()=>kind==="fetch"?await new Promise<Response>(()=>{}):new Response(new ReadableStream<Uint8Array>({start(){}})));
  vi.useFakeTimers();const pending=new TelegramBotApi("123456789:synthetic_token_12345678901234567890",bot,fetcher).inspect(),rejected=expect(pending).rejects.toThrow("telegram_api_unavailable");
  await vi.advanceTimersByTimeAsync(10001);await rejected;
+});
+it("never starts a late Telegram fetch after its runtime check outlives the API deadline",async()=>{
+ let release!:()=>void;const fetcher=vi.fn(async()=>Response.json({ok:true,result:true})),check=()=>new Promise<void>(resolve=>{release=resolve;});
+ vi.useFakeTimers();const pending=new TelegramBotApi("123456789:synthetic_token_12345678901234567890",bot,fetcher,check).inspect(),rejected=expect(pending).rejects.toThrow("telegram_api_unavailable");
+ await vi.advanceTimersByTimeAsync(10001);await rejected;release();await Promise.resolve();await Promise.resolve();expect(fetcher).not.toHaveBeenCalled();
 });
 it("keeps timed-out dispatch uncertain when the physical request later acknowledges, without repeating it",async()=>{
  await setup();const id=await notify();let release!:(value:Response)=>void;

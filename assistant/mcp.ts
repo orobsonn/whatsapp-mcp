@@ -147,9 +147,9 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    await assertRestoredGeneration(this.env, false);
     const query = ownerQuerySchema.parse(input);
     if (query.kind === "assistant.health") return assistantHealth(this.env, { kind: "owner" });
+    await assertRestoredGeneration(this.env, false);
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure") {
       const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read"), evaluation = new Evaluation(this.env.DB!, scope, { kind: "owner" },
         new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic }), { origin });

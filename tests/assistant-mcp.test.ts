@@ -99,6 +99,14 @@ function receiver() {
   return new OwnerAssistant(createExecutionContext(), { DB: env.DB, INSTALLATION_ID: affinity.installationId,
     OPERATIONAL_GENERATION: affinity.generation, BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration });
 }
+it.each(["seal", "generation"])("keeps owner health available for restore %s diagnosis while ordinary queries stay blocked", async blocked => {
+  if (blocked === "generation") await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,'next',?,?,'activate',1)").bind(affinity.installationId, "a".repeat(64), "b".repeat(64)).run();
+  const rpc = new OwnerAssistant(createExecutionContext(), { DB: env.DB, INSTALLATION_ID: affinity.installationId,
+    OPERATIONAL_GENERATION: affinity.generation, BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration,
+    ...(blocked === "seal" ? { RETENTION_GENERATION_SEAL_REQUIRED: "true" } : {}) });
+  expect(await rpc.query(affinity, { kind: "assistant.health" })).toMatchObject({ configuration: expect.any(Object), installation: expect.any(Object) });
+  await expect(rpc.query(affinity, { kind: "projects" })).rejects.toThrow(blocked === "seal" ? "restore_generation_seal_required" : "restore_generation_inactive");
+});
 it("checks binding affinity on every command and never interprets source text as control", async () => {
   const rpc = receiver(), command = { kind: "project.put", operationId: "project-op", id: "project", name: "Synthetic", expectedVersion: 0 };
   for (const key of Object.keys(affinity) as (keyof OwnerAffinity)[])
