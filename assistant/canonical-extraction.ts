@@ -24,6 +24,23 @@ type Slot={state:string;source_version:number;source_hash:string;slot_key:string
 type Options={clock?:()=>number;adapter:ModelAdapter;enabled:()=>boolean;guard:()=>AccessGuard;origin?:OriginGuard;runtime?:()=>Promise<void>};
 type Outcome={state:'published'|'blocked'|'uncertain'|'empty_catalog';claims?:number;gap?:string};
 const entity=z.object({kind:z.enum(['project','mission']),id:z.string().min(1).max(256)}).strict();
+const catalogInput=z.array(entity.extend({revision:z.number().int().positive().safe(),projectId:z.string().min(1).max(256).nullable()}).strict()).min(1).max(16).refine(rows=>new Set(rows.map(row=>row.kind+':'+row.id)).size===rows.length);
+const inputSource=z.object({id:z.string().min(1).max(256),revision:z.number().int().positive().safe(),authorId:z.string().max(512).nullable(),authorLabel:z.string().max(512).nullable(),text:z.string().max(32768)}).strict();
+const userInput=z.object({extraction:z.literal('canonical-candidates-v1'),source:inputSource,catalog:catalogInput}).strict();
+const chatInput=z.object({model:z.literal(CANONICAL_EXTRACTION_CONFIG.chatModel),max_completion_tokens:z.literal(CANONICAL_EXTRACTION_CONFIG.maxOutputTokens),response_format:z.object({type:z.literal('json_object')}).strict(),messages:z.tuple([z.object({role:z.literal('system'),content:z.string()}).strict(),z.object({role:z.literal('user'),content:z.string()}).strict()])}).strict();
+/** Published data may survive CAS-only catalog edits. This compares strict DTOs,
+ * removing ONLY revision on typed catalog entries, including the identical
+ * catalog inside user JSON. Source revision and every other field stay exact.
+ * It never mutates stored payload/catalog/pin or accepts unknown legacy fields. */
+function sameTerminalInput(oldCatalogJson:string,newCatalogJson:string,oldPayloadJson:string,newPayloadJson:string):boolean {
+ try{
+  const oldCatalog=catalogInput.parse(JSON.parse(oldCatalogJson)),newCatalog=catalogInput.parse(JSON.parse(newCatalogJson)),oldPayload=chatInput.parse(JSON.parse(oldPayloadJson)),newPayload=chatInput.parse(JSON.parse(newPayloadJson)),oldUser=userInput.parse(JSON.parse(oldPayload.messages[1].content)),newUser=userInput.parse(JSON.parse(newPayload.messages[1].content));
+  if(JSON.stringify(oldCatalog)!==JSON.stringify(oldUser.catalog)||JSON.stringify(newCatalog)!==JSON.stringify(newUser.catalog))return false;
+  const shape=(catalog:z.infer<typeof catalogInput>)=>catalog.map(({kind,id,projectId})=>({kind,id,projectId}));
+  const comparable=(payload:z.infer<typeof chatInput>,user:z.infer<typeof userInput>)=>({...payload,messages:[payload.messages[0],{...payload.messages[1],content:JSON.stringify({...user,catalog:shape(user.catalog)})}]});
+  return JSON.stringify(shape(oldCatalog))===JSON.stringify(shape(newCatalog))&&JSON.stringify(comparable(oldPayload,oldUser))===JSON.stringify(comparable(newPayload,newUser));
+ }catch{return false;}
+}
 const output=z.object({claims:z.array(z.object({kind:z.enum(['assertion','suggestion','decision','observation']),subject:entity,object:entity.optional(),predicate:z.string().min(1).max(128),quote:z.string().min(1).max(4096)}).strict()).max(8)}).strict();
 const size=(text:string)=>new TextEncoder().encode(text).length;
 const and=(...guards:AccessGuard[]):AccessGuard=>({sql:guards.map(g=>`(${g.sql})`).join(' AND '),values:guards.flatMap(g=>g.values)});
@@ -94,7 +111,7 @@ export class CanonicalCandidateExtractor {
   if(slot?.state==='published'){
    // A completed candidate is source data for a currently authorized reader.
    // The original actor/fence pin is NEVER rewritten for a second actor.
-   if(slot.config_hash!==configHash||slot.catalog_json!==catalogJson||slot.payload_json!==payloadJson||slot.source_version!==source.fence.source.version||slot.source_hash!==source.fence.source.hash)return {state:'blocked',gap:'canonical_terminal_pin_changed'};
+   if(slot.config_hash!==configHash||!sameTerminalInput(slot.catalog_json,catalogJson,slot.payload_json,payloadJson)||slot.source_version!==source.fence.source.version||slot.source_hash!==source.fence.source.hash)return {state:'blocked',gap:'canonical_terminal_pin_changed'};
    const backing=await this.statement(`SELECT m.response_json,b.operation_key batch_key,b.request_hash batch_hash,b.claims_json FROM assistant_canonical_extractions x
     JOIN assistant_model_receipts m ON m.installation_id=x.installation_id AND m.generation=x.generation AND m.operation_key=x.operation_key AND m.request_hash=x.request_hash AND m.source_id=x.source_id AND m.source_revision=x.source_revision AND m.state='complete' AND m.response_json IS NOT NULL AND m.actual_units IS NOT NULL
     JOIN assistant_budget_reservations r ON r.installation_id=m.installation_id AND r.generation=m.generation AND r.operation_key=m.operation_key AND r.request_hash=m.request_hash AND r.state='settled' AND r.actual_units IS m.actual_units

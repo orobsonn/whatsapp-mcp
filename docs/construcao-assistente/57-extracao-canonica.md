@@ -58,9 +58,14 @@ divergente, valores não primitivos/inteiros seguros e JSON acima de 32 KiB.
 Após unknown, não há reset, rekey ou replanejamento por novo catálogo/actor. O
 mesmo slot só pode recuperar o recibo completo exato, sem provider retry. Depois
 de publicado, outro actor atualmente autorizado pode ler o terminal sem mudar
-o actor pinado. Isso exige mesma fonte/configuração/catálogo/payload, origem e
-ACL atuais, recibo completo com settlement correspondente e lote/hash de claims
-consistentes. Backing ausente/divergente permanece lacuna, sem reinferência.
+o actor pinado. Isso exige mesma fonte/configuração e topologia do catálogo
+(kind/id/projectId/cardinalidade), com DTOs estritos. Apenas revisões CAS das
+entradas do catálogo podem diferir, incluindo o mesmo catálogo no JSON user do
+payload. Source.revision, autor, texto, system, modelo, tokens e demais campos
+continuam exatos; formato legado inválido ou campos desconhecidos negam reuso.
+O guard SQL usa revisões atuais, com origem/ACL/lease/hold atuais, recibo completo,
+settlement correspondente e lote/hash de claims consistentes. Os dados pinados
+originais não mudam. Backing ausente/divergente permanece lacuna, sem reinferência.
 
 ## Operação e retenção
 

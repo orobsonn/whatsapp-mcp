@@ -22,6 +22,8 @@
     {"boundary": "final extractor after guard sampling correction", "result": "GREEN", "passed": 34, "failed": 0, "durationSeconds": 20.73},
     {"boundary": "active and standalone eligibility followup", "result": "RED", "passed": 7, "failed": 3, "skipped": 32, "durationSeconds": 10.16},
     {"boundary": "shared catalog eligibility followup", "result": "GREEN", "passed": 42, "failed": 0, "durationSeconds": 39.66, "schemaFact": "17 real project renames preserve one project_revisions row by its primary key; no fabricated history or redundant MAX"},
+    {"boundary": "published CAS-only terminal compatibility", "result": "RED", "passed": 14, "failed": 2, "skipped": 41, "durationSeconds": 17.22},
+    {"boundary": "strict typed CAS-only terminal followup", "result": "GREEN", "passed": 57, "failed": 0, "durationSeconds": 34.42},
     {"boundary": "existing index API budget counter", "result": "GREEN", "passed": 9, "failed": 0, "durationSeconds": 0.93, "whatsapp128WarmD1ApiCalls": 872, "maximumBoundParameters": 13}
   ],
   "observedContracts": [
@@ -35,6 +37,8 @@
     "publication transaction repeats the actual source authorization predicate",
     "unknown and changed pins do not rekey; lost publication ACK recovers one receipt and batch",
     "new permitted guest reuses only proven terminal without changing original actor or invoking provider",
+    "only published typed catalog entry CAS revisions may drift; project/mission renames reuse1provider with all pinned fields unchanged",
+    "catalog topology and all noncatalog payload fields including source.revision remain exact; unknown fields fail closed",
     "missing receipt, settlement or batch refuses terminal reuse",
     "host SQL compaction is equivalent under real D1 and complete guest broker statements stay at most100 binds",
     "operational payload export and purge; canonical snapshot and restore parser exclude effect slots",
