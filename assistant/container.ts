@@ -280,6 +280,15 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   }
   fetch() { return Promise.resolve(deny()); }
   ingest(input: EngineIngest) { return this.host().ingest(input); }
+  async ingestReceipt(input: EngineIngest, indexEpoch: string) { const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
+  /** Host-only metadata: no source bodies, broker tokens or snapshot handles. */
+  async lifecycleState() {
+    this.host(); const index = await this.ctx.storage.get<IndexMetadata>("index"), checkpoint = await this.checkpointStore().read();
+    const record = checkpoint?.phase === "restoring" ? checkpoint.candidate ?? checkpoint.confirmed : checkpoint?.confirmed;
+    return { running: this.port!.running, index: index ? { epoch:index.epoch,revision:index.revision,lost:!!index.lost,state:index.indexState??"needs_checkpoint",sources:index.sources??[] } : null,
+      maintenance:!!await this.ctx.storage.get<boolean>("maintenance"),quarantine:!!await this.ctx.storage.get<boolean>("quarantine"),
+      checkpoint: record ? {id:record.id,epoch:record.manifest.indexEpoch,revision:record.manifest.indexRevision,phase:checkpoint!.phase} : null };
+  }
   search(input: EngineSearch) { return this.host().search(input); }
   lookup(id: string) { return this.host().lookup(id); }
   prepare(alias:string,input:EngineSearch) { return this.host().prepare(alias,input); }
@@ -301,15 +310,20 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
     this.host(); const state = await this.ctx.storage.get<RebuildState>("rebuild");
     return state ? { state: state.phase, indexEpoch: state.indexEpoch, next: state.next, reason: state.reason ?? null } : { state: "missing" };
   }
-  checkpoint() {
+  checkpoint(expected?: {indexEpoch:string;indexRevision:string}) {
     return this.host().maintain<CheckpointResult>(async plan => {
+      if(expected && (!plan || plan.indexEpoch!==expected.indexEpoch || plan.indexRevision!==expected.indexRevision))return {value:{state:"blocked",reason:"index_changed"}};
       if (!plan) return { value: { state: "rebuild_required", reason: "index_lost" } };
       const result = await (await this.checkpoints()).create(plan), state = await this.checkpointStore().read();
       return { value: result, ...(result.state === "checkpoint_confirmed" ? { restored: state!.confirmed!.manifest } : {}) };
     });
   }
-  restoreCheckpoint() {
-    return this.host().maintain(async () => {
+  restoreCheckpoint(expected?: {checkpointId:string;indexEpoch:string;indexRevision:string}) {
+    return this.host().maintain<CheckpointResult>(async () => {
+      if(expected){
+        const state=await this.checkpointStore().read(),record=state?.phase==="restoring"?state.candidate??state.confirmed:state?.confirmed,index=await this.ctx.storage.get<IndexMetadata>("index");
+        if(!record||!index||record.id!==expected.checkpointId||record.manifest.indexEpoch!==expected.indexEpoch||record.manifest.indexRevision!==expected.indexRevision||!samePlan(record.manifest,index))return {value:{state:"blocked",reason:"checkpoint_changed"}};
+      }
       const result = await (await this.checkpoints()).restore(), state = await this.checkpointStore().read();
       return { value: result, ...(result.state === "checkpoint_confirmed" ? { restored: state!.confirmed!.manifest } : {}) };
     }, true);

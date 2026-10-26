@@ -68,15 +68,28 @@ export class CogneeEngine implements EnginePort {
     if (!this.busy || !this.rebuilding) return { state: "blocked", reason: "rebuild_fenced" };
     return this.ingestSource(input, indexEpoch, owner);
   }
+  private async ingestInput(input: EngineIngest) {
+    input = JSON.parse(JSON.stringify(input)) as EngineIngest;
+    const s = input.source, f = s.fence.source;
+    if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
+    const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
+      ...(s.authorId !== null ? { authorId: s.authorId } : {}), ...(f.projectId !== null ? { projectId: f.projectId } : {}) });
+    return { input, source };
+  }
   private async ingestSource(input: EngineIngest, rebuildEpoch?: string, rebuildOwner?: string): Promise<unknown> {
     try {
-      input = JSON.parse(JSON.stringify(input)) as EngineIngest;
-      const s = input.source, f = s.fence.source;
-      if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
-      const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
-        ...(s.authorId !== null ? { authorId: s.authorId } : {}), ...(f.projectId !== null ? { projectId: f.projectId } : {}) });
-      return this.run("/ingest", { source }, input.actor, [{ source: s.fence, ...(input.origin ? { origin: input.origin } : {}) }], rebuildEpoch, rebuildOwner);
+      const owned = await this.ingestInput(input), s = owned.input.source;
+      return this.run("/ingest", { source: owned.source }, owned.input.actor, [{ source: s.fence, ...(owned.input.origin ? { origin: owned.input.origin } : {}) }], rebuildEpoch, rebuildOwner);
     } catch { return { state: "blocked", reason: "invalid_source" }; }
+  }
+  /** Exact existing receipt only. Never starts, ingests or changes an epoch. */
+  async ingestReceipt(input: EngineIngest, indexEpoch: string): Promise<Receipt | { state: "uncertain" }> {
+    try {
+      const owned = await this.ingestInput(input), meta = await this.store.get<Meta>("index");
+      if (!meta || meta.epoch !== indexEpoch || meta.lost || !await this.guard.check(owned.input.actor,[{source:owned.input.source.fence,...(owned.input.origin?{origin:owned.input.origin}:{})}])) return {state:"uncertain"};
+      const id = await bridgeHash([this.scope,indexEpoch,"/ingest",{source:owned.source},null]);
+      return this.lookup(id);
+    } catch { return {state:"uncertain"}; }
   }
   private validateSearch(input: EngineSearch) {
     input = JSON.parse(JSON.stringify(input)) as EngineSearch;
