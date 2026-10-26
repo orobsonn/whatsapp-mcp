@@ -34,7 +34,7 @@ export class SourceAccess {
   private readonly scope: SourceScope;
   constructor(private readonly db: D1Database, scope: SourceScope, private readonly clock = Date.now) {
     if (!scope.installationId || !scope.generation) throw new Error("invalid_source_scope");
-    this.scope = Object.freeze({ ...scope });
+    this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation });
   }
   private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number): AccessGuard | null {
     if (actor.kind === "extractor") return null;

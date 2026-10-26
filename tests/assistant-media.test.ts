@@ -55,6 +55,33 @@ it('reserves before inference, persists receipt and reuses without inference whi
   expect(parent).toEqual(before); const evidence = await context.read(owner, parent); expect(evidence?.text).toContain('NÃO'); expect(evidence?.parent.hash).toBe(parent.fence.source.hash); expect(evidence?.textHash).not.toBe(evidence?.parent.hash);
   expect((await budget.status()).committed).toBe(70);
 });
+it('normalizes SourceAccess fences from two-field, origin and budget scopes without weakening their comparison',async()=>{
+  const plain=new SourceAccess(env.DB,{installationId:scope.installationId,generation:scope.generation}),canonical=(await plain.read(owner,sourceId))!;
+  for(const input of [{installationId:scope.installationId,generation:scope.generation,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration},scope,{sourceGeneration:scope.sourceGeneration,sourceEpoch:scope.sourceEpoch,period:scope.period,generation:scope.generation,installationId:scope.installationId}]){
+    const access=new SourceAccess(env.DB,input),read=(await access.read(owner,sourceId))!;
+    expect(JSON.stringify(read.fence)).toBe(JSON.stringify(canonical.fence));expect((await access.readMany(owner,[{id:sourceId,revision:1}]))[0]).toEqual(canonical);
+    expect(await access.revalidate(owner,canonical.fence)).toBe(true);expect(await plain.revalidate(owner,read.fence)).toBe(true);
+    const guard=access.guard(owner,canonical.fence,Date.now());expect(await env.DB.prepare('SELECT 1 WHERE '+guard.sql).bind(...guard.values).first()).not.toBeNull();
+  }
+  expect(port).not.toHaveBeenCalled();
+});
+it.each(['origin','budget'] as const)('reads the settled media artifact using a %s-scope parent without another model call',async kind=>{
+  const budget=new InferenceBudget(env.DB,scope);await budget.configure(600000);const result=await context.interpret(owner,sourceId);expect(result.state).toBe('complete');if(result.state!=='complete')throw Error('fixture_not_complete');
+  const input=kind==='origin'?{installationId:scope.installationId,generation:scope.generation,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration}:scope;
+  const parent=(await new SourceAccess(env.DB,input).read(owner,sourceId))!;
+  expect(await context.read(owner,parent)).toEqual(result.evidence);expect(await context.interpret(owner,sourceId)).toEqual(result);expect(port).toHaveBeenCalledTimes(1);
+  for(const table of ['assistant_media_receipts','assistant_media_artifacts','assistant_budget_reservations'])expect(await env.DB.prepare('SELECT COUNT(*) n FROM '+table+' WHERE installation_id=? AND generation=?').bind(scope.installationId,scope.generation).first('n')).toBe(1);
+  expect((await budget.status()).committed).toBe(70);
+});
+it('keeps revision, extra fence fields, generation, origin and revoked ACL denied after scope normalization',async()=>{
+  await new InferenceBudget(env.DB,scope).configure(600000);expect((await context.interpret(owner,sourceId)).state).toBe('complete');const parent=(await new SourceAccess(env.DB,scope).read(owner,sourceId))!;
+  expect(await context.read(owner,{...parent,fence:{...parent.fence,source:{...parent.fence.source,revision:2}}})).toBeNull();
+  expect(await context.read(owner,{...parent,fence:{...parent.fence,sourceEpoch:'untrusted-extra'} as typeof parent.fence})).toBeNull();
+  expect(await new SourceAccess(env.DB,{...scope,generation:'wrong'}).read(owner,sourceId)).toBeNull();
+  expect(await new MediaContext(env.DB,{...scope,generation:'wrong'},options).read(owner,parent)).toBeNull();
+  const wrongOrigin=new OriginGuard(env.DB,()=>({...scope,sourceGeneration:'wrong'}),snapshotReader,'secret');expect(await new MediaContext(env.DB,scope,{...options,origin:wrongOrigin}).read(owner,parent)).toBeNull();
+  const actor=await mediaGuest(),guestParent=(await new SourceAccess(env.DB,scope).read(actor,sourceId))!;expect(await context.read(actor,guestParent)).not.toBeNull();await revokeMediaMandate();expect(await context.read(actor,guestParent)).toBeNull();expect(port).toHaveBeenCalledTimes(1);
+});
 it('budget0 calls no endpoint', async () => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(0);
   expect((await context.interpret(owner, sourceId)).state).toBe('pending'); expect(port).not.toHaveBeenCalled();

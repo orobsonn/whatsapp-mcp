@@ -1,0 +1,29 @@
+{
+  "issue": 52,
+  "base": "3bffd33",
+  "problem": "SourceAccess accepted a structural SourceScope but spread additional runtime OriginScope/BudgetScope fields into SourceFence. MediaContext used the nominal two-field scope, so its strict fence comparison denied an otherwise settled artifact.",
+  "realObservation": {
+    "reportedByOperator": true,
+    "mediaReceipt": "complete",
+    "artifactCount": 1,
+    "settledMicroUsd": 691,
+    "uncertainMicroUsd": 0,
+    "subsequentRead": null,
+    "fixHomologatedInCloud": false
+  },
+  "change": "SourceAccess freezes only installationId and generation, as specified by SourceScope. SourceFence comparison, ACL queries, origin guards, receipt keys and model transports are unchanged.",
+  "validation": {
+    "red": "Four directed real D1 tests failed in 13.34s: extra scope fields changed fences; origin/budget-scope parents could not read an artifact after one completed fake inference; the permitted guest read also failed before its revocation check.",
+    "green": "Four directed real D1 tests passed in 14.98s. Nominal/origin/budget fences serialize identically; cache reads preserve one receipt, artifact, fake model call and 70 microUSD synthetic commitment; revision/extra-field/generation/origin/revoked-ACL negatives deny.",
+    "typescript": "npm run check and git diff --check passed",
+    "model": "synthetic local adapter only",
+    "estimatedPaidTestsUsd": 0
+  },
+  "compatibility": "Existing persisted fences with additional fields are not rewritten or repinned. Strict comparison still denies incompatible old fences. An existing paid artifact is read with a freshly authorized nominal fence; no provider retry or receipt rekey is required.",
+  "remaining": [
+    "Integrated CI and independent implementation review",
+    "Read the existing installed artifact with the corrected code, preserving its paid receipt and cost",
+    "OCR quality and pilot acceptance remain separate validation boundaries"
+  ],
+  "pilotReady": false
+}
