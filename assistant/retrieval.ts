@@ -40,6 +40,15 @@ function boundedResult(raw: unknown) {
   }
   return engineSchema.parse(raw);
 }
+export function validateEngineResult(raw: unknown, allowedSources: Ref[], limit: number) {
+  const result = boundedResult(raw), permitted = new Set(allowedSources.map(key)), seen = new Set<string>();
+  if (result.result.candidates.length > limit || (result.result.missing.length && result.result.candidates.length)) throw new Error("engine_invalid");
+  for (const candidate of result.result.candidates) if (new Set(candidate.via).size !== candidate.via.length) throw new Error("engine_invalid");
+  for (const ref of [...result.result.candidates,...result.result.missing]) {
+    if (!permitted.has(key(ref)) || seen.has(ref.id)) throw new Error("engine_invalid"); seen.add(ref.id);
+  }
+  return result;
+}
 export function ownActor(actor: TrustedActor): TrustedActor {
   if (actor.kind === "owner" || actor.kind === "extractor") return Object.freeze({ kind: actor.kind });
   const copy = { kind: actor.kind, provider: actor.provider, address: actor.address, conversationId: actor.conversationId,

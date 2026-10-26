@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { semanticRankingSchema } from "../retrieval-runs";
 import type { Episode } from "./episodes";
 export const label = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const time = z.number().int().nonnegative().safe(), version = time.refine(value => value > 0);
@@ -23,7 +24,7 @@ const source = z.object({ id: label, text: z.string().max(32768).nullable(), aut
 const lease = z.object({ id: label, kind: z.enum(["extraction", "reasoning", "follow_up", "review", "maintenance"]), state: z.literal("processing"),
   attempts: version, max_attempts: version, lease_generation: version, lease_until: time, source_id: label, source_revision: version, last_error: z.string().nullable() });
 const search = z.object({ ...scope, ...originScope, runId: hash, runToken: label, requestHash: hash, checkpoint: time,
-  actor: z.string().max(2048), selected: z.array(sourceRef).max(10), allowedPackHash: hash, purpose }).strict();
+  actor: z.string().max(2048), selected: z.array(sourceRef).max(10), allowedPackHash: hash, purpose, ranking:semanticRankingSchema.optional() }).strict();
 const config = z.object({ extractionConfig: label, priceVersion: label, chatModel: label, embeddingModel: label,
   maxOutputTokens: version.max(6000), chatCeiling: version, embeddingCeiling: version }).strict();
 const work = z.object({ ...scope, kind: z.literal("follow_up"), jobId: label, occurrenceId: label, occurrenceState: label, followUpId: label,
