@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-26",
+  "environment": "isolated synthetic Cloudflare Worker/Container",
+  "workerVersion": "571d3a80-02a5-40a7-aa89-2f83100e9db0",
+  "integrationCommit": "655c01a",
+  "originalCandidate": "03339ec2219f47481f972ae8b4f4400be439fa79d18ddad1de2dcd2b10a0cc03",
+  "recovery": {
+    "path": "/restore",
+    "status": 200,
+    "seconds": 14.87,
+    "body": {
+      "state": "checkpoint_confirmed",
+      "id": "03339ec2219f47481f972ae8b4f4400be439fa79d18ddad1de2dcd2b10a0cc03",
+      "indexRevision": "e428728bbc65fce858a66bc562a689f9e11f6f0086f2a5feb6b3253bbc9522d0"
+    }
+  },
+  "confirmed": {
+    "path": "/checkpoint/status",
+    "status": 200,
+    "seconds": 0.33,
+    "body": {
+      "state": "confirmed",
+      "checkpointId": "03339ec2219f47481f972ae8b4f4400be439fa79d18ddad1de2dcd2b10a0cc03",
+      "indexRevision": "e428728bbc65fce858a66bc562a689f9e11f6f0086f2a5feb6b3253bbc9522d0",
+      "sourceCount": 9,
+      "snapshotBytes": 5439701,
+      "restoredAt": 1793013422369
+    }
+  },
+  "budgetAndReceiptsBefore": {
+    "budget": {
+      "cap": 255288,
+      "committed": 3692,
+      "blocked": false
+    },
+    "calls": [
+      {
+        "state": "complete",
+        "count": 228
+      }
+    ]
+  },
+  "budgetAndReceiptsAfter": {
+    "budget": {
+      "cap": 255288,
+      "committed": 3692,
+      "blocked": false
+    },
+    "calls": [
+      {
+        "state": "complete",
+        "count": 228
+      }
+    ]
+  },
+  "newModelReceipts": 0,
+  "newSnapshot": false,
+  "generationReset": false
+}

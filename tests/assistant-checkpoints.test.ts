@@ -98,10 +98,10 @@ it("binds the persisted handle to its checkpoint ID", async () => {
   await controller.create(plan); state!.confirmed!.snapshot.id = "swapped-handle"; vi.mocked(port.restore).mockClear();
   expect(await controller.restore()).toMatchObject({ state: "rebuild_required" }); expect(port.restore).not.toHaveBeenCalled();
 });
-it("retains a candidate when its persistence ACK is lost and explicitly restores it without another snapshot", async () => {
+it("reconciles a persisted candidate ACK loss without another snapshot", async () => {
   const cas = store.compareAndSet; let failed = false;
   store.compareAndSet = async (revision, next) => { const result = await cas(revision, next); if (!failed && next.candidate) { failed = true; throw new Error("candidate ACK lost"); } return result; };
-  expect(await controller.create(plan)).toMatchObject({ state: "uncertain" }); expect(state?.candidate).toBeDefined();
+  expect(await controller.create(plan)).toMatchObject({ state: "checkpoint_confirmed" });
   expect(await controller.restore()).toMatchObject({ state: "checkpoint_confirmed" }); expect(port.snapshot).toHaveBeenCalledTimes(1);
 });
 it("retains the candidate after a failed destroy and permits a later explicit recovery", async () => {
@@ -118,4 +118,71 @@ it("bounds an unknown snapshot timeout and never retries it automatically", asyn
 it("bounds snapshot attempts per day without resetting unknown outcomes", async () => {
   await controller.create(plan); state!.captures = { day: "1970-01-01", count: 24 }; plan.indexRevision = "e".repeat(64);
   expect(await controller.create(plan)).toMatchObject({ state: "blocked", reason: "checkpoint_daily_limit" }); expect(port.snapshot).toHaveBeenCalledTimes(1);
+});
+async function interruptedCandidate() {
+  await controller.create(plan);
+  const confirmed = structuredClone(state!.confirmed!);
+  plan.sources = Array.from({ length: 9 }, (_, i) => ({ ...plan.sources[0], id: "source-" + i }));
+  plan.indexRevision = "e".repeat(64);
+  const manifest = { ...structuredClone(plan), identity: structuredClone(identity) }, manifestHash = await bridgeHash(canonical(manifest));
+  const snapshot = { id: "candidate-nine-sources", size: 5_400_000 };
+  const candidate = { ...confirmed, id: await bridgeHash([manifestHash, snapshot.id]), snapshot, manifest, manifestHash };
+  state = { ...state!, revision: state!.revision + 1, owner: "interrupted-owner", phase: "restoring", index: structuredClone(plan), candidate, confirmed };
+  proof = { ...proof, indexRevision: plan.indexRevision, manifestHash, sources: plan.sources.map(({ id, version, hash }) => ({ id, version, hash, originalHash: hash, chunks: 1 })) };
+  calls = []; return candidate;
+}
+it("explicit recovery restores the exact durable nine-source candidate after restart without another snapshot", async () => {
+  const candidate = await interruptedCandidate();
+  expect(await new CheckpointController(identity, store, port, current, () => now).restore()).toMatchObject({ state: "checkpoint_confirmed", id: candidate.id });
+  expect(calls).toEqual(["deny", "destroy", "restore", "inspect"]);
+  expect(port.restore).toHaveBeenLastCalledWith(candidate.snapshot, expect.any(Object));
+  expect(port.snapshot).toHaveBeenCalledTimes(1); expect(state?.confirmed?.manifest.sources).toHaveLength(9);
+});
+it.each(["preparing", "restoring"] as const)("%s without a candidate never falls back to an older confirmed snapshot", async phase => {
+  await controller.create(plan); state = { ...state!, phase, candidate: undefined }; calls = [];
+  expect(await controller.restore()).toMatchObject({ state: "uncertain" });
+  expect(calls).toEqual([]); expect(port.snapshot).toHaveBeenCalledTimes(1);
+});
+it("a superseded owner suspended in source validation cannot destroy or restore its replacement", async () => {
+  await controller.create(plan); calls = []; let resume!: (value: boolean) => void;
+  current.mockImplementationOnce(() => new Promise(resolve => { resume = resolve; }));
+  const pending = controller.restore(); await vi.waitFor(() => expect(resume).toBeTypeOf("function"));
+  state = { ...state!, revision: state!.revision + 1, owner: "replacement-owner", phase: "confirmed" };
+  resume(true);
+  expect(await pending).toMatchObject({ state: "uncertain", reason: "checkpoint_fenced" });
+  expect(calls).toEqual([]); expect(state?.owner).toBe("replacement-owner");
+});
+it("ownership is rechecked after destruction before a replacement can be restored", async () => {
+  await controller.create(plan); calls = [];
+  vi.mocked(port.destroy).mockImplementation(async () => { calls.push("destroy"); state = { ...state!, revision: state!.revision + 1, owner: "replacement-owner" }; });
+  expect(await controller.restore()).toMatchObject({ state: "uncertain", reason: "checkpoint_fenced" });
+  expect(calls).toEqual(["deny", "destroy"]); expect(state?.owner).toBe("replacement-owner");
+});
+it("failure cleanup cannot destroy after a deny await loses ownership", async () => {
+  let denies = 0;
+  vi.mocked(port.deny).mockImplementation(async () => { calls.push("deny"); if (++denies === 2) state = { ...state!, revision: state!.revision + 1, owner: "replacement-owner" }; });
+  proof.poisoned = true;
+  expect(await controller.create(plan)).toMatchObject({ state: "uncertain", reason: "checkpoint_fenced" });
+  expect(port.destroy).not.toHaveBeenCalled(); expect(state?.owner).toBe("replacement-owner");
+});
+it.each(["hash", "identity", "expired"])("an invalid candidate %s cannot fall back to the older confirmed record", async fault => {
+  await interruptedCandidate(); calls = [];
+  if (fault === "hash") state!.candidate!.manifestHash = "f".repeat(64);
+  if (fault === "identity") state!.candidate!.manifest.identity.generation = "foreign";
+  if (fault === "expired") now += 30 * 86400000;
+  expect(await controller.restore()).toMatchObject({ state: "rebuild_required" });
+  expect(calls).toEqual([]); expect(state?.confirmed?.manifest.sources).toHaveLength(1);
+});
+it("only one explicit recovery claims the persisted candidate concurrently", async () => {
+  await interruptedCandidate();
+  const second = new CheckpointController(identity, store, port, current, () => now);
+  const results = await Promise.all([controller.restore(), second.restore()]);
+  expect(results.filter(result => result.state === "checkpoint_confirmed")).toHaveLength(1);
+  expect(port.restore).toHaveBeenCalledTimes(2); // One original capture and one recovered candidate.
+});
+it("a superseded owner returning from inspect cannot confirm or clean up the replacement", async () => {
+  await interruptedCandidate(); calls = [];
+  vi.mocked(port.inspect).mockImplementation(async () => { calls.push("inspect"); state = { ...state!, revision: state!.revision + 1, owner: "replacement-owner" }; return { ...proof, closed: false }; });
+  expect(await controller.restore()).toMatchObject({ state: "uncertain", reason: "checkpoint_fenced" });
+  expect(calls).toEqual(["deny", "destroy", "restore", "inspect"]); expect(state?.owner).toBe("replacement-owner");
 });
