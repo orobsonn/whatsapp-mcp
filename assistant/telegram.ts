@@ -2,8 +2,7 @@ import { z } from "zod";
 import type { AccessGuard } from "./access";
 import { DecisionJournal } from "./decisions";
 import type { AssistantEnv } from "./env";
-import { OriginGuard } from "./origin-guard";
-import { engineName } from "./container";
+import { hostConfiguredSearch } from "./configured-search";
 import type { OwnerAffinity } from "./mcp";
 import { telegramLinkGuard, type TelegramLinkFence } from "./telegram-auth";
 import { bridgeHash } from "./ingress";
@@ -149,8 +148,7 @@ function parseCallback(input:unknown){
 /** Product wiring only. Neither raw tokens nor this capability enter tools. */
 export async function createTelegramReview(env:AssistantEnv,scope:OwnerAffinity){
  if(!env.DB||!env.TELEGRAM_WEBHOOK_SECRET||!env.TELEGRAM_BOT_INSTANCE)throw new Error("telegram_unconfigured");
- const origin=env.CAPTURE_READER&&env.BRIDGE_SECRET?new OriginGuard(env.DB,()=>scope,env.CAPTURE_READER,env.BRIDGE_SECRET):undefined;
- const semantic=env.COGNEE?{mode:"required" as const,engine:env.COGNEE.get(env.COGNEE.idFromName(engineName(scope.installationId,scope.generation)))}:undefined;
+ const {origin,semantic}=hostConfiguredSearch(env,"owner_read");
  const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic});
  // Rotating either credential invalidates old buttons/prepared notifications.
  const key=await bridgeHash(["telegram-review-credentials-v1",env.TELEGRAM_WEBHOOK_SECRET,env.TELEGRAM_BOT_TOKEN??"unconfigured"]);
