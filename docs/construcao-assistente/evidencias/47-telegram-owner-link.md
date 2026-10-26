@@ -35,3 +35,11 @@ Avisos locais conhecidos: depreciação `punycode`, sourcemaps ausentes no SDK M
 A implementação de auth/CAS, a migração, o receiver e as integrações formam uma única fronteira inseparável. O diff excede o alvo de 400 linhas sobretudo pelos testes de corrida, replay, rollback e integração, preservados por serem contraprovas de autenticação. Não foi criado framework, scheduler, DO ou issue adicional.
 
 Homologação cloud depende da coordenação: configurar somente o segredo webhook e username do bot no Worker assistente, aplicar migrações, conectar a capability MCP nomeada e executar begin → A privado → confirm → B no mesmo chat → status → inbox → replay → revoke. Token do bot continua fora do Worker/D1/Git nesta #47. Nenhum resultado local demonstra vínculo real, webhook operacional ou comando executado; processamento e tópicos ficam para #48.
+
+## Correção da revisão adversarial — rotação do segredo
+
+A revisão encontrou P1: a recepção de A/B comparava somente a capability recebida com o hash persistido; após rotação, uma capability emitida sob o segredo anterior ainda admitia um update novo. Duas contraprovas incorporadas falharam antes da correção: A retornou `pairing_claimed` e B retornou `linked` quando ambos deveriam retornar `denied`.
+
+O guard agora rederiva a capability da tentativa sob o segredo atual e exige que seu hash corresponda ao recebido e ao persistido antes de qualquer batch mutador. Desafios antigos são negados sem update/claim/ativação. Replay de update já processado continua recuperando seu recibo original, sem mutação.
+
+Após o guard: `npm run check` passou; Telegram+MCP passaram com 30 testes; binding real/restart passou com 1 teste e novo `build:assistant`. A suíte completa anterior de 748 testes é evidência do commit anterior; não foi repetida nesta correção pontual, por instrução do coordenador, que validará o commit integrado em CI.

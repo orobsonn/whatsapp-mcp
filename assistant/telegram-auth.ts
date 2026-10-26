@@ -145,9 +145,11 @@ export class TelegramLink {
     const columns = "installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,pairing_id,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at";
     const base = [...this.keys(), updateId, hash, token, ...this.affinity()];
     if (challenge) {
-      const phase = challenge[1], nonceHash = await bridgeHash(challenge[2]);
+      const phase = challenge[1] === "p" ? "p" : "c", nonceHash = await bridgeHash(challenge[2]);
       const pair = await this.db.prepare(`SELECT * FROM assistant_telegram_pairings WHERE ${ns} AND ${origin} AND ${phase === "p" ? "a_hash" : "b_hash"}=?`).bind(...this.keys(), ...this.affinity(), nonceHash).first<Pairing>();
       if (!pair) return "denied";
+      const currentHash = await bridgeHash(await this.capability(pair, phase));
+      if (currentHash !== nonceHash || currentHash !== (phase === "p" ? pair.a_hash : pair.b_hash)) return "denied";
       const valid = `EXISTS(SELECT 1 FROM assistant_telegram_pairings p JOIN assistant_telegram_links l USING(installation_id,generation,bot_instance)
         WHERE p.installation_id=? AND p.generation=? AND p.bot_instance=? AND p.id=? AND p.source_epoch=? AND p.source_generation=?
         AND l.source_epoch=p.source_epoch AND l.source_generation=p.source_generation AND l.revision=p.expected_revision AND l.state<>'active'
