@@ -35,6 +35,9 @@ class CogneeBackend:
             'KUZU_MAX_DB_SIZE': '1073741824', 'KUZU_NUM_THREADS': '2', 'DB_PROVIDER': 'sqlite', 'DB_NAME': 'assistant_index',
             'SYSTEM_ROOT_DIRECTORY': str(self.root / 'system'), 'DATA_ROOT_DIRECTORY': str(self.root / 'data'),
             'COGNEE_DATA_ROOT_DIRECTORY': str(self.root / 'data'), 'ENABLE_BACKEND_ACCESS_CONTROL': 'false',
+            # Host pins provider/model/dimensions. Skip Cognee connectivity probes
+            # and keyless fallback/preflight; never fabricate a model response.
+            'COGNEE_SKIP_CONNECTION_TEST': 'true',
             'PERSONALIZATION_ENABLED': 'false', 'NO_PROXY': 'broker.internal,127.0.0.1,localhost,::1',
         })
         import cognee

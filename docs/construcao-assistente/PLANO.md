@@ -76,6 +76,6 @@ Separação revisada adversarialmente: #79 controla subchamadas, #39 executa ima
 
 - [ ] [91 · Reconstrução somente com recibos existentes](https://github.com/orobsonn/whatsapp-mcp/issues/91) — depende de #40/#79.
 - [x] [93 · Comandos persistentes do dono](https://github.com/orobsonn/whatsapp-mcp/issues/93) — depende de #31/#35/#38; antecede #44/#46.
-- [ ] [96 · Fundação oficial Flue e persistência real](https://github.com/orobsonn/whatsapp-mcp/issues/96) — depende de #28/#39; antecede #44.
+- [x] [96 · Fundação oficial Flue e persistência real](https://github.com/orobsonn/whatsapp-mcp/issues/96) — depende de #28/#39; antecede #44.
 
 A busca #41 limita cada operação a um lote autorizado. A continuação por inventário maior foi registrada na [issue #100](https://github.com/orobsonn/whatsapp-mcp/issues/100) como entrega própria, obrigatória antes do piloto; não há promessa de cobertura completa a partir de um único lote.

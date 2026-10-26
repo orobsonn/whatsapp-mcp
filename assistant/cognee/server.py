@@ -102,6 +102,11 @@ class Service:
             if self.lock.locked() or not self.ready: raise ValueError('not_ready')
             if 'checkpoint' not in self.record: raise ValueError('not_ready')
             return await self.checkpoint_proof(self.record['checkpoint'])
+        if path == '/verify-index':
+            fields(payload, ('manifest',))
+            if self.lock.locked() or not self.ready: raise ValueError('not_ready')
+            async with self.lock:
+                return await self.checkpoint_proof(json.loads(encoded(payload['manifest'])))
         if path == '/operation':
             fields(payload, ('operationId',)); identifier(payload['operationId'])
             key = self.record['ids'].get(payload['operationId'])

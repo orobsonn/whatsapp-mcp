@@ -1,6 +1,6 @@
 # Construção até piloto sombra
 
-Goal ativo desde 25/10/2026. Issues #27–43, #69, #70 e #79/#93 concluídas, com CI/revisão e releases v0.7.0–v0.27.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
+Goal ativo desde 25/10/2026. Issues #27–43, #69, #70 e #79/#93/#96 concluídas, com CI/revisão e releases v0.7.0–v0.28.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
 
 ## Método
 
@@ -36,12 +36,12 @@ Branch inicial `codex/gpt-connection-stability`, HEAD f5ff0f8, à frente de orig
 - #79: broker de modelos e recibos, PRs #89/#90 e v0.21.0.
 - #39: motor Cognee com extração e busca reais na Cloudflare; erro de redirect corrigido com contraprova do runtime. PRs #95/#97, v0.23.0. Recuperação do índice segue em #40/#91.
 - #40: snapshot, destruição e duas restaurações no serviço real, sem chamadas adicionais; PRs #103/#104, v0.26.0.
-- #91: reconstrução em andamento com recibos existentes; teste nativo já recuperou fontes em ordem diferente e após remover a primeira, sem nova inferência.
+- #91: reconstrução com recibos existentes passou localmente e na Cloudflare: duas fontes, novo checkpoint, destruição/restauração, 79 recibos e custo invariáveis; revisão independente concluída, release em preparação.
 - #43: replay/pause concluído após três contraprovas adversariais corrigidas; PRs #92/#94, v0.22.0.
 - #41: recuperação autorizada e limitada por lote; PRs #98/#99, v0.24.0. Continuação para inventário maior em implementação na #100, obrigatória antes do piloto.
 - #42: quatro casos novos com modelo real; originais preservados em 4/4, foco válido em 3/4 e fallback no outro; repetição sem chamadas novas. PRs #101/#102, v0.25.0.
 - #93: comandos internos do dono, 21 testes D1, PRs #105/#106, v0.27.0; integração autenticada ainda pertence a #46.
-- #96: Flue oficial em workerd, 7/7 testes de perfis/persistência e auditoria completa sem vulnerabilidades; não equivale a integração do agente #44.
+- #96: Flue oficial em workerd, 7/7 testes, auditoria completa sem vulnerabilidades, PRs #107/#108 e v0.28.0; não equivale a integração do agente #44.
 - A captura existente tem opt-in próprio: cobertura de todos privados da assistente ainda precisa ser integrada em #43/#56, com exclusões e lacunas honestas.
 
 ## Regras de conclusão

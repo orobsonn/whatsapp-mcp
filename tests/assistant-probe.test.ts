@@ -40,3 +40,15 @@ it('calls only the fixed checkpoint capability and returns no handle or credenti
   const response = await probe.fetch(new Request('https://probe/checkpoint', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }), env as never);
   expect(await response.json()).toMatchObject({ state: 'checkpoint_confirmed' }); expect(checkpoint).toHaveBeenCalledTimes(1);
 });
+it.each(['/rebuild/begin', '/rebuild/step/0', '/rebuild/step/1', '/rebuild/step/2', '/rebuild/recover', '/rebuild/status'])('authenticates the fixed %s reconstruction route', async path => {
+  const { env, get } = fixture(); expect((await probe.fetch(new Request('https://probe' + path, { method: 'POST' }), env as never)).status).toBe(403); expect(get).not.toHaveBeenCalled();
+});
+it('rebuild routes accept no caller source, epoch, model or cursor override', async () => {
+  const { env, get } = fixture(), beginRebuildProbe = vi.fn(async () => ({ state: 'pending' })), stepRebuildProbe = vi.fn(async () => ({ state: 'ready' }));
+  env.COGNEE.get = vi.fn(() => ({ beginRebuildProbe, stepRebuildProbe })) as never;
+  const request = (path: string) => new Request('https://probe' + path, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: JSON.stringify({ source: 'private', epoch: 'stale', model: 'paid', cursor: 128 }) });
+  expect((await probe.fetch(request('/rebuild/begin'), env as never)).status).toBe(200); expect(beginRebuildProbe).toHaveBeenCalledWith();
+  expect((await probe.fetch(request('/rebuild/step/1'), env as never)).status).toBe(200); expect(stepRebuildProbe).toHaveBeenCalledWith(1);
+  vi.mocked(env.COGNEE.get).mockClear(); expect((await probe.fetch(request('/rebuild/step/3'), env as never)).status).toBe(403);
+  expect((await probe.fetch(request('/rebuild/begin?epoch=stale'), env as never)).status).toBe(403); expect(env.COGNEE.get).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+});
