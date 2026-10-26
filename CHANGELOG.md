@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-25
+
+### Added
+- Reader nominal de imagem/PDF capturado com limite de 2 MiB, integridade e revalidação de captura/privacidade antes e depois do R2 (#114).
+
 ## [0.30.0] - 2026-10-25
 
 ### Added
