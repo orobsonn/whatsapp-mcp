@@ -5,7 +5,7 @@ import { CogneeEngine, type ContainerPort, type EngineGuard, type EngineIngest, 
 import { RetrievalRuns, type CoverageProof } from "./retrieval-runs";
 import { CogneeModelBroker } from "./model-broker";
 import { createOpenAIAdapter, DEFAULT_BROKER_CONFIG } from "./model-transport";
-import { OriginGuard, checkOriginsWithin } from "./origin-guard";
+import { OriginGuard, checkOriginsWithin, type OriginFence } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { CheckpointController, type CheckpointFence, type CheckpointManifest, type CheckpointPlan, type CheckpointResult, type CheckpointState, type CheckpointStore, type IndexProof, type SnapshotHandle } from "./checkpoints";
 import build from "./cognee/build-fingerprint.json";
@@ -121,10 +121,17 @@ export class CanonicalEngineGuard implements EngineGuard {
     try {
       if(!isCurrent())return false; await assertRestoredGeneration(this.env); if(!isCurrent())return false;
       const scope = configured(this.env);
+      const local = async () => {
+        // Original ACL statements retain independent bind-parameter budgets.
+        for (let offset=0;offset<permits.length;offset+=6) {
+          if(!isCurrent())return false;
+          const rows=await scope.db.batch(permits.slice(offset,offset+6).map(permit=>{const guard=this.access.guard(actor,permit.source,Date.now());return scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values);}));
+          if(!isCurrent()||rows.length!==Math.min(6,permits.length-offset)||rows.some(row=>row.results.length!==1))return false;
+        }
+        return true;
+      };
       for (const permit of permits) {
         if(!isCurrent())return false;
-        const guard = this.access.guard(actor, permit.source, Date.now());
-        if (!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()||!isCurrent()) return false;
         if (permit.source.source.origin === "whatsapp" && !permit.origin) return false;
         if (permit.origin) {
           if (permit.origin.canonicalId !== permit.source.source.id || permit.origin.revision !== permit.source.source.revision || permit.origin.version !== permit.source.source.version) return false;
@@ -132,12 +139,13 @@ export class CanonicalEngineGuard implements EngineGuard {
           // Remote checks run together below with one fixed deadline.
         }
       }
+      if(!await local())return false;
       const origins=permits.filter(permit=>permit.origin).map(permit=>permit.origin!);
       if(!origins.length){await assertRestoredGeneration(this.env);return isCurrent();}
       const origin=new OriginGuard(scope.db,()=>({installationId:scope.installationId,generation:scope.generation,sourceEpoch:this.env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:this.env.BRIDGE_SOURCE_GENERATION!}),this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!);
       if(!await checkOriginsWithin(origins,fence=>isCurrent()?origin.check(fence,isCurrent):Promise.resolve(false))||!isCurrent())return false;
       // Recheck local ACLs after the remote observations, before returning.
-      for(const permit of permits){if(!isCurrent())return false;const guard=this.access.guard(actor,permit.source,Date.now());if(!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()||!isCurrent())return false;}
+      if(!await local())return false;
       if(!isCurrent())return false;await assertRestoredGeneration(this.env);return isCurrent();
     } catch { return false; }
   }
@@ -200,19 +208,28 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
    * more work. The body stays on the host, never in the returned metadata. */
   private async indexedSourcesCurrent(sources:SourceStamp[]):Promise<"current"|"stale"|"unavailable"> {
     const scope=configured(this.env),access=new SourceAccess(scope.db,{installationId:scope.installationId,generation:scope.generation});
-    let next=0,stopped=false,timer:ReturnType<typeof setTimeout>|undefined;
+    let stopped=false,timer:ReturnType<typeof setTimeout>|undefined;
     const deadlineAt=Date.now()+5000,current=()=>!stopped&&Date.now()<deadlineAt;
-    const work=Promise.all(Array.from({length:Math.min(6,sources.length)},async()=>{
-      while(current()&&next<sources.length){const stamp=sources[next++];
-        try {
-          const source=await access.read({kind:"owner"},stamp.id,stamp.revision);
+    const work=(async()=>{
+      try {
+        const actor={kind:"owner"} as const,guard=new CanonicalEngineGuard(this.env);
+        for(let offset=0;current()&&offset<sources.length;offset+=6){
+          const stamps=sources.slice(offset,offset+6),rows=await access.readMany(actor,stamps);
           if(!current())return "unavailable" as const;
-          if(!source||source.fence.source.version!==stamp.version||source.fence.source.hash!==stamp.hash){stopped=true;return "stale" as const;}
-          if(!await this.rebuildSource(stamp,current)){stopped=true;return "unavailable" as const;}
-        }catch{stopped=true;return "unavailable" as const;}
-      }
+          if(rows.some((source,i)=>!source||source.fence.source.version!==stamps[i].version||source.fence.source.hash!==stamps[i].hash))return "stale" as const;
+          const remote=rows.filter(source=>source!.fence.source.origin==="whatsapp");
+          let origins:(OriginFence|null)[]=[];
+          if(remote.length){
+            if(!this.env.CAPTURE_READER||!this.env.BRIDGE_SECRET||!this.env.BRIDGE_SOURCE_EPOCH||!this.env.BRIDGE_SOURCE_GENERATION)return "unavailable" as const;
+            origins=await new OriginGuard(scope.db,()=>({installationId:scope.installationId,generation:scope.generation,sourceEpoch:this.env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:this.env.BRIDGE_SOURCE_GENERATION!}),this.env.CAPTURE_READER,this.env.BRIDGE_SECRET).fences(remote.map(source=>source!.id));
+            if(!current()||origins.some(origin=>!origin))return "unavailable" as const;
+          }
+          const byId=new Map(origins.map(origin=>[origin!.canonicalId,origin!]));
+          if(!current()||!await guard.check(actor,rows.map(source=>({source:source!.fence,...(byId.has(source!.id)?{origin:byId.get(source!.id)!}:{})})),current))return "unavailable" as const;
+        }
+      }catch{return "unavailable" as const;}
       return current()?"current" as const:"unavailable" as const;
-    })).then(results=>results.includes("stale")?"stale" as const:results.includes("unavailable")?"unavailable" as const:"current" as const);
+    })();
     try{return await Promise.race([work,new Promise<"unavailable">(resolve=>{timer=setTimeout(()=>{stopped=true;resolve("unavailable");},5000);})]);}
     finally{stopped=true;clearTimeout(timer);}
   }

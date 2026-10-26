@@ -17,15 +17,25 @@ export async function assertRestoredGeneration(env: AssistantEnv, execution = tr
   // Old fixtures without25 are explicit legacy, never a readiness assertion.
   const installed = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_retention_generation_seals'").first();
   if (!installed) { if (configured || env.RETENTION_GENERATION_SEAL_REQUIRED === "true") throw new Error("restore_generation_seal_required"); return; }
-  const active = await env.DB.prepare("SELECT generation FROM assistant_retention_active_generation WHERE installation_id=?").bind(env.INSTALLATION_ID).first<string>("generation");
+  // One current SQLite snapshot after the explicit legacy-schema guard. Every
+  // call is fresh; no authorization or execution result is cached across awaits.
+  const view = await env.DB.prepare(`SELECT
+    (SELECT generation FROM assistant_retention_active_generation WHERE installation_id=?) AS active,
+    g.seal,g.state,
+    EXISTS(SELECT 1 FROM assistant_retention_restore_sessions s WHERE s.installation_id=g.installation_id AND s.generation=g.generation AND s.ticket_hash=g.ticket_hash AND s.snapshot_seal=g.snapshot_seal AND s.state='inactive_complete' AND s.released=1) AS released,
+    EXISTS(SELECT 1 FROM assistant_retention_runtime_hold WHERE installation_id=? AND active=1) AS held,
+    EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='quiescing') AS quiescing
+    FROM (SELECT 1) LEFT JOIN assistant_retention_generation_seals g ON g.installation_id=? AND g.generation=?`)
+    .bind(env.INSTALLATION_ID, env.INSTALLATION_ID, env.INSTALLATION_ID, env.INSTALLATION_ID, env.OPERATIONAL_GENERATION)
+    .first<{ active: string | null; seal: string | null; state: string | null; released: number; held: number; quiescing: number }>();
+  if (!view) throw new Error("restore_runtime_configuration");
+  const active = view.active;
   if (active && active !== env.OPERATIONAL_GENERATION) throw new Error("restore_generation_inactive");
-  const seal = await env.DB.prepare(`SELECT g.seal,g.state,EXISTS(SELECT 1 FROM assistant_retention_restore_sessions s WHERE s.installation_id=g.installation_id AND s.generation=g.generation AND s.ticket_hash=g.ticket_hash AND s.snapshot_seal=g.snapshot_seal AND s.state='inactive_complete' AND s.released=1) AS released
-    FROM assistant_retention_generation_seals g WHERE g.installation_id=? AND g.generation=?`).bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION).first<{ seal: string; state: string; released: number }>();
-  if (seal || configured || env.RETENTION_GENERATION_SEAL_REQUIRED === "true") {
-    if (!seal || seal.state !== "inactive_complete" || seal.released !== 1 || !configured || seal.seal !== configured) throw new Error("restore_generation_seal_required");
+  if (view.seal !== null || configured || env.RETENTION_GENERATION_SEAL_REQUIRED === "true") {
+    if (!view.seal || view.state !== "inactive_complete" || view.released !== 1 || !configured || view.seal !== configured) throw new Error("restore_generation_seal_required");
   }
-  if (execution && await env.DB.prepare("SELECT 1 FROM assistant_retention_runtime_hold WHERE installation_id=? AND active=1").bind(env.INSTALLATION_ID).first()) throw new Error("restore_runtime_paused");
-  if (execution && await env.DB.prepare("SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='quiescing'").bind(env.INSTALLATION_ID).first()) throw new Error("canonical_writers_quiesced");
+  if (execution && view.held) throw new Error("restore_runtime_paused");
+  if (execution && view.quiescing) throw new Error("canonical_writers_quiesced");
 }
 /** Only the named OwnerAssistant capability creates these services. No actor,
  * database, URL, target generation or binding can come from a command body. */

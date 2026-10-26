@@ -132,7 +132,7 @@ function semanticEngine(cold=false,dirtyLost=false){
  const noWrite=vi.fn(async()=>{throw new Error("preflight cannot write");}),storage={get:read,transaction:async(action:(tx:{get:typeof read})=>Promise<unknown>)=>action({get:read})};
  const host=new CogneeEngine({installationId:scope.installationId,generation:scope.generation},{get:read as never,put:noWrite},port,new CanonicalEngineGuard(settings),()=>now);
  const core=Object.assign(Object.create(CogneeContainer.prototype),{ctx:{storage,container:{images:{cognee:"synthetic-pinned-image"}}},env:settings,engine:host,port}) as CogneeContainer;
- const engine={_state:state,_physical:physical,_port:port,_noWrite:noWrite,_gates:gates,_beforeVerify:(action:()=>Promise<void>)=>{beforeVerify=action;},_holdSources:(action:()=>Promise<null>)=>{Object.assign(core,{rebuildSource:action});},
+ const engine={_state:state,_physical:physical,_port:port,_noWrite:noWrite,_gates:gates,_beforeVerify:(action:()=>Promise<void>)=>{beforeVerify=action;},
  indexPreflight:vi.fn(async(expected:{indexEpoch:string;indexRevision:string})=>core.indexPreflight(expected)),lifecycleState:vi.fn(async()=>structuredClone(state)),restoreCheckpoint:vi.fn(async()=>{state.running=true;return {state:"checkpoint_confirmed"};}),checkpoint:vi.fn(async()=>{
    if(physical.size!==state.index.sources.length){state.checkpoint.phase="rebuild_required";state.maintenance=true;state.running=false;return {state:"rebuild_required"};}
    state.index.state="checkpoint_confirmed";state.checkpoint.revision=state.index.revision;return {state:"checkpoint_confirmed"};}),
@@ -204,8 +204,9 @@ it("restore hold arriving during Core verification prevents publishing a ready p
 });
 it("bounds all global origin checks by one deadline and six in flight without queuing late work",async()=>{
  const engine=semanticEngine(),owner=new SourceController(env.DB,scope,{kind:"owner"},()=>now),access=new SourceAccess(env.DB,scope);
- for(let i=0;i<9;i++){const ref=await owner.create({originKey:"global-"+i,text:"Synthetic global source "+i,occurredAt:now});await engine.ingest({actor:{kind:"owner"},source:(await access.read({kind:"owner"},ref.id))!});}await engine.checkpoint();
- const releases:(()=>void)[]=[],check=vi.fn(()=>new Promise<null>(resolve=>{releases.push(()=>resolve(null));}));engine._holdSources(check);vi.useFakeTimers();
+ for(let i=0;i<9;i++){const ref=await owner.create({originKey:"global-"+i,text:"Synthetic global source "+i,occurredAt:now});await query("UPDATE assistant_sources SET origin='whatsapp',conversation_id='chat' WHERE installation_id=? AND generation=? AND id=?",...keys(),ref.id).run();await engine.ingest({actor:{kind:"owner"},source:(await access.read({kind:"owner"},ref.id))!});}await engine.checkpoint();
+ vi.spyOn(OriginGuard.prototype,"fences").mockImplementation(async ids=>ids.map(canonicalId=>({...scope,canonicalId,sourceKind:"message" as const,sourceId:canonicalId,chatId:"chat",revision:1,version:1,watermark:1,hash:"a".repeat(64),conversationKind:"private" as const,policyRevision:0,policyMode:"attend"})));
+ const releases:(()=>void)[]=[],check=vi.spyOn(OriginGuard.prototype,"check").mockImplementation(()=>new Promise<boolean>(resolve=>{releases.push(()=>resolve(false));}));vi.useFakeTimers();
  const pending=engine.indexPreflight({indexEpoch:engine._state.index.epoch,indexRevision:engine._state.index.revision});await vi.waitFor(()=>expect(check).toHaveBeenCalledTimes(6),{timeout:1000});await vi.advanceTimersByTimeAsync(5001);
  expect(await pending).toMatchObject({state:"unavailable",reason:"origin_unavailable"});for(const release of releases)release();await Promise.resolve();await Promise.resolve();expect(check).toHaveBeenCalledTimes(6);expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();
 });
@@ -218,9 +219,9 @@ it("does not begin a late reader RPC when the preflight deadline expires during 
 it("honors the elapsed preflight budget before its deadline timer has been dispatched",async()=>{
  settings.ROUTINES_PAUSED="true";await event();await scheduler().tick();const id=await query("SELECT canonical_id FROM assistant_source_origins WHERE installation_id=? AND generation=?",...keys()).first<string>("canonical_id");
  const source=(await new SourceAccess(env.DB,scope).read({kind:"owner"},id!))!,engine=semanticEngine();await engine.ingest({actor:{kind:"owner"},source});await engine.checkpoint();
- const reader=vi.spyOn(settings.CAPTURE_READER!,"readSnapshot"),read=SourceAccess.prototype.read;let elapsed=false,timerFired=false;vi.useFakeTimers();
+ const reader=vi.spyOn(settings.CAPTURE_READER!,"readSnapshot"),read=SourceAccess.prototype.readMany;let elapsed=false,timerFired=false;vi.useFakeTimers();
  const marker=setTimeout(()=>{timerFired=true;},5000);
- vi.spyOn(SourceAccess.prototype,"read").mockImplementation(async function(this:SourceAccess,...args:Parameters<SourceAccess["read"]>){const value=await read.apply(this,args);if(!elapsed){elapsed=true;vi.setSystemTime(Date.now()+5001);}return value;});
+ vi.spyOn(SourceAccess.prototype,"readMany").mockImplementation(async function(this:SourceAccess,...args:Parameters<SourceAccess["readMany"]>){const value=await read.apply(this,args);if(!elapsed){elapsed=true;vi.setSystemTime(Date.now()+5001);}return value;});
  expect(await engine.indexPreflight({indexEpoch:engine._state.index.epoch,indexRevision:engine._state.index.revision})).toMatchObject({state:"unavailable",reason:"origin_unavailable"});
  expect(timerFired).toBe(false);clearTimeout(marker);expect(reader).not.toHaveBeenCalled();expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
 });

@@ -16,6 +16,7 @@
     "build:assistant": "vite build --config assistant/vite.config.ts",
     "test:assistant-runtime": "vitest run --config assistant/flue-test.config.ts",
     "test:calendar-oauth": "node --test scripts/calendar-oauth.check.mjs scripts/calendar-oauth-runtime.check.mjs",
+    "test:assistant-index-budget": "node --test scripts/assistant-index-budget.check.mjs",
     "test:assistant-install": "node --test scripts/assistant-install.check.mjs scripts/assistant-install-ops.check.mjs scripts/assistant-retention-operator.check.mjs"
   },
   "dependencies": {

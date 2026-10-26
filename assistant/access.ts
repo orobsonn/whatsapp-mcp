@@ -87,6 +87,18 @@ export class SourceAccess {
     if (!row) return null;
     return this.fromRow(actor, row);
   }
+  /** Host-only bounded read batch. Each statement retains read()'s exact ACL
+   * and bind parameters; D1.batch is one API call, not one broad permission. */
+  async readMany(actor: TrustedActor, refs: { id: string; revision: number }[], now = this.clock()): Promise<(SourceRead | null)[]> {
+    if (refs.length > 6) throw new Error("source_read_batch_limit");
+    actor = Object.freeze({ ...actor }); refs = refs.map(ref => ({ ...ref }));
+    if (!refs.length) return [];
+    const queries = refs.map(ref => this.current(actor, ref.id, ref.revision, now));
+    if (queries.some(query => !query) || actor.kind === "extractor") return refs.map(() => null);
+    const rows = await this.db.batch<AccessRow>(queries.map(query => this.db.prepare(query!.sql).bind(...query!.values)));
+    if (rows.length !== refs.length) throw new Error("source_read_batch_result");
+    return rows.map(row => row.results[0] ? this.fromRow(actor, row.results[0]) : null);
+  }
   fromRow(actor: TrustedActor, row: AccessRow): SourceRead {
     if (actor.kind === "extractor") throw new Error("source_access_denied");
     const needsMandate = actor.kind === "interlocutor" && row.audience === "restricted"
