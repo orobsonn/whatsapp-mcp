@@ -32,6 +32,11 @@ export class RetentionAuthorityCore {
       (state.phase === "sealed" && (state.count !== state.manifest.tombstoneCount || state.chain !== state.manifest.tombstoneDigest))) throw new Error("retention_authority_corrupt");
     return state;
   }
+  private async retired(store: Pick<RetirementStore,"get">, key: string) {
+    const value=await store.get<unknown>("retired:"+key);
+    if(value!==undefined&&value!==true)throw new Error("retention_authority_corrupt");
+    return value===true;
+  }
   async begin(raw: unknown) {
     const manifest = manifestSchema.parse(raw); this.expected(manifest.installationId);
     const seal = await bridgeHash(manifest);
@@ -49,7 +54,7 @@ export class RetentionAuthorityCore {
     try { await this.store.transaction(async store => {
       const state = await this.read(store);
       if (!state || state.phase !== "preparing" || state.seal !== seal || state.nextPage !== page || keys.some((key, index) => key <= (index ? keys[index - 1] : state.lastKey ?? "")) || state.count + keys.length > state.manifest.tombstoneCount) throw new Error("retention_bootstrap_conflict");
-      for (const key of keys) await store.put("retired:" + key, true);
+      for (const key of keys) { await this.retired(store,key); await store.put("retired:" + key, true); }
       receipt = { requestHash, revision: state.revision + 1 };
       await store.put("page:" + page, receipt);
       await store.put("state", { ...state, revision: receipt.revision, nextPage: page + 1, count: state.count + keys.length, lastKey: keys.at(-1)!, chain: await bridgeHash([state.chain, keys]) });
@@ -67,14 +72,14 @@ export class RetentionAuthorityCore {
   async lookup(installationId: string, raw: string[]): Promise<RetirementLookup> {
     this.expected(installationId); const keys = hashes.parse(raw);
     return this.store.transaction(async store => { const state = await this.read(store); if (state?.phase !== "sealed") return { state: "unavailable" };
-      const blocked: string[] = []; for (const key of keys) if (await store.get<boolean>("retired:" + key)) blocked.push(key);
+      const blocked: string[] = []; for (const key of keys) if (await this.retired(store,key)) blocked.push(key);
       return { state: "sealed", revision: state.revision, blocked };
     });
   }
   async record(installationId: string, raw: string[]): Promise<RetirementLookup> {
     this.expected(installationId); const keys = [...new Set(hashes.parse(raw))].sort();
     try { return await this.store.transaction(async store => { const state = await this.read(store); if (state?.phase !== "sealed") return { state: "unavailable" };
-      let changed = false; for (const key of keys) if (!await store.get<boolean>("retired:" + key)) { changed = true; await store.put("retired:" + key, true); }
+      let changed = false; for (const key of keys) if (!await this.retired(store,key)) { changed = true; await store.put("retired:" + key, true); }
       if (changed) await store.put("state", { ...state, revision: state.revision + 1 });
       return { state: "sealed", revision: state.revision + (changed ? 1 : 0), blocked: keys };
     }); } catch { const proof = await this.lookup(installationId, keys); if (proof.state !== "sealed" || proof.blocked.length !== keys.length) throw new Error("retention_record_uncertain"); return proof; }

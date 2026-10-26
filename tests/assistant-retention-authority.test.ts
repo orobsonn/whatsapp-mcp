@@ -65,6 +65,14 @@ test("monotone retirements survive restart, concurrent aliases and a lost record
   expect(outcomes[0]).toEqual(outcomes[1]); expect(await restart.lookup(scope.installationId, keys)).toMatchObject({ blocked: keys });
   expect(JSON.stringify([...store.values])).not.toContain("private-origin");
 });
+test.each([null,false,0])("corrupt retirement marker %s never authorizes a restored origin or gets overwritten",async value=>{
+  const {core}=await initialized(),keys=await retirementKeys(scope.installationId,"owner_note","retired-origin","source");
+  const key="retired:"+keys[0];store.values.set(key,value);
+  await expect(core.lookup(scope.installationId,keys)).rejects.toThrow("retention_authority_corrupt");
+  await expect(core.record(scope.installationId,keys)).rejects.toThrow("retention_authority_corrupt");
+  await expect(sourceRetirementGuard(scope.installationId,core).allow("owner_note","retired-origin","source")).rejects.toThrow("retention_authority_corrupt");
+  expect(store.values.get(key)).toBe(value);
+});
 test("bootstrap discovers withdrawn sources in every generation without reading their bodies", async () => {
   const oldScope = { ...scope, generation: "older" }, old = new SourceController(env.DB, oldScope, owner), source = await old.create({ originKey: "old-private", text: "BODY MUST NOT ENTER AUTHORITY", occurredAt: 1 }); await old.withdraw(source.id, 1);
   const { core, plan } = await initialized(); expect(plan.manifest.sourceCount).toBe(1); expect(plan.manifest.tombstoneCount).toBe(2);
