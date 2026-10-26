@@ -1,6 +1,6 @@
 # #112 — busca semântica no manifesto persistente
 
-Data: 25–26/10/2026. Implementação local; não é homologação/piloto. Nenhum deploy, wake de Cognee ou chamada paga foi executado nesta entrega. O corpus com Cognee/embedding real continua sendo uma prova separada, a executar pelo coordenador dentro do orçamento existente.
+Data: 25–26/10/2026. Implementação local revisada e homologação cloud em andamento; não é piloto. O coordenador publicou o código no ambiente sintético isolado e executou a ingestão real abaixo. A prova de recuperação semântica ainda não terminou; a issue permanece aberta.
 
 ## Contrato entregue
 
@@ -41,3 +41,11 @@ A execução final de check, suíte completa, suíte Flue e builds fica registra
 ## Verificação independente e correção de persistência
 
 Revisão adversarial independente: 60/60 em engine/semantic-runs/origin-checks e 36/36 em EpisodeController; sem bloqueador concreto. Suíte completa local anterior ao último ajuste: 721/721; Flue/workerd 43/43. O coordenador reproduziu uma referência WhatsApp válida negada apenas pela ordem das propriedades após persistência (RED), corrigiu OriginGuard.check para igualdade do conjunto exato de campos/valores e repetiu 52 testes de origem/materialização/semântica e check (GREEN). Campos extras, watermark alterado e retirada continuam negados. Re-review do delta e harness sintético sem novo bloqueador. CI no commit integrado ainda é gate de entrega.
+
+## Homologação cloud parcial — 26/10
+
+O Worker isolado executou o código112 real com Cognee1.6.5 em Container Cloudflare. Sete fontes novas (sinônimos, dois homônimos em projetos distintos, instrução citada e nota privada próxima) foram extraídas e indexadas: sete operações completas,149 novos recibos de modelo completos e3692microUSD registrados (US$0,003692). Orçamento e recibos anteriores foram conservados, inclusive reservas incertas; não houve reset.
+
+Após a ingestão, um checkpoint salvou candidato durável com nove fontes no total e snapshot de5439701bytes. Uma publicação do Worker ocorreu enquanto essa operação estava em andamento; o RPC terminou com500 e o estado persistido ficou restoring, com o candidate novo e confirmed antigo preservados. O restore existente recusa essa fase permanentemente. Isso motivou a issue121, com revisão adversarial e recuperação cercada por owner/época, sem recriar snapshot ou inferência.
+
+A consulta de sinônimo tinha score lexical0; result/advance permaneceram pending, semantic_unsearched, sem liberar fontes privadas nem registrar chamadas pagas adicionais. Esse resultado demonstra bloqueio honesto, NÃO recuperação semântica bem-sucedida. O Container foi parado após o diagnóstico para evitar custo ocioso. A busca do corpus (limite final de duas fontes), correção antes/depois de indexar e repetição sem custo continuam pendentes da recuperação121. Nenhuma dessas lacunas foi convertida em aceite.
