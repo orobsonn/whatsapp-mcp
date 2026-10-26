@@ -7,7 +7,8 @@ const label = z.string().min(1).max(256).refine(value => value.trim() === value 
 export const snapshotNamespace = z.object({ installationId: label, generation: label }).strict();
 export const financialTables = new Set(["assistant_budget_accounts", "assistant_budget_reservations"]);
 /** Canonical records and their original attribution. Operational effect latches,
- * model/media derivations, jobs, episodes, Telegram and OAuth are excluded. */
+ * model/media/canonical-extraction derivations and attempt latches, jobs,
+ * episodes, Telegram and OAuth are excluded. Restore cannot activate them. */
 export const canonicalSnapshotTables = new Set(`sources source_versions source_admissions source_origins origin_versions origin_conversations people provider_identities projects project_revisions project_memberships conversation_policies policy_versions mandates mandate_actions mandate_sources missions mission_versions follow_ups fup_provenance retention_restored_work`.split(" ").map(name => "assistant_" + name));
 const table = z.string().refine(name => canonicalSnapshotTables.has(name) || financialTables.has(name));
 export const snapshotExportPage = z.object({ schema: z.literal(2), purpose: z.literal("canonical_snapshot_candidate"), namespace: snapshotNamespace,

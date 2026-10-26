@@ -12,7 +12,8 @@ import { episodeDriver } from "./agent-runtime/driver";
 import { jobRequest,type DecisionSubject } from "./agent/contracts";
 import { JobQueue } from "./queue";
 import { InferenceBudget } from "./budget";
-import { DEFAULT_BROKER_CONFIG } from "./model-transport";
+import { DEFAULT_BROKER_CONFIG,createOpenAIAdapter } from "./model-transport";
+import {CanonicalCandidateExtractor,CANONICAL_EXTRACTION_CONFIG} from './canonical-extraction';
 import { runtimeHost } from "./agent-runtime/runtime";
 import { assertRestoredGeneration } from "./retention-runtime";
 import { retentionExecutionGuard } from "./retention-execution";
@@ -39,7 +40,7 @@ export class AssistantScheduler {
  private item(id:string){return this.sql(`SELECT * FROM assistant_routine_items WHERE ${originScopeSql} AND id=?`,...this.keys(),id).first<Item>();}
  private async update(cycle:RoutineCycle,id:string,sql:string,values:(string|number|null)[]=[]){const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_items SET ${sql},updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql}`,...values,this.clock(),...this.keys(),id,...owner.values).run();}
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
- private async configuration(){return bridgeHash(["routines-v1",this.scope,DEFAULT_BROKER_CONFIG,this.env.SEMANTIC_SEARCH_MODE??(this.env.COGNEE?"required":"lexical")]);}
+ private async configuration(){return bridgeHash(["routines-v1",this.scope,DEFAULT_BROKER_CONFIG,CANONICAL_EXTRACTION_CONFIG,this.env.SEMANTIC_SEARCH_MODE??(this.env.COGNEE?"required":"lexical")]);}
  async tick(){
   if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";
   try{await assertRestoredGeneration(this.env);}catch(error){const known=["restore_runtime_paused","restore_generation_inactive","restore_generation_seal_required","canonical_writers_quiesced"];return {state:"blocked",gap:error instanceof Error&&known.includes(error.message)?error.message:"restore_runtime_unavailable"};}
@@ -236,6 +237,12 @@ export class AssistantScheduler {
     else{const result=await media.interpret(binding.actor,source.id);if(result.state==="pending")return this.gap(cycle,item.id,result.reason,result.reason.includes("uncertain"));}
    }
   }
+  await this.routines.phase(cycle,'canonical_extraction',item.id);
+  const extractor=new CanonicalCandidateExtractor(this.env.DB!,this.scope,{clock:this.clock,origin:configured.origin,
+   adapter:this.options.model??createOpenAIAdapter(this.env.OPENAI_API_KEY),runtime:()=>assertRestoredGeneration(this.env),guard:()=>this.owned(cycle),
+   enabled:()=>this.env.ROUTINES_ENABLED==='shadow'&&this.env.ROUTINES_PAUSED!=='true'&&this.env.FLUE_EPISODES_ENABLED==='shadow'&&this.env.INSTALLATION_ID===this.scope.installationId&&this.env.OPERATIONAL_GENERATION===this.scope.generation&&this.env.BRIDGE_SOURCE_EPOCH===this.scope.sourceEpoch&&this.env.BRIDGE_SOURCE_GENERATION===this.scope.sourceGeneration});
+  const extraction=await extractor.extract(binding.actor,source.id,binding.source.revision,{replayOnly:reconcileOnly});
+  if(extraction.state!=='published'&&extraction.state!=='empty_catalog')return this.gap(cycle,item.id,extraction.gap??'canonical_extraction_unavailable',extraction.state==='uncertain');
   const indexed=await this.index(cycle,item,binding,reconcileOnly);if(indexed!=="ready")return indexed;if(reconcileOnly){await this.update(cycle,item.id,"state='pending',last_gap=NULL");return "pending";}
   let progress=await configured.search.start(binding.actor,"routine-search:"+item.id,{query:binding.query,limit:10,...(binding.projectId?{projectId:binding.projectId}:{})});
   if(item.run_id&&item.run_id!==progress.runId)throw new Error("routine_run_conflict");await this.update(cycle,item.id,"run_id=?,search_checkpoint=?,search_state=?,phase='search'",[progress.runId,progress.checkpoint,progress.state]);

@@ -14,6 +14,7 @@ import { InferenceBudget } from "../assistant/budget";
 import { JobQueue } from "../assistant/queue";
 import { SourceController } from "../assistant/sources";
 import { SourceAccess } from "../assistant/access";
+import {OwnerControl} from '../assistant/control';
 import { assistantHealth } from "../assistant/health";
 import { CogneeContainer, CanonicalEngineGuard } from "../assistant/container";
 import { CogneeEngine } from "../assistant/engine";
@@ -65,6 +66,15 @@ it("runs the concrete capture-to-presearch-to-Flue-to-journal pipeline once for 
  expect(await query("SELECT COUNT(*) n FROM assistant_routine_reviews WHERE installation_id=? AND generation=?",...keys()).first("n")).toBe(1);
  expect(await query("SELECT COUNT(*) n FROM assistant_routine_cycles WHERE installation_id=? AND generation=?",...keys()).first("n")).toBe(1);
 });
+it('extracts canonical candidates before scheduler presearch and uses one source-bound receipt across repeated cron ticks',async()=>{
+ settings.ROUTINES_PAUSED='true';await event(1,0,'canonical','Synthetic suggestion: consider Friday.');await scheduler().tick();expect(modelCalls).toBe(0);
+ const source=await query("SELECT id FROM assistant_sources WHERE installation_id=? AND generation=? AND origin='whatsapp'",...keys()).first<string>('id'),control=new OwnerControl(env.DB,scope,{kind:'owner'},()=>now);expect(source).toBeTruthy();
+ await control.execute({kind:'project.put',operationId:'canonical-project',id:'canonical-project',expectedVersion:0,name:'Synthetic project'});await control.execute({kind:'mission.put',operationId:'canonical-mission',id:'canonical-mission',expectedRevision:0,objective:'Explicit source-bound draft',source:{id:source!,revision:1},project:{id:'canonical-project',revision:1},state:'draft'});
+ const base=model,order:string[]=[];model=async request=>{const payload=JSON.parse(request.body),prompt=JSON.parse(payload.messages.at(-1).content);if(prompt.extraction==='canonical-candidates-v1'){order.push('canonical');expect(prompt.catalog.map((x:{kind:string})=>x.kind).sort()).toEqual(['mission','project']);expect(await query('SELECT phase FROM assistant_routine_cycles WHERE installation_id=? AND generation=? ORDER BY window_key DESC LIMIT 1',...keys()).first('phase')).toBe('canonical_extraction');return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'mission',id:'canonical-mission'},object:{kind:'project',id:'canonical-project'},predicate:'deadline',quote:'Synthetic suggestion: consider Friday.'}]})}}]})};}order.push('episode');return base(request);};
+ settings.ROUTINES_PAUSED='false';now+=60001;expect(await scheduler().tick()).toMatchObject({state:'complete'});expect(order).toEqual(['canonical','episode']);expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+ expect(await query('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);expect(await query('SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(2);
+ now+=60001;await scheduler().tick();expect(order).toEqual(['canonical','episode']);expect(await query('SELECT COUNT(*) n FROM assistant_shadow_decisions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);
+});
 it("coalesces three callbacks of the same canonical source into one immutable observation and keeps the other events not evaluated",async()=>{
  await event(1,0,"one");await event(2,1,"one");await event(3,2,"one");
  // Snapshot watermark is the current conversation observation for every source.
@@ -95,7 +105,7 @@ it("keeps budget exhaustion visible without configuring a replacement account or
 it("late cron makes only the current daily metadata review and does not replay missing days",async()=>{
  const routines=new Routines(env.DB,scope,()=>now);await routines.daily(false);now+=7*86400000;const a=await routines.daily(true),b=await routines.daily(true);expect(a.id).toBe(b.id);
  expect(await query("SELECT COUNT(*) n FROM assistant_routine_reviews WHERE installation_id=? AND generation=?",...keys()).first("n")).toBe(2);
- expect(a.summary.reportingScope).toBe("current_generation_cumulative");expect(a.summary.snapshotAt).toBe(now);expect(a.summary.budget.state).toBe("unconfigured");expect(a.summary.pipelineGaps).toContain("canonical_relations_unpublished");
+ expect(a.summary.reportingScope).toBe("current_generation_cumulative");expect(a.summary.snapshotAt).toBe(now);expect(a.summary.budget.state).toBe("unconfigured");expect(a.summary.pipelineGaps).toContain("canonical_relations_not_observed");expect(a.summary.canonicalExtraction).toMatchObject({sources:0,published:0,pending:0,observation:'not_observed'});
 });
 it("reconciles the same uncertain episode after restart without new job, alias or model charge",async()=>{
  await event();modelFailure=true;await scheduler().tick();const initial=await query("SELECT id,job_id,episode_id,run_id FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first();expect(modelCalls).toBe(1);
