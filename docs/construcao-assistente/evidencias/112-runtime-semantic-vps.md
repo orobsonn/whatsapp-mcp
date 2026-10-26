@@ -19,4 +19,4 @@ Não inicia Container, não restaura índice vazio, não configura orçamento e 
 
 Nenhuma chamada paga autorizada, acesso a dados reais, reset de ledger cloud, envio WhatsApp ou escrita Calendar. Custo incremental de inferência real: US$0. O modelo e a qualidade Cognee são sintéticos; driver Flue nativo, cliente e homologação cloud permanecem gates da integração/#57.
 
-A composição do produto também usa hostConfiguredSearch para obter origin/semantic no diário do gatewayMCP; o diário continua reconstruindo RetrievalRuns com a finalidade original do binding (owner_read ou automation), sem fixar uma leitura owner_read em decisões automáticas. A factory do Telegram deve seguir o mesmo contrato na integração48. Nenhuma alteração de cap ou lifecycle.
+A composição do produto também usa hostConfiguredSearch para obter origin/semantic no diário do gatewayMCP; o diário continua reconstruindo RetrievalRuns com a finalidade original do binding (owner_read ou automation), sem fixar uma leitura owner_read em decisões automáticas. Na composição48, a factory do Telegram segue o mesmo contrato configurado do host. Nenhuma alteração de cap ou lifecycle.
