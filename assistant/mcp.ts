@@ -16,6 +16,8 @@ import { calendarQuery, CalendarReader } from "./connectors/calendar";
 import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
 import { Evaluation, evaluationQuery } from "./evaluation";
 import { assistantHealth } from "./health";
+import { configuredRetirementGuard } from "./retention-authority";
+import { AssistantExport } from "./retention";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -26,6 +28,7 @@ export const ownerQuerySchema = z.union([
   calendarQuery,
   evaluationQuery,
   z.object({ kind: z.literal("assistant.health") }).strict(),
+  z.object({ kind: z.literal("assistant.export"), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(50).default(20) }).strict(),
   z.object({ kind: z.literal("source"), id }).strict(),
   z.object({ kind: z.literal("follow_up"), id }).strict(),
   z.object({ kind: z.literal("decision"), id: z.string().min(1).max(2048) }).strict(),
@@ -66,6 +69,7 @@ export class OwnerQueries {
     if (query.kind === "github.list" || query.kind === "github.read") return { state: "pending_configuration", dependency: "github_read" };
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") return { state: "pending_configuration", dependency: "calendar_read" };
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure" || query.kind === "assistant.health") return { state: "pending_configuration", dependency: "owner_evaluation" };
+    if (query.kind === "assistant.export") { const { kind: _, ...input } = query; return new AssistantExport(this.db, this.scope, { kind: "owner" }).page(input); }
     if (query.kind === "source") {
       const access = new SourceAccess(this.db, this.scope), actor = { kind: "owner" } as const;
       const first = await access.read(actor, query.id);
@@ -118,7 +122,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async source(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    return new SourceController(this.env.DB!, scope, { kind: "owner" }).execute(input);
+    return new SourceController(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).execute(input);
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);

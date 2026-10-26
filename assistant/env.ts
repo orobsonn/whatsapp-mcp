@@ -3,6 +3,7 @@ import type { MediaReader } from "./media";
 import type { PdfAdmissionReader } from "./media-admission";
 import type { SnapshotReader } from "./origin-guard";
 import type { CalendarOAuth } from "./connectors/calendar-oauth";
+import type { RetentionAuthority } from "./retention-authority";
 // Host-only owner Telegram notifications; never WhatsApp or Calendar write credentials.
 export interface AssistantEnv {
   DB?: D1Database;
@@ -32,4 +33,7 @@ export interface AssistantEnv {
   CALENDAR_OAUTH_CLIENT_SECRET?: string;
   CALENDAR_OAUTH_REFRESH_TOKEN?: string;
   CALENDAR_OAUTH_ENCRYPTION_KEY?: string;
+  RETENTION_AUTHORITY?: DurableObjectNamespace<RetentionAuthority>;
+  RETENTION_AUTHORITY_REQUIRED?: string;
+  RETENTION_BOOTSTRAP_SEAL?: string;
 }

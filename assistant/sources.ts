@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { TrustedActor } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger, type CommandValue } from "./command-ledger";
+import type { SourceRetirementGuard } from "./retention-authority";
 export type SourceScope = Readonly<{
     installationId: string;
     generation: string;
@@ -71,7 +72,7 @@ type Statement = (sql: string, ...values: CommandValue[]) => D1PreparedStatement
 export class SourceController {
     private readonly scope: SourceScope;
     private readonly actor: TrustedActor;
-    constructor(private readonly db: D1Database, scope: SourceScope, actor: TrustedActor, private readonly clock = Date.now) {
+    constructor(private readonly db: D1Database, scope: SourceScope, actor: TrustedActor, private readonly clock = Date.now, private readonly retirement?: SourceRetirementGuard) {
         if (!scope.installationId || !scope.generation)
             throw new Error("invalid_source_scope");
         this.scope = Object.freeze({ ...scope });
@@ -82,6 +83,14 @@ export class SourceController {
     private statement = (query: string, ...values: CommandValue[]) => this.db.prepare(query).bind(...values);
     private plain: Statement = (query, ...values) => this.statement(query.replaceAll("$gate", "1"), ...values);
     private keys() { return [this.scope.installationId, this.scope.generation]; }
+    private async retirementCheck(id: string, expected: number, retire = false) {
+        if (!this.retirement) return;
+        const row = await this.statement(`SELECT origin,origin_key,revision,status FROM assistant_sources WHERE installation_id=? AND generation=? AND id=?`, ...this.keys(), id)
+            .first<{ origin: string; origin_key: string; revision: number; status: string }>();
+        if (!row || row.revision !== expected || row.status !== 'active') throw new Error("source_revision_conflict");
+        if (retire) await this.retirement.withdraw(row.origin, row.origin_key, id);
+        else await this.retirement.allow(row.origin, row.origin_key, id);
+    }
     private async prepared(input: SourceInput) {
         integer(input.occurredAt);
         if (!input.originKey || !label(input.originKey))
@@ -118,6 +127,7 @@ export class SourceController {
         const now = this.clock();
         integer(now);
         const data = await this.prepared(input);
+        await this.retirement?.allow('owner_note', input.originKey);
         await this.db.batch(this.creation(this.plain, crypto.randomUUID(), data, now));
         const row = await this.origin(input.originKey);
         if (!row || row.request_hash !== data.requestHash)
@@ -152,7 +162,9 @@ export class SourceController {
         integer(input.occurredAt);
         const now = this.clock();
         integer(now);
-        const hash = await sourceTextHash(input.text), results = await this.db.batch(this.correction(this.plain, id, expected, input, hash, now));
+        const hash = await sourceTextHash(input.text);
+        await this.retirementCheck(id, expected);
+        const results = await this.db.batch(this.correction(this.plain, id, expected, input, hash, now));
         const changed = results[1].results[0] as SourceRef | undefined;
         if (!changed)
             throw new Error("source_revision_conflict");
@@ -163,7 +175,7 @@ export class SourceController {
       AND revision=? AND status='active' AND $gate RETURNING id,revision,current_version AS version`, ...values, ...this.keys(), id, expected), this.change(s, id, expected, kind, now)];
     }
     async changeAudience(id: string, expected: number, visibility: Audience) { this.owner(); audience(visibility); return this.update(id, expected, "access_changed", "audience=?", [visibility]); }
-    async withdraw(id: string, expected: number) { this.owner(); return this.update(id, expected, "withdrawn", "status='withdrawn'", []); }
+    async withdraw(id: string, expected: number) { this.owner(); integer(expected, 1); await this.retirementCheck(id, expected, true); return this.update(id, expected, "withdrawn", "status='withdrawn'", []); }
     private async update(id: string, expected: number, kind: string, assignment: string, values: string[]) {
         integer(expected, 1);
         const now = this.clock();
@@ -186,6 +198,7 @@ export class SourceController {
         let batch: D1PreparedStatement[];
         if (item.kind === 'source.create') {
             const data = await this.prepared(item.input), existing = await this.origin(item.input.originKey);
+            await this.retirement?.allow('owner_note', item.input.originKey);
             if (existing && existing.request_hash !== data.requestHash)
                 throw new Error("source_origin_conflict");
             const condition = `NOT EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND origin='owner_note' AND origin_key=?)
@@ -202,6 +215,7 @@ export class SourceController {
             const row = await this.statement(`SELECT id,revision,current_version AS version FROM assistant_sources WHERE installation_id=? AND generation=? AND id=?`, ...this.keys(), item.id).first<SourceRef>();
             if (!row)
                 throw new Error("source_revision_conflict");
+            await this.retirementCheck(item.id, item.expectedRevision, item.kind === 'source.withdraw');
             const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' ? 1 : 0), shadow: true };
             // A future expectedRevision must not make a previously read version
             // valid after somebody else's correction wins before this batch.
