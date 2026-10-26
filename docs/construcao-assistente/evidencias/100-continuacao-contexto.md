@@ -28,6 +28,7 @@ Outros casos cobrem concorrência, perda de ACK na preparação e na conclusão,
 - Regressão dirigida `retrieval-runs + retrieval + sources + jobs`: **110/110** após a implementação final. Em seguida, duas contraprovas adicionais sem alteração de implementação: suíte `retrieval-runs` final **26/26**.
 - `npm run check` e `git diff --check` passaram.
 - Conferência final do integrador: **112/112** testes dirigidos passaram, incluindo as duas contraprovas finais; `check` passou no mesmo conteúdo. A revisão adversarial independente aprovou após repetir o caso de geração nominal e a leitura manual durante pausa.
+- Na primeira CI, uma execução completa passou e outra ultrapassou os cinco segundos padrão no caso com 1.105 fontes. Esse único teste de integração agora tem prazo de 30 segundos, incluindo criação do corpus e todos os passos persistentes; nenhum limite do produto foi alterado. A CI é repetida no commit corrigido antes de integração.
 - Nenhuma chamada paga, inferência real, segredo, rede externa, commit ou deploy foi executado pelo implementador nesta entrega.
 
 O diff excede a referência de 400 linhas porque conserva juntos o controlador transacional, sua migração e as contraprovas de autorização/concorrência. Separar esses testes do mecanismo deixaria uma entrega sem seu critério verificável; a integração semântica e o episódio Flue permanecem em fronteiras próprias.

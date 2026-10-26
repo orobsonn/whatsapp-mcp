@@ -54,7 +54,7 @@ it("finds a late target beyond 1000 canonical rows without private IDs or bodies
   expect(result.coverage.gaps).toContain("index_capacity");
   const serialized = JSON.stringify(result); expect(serialized).not.toContain('"s00000"'); expect(serialized).not.toMatch(/evaluated|scanned|privateCount/);
   expect(await search.check(guest, result.fence!)).toBe(true);
-});
+}, 30000); // Includes seeding and every durable page; not a per-request latency SLO.
 it("persists a complete 64-entry page and resumes global ranking after restart", async () => {
   await seed(130);
   let progress = await search.start(owner, "resume", { query: "Órbita prazo" });
