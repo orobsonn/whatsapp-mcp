@@ -6,6 +6,8 @@ import { OwnerControl } from "./control";
 import { SourceAccess } from "./access";
 import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
+import { DecisionJournal } from "./decisions";
+import { engineName } from "./container";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -13,8 +15,8 @@ export type OwnerAffinity = z.infer<typeof ownerAffinitySchema>;
 const listKind = z.enum(["sources", "projects", "missions", "policies", "mandates", "follow_ups", "decisions"]);
 export const ownerQuerySchema = z.union([
   z.object({ kind: z.literal("source"), id }).strict(),
-  z.object({ kind: z.literal("decision"), id }).strict(),
-  z.object({ kind: listKind, cursor: z.string().max(2048).optional(), limit: z.number().int().min(1).max(50).default(20) }).strict(),
+  z.object({ kind: z.literal("decision"), id: z.string().min(1).max(2048) }).strict(),
+  z.object({ kind: listKind, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(50).default(20) }).strict(),
 ]);
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
@@ -98,7 +100,9 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     const scope = this.#affinity(expected);
     const origin = this.env.CAPTURE_READER && this.env.BRIDGE_SECRET
       ? new OriginGuard(this.env.DB!, () => scope, this.env.CAPTURE_READER, this.env.BRIDGE_SECRET) : undefined;
-    // #45 supplies the mandatory journal at integration; unavailable is explicit.
-    return new OwnerQueries(this.env.DB!, scope, origin).execute(input);
+    const semantic = this.env.COGNEE ? { mode: "required" as const,
+      engine: this.env.COGNEE.get(this.env.COGNEE.idFromName(engineName(scope.installationId, scope.generation))) } : undefined;
+    const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic });
+    return new OwnerQueries(this.env.DB!, scope, origin, journal).execute(input);
   }
 }
