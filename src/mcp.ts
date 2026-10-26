@@ -42,6 +42,7 @@ import {
 } from "./operations";
 import { requireMcpOwner } from "./auth";
 import { telegramLinkCommandSchema } from "../assistant/telegram-auth";
+import { evaluationCommand } from "../assistant/evaluation";
 import { telegramReviewCommand } from "../assistant/telegram";
 import { getChat } from "./store";
 import pkg from "../package.json";
@@ -481,6 +482,8 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
       z.object({ command: sourceCommandSchema }).strict(), false, input => binding().source(affinity(), input.command));
     tool("assistente_controlar", "Direção administrativa do dono para projetos, missões, políticas, mandatos e retornos combinados. Informe operação e versão/revisão esperada. Registrar contexto não executa envios; piloto em modo sombra.",
       z.object({ command: ownerCommandSchema }).strict(), false, input => binding().control(affinity(), input.command));
+    tool("assistente_avaliar", "Registra exposição e avaliação explicitamente informada pelo dono sobre uma entrada do diário sombra. Labels são juízo humano na exposição; ação humana é relato explícito, nunca inferida de fromMe, conteúdo recebido, revisão Telegram ou aprovação simulada. Não preencha avaliações sem relato do dono. Tempo é intervalo de relógio entre registros, sem medir atenção ativa.",
+      z.object({ command: evaluationCommand }).strict(), false, input => binding().evaluate(affinity(), input.command));
     tool("assistente_consultar", "Consulta estado e fontes atuais da assistente com paginação limitada. Decisões de sombra são propostas hipotéticas, nunca mensagens enviadas. Fonte indisponível ou dependência pendente é explícita; não é acervo vazio.",
       z.object({ query: ownerQuerySchema }).strict(), true, input => binding().query(affinity(), input.query));
   }

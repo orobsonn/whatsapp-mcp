@@ -14,6 +14,8 @@ import { FollowUps } from "./followups";
 import { githubQuery, GitHubReader } from "./connectors/github";
 import { calendarQuery, CalendarReader } from "./connectors/calendar";
 import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
+import { Evaluation, evaluationQuery } from "./evaluation";
+import { assistantHealth } from "./health";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -22,6 +24,8 @@ const listKind = z.enum(["sources", "projects", "missions", "policies", "mandate
 export const ownerQuerySchema = z.union([
   githubQuery,
   calendarQuery,
+  evaluationQuery,
+  z.object({ kind: z.literal("assistant.health") }).strict(),
   z.object({ kind: z.literal("source"), id }).strict(),
   z.object({ kind: z.literal("follow_up"), id }).strict(),
   z.object({ kind: z.literal("decision"), id: z.string().min(1).max(2048) }).strict(),
@@ -32,6 +36,7 @@ export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 export interface OwnerAssistantRPC {
   telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand): Promise<unknown>;
   telegramReview(expected: OwnerAffinity, command: unknown): Promise<unknown>;
+  evaluate(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   source(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   control(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   query(expected: OwnerAffinity, input: unknown): Promise<unknown>;
@@ -60,6 +65,7 @@ export class OwnerQueries {
     if(query.kind==="follow_up")return new FollowUps(this.db,this.scope,{origin:this.origin}).get(query.id);
     if (query.kind === "github.list" || query.kind === "github.read") return { state: "pending_configuration", dependency: "github_read" };
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") return { state: "pending_configuration", dependency: "calendar_read" };
+    if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure" || query.kind === "assistant.health") return { state: "pending_configuration", dependency: "owner_evaluation" };
     if (query.kind === "source") {
       const access = new SourceAccess(this.db, this.scope), actor = { kind: "owner" } as const;
       const first = await access.read(actor, query.id);
@@ -118,9 +124,21 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     const scope = this.#affinity(expected);
     return new OwnerControl(this.env.DB!, scope, { kind: "owner" }).execute(input);
   }
+  async evaluate(expected: OwnerAffinity, input: unknown) {
+    const scope = this.#affinity(expected), { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
+    return new Evaluation(this.env.DB!, scope, { kind: "owner" }, new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic }), { origin }).execute(input);
+  }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
     const query = ownerQuerySchema.parse(input);
+    if (query.kind === "assistant.health") return assistantHealth(this.env, { kind: "owner" });
+    if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure") {
+      const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read"), evaluation = new Evaluation(this.env.DB!, scope, { kind: "owner" },
+        new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic }), { origin });
+      if (query.kind === "evaluation.metrics") return evaluation.metrics();
+      if (query.kind === "evaluation.exposure") return evaluation.exposure(query.id);
+      const { kind: _, ...input } = query; return evaluation.sample(input);
+    }
     if (query.kind === "github.list" || query.kind === "github.read") {
       if (!this.env.GITHUB_READ_REPOSITORIES) return { state: "pending_configuration", dependency: "github_read" };
       return new GitHubReader(this.env.DB!, scope, JSON.parse(this.env.GITHUB_READ_REPOSITORIES), this.env.GITHUB_READ_TOKEN).execute({ kind: "owner" }, query);
