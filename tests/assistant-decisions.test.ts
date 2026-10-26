@@ -296,7 +296,7 @@ test("a malformed job request is an isolated visible invariant failure and canno
   expect(await journal.get("job:" + healthy.job.id)).toMatchObject({ phase: "failed", reason: "invariant_failure" });
 });
 
-async function remoteProposal() {
+async function remoteProposal(timeoutMs = 4000) {
   const nominal = { ...scope, sourceEpoch: "epoch", sourceGeneration: "origin" };
   const background = await new SourceController(env.DB, scope, { kind: "owner" }, () => now).create({ originKey: "remote-background", text: "Synthetic request remote background", occurredAt: now });
   let state: "available" | "withdrawn" | "offline" | "hung" = "available";
@@ -318,8 +318,9 @@ async function remoteProposal() {
   ]);
   const result = await computed({ origin }), published = await result.host.publish(result.episode.id, result.reply);
   expect(published.state).toBe("shadow_completed");
-  const diary = new DecisionJournal(database, nominal, { kind: "owner" }, { origin, clock: () => now, timeoutMs: 25 });
-  expect(await diary.get(published.decisionId!)).toMatchObject({ freshness: "current" });
+  // Healthy setup must not compete with the deliberately short failure deadline.
+  expect(await new DecisionJournal(database, nominal, { kind: "owner" }, { origin, clock: () => now }).get(published.decisionId!)).toMatchObject({ freshness: "current" });
+  const diary = new DecisionJournal(database, nominal, { kind: "owner" }, { origin, clock: () => now, timeoutMs });
   return { ...result, diary, origin, background, id: published.decisionId!, setState: (value: typeof state) => { state = value; }, race: (action: typeof during) => { during = action; } };
 }
 test("captured events own their completed decision or model failure without inheriting the previous event", async () => {
@@ -341,14 +342,21 @@ test("captured events own their completed decision or model failure without inhe
   ]));
 });
 test.each(["withdrawn", "offline", "hung"] as const)("remote %s suppresses an unchanged proposal within the total read deadline", async state => {
-  const result = await remoteProposal(); result.setState(state);
+  const result = await remoteProposal(25); result.setState(state);
   const started = Date.now(), detail = await result.diary.get(result.id);
   expect(detail).toMatchObject({ freshness: "unavailable" }); expect(detail).not.toHaveProperty("proposal");
   expect(Date.now() - started).toBeLessThan(1000); expect(result.calls()).toBe(1);
 });
 test("a policy mutation during remote revalidation is denied by the final local batch", async () => {
   const result = await remoteProposal();
-  result.race(async () => { await query("UPDATE assistant_conversations SET revision=revision+1 WHERE installation_id=? AND chat_id='chat'", scope.installationId).run(); });
+  const before = await query("SELECT revision FROM assistant_conversations WHERE installation_id=? AND chat_id='chat'", scope.installationId).first<{ revision: number }>();
+  let mutations = 0;
+  result.race(async () => {
+    await query("UPDATE assistant_conversations SET revision=revision+1 WHERE installation_id=? AND chat_id='chat'", scope.installationId).run();
+    mutations++;
+  });
   const detail = await result.diary.get(result.id);
+  expect(mutations).toBeGreaterThan(0);
+  expect(await query("SELECT revision FROM assistant_conversations WHERE installation_id=? AND chat_id='chat'", scope.installationId).first()).toEqual({ revision: before!.revision + mutations });
   expect(detail).toMatchObject({ freshness: "stale" }); expect(detail).not.toHaveProperty("proposal"); expect(result.calls()).toBe(1);
 });
