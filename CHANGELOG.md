@@ -4,6 +4,21 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-26
+
+### Added
+- Revisão diária em sombra, única por período UTC, com pendências, silêncios registrados, lacunas, FUPs bloqueados e estado de pausa/orçamento (#53).
+- Ciclos persistentes recuperam o mesmo item/recibo e não despejam notificações de períodos atrasados. Resumo identifica metadados cumulativos, sem alegar cobertura completa.
+
+### Fixed
+- Descoberta conserva a lacuna explícita de conversas cujo tipo ainda não foi observado, avançando o cursor sem interromper o cron ou inventar o tipo.
+
+### Validation
+- D1/workerd controlado cobre disputa de cron, deduplicação de atrasos, silêncios/FUPs e pausa/budget; a Cloudflare executou ciclos naturais completos em minutos distintos e manteve uma revisão do período, com processamento pausado. [Provas do scheduler](docs/construcao-assistente/evidencias/53-routines.md) e [cron natural](docs/construcao-assistente/evidencias/53-56-natural-cron-vps.md).
+
+### Notes
+- Entrega de engenharia do scheduler; Telegram real, inferência/Flue sem pausa e homologação completa do piloto mantêm gates próprios. Esta versão não habilita envios WhatsApp, escrita Calendar ou notificações Telegram.
+
 ## [0.37.0] - 2026-10-26
 
 ### Added

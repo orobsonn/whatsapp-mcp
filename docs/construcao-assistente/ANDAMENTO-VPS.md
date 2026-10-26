@@ -2,6 +2,12 @@
 
 Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; ainda não há homologação integrada do produto. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
 
+## Atualização — v0.36.0 publicada; mídia e cron comprovados nas fronteiras descritas
+
+A v0.36.0/#49 foi publicada no commit integrado `db1a556`, com CI 40419487839 aprovada e tag/package/lock/changelog consistentes. A mídia da #52 tem três casos sintéticos reais, leitura/cache e retirada comprovados; evidência [cloud de mídia](evidencias/52-media-cloud-vps.md). O ledger dos testes de API preserva 53189 microUSD comprometidos, incluindo 40000 incertos anteriores; 4136 são os três novos casos conhecidos e liquidados, sem nova inferência incerta. Custos de infraestrutura e fatura são separados.
+
+O cron próprio tem a prova natural pausada abaixo; o pipeline completo com inferência continua pendente de #57. MCP no cliente, Telegram e Google próprios mantêm as dependências já registradas. A capacidade geral de iniciar conversa sem histórico é #126/#128, sem produto de cotação/broadcast. Os checkpoints anteriores são históricos e não prevalecem sobre estas evidências mais recentes; nenhum custo ou tentativa incerta foi apagado.
+
 ## Atualização — cron natural pausado no código 6171513
 
 O Root instalou somente código `6171513` no Worker próprio, versão `06ac6ec5`, com ACK e readback integral. Flags shadow/paused, mídia/resumos desabilitados, cinco namespaces/markers de secrets, imagem, exposição e cron foram preservados. A CI 40415132411 da base exata passou com 1277 gerais/63 nativos, tipos, builds e auditoria. Nenhuma nova migração ou ativação de modelo foi feita nesta atualização.
