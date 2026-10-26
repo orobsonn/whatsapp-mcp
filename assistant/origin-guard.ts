@@ -3,7 +3,7 @@ import { bridgeHash } from "./ingress";
 export type OriginScope = { installationId: string; generation: string; sourceEpoch: string; sourceGeneration: string };
 export type OriginRef = { sourceKind: "message" | "media" | "derivative" | "conversation"; sourceId: string; chatId: string };
 export type ReaderQuery = OriginRef & { secret: string; sourceEpoch: string; sourceGeneration: string };
-export interface SnapshotReader { readSnapshot(input: ReaderQuery): Promise<unknown> }
+export interface SnapshotReader { readSnapshot(input: ReaderQuery): Promise<unknown>; installationAffinity?(input: { secret: string }): Promise<unknown> }
 export const scopeKeys = (scope: OriginScope) => [scope.installationId, scope.generation, scope.sourceEpoch, scope.sourceGeneration];
 export const originScopeSql = "installation_id=? AND generation=? AND source_epoch=? AND source_generation=?";
 export function activeOrigin(getScope: () => OriginScope) {
