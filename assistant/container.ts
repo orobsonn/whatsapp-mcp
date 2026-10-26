@@ -1,7 +1,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { AssistantEnv } from "./env";
 import { SourceAccess, type SourceFence, type TrustedActor } from "./access";
-import { CogneeEngine, type ContainerPort, type EngineGuard, type EngineIngest, type EnginePermit, type EngineSearch, type SearchTicket } from "./engine";
+import { CogneeEngine, type ContainerPort, type EngineGuard, type EngineIngest, type EnginePermit, type EngineSearch, type SearchTicket,type InitialIngestAdmission,type InitialIngestTicket,type InitialIngestCheckInput } from "./engine";
 import { RetrievalRuns, type CoverageProof } from "./retrieval-runs";
 import { CogneeModelBroker } from "./model-broker";
 import { createOpenAIAdapter, DEFAULT_BROKER_CONFIG } from "./model-transport";
@@ -13,6 +13,7 @@ import { RebuildController, validIndexProof, type RebuildState, type RebuildStor
 import type { SourceStamp } from "./checkpoints";
 import { z } from "zod";
 import { assertRestoredGeneration } from "./retention-runtime";
+import {retentionExecutionGuard} from './retention-execution';
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -48,13 +49,14 @@ export class DirectContainerPort implements ContainerPort {
   constructor(private container: Container, private outbound: (epoch: string) => Fetcher,
     private scope: { installationId: string; generation: string }) {}
   get running() { return this.container.running; }
-  async start() {
-    return this.boot();
+  async start(check?:LifecycleCheck) {
+    if(check&&this.container.running)throw Error('initial_process_not_stopped');return this.boot(undefined,check);
   }
   private async boot(snapshot?: SnapshotHandle, check?: LifecycleCheck) {
     if (!this.container.running) {
       const hash = await checked(check, () => bridgeHash(DEFAULT_BROKER_CONFIG));
       if (check) await check();
+      if(check&&!snapshot&&this.container.running)throw Error('initial_process_not_stopped');
       this.container.start({ ...(snapshot ? { containerSnapshot: { id: snapshot.id } } : { image: this.container.images.cognee }), instance: "standard-1", enableInternet: false,
         env: { ASSISTANT_INSTALLATION_ID: this.scope.installationId, ASSISTANT_GENERATION: this.scope.generation, ASSISTANT_CONFIGURATION_HASH: hash } });
     }
@@ -117,6 +119,16 @@ function coverageHost(env:AssistantEnv,proof:CoverageProof) {
 export class CanonicalEngineGuard implements EngineGuard {
   private access: SourceAccess;
   constructor(private env: AssistantEnv) { const scope = configured(env); this.access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }); }
+  async checkInitialAdmission(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string){
+    try{if(!/^[a-f0-9]{64}$/.test(admission.itemId)||typeof admission.owner!=='string'||admission.owner.length>256||this.env.ROUTINES_ENABLED!=='shadow'||this.env.ROUTINES_PAUSED==='true')return false;
+      await assertRestoredGeneration(this.env);const scope=configured(this.env),now=Date.now(),ref=input.source.fence.source,guard=this.access.guard(input.actor,input.source.fence,now),execution=retentionExecutionGuard(scope);
+      return !!await scope.db.prepare(`SELECT 1 FROM assistant_routine_state c JOIN assistant_routine_items r USING(installation_id,generation,source_epoch,source_generation)
+        WHERE c.installation_id=? AND c.generation=? AND c.source_epoch=? AND c.source_generation=? AND c.owner_token=? AND c.state='running' AND c.paused=0 AND c.lease_until>? AND c.active_item_id=r.id AND r.id=? AND r.actor_json=?
+        AND EXISTS(SELECT 1 FROM json_each(r.index_sources_json) j WHERE json_extract(j.value,'$.id')=? AND json_extract(j.value,'$.revision')=? AND json_extract(j.value,'$.version')=? AND json_extract(j.value,'$.hash')=?)
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM assistant_routine_ingestions i WHERE i.installation_id=r.installation_id AND i.generation=r.generation AND i.source_epoch=r.source_epoch AND i.source_generation=r.source_generation AND i.item_id=r.id AND i.source_id=? AND i.index_epoch=? AND i.state='attempting' AND json_extract(i.source_ref_json,'$.revision')=? AND json_extract(i.source_ref_json,'$.version')=? AND json_extract(i.source_ref_json,'$.hash')=?))
+        AND (${guard.sql}) AND (${execution.sql})`).bind(scope.installationId,scope.generation,this.env.BRIDGE_SOURCE_EPOCH!,this.env.BRIDGE_SOURCE_GENERATION!,admission.owner,now,admission.itemId,JSON.stringify(input.actor),ref.id,ref.revision,ref.version,ref.hash,indexEpoch??null,ref.id,indexEpoch??null,ref.revision,ref.version,ref.hash,...guard.values,...execution.values).first();
+    }catch{return false;}
+  }
   async check(actor: TrustedActor, permits: EnginePermit[], isCurrent:()=>boolean=()=>true) {
     try {
       if(!isCurrent())return false; await assertRestoredGeneration(this.env); if(!isCurrent())return false;
@@ -375,6 +387,9 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   }
   fetch() { return Promise.resolve(deny()); }
   async ingest(input: EngineIngest) { const host=this.host(); await assertRestoredGeneration(this.env); return host.ingest(input); }
+  async reserveInitialIngest(input:EngineIngest,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().reserveInitialIngest(input,admission);}
+  async commitInitialIngest(input:EngineIngest,ticket:InitialIngestTicket,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().commitInitialIngest(input,ticket,admission);}
+  async initialIngestReceipt(input:EngineIngest,itemId:string,indexEpoch:string){await assertRestoredGeneration(this.env);const result=await this.host().initialIngestReceipt(input,itemId,indexEpoch);return result.state==='complete'?{state:'complete' as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:'uncertain' as const};}
   async ingestReceipt(input: EngineIngest, indexEpoch: string) { await assertRestoredGeneration(this.env); const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
   /** Host-only metadata: no source bodies, broker tokens or snapshot handles. */
   async lifecycleState() {

@@ -159,6 +159,35 @@ export class AssistantScheduler {
   if(result.state==="maintenance_required")return "index_maintenance_required";
   return result.state==="verified"||!physical&&result.state==="current_metadata"?null:"index_preflight_unavailable";
  }
+ private async initialIndex(cycle:RoutineCycle,item:Item,binding:Binding,refs:Binding['source'][],engine:DurableObjectStub<CogneeContainer>,reconcileOnly:boolean){
+  const ref=refs.find(x=>x.id===item.source_id)??refs[0];if(!ref)return this.gap(cycle,item.id,'index_bootstrap_empty');
+  const source=await this.access.read(binding.actor,ref.id,ref.revision);if(!source||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash||!source.text?.trim())return this.gap(cycle,item.id,'source_changed');
+  const {origin}=hostConfiguredSearch(this.env,'automation',this.clock),fence=source.fence.source.origin==='whatsapp'?await origin?.fence(source.id):undefined;
+  if(source.fence.source.origin==='whatsapp'&&(!fence||!await origin!.check(fence)))return this.gap(cycle,item.id,'origin_unavailable');
+  const input={actor:binding.actor,source,...(fence?{origin:fence}:{})},admission={itemId:item.id,owner:cycle.owner};
+  let work=await this.sql(`SELECT state,index_epoch FROM assistant_routine_ingestions WHERE ${originScopeSql} AND item_id=? AND source_id=?`,...this.keys(),item.id,ref.id).first<{state:string;index_epoch:string}>();
+  if(work?.state==='complete')return this.gap(cycle,item.id,'index_maintenance_required');
+  if(work?.state==='attempting'||work?.state==='uncertain'){
+   const receipt=await engine.initialIngestReceipt(input,item.id,work.index_epoch);if(receipt.state!=='complete')return this.gap(cycle,item.id,'ingestion_uncertain',true);
+  }else{
+   if(reconcileOnly)return this.gap(cycle,item.id,'ingestion_uncertain',true);
+   const reserved=await engine.reserveInitialIngest(input,admission);if(reserved.state!=='reserved')return this.gap(cycle,item.id,reserved.state==='uncertain'?'ingestion_uncertain':'index_bootstrap_unavailable',reserved.state==='uncertain');
+   const owner=this.owned(cycle),epoch=reserved.ticket.indexEpoch;
+   await this.sql(`INSERT INTO assistant_routine_ingestions SELECT ?,?,?,?,?,?,?,?,'prepared' WHERE ${owner.sql} ON CONFLICT DO NOTHING`,...this.keys(),item.id,ref.id,JSON.stringify(ref),epoch,...owner.values).run();
+   const claimed=await this.sql(`UPDATE assistant_routine_ingestions SET state='attempting' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND source_ref_json=? AND index_epoch=? AND state='prepared' AND ${owner.sql} RETURNING source_id`,...this.keys(),item.id,ref.id,JSON.stringify(ref),epoch,...owner.values).all();
+   if(!claimed.results.length)return this.gap(cycle,item.id,'ingestion_uncertain',true);
+   work={state:'attempting',index_epoch:epoch};await this.routines.phase(cycle,'initial_ingest',item.id);
+   const result=await engine.commitInitialIngest(input,reserved.ticket,admission) as {state:string};
+   if(result.state!=='complete'){await this.sql(`UPDATE assistant_routine_ingestions SET state='uncertain' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND index_epoch=? AND state='attempting'`,...this.keys(),item.id,ref.id,epoch).run();return this.gap(cycle,item.id,'ingestion_uncertain',true);}
+  }
+  await this.sql(`UPDATE assistant_routine_ingestions SET state='complete' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND index_epoch=? AND state IN ('attempting','uncertain')`,...this.keys(),item.id,ref.id,work!.index_epoch).run();
+  if(!await this.routines.current(cycle))throw Error('routine_stale');
+  const current=await engine.lifecycleState();if(!current.index||current.index.epoch!==work!.index_epoch||current.index.lost||!current.index.sources.length)return this.gap(cycle,item.id,'index_maintenance_required');
+  const checked=await this.preflight(cycle,engine,current.index,true);if(checked)return this.gap(cycle,item.id,checked);
+  await this.routines.phase(cycle,'checkpoint',item.id);const checkpoint=await engine.checkpoint({indexEpoch:current.index.epoch,indexRevision:current.index.revision});
+  if(checkpoint.state!=='checkpoint_confirmed')return this.gap(cycle,item.id,'checkpoint_pending');
+  await this.update(cycle,item.id,"state='pending',last_gap='indexing_pending'");return 'pending';
+ }
  private async index(cycle:RoutineCycle,item:Item,binding:Binding,reconcileOnly:boolean):Promise<string>{
   if(!this.env.COGNEE)return "ready";const inventory=this.access.inventory(binding.actor,binding.projectId,this.clock(),this.scope);
   const rows=await this.sql(`SELECT id,revision,version,content_hash FROM (${inventory.sql}) ORDER BY id LIMIT 65`,...inventory.values).all<{id:string;revision:number;version:number;content_hash:string}>();
@@ -166,8 +195,10 @@ export class AssistantScheduler {
   const refs=JSON.stringify(rows.results.map(row=>({id:row.id,revision:row.revision,version:row.version,hash:row.content_hash})));
   if(item.index_sources_json&&item.index_sources_json!==refs){await this.update(cycle,item.id,"state='blocked',last_gap='inventory_changed'");return "blocked";}
   if(!item.index_sources_json){if(reconcileOnly)return "uncertain";await this.update(cycle,item.id,"index_sources_json=?",[refs]);}
+  const engine=this.env.COGNEE.get(this.env.COGNEE.idFromName(engineName(this.scope.installationId,this.scope.generation))),before=await engine.lifecycleState();
+  if(!before.index)return this.initialIndex(cycle,item,binding,JSON.parse(refs),engine,reconcileOnly);
   const warm=await this.warm(cycle,item);if(!warm.ready||!warm.state?.index)return this.gap(cycle,item.id,warm.gap??"index_unavailable",reconcileOnly);
-  let metadata=warm.state.index;const engine=warm.engine;
+  let metadata=warm.state.index;
   for(const ref of JSON.parse(refs) as Binding["source"][]){
    const source=await this.access.read(binding.actor,ref.id,ref.revision);if(!source||source.fence.source.hash!==ref.hash)return this.gap(cycle,item.id,"source_changed");
    const {origin}=hostConfiguredSearch(this.env,"automation",this.clock),fence=source.fence.source.origin==="whatsapp"?await origin?.fence(source.id):undefined;
