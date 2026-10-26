@@ -12,6 +12,8 @@ import { EpisodeController } from "../assistant/agent/controller";
 import { SourceAccess } from "../assistant/access";
 import { InferenceBudget } from "../assistant/budget";
 import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
+import { bridgeHash } from "../assistant/ingress";
+import type { SemanticEnginePort, SearchTicket, EngineSearchOutcome } from "../assistant/engine";
 import { RetrievalRuns } from "../assistant/retrieval-runs";
 import { DecisionJournal } from "../assistant/decisions";
 
@@ -570,4 +572,44 @@ test("real interlocutor Flue receives public canonical context instead of owner 
   expect((await runtimeCall("/read", { episodeId: episode.id })).body.state).toBe("shadow_completed");
   expect(await db.prepare("SELECT COUNT(*) FROM synthetic_model_calls").first("COUNT(*)")).toBe(1);
   expect(await db.prepare("SELECT body FROM synthetic_model_calls").first("body")).not.toContain("OWNER_PRIVATE_SENTINEL");
+});
+
+async function semanticController(mode:"required"|"lexical_fallback") {
+  const actor={kind:"owner"} as const,query=mode==="required"?"Quem responde pela cobrança?":"Synthetic question";
+  const queue=new JobQueue(db,scope);await queue.fail(lease,"previous",now);
+  await queue.enqueue({kind:"reasoning",dedupeKey:"semantic-episode",sourceId:"source",sourceRevision:1,request:query,runtime:"flue"},now);lease=(await queue.claim(now,90000))!;
+  let semanticReceipt:EngineSearchOutcome={state:"uncertain",reason:"not_submitted"},preparedInput:Parameters<SemanticEnginePort["prepare"]>[1],semanticCalls=0,modelCalls=0;
+  const engine:SemanticEnginePort={prepare:async(alias,input)=>{
+    preparedInput=input;
+    return mode==="lexical_fallback"?{state:"blocked",reason:"PRIVATE_ENGINE_REASON_SENTINEL"}:{state:"prepared",ticket:{alias,requestHash:await bridgeHash(input),operationId:"a".repeat(64),indexEpoch:"synthetic-index",indexRevision:"b".repeat(64)}};
+  },submit:async(ticket:SearchTicket)=>{semanticCalls++;semanticReceipt={state:"complete",operationId:ticket.operationId,indexRevision:ticket.indexRevision,indexState:"needs_checkpoint",result:{candidates:[{...preparedInput.allowedSources[0],via:["chunks"],relationCount:0}],missing:[]}};return semanticReceipt;},lookupTicket:async()=>semanticReceipt};
+  const search=new RetrievalRuns(db,scope,{clock:()=>now,purpose:"owner_read",semantic:{mode,engine}});
+  let progress=await search.start(actor,"semantic-controller",{query});
+  for(let i=0;progress.state==="pending"&&i<10;i++)progress=await search.step(actor,{runId:progress.runId,stepId:`semantic-${i}`,expectedCheckpoint:progress.checkpoint});
+  const source=(await new SourceAccess(db,scope).read(actor,"source"))!,budgetScope={...scope,period:"synthetic-period"};await new InferenceBudget(db,budgetScope).configure(100000);
+  const host=new EpisodeController(db,budgetScope,search,async()=>{modelCalls++;return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:"proposed",text:"Synthetic proposal",citations:[{id:"source",revision:1,version:1,hash:source.fence.source.hash,quote:"Synthetic original"}]})}}]})};},{...DEFAULT_BROKER_CONFIG,chatCeiling:5},{clock:()=>now,purpose:"owner_read"});
+  if(mode==="required") {await expect(host.prepare(lease,"owner",progress.runId)).rejects.toThrow("episode_waiting_context");expect(modelCalls).toBe(0);}
+  await search.advanceSemantic(actor,progress.runId);
+  return {host,search,runId:progress.runId,modelCalls:()=>modelCalls,semanticCalls:()=>semanticCalls};
+}
+test.each(["required","lexical_fallback"] as const)("real episode binds strict %s semantic provenance through admission and guarded publication",async mode=>{
+  const {host,runId,semanticCalls,modelCalls}=await semanticController(mode),episode=await host.prepare(lease,"owner",runId);
+  expect(episode.binding.search.ranking).toMatchObject({engine:mode==="required"?"complete":"unavailable"});
+  expect(JSON.stringify(episode)).not.toContain("PRIVATE_ENGINE_REASON_SENTINEL");
+  expect(host.message(episode)).toContain(mode==="required"?'"gaps":[]':'semantic_unsearched');
+  const native={submissionId:"semantic-submission",uid:"semantic-uid",acceptedAt:"2026-10-25T00:00:00Z"};
+  await host.episodes.dispatch(episode.id);await host.episodes.accept(episode.id,{profile:"owner",runtimeId:episode.runtime_id,bindingHash:episode.binding_hash,envelopeHash:episode.dispatch_hash,receipt:native});
+  const raw=await host.model(episode.id,{profile:"owner",runtimeId:episode.runtime_id,submissionId:native.submissionId},{messages:[{role:"user",content:host.message(episode)}]});
+  expect(await db.prepare("SELECT search_nonce FROM assistant_episodes WHERE id=?").bind(episode.id).first("search_nonce")).toEqual(expect.any(String));
+  expect(await host.publish(episode.id,{text:raw,data:{},...native})).toMatchObject({state:"shadow_completed",proposal:{coverage:{engine:mode==="required"?"complete":"unavailable"},binding:{allowedPackHash:episode.binding.search.allowedPackHash}}});
+  expect(modelCalls()).toBe(1);expect(semanticCalls()).toBe(mode==="required"?1:0);
+});
+test.each(["required","lexical_fallback"] as const)("fresh inventory insertion blocks the %s episode receipt and nonce atomically",async mode=>{
+  const {host,runId,modelCalls}=await semanticController(mode),episode=await host.prepare(lease,"owner",runId);
+  let oldNonce:unknown;
+  const batch=db.batch.bind(db);let inserted=false;
+  db.batch=async statements=>{if(statements.length===4&&!inserted){inserted=true;oldNonce=await db.prepare("SELECT search_nonce FROM assistant_episodes WHERE id=?").bind(episode.id).first("search_nonce");await new SourceController(db,scope,{kind:"owner"},()=>now).create({originKey:"insert-behind",text:"Fresh context after search",occurredAt:now});}return batch(statements);};
+  await expect(host.model(episode.id,{profile:"owner",runtimeId:episode.runtime_id,submissionId:"semantic-submission"},{messages:[{role:"user",content:host.message(episode)}]})).rejects.toThrow("episode_denied");
+  expect(inserted).toBe(true);expect(modelCalls()).toBe(0);expect(await db.prepare("SELECT COUNT(*) n FROM assistant_model_receipts").first("n")).toBe(0);
+  expect(await db.prepare("SELECT search_nonce FROM assistant_episodes WHERE id=?").bind(episode.id).first("search_nonce")).toBe(oldNonce);
 });
