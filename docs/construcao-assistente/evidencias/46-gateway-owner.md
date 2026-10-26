@@ -8,4 +8,6 @@ Classe WorkerEntrypoint real instanciada em workerd local e controllers D1 reais
 
 Listagens são metadados, limite20/50, cursor limitado e vinculado ao namespace/origem/tipo. Cursor UTF8 suporta ID não ASCII; final de listagem não afirma snapshot/inventário histórico completo. Corpo atual de nota usa SourceAccess; origemWhatsApp também usa OriginGuard real. Contraprova retira a fonte remotamente sem mudar status active no D1 nem aplicar novo inbox: resultado não contém texto. Listas não incluem corpos de fontes.
 
-Pendente: diário45 ainda retorna pending_dependency; export do receiver/config binding e homologação cloud ainda não foram feitos. Nenhum deploy, inferência paga ou envio. Estas provas não fecham46 nem comprovam cliente GPT/Claude real.
+O bundle oficial agora exporta OwnerAssistant por assistant/cloudflare.ts. Contraprova sem export falhou na inicialização do workerd; após export e data de compatibilidade RPC no caller de teste, o service binding real entre dois Workers executou fonte→D1, recusou cada afinidade errada e recuperou o recibo original após reinício com estado persistido (1/1, /tmp/assistant46-binding-green.txt). Sem rede externa.
+
+Pendente: diário45 ainda retorna pending_dependency; configuração de binding cloud e homologação cloud ainda não foram feitas. Nenhum deploy, inferência paga ou envio. Estas provas não fecham46 nem comprovam cliente GPT/Claude real.
