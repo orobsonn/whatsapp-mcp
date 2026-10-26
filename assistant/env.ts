@@ -20,4 +20,6 @@ export interface AssistantEnv {
   MEDIA_PDF_PARSER?: PdfAdmissionReader;
   GITHUB_READ_REPOSITORIES?: string;
   GITHUB_READ_TOKEN?: string;
+  CALENDAR_READ_CALENDARS?: string;
+  CALENDAR_READ_ACCESS_TOKEN?: string;
 }
