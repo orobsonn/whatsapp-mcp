@@ -8,7 +8,7 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: "2026-10-19",
         compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
-        d1Databases: ["DB"],
+        d1Databases: ["DB", "RECIPIENT_DB"],
         r2Buckets: ["MEDIA", "ARTIFACTS"],
         kvNamespaces: ["OAUTH_KV"],
         bindings: {

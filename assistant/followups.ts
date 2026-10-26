@@ -6,6 +6,7 @@ import { JobQueue, type JobScope } from "./queue";
 import { seedDecisionJob } from "./decisions";
 import type { OriginGuard } from "./origin-guard";
 import { normalizeRetrievalInput } from "./retrieval";
+import {outgoingProof,type OutgoingPort} from './outgoing';
 const ns = "installation_id=? AND generation=?";
 const id = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/), version = z.number().int().positive();
 export const fupProvenanceSchema = z.object({ evidenceKind: z.enum(["owner_directive", "attributed_candidate"]),
@@ -13,7 +14,7 @@ export const fupProvenanceSchema = z.object({ evidenceKind: z.enum(["owner_direc
   candidate: z.object({ batchKey: id, claimIndex: z.number().int().min(0).max(31), requestHash: hash, quote: z.string().min(1).max(4096) }).strict().nullable(),
   conditionStatus: z.enum(["none_explicit", "attributed", "unknown"]),
   temporal: z.object({ dueAt: z.number().int().nonnegative().safe().nullable(), windowEnd: z.number().int().nonnegative().safe().nullable(), timezone: id, precision: z.enum(["unset", "exact", "day", "window"]) }).strict(),
-}).strict();
+ outgoing:outgoingProof.optional(),}).strict();
 /** Only an explicit offset plus an IANA-zone round trip can define civil time.
  * Numeric input remains an already resolved UTC instant, including legacy UTC. */
 export function fupInstant(value: number | string, timezone: string): number {
@@ -54,7 +55,7 @@ export async function prepareFupProvenance(db: D1Database, scope: SourceScope, i
   const body = fupProvenanceSchema.parse({ evidenceKind: candidate ? "attributed_candidate" : "owner_directive", source: { id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash }, authorId: source.authorId, authorLabel: source.authorLabel, candidate,
     conditionStatus: item.condition ? "attributed" : candidate ? "unknown" : "none_explicit", temporal: { dueAt: item.dueAt ?? null, windowEnd: item.windowEnd ?? null, timezone: item.timezone, precision: item.precision } });
   if (new TextEncoder().encode(JSON.stringify(body)).length > 16384) throw new Error("control_input");
-  return { guard, body };
+  return { guard, body, source };
 }
 /** Fixed admission predicate shared by occurrence creation and queue insertion.
  * A due observation never overrides current owner intent or a cancelled child. */
@@ -81,7 +82,7 @@ type DueItem={id:string;version:number;occurrenceId:string;state:"admitted"|"blo
 export class FollowUps {
   private readonly scope:JobScope;
   private readonly clock:()=>number;
-  constructor(private readonly db:D1Database,scope:JobScope,private readonly options:{clock?:()=>number;origin?:Pick<OriginGuard,"fence"|"check">}={}) {
+  constructor(private readonly db:D1Database,scope:JobScope,private readonly options:{clock?:()=>number;origin?:Pick<OriginGuard,"fence"|"check">;outgoing?:OutgoingPort}={}) {
     if(!scope.installationId||!scope.generation)throw new Error("followup_scope");this.scope=Object.freeze({...scope});this.clock=options.clock??Date.now;
   }
   private statement(query:string,...values:(string|number|null)[]){return this.db.prepare(query).bind(this.scope.installationId,this.scope.generation,...values);}
@@ -96,6 +97,7 @@ export class FollowUps {
     const required=!stored&&await this.statement(`SELECT 1 FROM assistant_owner_commands WHERE ${ns} AND json_extract(result_json,'$.fupProvenance')=1 AND json_extract(result_json,'$.id')=? LIMIT 1`,key).first();
     const parsed=stored?fupProvenanceSchema.safeParse(JSON.parse(stored.body_json)):null;
     if(source.fence.source.origin==="whatsapp") {const fence=await this.options.origin?.fence(source.id);if(!fence||!await this.options.origin!.check(fence))return {...metadata,provenance:{state:"unavailable"}};}
+    if(parsed?.success&&parsed.data.outgoing&&(!this.options.outgoing||!await this.options.outgoing.check(parsed.data.outgoing)))return {...metadata,provenance:{state:'unavailable'}};
     if(!await access.revalidate({kind:"owner"},source.fence))return {...metadata,provenance:{state:"unavailable"}};
     if(!parsed)return {...metadata,provenance:{state:required?"unavailable":"legacy_unavailable"}};
     if(!parsed.success||parsed.data.source.id!==source.id||parsed.data.source.revision!==source.fence.source.revision||parsed.data.source.version!==source.fence.source.version||parsed.data.source.hash!==source.fence.source.hash)return {...metadata,provenance:{state:"unavailable"}};

@@ -18,6 +18,10 @@ import { RetrievalRuns } from "../assistant/retrieval-runs";
 import { DecisionJournal } from "../assistant/decisions";
 import { OwnerControl } from "../assistant/control";
 import { FollowUps } from "../assistant/followups";
+import {resolveRecipient} from '../src/recipients';
+import {readRecipientEnvelope} from '../src/assistant-recipient-reader';
+import {outgoingPort} from '../assistant/outgoing';
+import {readD1Migrations} from '@cloudflare/vitest-plugin';
 
 const root = resolve(import.meta.dirname, "..");
 const scope = { installationId: "synthetic-episodes", generation: "g1" };
@@ -373,8 +377,8 @@ function host(env,purpose='owner_read',dropPublication=false){
   await env.DB.prepare('INSERT INTO synthetic_model_calls(body) VALUES(?)').bind(request.body).run();
   const payload=JSON.parse(request.body), pack=payload.messages.filter(m=>m.role==='user').map(m=>{try{return JSON.parse(m.content)}catch{return null}}).find(v=>v?.sources);
   const source=pack.sources[0];
-  return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:'proposed',text:'Synthetic proposal',citations:[{id:source.id,revision:source.revision,version:source.version,hash:source.hash,quote:source.text}]})}}]})};
- },{...DEFAULT_BROKER_CONFIG,chatCeiling:5},{clock:()=>100,purpose});
+  return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:'proposed',text:pack.outgoing?.envelope.kind==='text'?pack.outgoing.envelope.text:'Synthetic proposal',citations:[{id:source.id,revision:source.revision,version:source.version,hash:source.hash,quote:source.text}]})}}]})};
+ },{...DEFAULT_BROKER_CONFIG,chatCeiling:5},{clock:()=>100,purpose,outgoing:{prepare:async()=>{throw Error('host_only')},check:async proof=>{const row=await database.prepare('SELECT proof_json FROM synthetic_outgoing_proof WHERE id=1').first();return row?.proof_json===JSON.stringify(proof)}}});
 }
 installEpisodeRuntime(async(env,identity)=>{
  const row=await env.DB.prepare('SELECT id,binding_json FROM assistant_episodes WHERE installation_id=? AND generation=? AND profile=? AND runtime_id=?').bind(env.INSTALLATION_ID,env.OPERATIONAL_GENERATION,identity.profile,identity.runtimeId).first();
@@ -543,6 +547,21 @@ test("owner FUP due admission crosses real Flue and the mandatory journal exactl
   expect(after.map(r=>r.results)).toEqual(before.map(r=>r.results));
   expect((await due.admitDue()).items[0].jobId).toBe(item.jobId);
   expect(await db.prepare("SELECT COUNT(*) FROM synthetic_model_calls").first("COUNT(*)")).toBe(1);
+});
+test('an explicit new recipient with no history crosses real Flue once with its immutable shadow envelope and no send capability',async()=>{
+ await worker.dispose();await bootstrap(nativeWorker('outgoing-128'));await db.prepare('CREATE TABLE synthetic_model_calls(body TEXT NOT NULL)').run();await new JobQueue(db,scope).fail(lease,'previous',now);
+ const archiveWorker=new Miniflare(convertV4MiniflareOptions({modules:true,script:"export default{fetch(){return new Response('fixture')}}",d1Databases:['ARCHIVE'],outboundService:()=>{throw Error('external_network_forbidden')}}));
+ try{const archive=await archiveWorker.getD1Database('ARCHIVE');for(const migration of await readD1Migrations(resolve(root,'migrations')))await archive.batch(migration.queries.map(q=>archive.prepare(q)));
+  const nominal={...scope,sourceEpoch:'recipient-e',sourceGeneration:'recipient-g'},secret='synthetic-native-recipient-reader-secret',phone='12025550100',status={status:async()=>({connected:true,phone})};
+  const e:any={DB:archive,OWNER_SUB:'fixture-owner',INSTALLATION_EPOCH:nominal.sourceEpoch,CONNECTION_GENERATION:nominal.sourceGeneration,CONNECTED_PHONE:phone,MAINTENANCE:'false',RUNTIME_CONFIG:'static',DEVELOPMENT:'true',PUBLIC_ORIGIN:'https://fixture.invalid',ASSISTANT_READER_SECRET:secret,ZAPI_INSTANCE_ID:'fixture',ZAPI_TOKEN:'fixture',ZAPI_CLIENT_TOKEN:'fixture'};
+  const recipient=await resolveRecipient(e,{phone:'+12025550123'},status),port=outgoingPort({DB:db,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:nominal.sourceEpoch,BRIDGE_SOURCE_GENERATION:nominal.sourceGeneration,BRIDGE_SECRET:secret,FLUE_EPISODES_ENABLED:'shadow',CAPTURE_READER:{readSnapshot:async()=>{throw Error('no_history')},readRecipientEnvelope:input=>readRecipientEnvelope(e,input,status)}}),control=new OwnerControl(db,nominal,{kind:'owner'},()=>now,port);
+  await control.execute({kind:'policy.put',operationId:'outgoing-policy',id:recipient.chatId,expectedRevision:0,conversationKind:'private'});await control.execute({kind:'fup.put',operationId:'outgoing-fup',id:'outgoing-fup',expectedVersion:0,conversationId:recipient.chatId,policyRevision:1,source:{id:'source',revision:1},purpose:'Synthetic question',dueAt:100,timezone:'UTC',precision:'exact',state:'scheduled',outgoing:{authorization:{kind:'owner_exact'},envelope:{kind:'text',chatId:recipient.chatId,text:'Exact first-contact shadow text.'}}});
+  const proof=JSON.parse((await db.prepare('SELECT body_json FROM assistant_fup_provenance WHERE fup_id=?').bind('outgoing-fup').first<string>('body_json'))!).outgoing;await db.prepare('CREATE TABLE synthetic_outgoing_proof(id INTEGER PRIMARY KEY,proof_json TEXT)').run();await db.prepare('INSERT INTO synthetic_outgoing_proof VALUES(1,?)').bind(JSON.stringify(proof)).run();
+  const due=new FollowUps(db,scope,{clock:()=>now}),item=(await due.admitDue()).items[0];expect(item.state).toBe('admitted');const queue=new JobQueue(db,scope),claimed=(await queue.claim(now,90000))!,ledger=(await queue.ledger(claimed.id))!,request=JSON.parse(ledger.request_json),search=new RetrievalRuns(db,scope,{clock:()=>now});let progress=await search.start({kind:'owner'},'outgoing-search',{query:request.input});for(let i=0;progress.state==='pending'&&i<10;i++)progress=await search.step({kind:'owner'},{runId:progress.runId,stepId:'outgoing-'+i,expectedCheckpoint:progress.checkpoint});
+  await new InferenceBudget(db,{...scope,period:'synthetic-period'}).configure(1000);const host=new EpisodeController(db,{...scope,period:'synthetic-period'},search,async()=>{throw Error('native_callback_only')},{...DEFAULT_BROKER_CONFIG,chatCeiling:5},{clock:()=>now,outgoing:port}),episode=await host.prepare(claimed,'owner',progress.runId);expect(episode.binding.outgoing).toEqual(proof);
+  expect((await runtimeCall('/dispatch',{episodeId:episode.id})).body.state).toBe('accepted');const result=(await runtimeCall('/read',{episodeId:episode.id})).body;expect(result).toMatchObject({state:'shadow_completed',proposal:{mode:'shadow',externalAttempted:false,outgoing:proof}});expect((await runtimeCall('/read',{episodeId:episode.id})).body).toMatchObject({state:'shadow_completed',decisionId:result.decisionId});
+  expect(await db.prepare('SELECT COUNT(*) n FROM synthetic_model_calls').first('n')).toBe(1);expect((await queue.ledger(claimed.id))!.request_json).toBe(ledger.request_json);for(const table of ['messages','actions'])expect(await archive.prepare('SELECT COUNT(*) n FROM '+table).first('n')).toBe(0);expect(await db.prepare('SELECT COUNT(*) n FROM assistant_origin_conversations').first('n')).toBe(0);
+ }finally{await archiveWorker.dispose();}
 });
 test("journal freshness rechecks mandate expiry after awaits rather than using its first clock sample", async () => {
   const { host, runId, nominal } = await followUp();

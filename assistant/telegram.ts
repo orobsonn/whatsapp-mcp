@@ -9,6 +9,7 @@ import { telegramLinkGuard, type TelegramLinkFence } from "./telegram-auth";
 import { bridgeHash } from "./ingress";
 import { retentionExecutionGuard } from "./retention-execution";
 import { assertRestoredGeneration } from "./retention-runtime";
+import {outgoingPort} from './outgoing';
 const positive=z.number().int().positive().safe(),textId=z.string().min(1).max(256);
 export const telegramSlot=z.enum(["general","summaries","pending","missions"]);
 export const telegramReviewCommand=z.discriminatedUnion("kind",[
@@ -178,7 +179,7 @@ function parseCallback(input:unknown){
 export async function createTelegramReview(env:AssistantEnv,scope:OwnerAffinity,hostEffectGuard?:()=>AccessGuard){
  if(!env.DB||!env.TELEGRAM_WEBHOOK_SECRET||!env.TELEGRAM_BOT_INSTANCE)throw new Error("telegram_unconfigured");
  const {origin,semantic}=hostConfiguredSearch(env,"owner_read");
- const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic});
+ const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic,outgoing:outgoingPort(env)});
  // Rotating either credential invalidates old buttons/prepared notifications.
  const key=await bridgeHash(["telegram-review-credentials-v1",env.TELEGRAM_WEBHOOK_SECRET,env.TELEGRAM_BOT_TOKEN??"unconfigured"]);
  const effectCheck=async()=>{await assertRestoredGeneration(env);const effect=telegramEffectGuard(scope,hostEffectGuard);if(!await env.DB!.prepare(`SELECT 1 WHERE ${effect.sql}`).bind(...effect.values).first())throw new Error("telegram_runtime_blocked");};

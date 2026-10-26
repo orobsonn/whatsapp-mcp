@@ -4,6 +4,7 @@ import type { AssistantEnv } from "./env";
 import { SourceController } from "./sources";
 import { OwnerControl } from "./control";
 import { SourceAccess } from "./access";
+import {outgoingPort,type OutgoingPort} from './outgoing';
 import { OriginGuard } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { DecisionJournal } from "./decisions";
@@ -73,10 +74,10 @@ const listings = {
 export class OwnerQueries {
   private readonly scope: Readonly<OwnerAffinity>;
   constructor(private readonly db: D1Database, scope: OwnerAffinity, private readonly origin?: OriginGuard,
-    private readonly journal?: OwnerJournalReader) { this.scope = Object.freeze({ ...scope }); }
+    private readonly journal?: OwnerJournalReader,private readonly outgoing?:OutgoingPort) { this.scope = Object.freeze({ ...scope }); }
   async execute(input: unknown): Promise<unknown> {
     const query = ownerQuerySchema.parse(input), keys = [this.scope.installationId, this.scope.generation];
-    if(query.kind==="follow_up")return new FollowUps(this.db,this.scope,{origin:this.origin}).get(query.id);
+    if(query.kind==="follow_up")return new FollowUps(this.db,this.scope,{origin:this.origin,outgoing:this.outgoing}).get(query.id);
     if (query.kind === "github.list" || query.kind === "github.read") return { state: "pending_configuration", dependency: "github_read" };
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") return { state: "pending_configuration", dependency: "calendar_read" };
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure" || query.kind === "assistant.health") return { state: "pending_configuration", dependency: "owner_evaluation" };
@@ -174,11 +175,11 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    return new OwnerControl(this.env.DB!, scope, { kind: "owner" }).execute(input);
+    return new OwnerControl(this.env.DB!, scope, { kind: "owner" },Date.now,outgoingPort(this.env)).execute(input);
   }
   async evaluate(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected), { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
-    return new Evaluation(this.env.DB!, scope, { kind: "owner" }, new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic }), { origin }).execute(input);
+    return new Evaluation(this.env.DB!, scope, { kind: "owner" }, new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) }), { origin }).execute(input);
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
@@ -187,7 +188,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     await assertRestoredGeneration(this.env, false);
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure") {
       const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read"), evaluation = new Evaluation(this.env.DB!, scope, { kind: "owner" },
-        new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic }), { origin });
+        new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) }), { origin });
       if (query.kind === "evaluation.metrics") return evaluation.metrics();
       if (query.kind === "evaluation.exposure") return evaluation.exposure(query.id);
       const { kind: _, ...input } = query; return evaluation.sample(input);
@@ -206,7 +207,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), token).execute({ kind: "owner" }, query);
     }
     const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
-    const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic });
-    return new OwnerQueries(this.env.DB!, scope, origin, journal).execute(input);
+    const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) });
+    return new OwnerQueries(this.env.DB!, scope, origin, journal,outgoingPort(this.env)).execute(input);
   }
 }

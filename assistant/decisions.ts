@@ -10,6 +10,7 @@ import type { OriginGuard } from "./origin-guard";
 import type { EpisodeSearch, ValidatedProposal } from "./agent/controller";
 import { bridgeHash } from "./ingress";
 import type { SourceScope } from "./sources";
+import {outgoingGuard,type OutgoingPort} from './outgoing';
 export { decisionSubject, type DecisionSubject };
 export const journalPhase = z.enum(["not_evaluated", "pending", "uncertain", "failed", "cancelled", "proposed", "silence", "waiting_context"]);
 export const journalReason = z.enum(["budget_blocked", "waiting_context", "source_changed", "publication_rejected", "dispatch_uncertain", "model_uncertain", "cancelled", "invariant_failure"]);
@@ -63,7 +64,7 @@ export async function seedDecisionJob(db: D1Database, scope: Scope, jobId: strin
 export type DecisionMetadata = { id: string; subject?: DecisionSubject; jobId?: string; episodeId?: string; phase: JournalPhase; reason?: JournalReason; freshness: "unchecked" | "current" | "stale" | "unavailable"; recordedAt: number | null; effects: { mode: "shadow"; external: "none" }; capture?: { operation: string; applicationState: string; replayState: string | null } };
 type ReviewAdmission = { hash: string; build: (guard: AccessGuard) => D1PreparedStatement[]; results: D1Result[] | null };
 type Plan = { proposal: ValidatedProposal; statements: D1PreparedStatement[]; publicationIndex: number; journalGuard: AccessGuard };
-type Options = { clock?: () => number; origin?: OriginGuard; search?: EpisodeSearch; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort }; timeoutMs?: number };
+type Options = { clock?: () => number; origin?: OriginGuard; search?: EpisodeSearch; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort }; timeoutMs?: number;outgoing?:OutgoingPort };
 type MetadataRow = { family: string; key: string; sort: number; recorded: number | null; job_id: string | null; episode_id: string | null; subject_json: string | null; phase: string; reason: string | null; coalesced: number | null; observed_revision: number | null; observed_watermark: number | null; operation: string | null; application_state: string; replay_state: string | null };
 const committed = `j.state='shadow_completed' AND e.state='settled' AND d.request_hash=l.request_hash AND d.binding_hash=e.binding_hash AND d.proposal_json=e.result_json AND d.proposal_json IS NOT NULL AND d.publication_nonce=e.search_nonce AND d.publication_nonce IS NOT NULL`;
 const invalidRequest = `CASE WHEN json_valid(l.request_json) THEN json_extract(l.request_json,'$.runtime') IS NOT 'flue' ELSE 1 END`;
@@ -220,6 +221,7 @@ export class DecisionJournal {
       if (!raw) throw 0; const episode = boundEpisode(raw), binding = episode.binding;
       const actual = binding.context.sources.map(row => row.fence.source).map(({id,revision,version,hash}) => ({id,revision,version,hash}));
       if (JSON.stringify(actual) !== JSON.stringify(refs) || JSON.stringify(value) !== JSON.stringify(episode.result) || value.binding.bindingHash !== episode.binding_hash || JSON.stringify(metadata.subject) !== JSON.stringify(request.subject) || JSON.stringify(request.subject) !== JSON.stringify(binding.subject)) throw 0;
+      if(JSON.stringify(request.outgoing)!==JSON.stringify(binding.outgoing)||JSON.stringify(value.outgoing)!==JSON.stringify(binding.outgoing))throw 0;
       const access = new SourceAccess(this.db, this.scope), now = this.clock(), ownerFences: SourceFence[] = [];
       const search = this.options.search ?? new RetrievalRuns(this.db, this.scope, { purpose: binding.purpose, origin: this.options.origin, clock: this.clock, semantic: this.options.semantic });
       for (const source of binding.context.sources) {
@@ -234,6 +236,7 @@ export class DecisionJournal {
         if (binding.work.kind === "follow_up") guards.push(workIntentGuard(binding.work.fence, at), conversationGuard(binding.work.target.fence), {
           sql: `EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE ${ns} AND conversation_id=? AND kind=? AND revision=? AND effective_mode=?)`,
           values: [...keys(this.scope), binding.work.target.fence.chatId, binding.work.target.policy.kind, binding.work.target.policy.revision, binding.work.target.policy.mode] });
+        if(binding.outgoing){if(binding.work.kind!=='follow_up')throw 0;guards.push(outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,at,request.sourceId));}
         return guards;
       };
       const origins = binding.context.sources.flatMap(source => source.origin ? [source.origin] : []);
@@ -258,6 +261,7 @@ export class DecisionJournal {
       }
       // A single final D1 transaction sees all local predicates coherently;
       // separate SELECTs preserve depth100 and <=100 bindings per statement.
+      if(binding.outgoing&&(!this.options.outgoing||!await this.options.outgoing.check(binding.outgoing)))return {...metadata,freshness:'stale'};
       const guards = await localGuards(this.clock());
       const detail = { ...metadata, freshness: "current" as const, proposal: value };
       if (new TextEncoder().encode(JSON.stringify(detail)).length > 32768) throw 0;

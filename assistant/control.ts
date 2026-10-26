@@ -4,6 +4,7 @@ import type { TrustedActor, AccessGuard } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger } from "./command-ledger";
 import { fupInstant, prepareFupProvenance } from "./followups";
+import {outgoingInput,outgoingAuthorityGuard,type OutgoingPort} from './outgoing';
 const id = z.string().min(1).max(256), version = z.number().int().min(0).max(2147483646);
 const time = z.number().int().nonnegative().safe(), revision = version.refine(n => n > 0);
 const reference = z.object({ id, revision }).strict();
@@ -28,7 +29,7 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
     dueAt: z.union([time,z.string().max(40)]).optional(), windowEnd: z.union([time,z.string().max(40)]).optional(), timezone: id.default("UTC"), precision: z.enum(["unset", "exact", "day", "window"]).default("unset"),
     candidate: z.object({batchKey:id,claimIndex:z.number().int().min(0).max(31)}).strict().optional(),
     condition: z.string().min(1).max(2048).optional(), recurrenceLimit: z.number().int().min(1).max(100).default(1),
-    state: z.enum(["scheduled", "awaiting_condition", "awaiting_approval"]).default("awaiting_approval") }).strict(),
+    state: z.enum(["scheduled", "awaiting_condition", "awaiting_approval"]).default("awaiting_approval"),outgoing:outgoingInput.optional() }).strict(),
   z.object({ ...base, kind: z.literal("fup.pause"), expectedVersion: revision }).strict(),
   z.object({ ...base, kind: z.literal("fup.cancel"), expectedVersion: revision }).strict(),
 ]);
@@ -75,7 +76,7 @@ function command(input: unknown) {
 export class OwnerControl {
   private readonly scope: OwnerControlScope;
   private readonly principal: TrustedActor;
-  constructor(private readonly db: D1Database, scope: OwnerControlScope, principal: TrustedActor, private readonly clock = Date.now) {
+  constructor(private readonly db: D1Database, scope: OwnerControlScope, principal: TrustedActor, private readonly clock = Date.now,private readonly outgoing?:OutgoingPort) {
     if (![scope.installationId, scope.generation].every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
     const origin = [scope.sourceEpoch, scope.sourceGeneration];
     if (origin.some(value => value !== undefined) && !origin.every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
@@ -96,6 +97,12 @@ export class OwnerControl {
     const conditions: string[] = [], values: Value[] = [];
     const require = (sql: string, ...binds: Value[]) => { conditions.push(sql); values.push(...binds); };
     const provenance=item.kind==="fup.put"?await prepareFupProvenance(this.db,this.scope,item as Parameters<typeof prepareFupProvenance>[2]):null;
+    if(item.kind==='fup.put'&&item.outgoing){
+      if(!this.outgoing||item.outgoing.envelope.chatId!==item.conversationId||item.candidate||provenance?.source.fence.source.origin!=='owner_note'||provenance.source.fence.source.audience!=='owner')throw Error('control_precondition');
+      const a=item.outgoing.authorization;if(a.kind==='mandate'&&(item.mandate?.id!==a.id||item.mandate.version!==a.version))throw Error('control_precondition');
+      provenance.body.outgoing=await this.outgoing.prepare(item.outgoing);const gate=outgoingAuthorityGuard(this.scope,a,item.source.id,item.conversationId,this.clock());require(gate.sql,...gate.values);
+      if(new TextEncoder().encode(JSON.stringify(provenance.body)).length>16384)throw Error('control_input');
+    }
     if(provenance)result.fupProvenance=1;
     if(provenance)require(provenance.guard.sql,...provenance.guard.values);
     const table = item.kind.startsWith("mission.") ? "assistant_missions" : item.kind === "policy.put" ? "assistant_conversation_policies" : item.kind === "project.put" ? "assistant_projects" : item.kind.startsWith("mandate.") ? "assistant_mandates" : "assistant_follow_ups";
@@ -138,6 +145,7 @@ export class OwnerControl {
           AND m.status='active' AND m.conversation_id=? AND m.project_id IS ? AND m.issued_at<=? AND m.expires_at>?)`, ...this.keys(), item.mandate.id, item.mandate.version, item.conversationId, item.project?.id ?? null, now, now);
       }
     }
+    if(provenance?.body.outgoing){if(!await this.outgoing!.check(provenance.body.outgoing))throw Error('control_precondition');const gate=outgoingAuthorityGuard(this.scope,provenance.body.outgoing.authorization,provenance.source.id,provenance.body.outgoing.envelope.chatId,this.clock());require(gate.sql,...gate.values);}
     const gated = (sql: string, ...binds: Value[]) => ledger.statement(sql, ...binds);
     const batch = [ledger.admit(result, now, conditions.join(" AND "), values)];
     if (item.kind === "mission.put" || item.kind === "mission.set_state") {
@@ -188,6 +196,7 @@ export class OwnerControl {
       batch.push(gated(`UPDATE assistant_fup_occurrences SET state='cancelled' WHERE ${ns} AND follow_up_id=? AND follow_up_version<=? AND state IN ('pending','blocked','paused') AND $gate`, ...this.keys(), item.id, item.expectedVersion));
     }
     await this.db.batch(batch);
+    if(provenance?.body.outgoing&&!await this.outgoing!.check(provenance.body.outgoing))throw Error('control_precondition');
     const stored = await ledger.recover<CommandReceipt>(); if (!stored) throw new Error("control_precondition"); return stored;
   }
 }

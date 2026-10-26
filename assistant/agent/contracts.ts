@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {outgoingProof} from '../outgoing';
 import { semanticRankingSchema } from "../retrieval-runs";
 import { mediaEvidenceSchema } from "../media-evidence";
 import type { Episode } from "./episodes";
@@ -40,10 +41,10 @@ export const decisionSubject = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fup_occurrence"), occurrenceId: label, followUpId: label, followUpVersion: version }).strict(),
 ]);
 export type DecisionSubject = z.infer<typeof decisionSubject>;
-export const jobRequest = z.object({ kind: label, sourceId: label, sourceRevision: version, input: z.string().max(32768), actor,
+export const jobRequest = z.object({ kind: label, sourceId: label, sourceRevision: version, input: z.string().max(32768), actor,outgoing:outgoingProof.optional(),
   fence: sourceFence, conversation: conversationFence.nullable(), runtime: z.literal("flue"), subject: decisionSubject }).strict();
 export const modelPayload = z.object({ messages: z.array(z.object({ role: z.enum(["system", "user", "assistant"]), content: z.string().max(60000) }).strict()).min(1).max(64) }).strict();
-const binding = z.object({ lease, actor, purpose, search, subject: decisionSubject, runId: hash, query: z.string().min(1).max(2048), config,
+const binding = z.object({ lease, actor, purpose, search, subject: decisionSubject, runId: hash, query: z.string().min(1).max(2048), config,outgoing:outgoingProof.optional(),
   coverage: z.object({ inventoryComplete: z.boolean(), engine: label, gaps: z.array(label).max(32) }).strict(),
   context: z.object({ state: z.literal("ready"), mode: z.enum(["model", "fallback", "originals"]), sources: z.array(source).min(1).max(10),
     focus: z.array(z.object({ id: label, spans: z.array(z.object({ start: time, end: time, quote: z.string().max(4096) }).strict()).max(4) }).strict()).max(10),
@@ -63,7 +64,7 @@ export function boundEpisode(row: Episode): BoundEpisode {
   return { ...row, binding: binding.parse(row.binding), receipt: row.receipt === null ? null : receipt.parse(row.receipt), envelope: row.envelope === null ? null : envelope.parse(row.envelope) };
 }
 
-export const validatedProposal = proposal.extend({ schema: z.literal(1), kind: z.literal("shadow_proposal"), execution: z.literal("unconfirmed"), semanticValidation: z.literal("structure_and_attribution_only"),
+export const validatedProposal = proposal.extend({ schema: z.literal(1), kind: z.literal("shadow_proposal"), execution: z.literal("unconfirmed"), semanticValidation: z.literal("structure_and_attribution_only"),mode:z.literal('shadow').optional(),externalAttempted:z.literal(false).optional(),outgoing:outgoingProof.optional(),
   coverage: z.object({ inventoryComplete: z.boolean(), engine: label, gaps: z.array(label).max(32) }).strict(),
   binding: z.object({ episodeId: hash, bindingHash: hash, jobId: label, requestHash: hash, runId: hash, allowedPackHash: hash, profile: z.enum(["owner", "interlocutor"]), purpose }).strict(),
 }).strict();

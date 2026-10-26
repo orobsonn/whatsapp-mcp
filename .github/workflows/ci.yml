@@ -20,6 +20,7 @@ jobs:
       - run: npm run test:assistant-runtime
       - run: npm run test:calendar-oauth
       - run: npm run test:assistant-index-budget
+      - run: npm run test:assistant-outgoing
       - run: npm run test:assistant-install
       - run: npm run build
       - run: npm run build:assistant

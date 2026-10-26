@@ -1,6 +1,7 @@
 import { decisionSubject, type DecisionSubject } from "./agent/contracts";
 import { seedDecisionJob } from "./decisions";
 import { dueFollowUpGuard } from "./followups";
+import {outgoingProof,outgoingGuard} from './outgoing';
 import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
@@ -64,11 +65,15 @@ export class JobQueue {
     const chatId = this.actor.kind === "interlocutor" ? this.actor.conversationId : source.fence.source.conversationId;
     const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
     if (chatId && !conversation) throw new Error("conversation_not_ready");
-    const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,
+    const fup=input.subject?.kind==='fup_occurrence'?input.subject:null;
+    const storedOutgoing=fup?await this.statement(`SELECT json_extract(body_json,'$.outgoing') outgoing FROM assistant_fup_provenance WHERE installation_id=? AND generation=? AND fup_id=? AND version=?`,fup.followUpId,fup.followUpVersion).first<string>('outgoing'):null;
+    const outgoing=storedOutgoing?outgoingProof.parse(JSON.parse(storedOutgoing)):undefined;
+    const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,...(outgoing?{outgoing}:{}),
       input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;
+    if(due&&outgoing&&fup){const gate=outgoingGuard(this.scope,{id:fup.followUpId,version:fup.followUpVersion},outgoing,now,input.sourceId);due.sql+=` AND (${gate.sql})`;due.values.push(...gate.values);}
     await this.db.batch([
       this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts,occurrence_id)
         SELECT ?,?,?,?,?,?,?,?,?,? ${due?`WHERE ${due.sql} AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND occurrence_id=?)`:""} ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,

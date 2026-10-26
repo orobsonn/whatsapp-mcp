@@ -5,6 +5,7 @@ import { DEFAULT_BROKER_CONFIG, createOpenAIAdapter } from "../model-transport";
 import { EpisodeController, type Purpose, type RuntimeIdentity } from "../agent/controller";
 import { assertRestoredGeneration } from "../retention-runtime";
 import type { ModelAdapter } from "../model-broker";
+import {outgoingPort} from '../outgoing';
 /** No router or generic binding. Existing account limits must already be
  * configured; this factory neither configures a budget nor activates capture. */
 export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter } = {}) {
@@ -20,7 +21,7 @@ export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { cloc
   }
   const adapter = options.model ?? createOpenAIAdapter(env.OPENAI_API_KEY);
   return new PausedRestoreEpisode(env.DB, { ...scope, period: new Date(clock()).toISOString().slice(0, 10) }, search,
-    async request => { await assertRestoredGeneration(env); return adapter(request); }, DEFAULT_BROKER_CONFIG, { purpose, clock });
+    async request => { await assertRestoredGeneration(env); return adapter(request); }, DEFAULT_BROKER_CONFIG, { purpose, clock,outgoing:outgoingPort(env) });
 }
 export async function resolveRuntimeEpisode(raw: Record<string, unknown>, identity: RuntimeIdentity) {
   // Cloudflare supplies env and the named DO supplies identity, not the model.
