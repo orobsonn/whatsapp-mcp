@@ -79,13 +79,19 @@ import sourceControls from "../assistant/migrations/0007_source_controls.sql?raw
 import commandSchema from "../assistant/migrations/0012_owner_commands.sql?raw";
 // @ts-expect-error Raw SQL.
 import ownerCore from "../assistant/migrations/0016_owner_core.sql?raw";
+// @ts-expect-error Raw SQL.
+import conversationSchema from "../assistant/migrations/0011_conversations.sql?raw";
+// @ts-expect-error Raw SQL.
+import episodeSchema from "../assistant/migrations/0013_episodes.sql?raw";
+// @ts-expect-error Raw SQL.
+import journalSchema from "../assistant/migrations/0017_shadow_decisions.sql?raw";
 import { OwnerAssistant, OwnerQueries, type OwnerAffinity } from "../assistant/mcp";
 import { SourceController } from "../assistant/sources";
 import { OriginGuard } from "../assistant/origin-guard";
 let affinity: OwnerAffinity;
 beforeEach(async () => {
   affinity = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "capture-e", sourceGeneration: "capture-g" };
-  for (const schema of [sourceSchema, policySchema, workSchema, inboxSchema, jobSchema, originSchema, sourceControls, commandSchema, ownerCore])
+  for (const schema of [sourceSchema, policySchema, workSchema, inboxSchema, jobSchema, originSchema, sourceControls, conversationSchema, commandSchema, episodeSchema, ownerCore, journalSchema])
     await env.DB.batch(schema.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
 });
 afterEach(() => vi.restoreAllMocks());
@@ -104,7 +110,7 @@ it("checks binding affinity on every command and never interprets source text as
   const first = await rpc.control(affinity, command);
   expect(await receiver().control(affinity, command)).toEqual(first);
   expect(await rpc.query(affinity, { kind: "projects" })).toMatchObject({ items: [{ id: "project", name: "Synthetic" }] });
-  expect(await rpc.query(affinity, { kind: "decisions" })).toEqual({ state: "pending_dependency", dependency: 45 });
+  expect(await rpc.query(affinity, { kind: "decisions" })).toMatchObject({ items: [], coverage: { kind: "page", remoteFreshness: "unchecked" } });
 });
 it("pages the full namespace, keeps Unicode IDs and rejects cursor reuse with another kind or namespace", async () => {
   const rpc = receiver();
