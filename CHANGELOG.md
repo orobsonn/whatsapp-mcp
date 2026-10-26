@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-26
+
+### Added
+- Recuperação de checkpoint interrompido com candidato durável, owner/época e gates publicados atomicamente (#121).
+
 ## [0.33.0] - 2026-10-26
 
 ### Added
