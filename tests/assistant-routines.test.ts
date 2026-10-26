@@ -5,6 +5,7 @@ import { TelegramReview,type TelegramApi } from "../assistant/telegram";
 import type { DecisionJournal } from "../assistant/decisions";
 import { Routines } from "../assistant/routines";
 import { AssistantScheduler } from "../assistant/scheduler";
+import { Conversations } from "../assistant/conversations";
 import { receiveCapture } from "../assistant/ingress";
 import { hostConfiguredSearch } from "../assistant/configured-search";
 import { EpisodeController,type EpisodeDriver } from "../assistant/agent/controller";
@@ -96,6 +97,40 @@ it("pause preserves canonical capture and visible metadata without inference",as
  settings.ROUTINES_PAUSED="true";await event();await scheduler().tick();expect(modelCalls).toBe(0);
  expect(await query("SELECT application_state FROM assistant_capture_inbox WHERE installation_id=? AND generation=?",...keys()).first("application_state")).toBe("applied");
  const review=JSON.parse((await query("SELECT payload_json FROM assistant_routine_reviews WHERE installation_id=? AND generation=?",...keys()).first<string>("payload_json"))!);expect(review.paused).toBe(true);expect(review.journal.not_evaluated).toBe(1);
+});
+async function captureForChat(sequence:number,chatId:string,operation:'withdraw'|'upsert',available=false){
+ const sourceId='source-'+chatId+'-'+sequence;
+ if(available)snapshots.set('message:'+sourceId,{observation:'capture_snapshot',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:'message',sourceId,chatId,sourceVersion:1,watermark:sequence,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:'Synthetic current observation',authorId:author,authorName:'Synthetic author',fromMe:false,occurredAt:now,messageId:sourceId,messageVersion:1}});
+ const response=await receiveCapture(new Request('https://synthetic.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify({protocol:1,...scope,sequence,previousSequence:sequence-1,chatId,sourceId,sourceKind:'message',operation,recordedAt:now})}),settings);expect(response.status).toBe(200);
+}
+it('keeps withdraw-first kind unknown visible while completing paused capture and discovering another conversation',async()=>{
+ settings.ROUTINES_PAUSED='true';await captureForChat(1,'a-unknown','withdraw');await captureForChat(2,'z-known','upsert',true);
+ expect(await scheduler().tick()).toMatchObject({state:'complete',gap:'conversation_kind_unobserved'});
+ expect(await query('SELECT kind,access_state FROM assistant_origin_conversations WHERE installation_id=? AND chat_id=?',scope.installationId,'a-unknown').first()).toEqual({kind:null,access_state:'unknown'});
+ expect(await query('SELECT COUNT(*) n FROM assistant_conversations WHERE installation_id=? AND chat_id=?',scope.installationId,'a-unknown').first('n')).toBe(0);
+ expect(await query('SELECT COUNT(*) n FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);
+ const review=JSON.parse((await query('SELECT payload_json FROM assistant_routine_reviews WHERE installation_id=? AND generation=?',...keys()).first<string>('payload_json'))!);expect(review.pipelineGaps).toContain('conversation_kind_unobserved');expect(review.gaps).toBe(1);
+ expect(await query('SELECT state,last_gap FROM assistant_routine_cycles WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'completed',last_gap:'conversation_kind_unobserved'});expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+});
+it('advances all five unknown rows, wraps its cursor, and reconsiders kind only after a real reader observation',async()=>{
+ settings.ROUTINES_PAUSED='true';for(let i=0;i<5;i++)await captureForChat(i+1,'a-'+i,i===0?'upsert':'withdraw');await captureForChat(6,'z-known','upsert',true);
+ expect(await scheduler().tick()).toMatchObject({state:'complete',gap:'conversation_kind_unobserved'});
+ expect(await query('SELECT cursor_chat FROM assistant_routine_state WHERE installation_id=?',scope.installationId).first('cursor_chat')).toBe('a-4');
+ expect(await query('SELECT state,last_gap_reason FROM assistant_materialization_results WHERE installation_id=? AND sequence=1',scope.installationId).first()).toEqual({state:'blocked',last_gap_reason:'reader_unavailable'});
+ now+=60001;expect(await scheduler().tick()).toMatchObject({state:'complete',gap:'conversation_kind_unobserved'});expect(await query('SELECT cursor_chat FROM assistant_routine_state WHERE installation_id=?',scope.installationId).first('cursor_chat')).toBe('');expect(await query('SELECT COUNT(*) n FROM assistant_routine_items WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+ await captureForChat(7,'a-0','upsert',true);now+=60001;expect(await scheduler().tick()).toMatchObject({state:'complete',gap:'conversation_kind_unobserved'});
+ expect(await query('SELECT kind,access_state FROM assistant_origin_conversations WHERE installation_id=? AND chat_id=?',scope.installationId,'a-0').first()).toEqual({kind:'private',access_state:'available'});expect(await query('SELECT COUNT(*) n FROM assistant_conversations WHERE installation_id=? AND chat_id=?',scope.installationId,'a-0').first('n')).toBe(1);
+ for(let i=1;i<5;i++)await captureForChat(7+i,'a-'+i,'upsert',true);now+=60001;expect(await scheduler().tick()).toMatchObject({state:'complete',gap:null});
+ expect(modelCalls).toBe(0);expect(dispatches).toBe(0);expect(await query('SELECT COUNT(*) n FROM assistant_budget_reservations WHERE installation_id=?',scope.installationId).first('n')).toBe(0);
+});
+it('does not hide an unrelated conversation replay failure behind the unknown-kind gap',async()=>{
+ settings.ROUTINES_PAUSED='true';await captureForChat(1,'a-unknown','withdraw');await captureForChat(2,'z-known','upsert',true);vi.spyOn(Conversations.prototype,'replay').mockRejectedValue(new Error('synthetic unexpected replay failure'));
+ expect(await scheduler().tick()).toMatchObject({state:'uncertain',gap:'routine_operation_uncertain'});expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+});
+it('does not use a legacy frame to infer an unobserved conversation kind',async()=>{
+ settings.ROUTINES_PAUSED='true';await query("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,0,NULL,'unknown')",...keys(),scope.sourceEpoch,scope.sourceGeneration,'legacy-unknown').run();
+ await query("INSERT INTO assistant_conversations(installation_id,generation,source_epoch,source_generation,chat_id,policy_revision,mode) VALUES(?,?,?,?,?,0,'observe')",...keys(),scope.sourceEpoch,scope.sourceGeneration,'legacy-unknown').run();const replay=vi.spyOn(Conversations.prototype,'replay');
+ expect(await scheduler().tick()).toMatchObject({state:'complete',gap:'conversation_kind_unobserved'});expect(replay).not.toHaveBeenCalled();expect(await query('SELECT mode FROM assistant_conversations WHERE installation_id=?',scope.installationId).first('mode')).toBe('observe');expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
 });
 it("keeps budget exhaustion visible without configuring a replacement account or calling a model",async()=>{
  await query("UPDATE assistant_budget_accounts SET cap_units=0 WHERE installation_id=? AND generation=?",...keys()).run();await event();await scheduler().tick();expect(modelCalls).toBe(0);

@@ -52,11 +52,11 @@ export class AssistantScheduler {
    if(!reconcileOnly){
     await this.routines.phase(cycle,"capture");const materializer=new CaptureMaterializer(this.env.DB!,()=>this.scope,this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!,this.clock);
     await materializer.drain(10);if(!await this.routines.current(cycle))throw new Error("routine_stale");await materializer.retry(2);
-    await this.discover(cycle);if(!paused)await this.due(cycle);
+    gap=await this.discover(cycle);if(!paused)await this.due(cycle);
    }
    if(!paused){
     const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ORDER BY updated_at,id LIMIT 1`,...this.keys()).first<{id:string}>();
-    if(row?.id){const item=await this.item(row.id);if(item){await this.routines.phase(cycle,"work",item.id);state=await this.process(cycle,item,reconcileOnly);gap=(await this.item(item.id))?.last_gap??null;}}
+    if(row?.id){const item=await this.item(row.id);if(item){await this.routines.phase(cycle,"work",item.id);state=await this.process(cycle,item,reconcileOnly);gap=(await this.item(item.id))?.last_gap??gap;}}
    }
    const daily=await this.routines.daily(paused);
    if(!paused&&state!=="uncertain"&&this.env.TELEGRAM_SUMMARIES_ENABLED==="true"&&await this.routines.current(cycle)){
@@ -67,10 +67,15 @@ export class AssistantScheduler {
  }
  private async discover(cycle:RoutineCycle){
   const cursor=await this.sql(`SELECT cursor_chat FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<string>("cursor_chat")??"";
-  const chats=await this.sql(`SELECT chat_id,kind FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id>? ORDER BY chat_id LIMIT 5`,...this.keys(),cursor).all<{chat_id:string;kind:"private"|"group"}>();
+  const chats=await this.sql(`SELECT chat_id,kind FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id>? ORDER BY chat_id LIMIT 5`,...this.keys(),cursor).all<{chat_id:string;kind:"private"|"group"|null}>();
   const conversations=new Conversations(this.env.DB!,()=>this.scope);
   for(const chat of chats.results){
-   if(!await this.routines.current(cycle))throw new Error("routine_stale");await conversations.ensure(chat.chat_id);await conversations.replay(chat.chat_id,32);await conversations.retryGaps(chat.chat_id,4);
+   if(!await this.routines.current(cycle))throw new Error("routine_stale");
+   // Withdraw-first and unavailable snapshots can legitimately observe a chat
+   // without its kind. Keep that gap; a later observation can supply the kind.
+   // Still consume this page/cursor so one such chat cannot block other chats.
+   if(!await conversations.ensure(chat.chat_id)||chat.kind===null)continue;
+   await conversations.replay(chat.chat_id,32);await conversations.retryGaps(chat.chat_id,4);
    const frame=await conversations.state(chat.chat_id);if(frame.state==="paused"||frame.state==="ignored")continue;
    const events=await this.sql(`SELECT i.sequence,i.chat_id,i.source_kind,i.metadata_hash,r.state,r.canonical_id,r.observed_revision,r.observed_version,r.observed_watermark,r.coalesced
     FROM assistant_capture_inbox i JOIN assistant_conversation_replay r USING(installation_id,generation,source_epoch,source_generation,chat_id,sequence)
@@ -110,6 +115,7 @@ export class AssistantScheduler {
    for(const event of unresolved)await map(event,null,event.state,null);
   }
   const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_state SET cursor_chat=? WHERE ${originScopeSql} AND ${owner.sql}`,chats.results.length===5?chats.results.at(-1)!.chat_id:"",...this.keys(),...owner.values).run();
+  return await this.routines.unobservedConversationKinds()?"conversation_kind_unobserved":null;
  }
  private async due(cycle:RoutineCycle){
   if(!await this.routines.current(cycle))throw new Error("routine_stale");const {origin}=hostConfiguredSearch(this.env,"automation",this.clock);
