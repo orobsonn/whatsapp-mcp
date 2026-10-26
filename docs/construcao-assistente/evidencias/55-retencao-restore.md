@@ -7,13 +7,13 @@ Engenharia local em 26/10/2026. Sem dado real, paid API, provisionamento/deploy 
 | Gate | Evidência |
 | --- | --- |
 | TypeScript | `npm run check` passou após o patch final |
-| Producer + importer/reproof/activation, após revisão independente | **29/29** em 46,83 s: `npm test -- tests/assistant-retention-snapshot.test.ts tests/assistant-retention-restore.test.ts` |
+| Producer + importer/reproof/activation/ACL, após revisão independente | **35/35** em 106,85 s: `npm test -- tests/assistant-retention-snapshot.test.ts tests/assistant-retention-restore.test.ts` |
 | Financeiro vivo ausente, contraprova adicional | **1/1**, 12 ignorados, em 10,31 s: `npm test -- tests/assistant-retention-restore.test.ts -t 'missing live financial history'` |
 | Codec + operador local | **11/11** em 0,88 s, com nova checagem do token fora de vars imprimíveis **5/5** em 0,66 s |
 | CLI | `node scripts/assistant-retention.mjs --help` e `node --check scripts/assistant-retention.mjs` passaram; nenhuma conexão remota foi iniciada |
 | Whitespace | `git diff --check` passou |
 
-O histórico anterior foi 23/23 + uma contraprova financeira isolada; depois da revisão independente, os 29 casos passaram em uma única execução. Suite geral, nativa, build e CI da composição final são gates do coordenador. Authority/reader externos são controlados nos testes; D1, runtime Workers e transações são locais reais.
+O histórico anterior foi 23/23 + uma contraprova financeira isolada; depois da revisão independente houve 29/29, os três casos FK/roundtrip e agora os 35 casos passaram em uma única execução. Suite geral, nativa, build e CI da composição final são gates do coordenador. Authority/reader externos são controlados nos testes; D1, runtime Workers e transações são locais reais.
 
 ## Antes/depois e contraprovas
 
@@ -62,3 +62,15 @@ Duas contraprovas **RED** em 10,94 s confirmaram: missão corrente atribuída a 
 A revisão independente acrescentou a contraprova normal G1→G2→G3, com missão/FUP vivos: **RED** em 14,39 s por colisão do histórico `(kind,id,version)`. A chave inclui agora o selo de snapshot. G1 original e projeção autêntica G2 coexistem sem overwrite. A cópia de linha histórica não gera outra cópia recursiva; apenas um registro canônico de missão/FUP gera a camada nova daquele selo. O relatório conta registros de proveniência e versões distintas de trabalho, nunca novos pedidos humanos.
 
 Os três casos passaram **3/3 GREEN** em 16,38 s, com TypeScript aprovado: parent retirado antes/depois + segundo roundtrip normal. Testes verificam ausência de corpo/objetivo A e controles parent/FUP ativos, conservação de intenção/provenance B, reexport/import dos tipos, proveniência G1 byte-igual, missão/FUP normais ainda pausados e purga B de todas as camadas em G2/G3. A edição adicional da 0025 permanece anterior à ativação/deploy real dessa migração. Sua composição final ainda exige gates do produto; o followup não fecha a issue, e ACL de nota restaurada tem gate separado.
+
+## Followup — ACL de nota e reproof independente de revisão
+
+Dois **RED** em 14,85 s comprovaram vazamento de permissão: uma nota public no snapshot e posteriormente owner no D1 vivo voltava a ser legível por interlocutor depois do restore. Também era possível incrementar revisão de fonte WhatsApp por change_audience e escapar de uma origin quarantine antiga, sem observação atual do reader.
+
+O fix mantém nota public/restricted como ACL candidata histórica, com leitura owner permitida e guest/activation bloqueados. `source_authorization` é removida somente pela admissão de um **novo** source.change_audience autenticado, com CAS/token/registro do owner no mesmo batch. Correção do corpo não remove essa proteção; um recibo antigo continua idempotente e não reabilita acesso depois de nova revogação. Kinds de ACL e envelopes foram adicionados à 0025 ainda inativa, sem copiar outro corpo privado. O relatório conta essas linhas apenas como provenance records, com zero work versions/intents atribuídos quando só existem registros de ACL.
+
+`SourceAccess.current` e o join da prova de identidade negam qualquer origin quarantine ativa, independentemente da revisão. Raw reader reproof com fence/policy/source/selo atuais pode remover q de versões anteriores; remainingANY impede declarar sucesso se outra q continua ativa. Quarentena de identidade permanece e ainda exige seu vínculo explícito.
+
+O novo roundtrip confirma: grant public fresco em G2 é preservado como metadata no snapshot de G2, mas não autoriza G3. Header/selo/revisões 1 e 2 permanecem históricos; owner lê, guest não, até um novo grant G3. A fixture capturada positiva recebeu também fresh grant da nota restrita e CAS de mandato na revisão atual, sem relaxar identidade ou reader. Uma primeira seleção passou os três casos novos e teve somente timeout dessa fixture antiga em 5 s (6,007 s); seu limite de fixture passou a 30 s, coerente com o gate D1 do produto. Nenhum deadline de produção foi aumentado. A regressão completa final passou **35/35** em **106,85 s**, TypeScript e diff check aprovados. Custo adicional: **US$ 0**, sem CLI/Cloud/ativação real.
+
+O fix de quota/readMany e os hooks de admissão de modelo/mídia foram implementados pelo coordenador/outros agentes no produto; esta árvore não os substitui. Preservar `SourceAccess.readMany` ao integrar os predicados `current()` e manter os fixes Ops/CLI e do catálogo export installation-wide que já existem no produto. Fechamento da issue depende da composição e CI finais; homologação real permanece separada.

@@ -241,6 +241,13 @@ export class CanonicalRestore {
         statements.push(this.sql(`INSERT INTO assistant_retention_quarantines SELECT ?,?,?,?,?,?,?,?,?,?,1,'snapshot_reproof_required',? WHERE EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND table_name='restore_row_admission' AND action='insert') ON CONFLICT DO NOTHING`, ...this.keys(), kind, await bridgeHash(key), fields.source ?? null, fields.provider ?? null, fields.address ?? null, fields.mandate ?? null, fields.conversation ?? null, fields.version, manifest.seal, ...this.keys(), attempt));
       };
       if (header?.value.origin === "whatsapp") await quarantine("origin_source", [sourceId], { source: sourceId!, version: Number(header.value.revision) });
+      if (header?.value.origin === "owner_note" && header.value.audience !== "owner" && pair) {
+        await quarantine("source_authorization", [sourceId], { source: sourceId!, version: Number(header.value.revision) });
+        await write("assistant_retention_restored_work", { installation_id: this.target.installationId, generation: this.target.generation, kind: "source_authorization", id: sourceId, version: header.value.revision, source_id: sourceId,
+          snapshot_seal: manifest.seal, source_generation: manifest.namespace.generation, original_command_id: null,
+          body_json: JSON.stringify({ kind: "source_authorization", execution: "historical_only", status: "snapshot_candidate_not_permission", record: header.value,
+            provenance: { recordHash: header.hash, leafIndex: pair.header.proof.index, snapshotSeal: manifest.seal, snapshotGeneration: manifest.namespace.generation } }) });
+      }
       if (record.table === "assistant_provider_identities") await quarantine("provider_identity", [value.provider, value.address], { source: String(value.proof_source_id), provider: String(value.provider), address: String(value.address), version: Number(value.proof_source_revision) });
       if (record.table === "assistant_mandates") await quarantine("mandate", [value.id], { mandate: String(value.id), version: Number(value.version) });
       if (record.table === "assistant_conversation_policies") await quarantine("policy", [value.conversation_id], { conversation: String(value.conversation_id), version: Number(value.revision) });
@@ -409,7 +416,7 @@ export class CanonicalRestore {
     if (!fence || fence.generation !== this.target.generation || fence.sourceEpoch !== this.capture.sourceEpoch || fence.sourceGeneration !== this.capture.sourceGeneration || fence.revision !== revision || !await this.origin.check(fence)) throw new Error("restore_origin_reproof_required");
     await this.retirement.allow("whatsapp", (await this.sql("SELECT origin_key FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=?", ...this.keys(), sourceId, revision).first<string>("origin_key"))!, sourceId);
     const proof = JSON.stringify(fence);
-    await this.sql(`UPDATE assistant_retention_quarantines SET active=0,reason='fresh_origin_reproved' WHERE installation_id=? AND generation=? AND kind='origin_source' AND source_id=? AND version=? AND snapshot_seal=?
+    await this.sql(`UPDATE assistant_retention_quarantines SET active=0,reason='fresh_origin_reproved' WHERE installation_id=? AND generation=? AND kind='origin_source' AND source_id=? AND version<=? AND snapshot_seal=?
       AND EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND state='idle')
       AND EXISTS(SELECT 1 FROM assistant_retention_runtime_hold WHERE installation_id=? AND active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied')
@@ -423,7 +430,7 @@ export class CanonicalRestore {
         AND c.watermark=json_extract(f,'$.watermark') AND c.kind=json_extract(f,'$.conversationKind') AND c.access_state='available'
         AND p.revision=json_extract(f,'$.policyRevision') AND p.effective_mode=json_extract(f,'$.policyMode') AND p.kind=c.kind)`,
       ...this.keys(), sourceId, revision, session.snapshot_seal, this.target.installationId, this.target.installationId, this.target.installationId, this.target.installationId, sourceId, ...this.keys(), sourceId, proof, ...this.keys(), sourceId).run();
-    const remaining = await this.sql("SELECT 1 FROM assistant_retention_quarantines WHERE installation_id=? AND generation=? AND kind='origin_source' AND source_id=? AND version=? AND active=1", ...this.keys(), sourceId, revision).first();
+    const remaining = await this.sql("SELECT 1 FROM assistant_retention_quarantines WHERE installation_id=? AND generation=? AND kind='origin_source' AND source_id=? AND active=1", ...this.keys(), sourceId).first();
     if (remaining) throw new Error("restore_origin_reproof_changed");
     return { state: "source_reproved", sourceId, revision, identity: "explicit_owner_binding_required", mandates: "fresh_owner_revision_required", execution: "held" };
   }
@@ -503,7 +510,8 @@ export class CanonicalRestore {
       AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied')
       AND NOT EXISTS(SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND (source_epoch<>? OR source_generation<>?))
       AND NOT EXISTS(SELECT 1 FROM assistant_sources s JOIN assistant_retention_barriers b ON b.installation_id=s.installation_id AND (b.source_id=s.id OR (b.origin=s.origin AND b.origin_key=s.origin_key)) WHERE s.installation_id=? AND s.generation=? AND s.status='active')
-      AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_sources s ON s.installation_id=q.installation_id AND s.generation=q.generation AND s.id=q.source_id AND s.revision=q.version AND s.status='active' WHERE q.installation_id=? AND q.generation=? AND q.kind='origin_source' AND q.active=1)
+      AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_sources s ON s.installation_id=q.installation_id AND s.generation=q.generation AND s.id=q.source_id AND s.status='active' WHERE q.installation_id=? AND q.generation=? AND q.kind='origin_source' AND q.active=1)
+      AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_sources s ON s.installation_id=q.installation_id AND s.generation=q.generation AND s.id=q.source_id AND s.status='active' WHERE q.installation_id=? AND q.generation=? AND q.kind='source_authorization' AND q.active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_provider_identities i ON i.installation_id=q.installation_id AND i.generation=q.generation AND i.provider=q.provider AND i.address=q.address AND i.proof_source_id=q.source_id AND i.proof_source_revision=q.version WHERE q.installation_id=? AND q.generation=? AND q.kind='provider_identity' AND q.active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_conversation_policies p ON p.installation_id=q.installation_id AND p.generation=q.generation AND p.conversation_id=q.conversation_id AND p.revision=q.version WHERE q.installation_id=? AND q.generation=? AND q.kind='policy' AND q.active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q JOIN assistant_mandates m ON m.installation_id=q.installation_id AND m.generation=q.generation AND m.id=q.mandate_id AND m.version=q.version AND m.status='active' WHERE q.installation_id=? AND q.generation=? AND q.kind='mandate' AND q.active=1 AND m.version=(SELECT MAX(version) FROM assistant_mandates WHERE installation_id=m.installation_id AND generation=m.generation AND id=m.id))
@@ -515,7 +523,7 @@ export class CanonicalRestore {
     const values = [...this.keys(), input.expectedSeal, session.snapshot_seal, session.ticket_hash, ...this.keys(), input.operationId, session.token, savedProgress,
       this.target.installationId, input.operationId, this.target.generation, this.target.installationId, gate.financial_revision,
       this.target.installationId, this.target.installationId, ticket.currentGeneration, this.target.installationId,
-      ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration, ...this.keys(), ...this.keys(), ...this.keys(), ...this.keys(), ...this.keys(),
+      ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration, ...this.keys(), ...this.keys(), ...this.keys(), ...this.keys(), ...this.keys(), ...this.keys(),
       ...this.keys(), period, input.budget.capMicroUsd, ...this.keys(), ...this.keys(), input.operationId];
     const result = { state: "generation_activated", attribution: "explicit_owner_after_restore", operationId: input.commandId, generation: this.target.generation, seal: input.expectedSeal,
       financialHashAtActivation: cursor.hash, financialScope: "installation_all_generations_all_periods", budget: { period, capMicroUsd: input.budget.capMicroUsd, automaticInitialization: false },

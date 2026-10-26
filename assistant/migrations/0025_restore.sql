@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS assistant_retention_restore_grants (
 );
 CREATE INDEX IF NOT EXISTS retention_restore_work_parent ON assistant_retention_restore_rows(installation_id,generation,operation_id,table_name,work_id,state);
 CREATE TABLE IF NOT EXISTS assistant_retention_restored_work (
- installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('mission','follow_up','mission_history','follow_up_intent','follow_up_provenance')),id TEXT NOT NULL,version INTEGER NOT NULL,source_id TEXT NOT NULL,
+ installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('mission','follow_up','mission_history','follow_up_intent','follow_up_provenance','source_authorization')),id TEXT NOT NULL,version INTEGER NOT NULL,source_id TEXT NOT NULL,
  snapshot_seal TEXT NOT NULL,source_generation TEXT NOT NULL,original_command_id TEXT,body_json TEXT NOT NULL CHECK(json_valid(body_json)),
  PRIMARY KEY(installation_id,generation,kind,id,version,snapshot_seal)
 );
@@ -75,7 +75,7 @@ CREATE TRIGGER IF NOT EXISTS retention_hold_model_calls BEFORE UPDATE OF state O
  WHEN NEW.state='attempting' AND EXISTS(SELECT 1 FROM assistant_retention_runtime_hold WHERE installation_id=NEW.installation_id AND active=1)
  BEGIN SELECT RAISE(ABORT,'restore_runtime_paused'); END;
 CREATE TABLE IF NOT EXISTS assistant_retention_quarantines (
- installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('origin_source','provider_identity','mandate','policy')),record_key TEXT NOT NULL,
+ installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('origin_source','source_authorization','provider_identity','mandate','policy')),record_key TEXT NOT NULL,
  source_id TEXT,provider TEXT,address TEXT,mandate_id TEXT,conversation_id TEXT,version INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),reason TEXT NOT NULL,snapshot_seal TEXT NOT NULL,
  PRIMARY KEY(installation_id,generation,kind,record_key,version)
 );

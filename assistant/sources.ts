@@ -230,6 +230,14 @@ export class SourceController {
                 batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now));
             else
                 batch.push(...this.updatePlan(s, item.id, item.expectedRevision, 'access_changed', "audience=?", [item.audience], now));
+            // A restored public/restricted audience is historical until this
+            // exact fresh owner command wins its CAS. Body edits, legacy
+            // revision changes and replay of an old receipt never clear it.
+            if (item.kind === 'source.change_audience' && await this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_retention_quarantines'").first())
+                batch.push(s(`UPDATE assistant_retention_quarantines SET active=0,reason='owner_confirmed_current_audience'
+                  WHERE installation_id=? AND generation=? AND kind='source_authorization' AND source_id=? AND active=1 AND version<=?
+                  AND EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND audience=?) AND $gate`,
+                  ...this.keys(), item.id, item.expectedRevision + 1, ...this.keys(), item.id, item.expectedRevision + 1, item.audience));
         }
         await this.db.batch(batch);
         const receipt = await ledger.recover<SourceCommandReceipt>();

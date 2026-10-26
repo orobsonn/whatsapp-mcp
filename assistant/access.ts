@@ -42,7 +42,7 @@ export class SourceAccess {
     const keys = [this.scope.installationId, this.scope.generation, ...(id === null ? [] : [id]), expectedRevision ?? null, expectedRevision ?? null];
     const current = `s.installation_id=? AND s.generation=?${id === null ? '' : ' AND s.id=?'} AND (? IS NULL OR s.revision=?) AND s.status='active'
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=s.installation_id AND (b.source_id=s.id OR (b.origin=s.origin AND b.origin_key=s.origin_key)))
-      AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=s.installation_id AND q.generation=s.generation AND q.kind='origin_source' AND q.source_id=s.id AND q.version=s.revision AND q.active=1)
+      AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=s.installation_id AND q.generation=s.generation AND q.kind='origin_source' AND q.source_id=s.id AND q.active=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_installation_gate g WHERE g.installation_id=s.installation_id AND g.state='quiescing')`;
 
     if (actor.kind === "owner") {
@@ -59,11 +59,12 @@ export class SourceAccess {
         LEFT JOIN assistant_sources proof ON proof.installation_id=i.installation_id AND proof.generation=i.generation AND proof.id=i.proof_source_id
           AND proof.status='active' AND proof.revision=i.proof_source_revision
           AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=proof.installation_id AND (b.source_id=proof.id OR (b.origin=proof.origin AND b.origin_key=proof.origin_key)))
-          AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=proof.installation_id AND q.generation=proof.generation AND q.kind='origin_source' AND q.source_id=proof.id AND q.version=proof.revision AND q.active=1)
+          AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=proof.installation_id AND q.generation=proof.generation AND q.kind='origin_source' AND q.source_id=proof.id AND q.active=1)
         LEFT JOIN assistant_mandates m ON m.installation_id=s.installation_id AND m.generation=s.generation AND m.id=?
           AND m.version=(SELECT MAX(latest.version) FROM assistant_mandates latest WHERE latest.installation_id=m.installation_id
             AND latest.generation=m.generation AND latest.id=m.id)
         WHERE ${current} AND COALESCE(p.kind,?)=?
+        AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=s.installation_id AND q.generation=s.generation AND q.kind='source_authorization' AND q.source_id=s.id AND q.active=1)
         AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=p.installation_id AND q.generation=p.generation AND q.kind='policy' AND q.conversation_id=p.conversation_id AND q.version=p.revision AND q.active=1)
         AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=m.installation_id AND q.generation=m.generation AND q.kind='mandate' AND q.mandate_id=m.id AND q.version=m.version AND q.active=1)
         AND COALESCE(p.effective_mode,CASE WHEN ?='private' THEN 'attend' ELSE 'ignore' END)<>'ignore'
