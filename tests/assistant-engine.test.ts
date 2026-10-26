@@ -11,11 +11,14 @@ import sources from "../assistant/migrations/0001_sources.sql?raw";
 import controls from "../assistant/migrations/0007_source_controls.sql?raw";
 let engine: CogneeEngine, port: ContainerPort, guard: EngineGuard, store: EngineStore, data: Map<string, unknown>;
 let ingest: EngineIngest, search: EngineSearch, now: number, epoch: string, revoked: string[];
+let storageTail=Promise.resolve();
 const scope = { installationId: "synthetic-install", generation: "g1" };
 beforeEach(async () => {
-  data = new Map(); now = 100; revoked = []; epoch = "";
-  store = { get: async <T>(key: string) => structuredClone(data.get(key)) as T | undefined,
-    put: async (key, value) => { data.set(key, structuredClone(value)); },
+  data = new Map(); storageTail=Promise.resolve(); now = 100; revoked = []; epoch = "";
+  const storage=transactionalStore();
+  store = { get: <T>(key: string) => storage(tx=>tx.get<T>(key)),
+    put: (key, value) => storage(tx=>tx.put(key,value)),
+    transaction: transactionalStore(),
     putFenced: async (key, value, epoch, owner) => {
       const run = data.get("rebuild") as { indexEpoch: string; owner: string };
       if (run?.indexEpoch !== epoch || run.owner !== owner) throw new Error("rebuild_fenced"); data.set(key, structuredClone(value));
@@ -307,11 +310,10 @@ it("does not write or destroy the replacement index when an old rebuild response
 
 // Faithful serializable adapter: isolated copy, commit on success, rollback on throw.
 function transactionalStore(): NonNullable<EngineStore["transaction"]> {
-  let tail=Promise.resolve();
   return async operation=>{
-    const previous=tail;let release!:()=>void;tail=new Promise(resolve=>{release=resolve;});await previous;
+    const previous=storageTail;let release!:()=>void;storageTail=new Promise(resolve=>{release=resolve;});await previous;
     const snapshot=new Map(structuredClone([...data]));
-    try {const result=await operation({get:async <T>(key:string)=>structuredClone(snapshot.get(key)) as T|undefined,put:async(key,value)=>{snapshot.set(key,structuredClone(value));}});data.clear();for(const [key,value]of snapshot)data.set(key,value);return result;} finally {release();}
+    try {const result=await operation({get:async <T>(key:string)=>structuredClone(snapshot.get(key)) as T|undefined,put:async(key,value)=>{snapshot.set(key,structuredClone(value));},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map(structuredClone([...snapshot].filter(([key])=>key.startsWith(prefix)).sort(([a],[b])=>a.localeCompare(b)).slice(0,limit))) as Map<string,T>});data.clear();for(const [key,value]of snapshot)data.set(key,value);return result;} finally {release();}
   };
 }
 it("prepares a persistent alias without wake or permit, then submits once across restart and ACK loss", async () => {
@@ -397,4 +399,104 @@ it("owns a canonical ticket identity regardless of caller property order",async(
   if(prepared.state!=="prepared")throw new Error("ticket missing");
   const reordered=Object.fromEntries(Object.entries(prepared.ticket).reverse()) as typeof prepared.ticket;
   expect(await engine.submit(reordered)).toMatchObject({state:"complete",operationId:prepared.ticket.operationId});
+});
+
+it("never admits another alias for an operation with a legacy attempting ticket and no receipt",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();
+  const first=await engine.prepare("legacy-attempt",search),second=await engine.prepare("original-prepare-refusal",search);
+  if(first.state!=="prepared"||second.state!=="prepared")throw new Error("ticket missing");
+  expect(first.ticket.operationId).toBe(second.ticket.operationId);
+  for(const [key,row]of data)if(key.startsWith("search-ticket:")&&(row as {ticket:{alias:string}}).ticket.alias==="legacy-attempt")data.set(key,{...(row as object),state:"attempting"});
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  const restarted=new CogneeEngine(scope,store,port,guard,()=>now);
+  expect(await restarted.submit(second.ticket)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain",operationId:first.ticket.operationId});
+  expect(await restarted.lookupTicket(second.ticket)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+  expect([...data].filter(([key])=>key.startsWith("search-ticket:")).map(([,row])=>(row as {state:string}).state).sort()).toEqual(["attempting","prepared"]);
+});
+
+it("does not bypass a legacy ticket's uncertainty through the direct search API after exact index restore",async()=>{
+  await engine.ingest(ingest);store.transaction=transactionalStore();
+  const first=await engine.prepare("legacy-direct",search);if(first.state!=="prepared")throw new Error("ticket missing");
+  for(const [key,row]of data)if(key.startsWith("search-ticket:"))data.set(key,{...(row as object),state:"attempting"});
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  const restarted=new CogneeEngine(scope,store,port,guard,()=>now);
+  expect(await restarted.search(search)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain",operationId:first.ticket.operationId});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+});
+
+it("migrates an old direct operation without a receipt before admitting another search",async()=>{
+  await engine.ingest(ingest);const prepared=await engine.prepare("old-direct-access",search);if(prepared.state!=="prepared")throw new Error("ticket missing");
+  data.set("access:"+prepared.ticket.operationId,{actor:search.actor,permits:search.permits});
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.search(search)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect(data.get("search-operation:"+prepared.ticket.operationId)).toMatchObject({alias:null,requestHash:null});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+});
+
+it("claims one shared operation across different aliases before the first model permit await",async()=>{
+  await engine.ingest(ingest);const first=await engine.prepare("first-alias",search),second=await engine.prepare("second-alias",search);
+  if(first.state!=="prepared"||second.state!=="prepared")throw new Error("ticket missing");
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  let entered!:()=>void,release!:()=>void;const waiting=new Promise<void>(resolve=>{entered=resolve;}),held=new Promise<void>(resolve=>{release=resolve;});
+  vi.mocked(guard.issue).mockImplementationOnce(async()=>{entered();await held;return "host-only-token";});
+  const active=engine.submit(first.ticket);await waiting;
+  const restarted=new CogneeEngine(scope,store,port,guard,()=>now);
+  expect(await restarted.submit(second.ticket)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect(guard.issue).toHaveBeenCalledTimes(1);expect(port.request).not.toHaveBeenCalled();
+  release();expect(await active).toMatchObject({state:"complete"});
+  expect(await restarted.lookupTicket(second.ticket)).toMatchObject({state:"complete",operationId:first.ticket.operationId});
+  expect(await restarted.submit(second.ticket)).toMatchObject({state:"complete"});
+  expect(vi.mocked(port.request).mock.calls.filter(([path])=>path==="/search")).toHaveLength(1);expect(guard.issue).toHaveBeenCalledTimes(1);
+});
+
+it("preserves both operation and alias admission after a lost transaction ACK without another effect",async()=>{
+  await engine.ingest(ingest);const first=await engine.prepare("lost-claim-ack",search),second=await engine.prepare("other-after-lost-ack",search);
+  if(first.state!=="prepared"||second.state!=="prepared")throw new Error("ticket missing");
+  const transaction=store.transaction!;let lost=false;
+  store.transaction=async operation=>{const result=await transaction(operation);if(!lost){lost=true;throw new Error("commit ACK lost");}return result;};
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  await expect(engine.submit(first.ticket)).rejects.toThrow("commit ACK lost");
+  const restarted=new CogneeEngine(scope,store,port,guard,()=>now);
+  expect(await restarted.submit(second.ticket)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect(await restarted.lookupTicket(first.ticket)).toMatchObject({state:"uncertain",reason:"engine_operation_uncertain"});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+});
+
+it.each(["capacity","missing_inventory","invalid_seal"])("fails closed on %s before search admission",async kind=>{
+  await engine.ingest(ingest);const prepared=await engine.prepare("history-guard",search);if(prepared.state!=="prepared")throw new Error("ticket missing");
+  if(kind==="capacity")for(let i=0;i<257;i++)data.set("search-ticket:legacy-"+i,{ticket:{...prepared.ticket,alias:"legacy-"+i},state:"prepared"});
+  if(kind==="invalid_seal")data.set("search-operation-history-v1",{version:1,untrusted:true});
+  if(kind==="missing_inventory"){const transaction=store.transaction!;store.transaction=operation=>transaction(({list:_,...tx})=>operation(tx));}
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked",reason:kind==="capacity"?"operation_history_capacity":kind==="invalid_seal"?"operation_history_invalid":"operation_history_unavailable"});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+  expect(data.has("search-operation:"+prepared.ticket.operationId)).toBe(false);
+});
+
+it("seals legacy inventory once and does not impose its migration limit on future aliases",async()=>{
+  await engine.ingest(ingest);expect(await engine.search(search)).toMatchObject({state:"complete"});
+  expect(data.get("search-operation-history-v1")).toEqual({version:1});
+  for(let i=0;i<257;i++)data.set("search-ticket:future-"+i,{malformed:"must not rescan sealed migration"});
+  const before=vi.mocked(port.request).mock.calls.length;
+  expect(await engine.search({...search,query:"A legitimate new query"})).toMatchObject({state:"complete"});
+  expect(port.request).toHaveBeenCalledTimes(before+1);
+});
+
+it("rechecks source authorization after legacy metadata inventory before any permit or query leaves",async()=>{
+  await engine.ingest(ingest);const transaction=store.transaction!;
+  store.transaction=operation=>transaction(tx=>operation({...tx,list:async<T>(options:{prefix:string;limit:number})=>{const rows=await tx.list!<T>(options);vi.mocked(guard.check).mockResolvedValue(false);return rows;}}));
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.search(search)).toMatchObject({state:"blocked",reason:"source_denied"});
+  expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
+});
+
+it.each([null,false,0])("never overwrites an existing falsy operation marker %s or reports it not submitted",async value=>{
+  await engine.ingest(ingest);const prepared=await engine.prepare("invalid-operation-marker",search);if(prepared.state!=="prepared")throw new Error("ticket missing");
+  const key="search-operation:"+prepared.ticket.operationId;data.set(key,value);
+  vi.mocked(port.request).mockClear();vi.mocked(guard.issue).mockClear();
+  expect(await engine.lookupTicket(prepared.ticket)).toMatchObject({state:"blocked",reason:"operation_history_invalid"});
+  expect(await engine.submit(prepared.ticket)).toMatchObject({state:"blocked",reason:"operation_history_invalid"});
+  expect(await engine.search(search)).toMatchObject({state:"blocked",reason:"operation_history_invalid"});
+  expect(data.get(key)).toBe(value);expect(port.request).not.toHaveBeenCalled();expect(guard.issue).not.toHaveBeenCalled();
 });

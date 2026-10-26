@@ -19,6 +19,7 @@ export type PreparedSearch = { state: "prepared"; ticket: SearchTicket } | { sta
 type TicketRecord = { ticket: SearchTicket; input: EngineSearch; state: "prepared" | "attempting" };
 export interface SemanticEnginePort { prepare(alias: string, input: EngineSearch): Promise<PreparedSearch>; submit(ticket: SearchTicket): Promise<EngineSearchOutcome>; lookupTicket(ticket: SearchTicket): Promise<EngineSearchOutcome> }
 export interface EngineStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>;
+  list?<T>(options: { prefix: string; limit: number }): Promise<Map<string, T>>;
   transaction?<T>(operation: (store: EngineStore) => Promise<T>): Promise<T>;
   putFenced?(key: string, value: unknown, indexEpoch: string, owner: string): Promise<void> }
 export interface ContainerPort {
@@ -42,6 +43,7 @@ const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/);
 const refSchema = z.object({ id: identifier, version: z.number().int().positive().max(2147483647), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const counter = z.number().int().nonnegative().safe();
+const searchAdmissionSchema = z.object({ token: z.string().min(1).max(256), alias: z.string().max(256).nullable(), requestHash: z.string().regex(/^[a-f0-9]{64}$/).nullable() }).strict();
 const searchResult = z.object({ candidates: z.array(refSchema.extend({ via: z.array(z.enum(["chunks", "graph"])).max(2), relationCount: counter })).max(10), missing: z.array(refSchema).max(64) }).strict();
 export const searchTicketSchema = z.object({alias:z.string().min(1).max(256),requestHash:z.string().regex(/^[a-f0-9]{64}$/),operationId:z.string().regex(/^[a-f0-9]{64}$/),indexEpoch:z.string().min(1).max(256),indexRevision:z.union([z.literal("empty"),z.string().regex(/^[a-f0-9]{64}$/)])}).strict();
 export function parseSearchTicket(input:unknown):SearchTicket {return searchTicketSchema.parse(input);}
@@ -112,6 +114,45 @@ export class CogneeEngine implements EnginePort {
     const row = await this.store.get<TicketRecord>("search-ticket:"+await bridgeHash([this.scope,ticket.alias]));
     return row && JSON.stringify(row.ticket) === JSON.stringify(ticket) ? row : undefined;
   }
+  /** One metadata upgrade, before any new search effect. Old aliases and direct
+   * calls may already have admitted the same operation without its receipt.
+   * Absence of that receipt cannot prove no execution occurred. */
+  private async searchHistory(store: EngineStore): Promise<string | null> {
+    const seal = await store.get<unknown>("search-operation-history-v1");
+    if (seal !== undefined) return z.object({ version: z.literal(1) }).strict().safeParse(seal).success ? null : "operation_history_invalid";
+    if (!store.list) return "operation_history_unavailable";
+    const tickets = await store.list<unknown>({ prefix: "search-ticket:", limit: 257 });
+    const accesses = await store.list<unknown>({ prefix: "access:", limit: 257 });
+    if (tickets.size > 256 || accesses.size > 256) return "operation_history_capacity";
+    const legacy: { operationId: string; alias: string | null; requestHash: string | null }[] = [];
+    try {
+      for (const raw of tickets.values()) {
+        const row = z.object({ ticket: searchTicketSchema, state: z.enum(["prepared", "attempting"]) }).parse(raw);
+        if (row.state === "attempting") legacy.push({ operationId: row.ticket.operationId, alias: row.ticket.alias, requestHash: row.ticket.requestHash });
+      }
+      for (const key of accesses.keys()) {
+        const operationId = key.slice("access:".length); if (!/^[a-f0-9]{64}$/.test(operationId)) return "operation_history_invalid";
+        const receipt = await store.get<Receipt>("receipt:" + operationId);
+        if (receipt?.state !== "complete" || receipt.operationId !== operationId) legacy.push({ operationId, alias: null, requestHash: null });
+      }
+    } catch { return "operation_history_invalid"; }
+    for (const item of legacy) {
+      const prior = await store.get("search-operation:" + item.operationId);
+      if (prior !== undefined && !searchAdmissionSchema.safeParse(prior).success) return "operation_history_invalid";
+    }
+    for (const item of legacy) if (await store.get("search-operation:" + item.operationId) === undefined) await store.put("search-operation:" + item.operationId, { token: crypto.randomUUID(), alias: item.alias, requestHash: item.requestHash });
+    await store.put("search-operation-history-v1", { version: 1 }); return null;
+  }
+  private async admitSearch(store: EngineStore, operationId: string, token: string, ticket?: SearchTicket): Promise<string | null> {
+    const history = await this.searchHistory(store); if (history) return history;
+    const prior = await store.get("search-operation:" + operationId);
+    if (prior !== undefined) return searchAdmissionSchema.safeParse(prior).success ? "engine_operation_uncertain" : "operation_history_invalid";
+    await store.put("search-operation:" + operationId, { token, alias: ticket?.alias ?? null, requestHash: ticket?.requestHash ?? null }); return null;
+  }
+  private async observeSearchClaim(store: EngineStore, operationId: string) {
+    const raw = await store.get("search-operation:" + operationId);
+    return { reason: raw !== undefined && !searchAdmissionSchema.safeParse(raw).success ? "operation_history_invalid" : null, claimed: raw !== undefined };
+  }
   async lookupTicket(ticket: SearchTicket): Promise<EngineSearchOutcome> {
     const row = await this.ticketRecord(ticket);
     if (!row) return {state:"blocked",reason:"ticket_denied"};
@@ -120,7 +161,14 @@ export class CogneeEngine implements EnginePort {
     // The ticket owns the current principal/proof. A shared exact receipt may
     // have been produced under an earlier proof, whose revocation is unrelated.
     const receipt = await this.store.get<Receipt>(`receipt:${ticket.operationId}`);
-    return receipt?.state === "complete" && receipt.operationId===ticket.operationId && receipt.indexRevision===ticket.indexRevision && await this.ticketCurrent(ticket) && await this.coverageValid(row.input.coverage) ? receipt as EngineSearchOutcome : {state:"uncertain",reason:row.state === "prepared" ? "not_submitted" : "engine_operation_uncertain",operationId:ticket.operationId};
+    if (receipt?.state === "complete" && receipt.operationId===ticket.operationId && receipt.indexRevision===ticket.indexRevision && await this.ticketCurrent(ticket) && await this.coverageValid(row.input.coverage)) return receipt as EngineSearchOutcome;
+    if (!this.store.transaction) return { state: "blocked", reason: "operation_history_unavailable", operationId: ticket.operationId };
+    const sealed = z.object({ version: z.literal(1) }).strict().safeParse(await this.store.get("search-operation-history-v1")).success;
+    // The seal and operation claims are monotonic. Once migrated, lookup only
+    // observes metadata; it does not need to open another write transaction.
+    const admission = sealed ? await this.observeSearchClaim(this.store,ticket.operationId) : await this.store.transaction(async store => { const reason = await this.searchHistory(store), claim = await this.observeSearchClaim(store,ticket.operationId); return {...claim,reason:reason??claim.reason}; });
+    if (admission.reason) return { state: "blocked", reason: admission.reason, operationId: ticket.operationId };
+    return {state:"uncertain",reason:row.state === "prepared" && !admission.claimed ? "not_submitted" : "engine_operation_uncertain",operationId:ticket.operationId};
   }
   private async submitBlocked(ticket: SearchTicket, store = this.store): Promise<string | null> {
     if (!await this.ticketCurrent(ticket, store)) return "index_changed";
@@ -153,16 +201,20 @@ export class CogneeEngine implements EnginePort {
       const blocked = await this.submitBlocked(ticket);
       if (blocked) return {state:"blocked",reason:blocked,operationId:ticket.operationId};
       const key="search-ticket:"+await bridgeHash([this.scope,ticket.alias]);
-      const claimed = await this.store.transaction(async store => {
+      const admissionToken = crypto.randomUUID();
+      const claimed = await this.store.transaction<{ claimed: boolean; reason?: string }>(async store => {
         const current=await store.get<TicketRecord>(key);
         if (!current || JSON.stringify(current.ticket) !== JSON.stringify(ticket) || current.state !== "prepared") return {claimed:false};
         // Recheck every operational gate at the last point before admission.
         const reason = await this.submitBlocked(ticket,store);
         if (reason) return {claimed:false,reason};
+        if (await store.get("receipt:" + ticket.operationId) !== undefined) return { claimed: false };
+        const denied = await this.admitSearch(store, ticket.operationId, admissionToken, ticket);
+        if (denied) return { claimed: false, reason: denied };
         await store.put(key,{...current,state:"attempting"}); return {claimed:true};
       });
-      if (!claimed.claimed) return claimed.reason ? {state:"blocked",reason:claimed.reason,operationId:ticket.operationId} : this.lookupTicket(ticket);
-      return await this.run("/search",{query:row.input.query,allowedSources:row.input.allowedSources,limit:row.input.limit},row.input.actor,row.input.permits,undefined,undefined,{ticket,coverage:row.input.coverage},owner) as EngineSearchOutcome;
+      if (!claimed.claimed) return claimed.reason ? {state:claimed.reason === "engine_operation_uncertain" ? "uncertain" : "blocked",reason:claimed.reason,operationId:ticket.operationId} : this.lookupTicket(ticket);
+      return await this.run("/search",{query:row.input.query,allowedSources:row.input.allowedSources,limit:row.input.limit},row.input.actor,row.input.permits,undefined,undefined,{ticket,coverage:row.input.coverage,admissionToken},owner) as EngineSearchOutcome;
     } finally { this.submitReturned = true; this.releaseSubmit(owner); }
   }
   async search(input: EngineSearch): Promise<EngineSearchOutcome> {
@@ -265,7 +317,7 @@ export class CogneeEngine implements EnginePort {
     // deny/revoke/storage failed. A new DO can only reconcile, never re-admit it.
     try { await this.container.destroy(); if (!this.container.running) await this.store.put("active", null); } catch { /* Quarantine remains. */ }
   }
-  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof}, submitOwner?: symbol): Promise<unknown> {
+  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof;admissionToken:string}, submitOwner?: symbol): Promise<unknown> {
     const nested = (!!rebuildEpoch && this.busy && this.rebuilding) || (!!submitOwner && this.busy && this.submitOwner === submitOwner);
     if (this.busy && !nested) return { state: "blocked", reason: "busy" }; if (!nested) this.busy = true;
     let active: Active | undefined, timer: ReturnType<typeof setTimeout> | undefined; const controller = new AbortController();
@@ -294,6 +346,17 @@ export class CogneeEngine implements EnginePort {
       const operationId = await bridgeHash([this.scope, meta.epoch, path, wire, path === "/search" ? meta.revision : null]);
       const prior = await this.store.get<Receipt>(`receipt:${operationId}`);
       if (prior) return await this.guard.check(actor, permits) && await this.coverageValid(prepared?.coverage) ? { ...prior, indexState: meta.indexState ?? "needs_checkpoint" } : { state: "blocked", reason: "source_denied", operationId };
+      if (path === "/search") {
+        if (prepared) {
+          const claim = searchAdmissionSchema.safeParse(await this.store.get("search-operation:" + operationId));
+          if (operationId !== prepared.ticket.operationId || !claim.success || claim.data.token !== prepared.admissionToken || claim.data.alias !== prepared.ticket.alias || claim.data.requestHash !== prepared.ticket.requestHash) return { state: "uncertain", reason: "engine_operation_uncertain", operationId };
+        } else {
+          if (!this.store.transaction) return { state: "blocked", reason: "operation_history_unavailable", operationId };
+          const denied = await this.store.transaction(store => this.admitSearch(store, operationId, crypto.randomUUID()));
+          if (denied) return { state: denied === "engine_operation_uncertain" ? "uncertain" : "blocked", reason: denied, operationId };
+        }
+        if (!await this.guard.check(actor, permits) || !await this.coverageValid(prepared?.coverage)) return { state: "blocked", reason: "source_denied", operationId };
+      }
       await write(`access:${operationId}`, { actor, permits, ...(prepared?.coverage ? {coverage:prepared.coverage} : {}) });
       active = { epoch: crypto.randomUUID(), operationId, token: await this.guard.issue(permits[0].source, this.clock() + 300000),
         ...(prepared ? {searchIndex:{epoch:prepared.ticket.indexEpoch,revision:prepared.ticket.indexRevision},...(prepared.coverage ? {coverage:prepared.coverage}: {})} : {}),

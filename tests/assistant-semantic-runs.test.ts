@@ -42,11 +42,12 @@ beforeEach(async()=>{
   for(const migration of [sources,policies,inbox,origins,controls,budgets,relations,receipts,conversations,runs,semantic]) await env.DB.batch(migration.replace(/^--.*$/gm,"").trim().split(/;\s*(?=CREATE|$)/).filter((part:string)=>part.trim()).map((part:string)=>env.DB.prepare(part)));
   scope={installationId:crypto.randomUUID(),generation:"g1"};controller=new SourceController(env.DB,scope,owner,clock);data=new Map();epoch="";searchCalls=0;callback=async()=>{};mutate=async()=>{};response=undefined;lastInput=undefined;
   let tail=Promise.resolve();
-  store={get:async<T>(key:string)=>structuredClone(data.get(key)) as T|undefined,put:async(key,value)=>{data.set(key,structuredClone(value));},transaction:async operation=>{
+  const storage:NonNullable<EngineStore["transaction"]>=async operation=>{
     const previous=tail;let release!:()=>void;tail=new Promise(resolve=>{release=resolve;});await previous;
     const snapshot=new Map(structuredClone([...data]));
-    try{const result=await operation({get:async<T>(key:string)=>structuredClone(snapshot.get(key)) as T|undefined,put:async(key,value)=>{snapshot.set(key,structuredClone(value));}});data.clear();for(const [key,value] of snapshot)data.set(key,value);return result;}finally{release();}
-  }};
+    try{const result=await operation({get:async<T>(key:string)=>structuredClone(snapshot.get(key)) as T|undefined,put:async(key,value)=>{snapshot.set(key,structuredClone(value));},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map(structuredClone([...snapshot].filter(([key])=>key.startsWith(prefix)).sort(([a],[b])=>a.localeCompare(b)).slice(0,limit))) as Map<string,T>});data.clear();for(const [key,value] of snapshot)data.set(key,value);return result;}finally{release();}
+  };
+  store={get:<T>(key:string)=>storage(tx=>tx.get<T>(key)),put:(key,value)=>storage(tx=>tx.put(key,value)),transaction:storage};
   data.set("index",{namespace:JSON.stringify(scope),epoch:"epoch-a",revision:"a".repeat(64),sources:[],lost:false,indexState:"needs_checkpoint"});
   const access=new SourceAccess(env.DB,scope,clock);
   const guard={check:async(actor:TrustedActor,permits:EngineSearch["permits"])=>{for(const permit of permits)if(!await access.revalidate(actor,permit.source))return false;return true;},checkCoverage:(proof:CoverageProof)=>search.checkProof(proof),issue:async(fence:EngineSearch["permits"][0]["source"])=>new CogneeModelBroker(env.DB,{...scope,period:"1970-01-01"},config,async()=>{throw 0;},clock).issuePermit(fence.source.id,fence.source.revision,5000),revoke:async()=>{}};
@@ -218,7 +219,7 @@ it("recovers the original prepared ticket after lost prepare ACK without budget 
 it("does not retry a claim that survived process death before a search response existed",async()=>{
   selected=(await create("Breno cuida das faturas.")).id;const id=await inventory();await search.result(owner,id);
   const transaction=store.transaction!;let crash=true;
-  store.transaction=async operation=>{const result=await transaction(operation);if(crash){crash=false;throw new Error("process died after CAS");}return result;};
+  store.transaction=async operation=>{const result=await transaction(operation);if(crash&&[...data].some(([key,value])=>key.startsWith("search-ticket:")&&(value as {state:string}).state==="attempting")){crash=false;throw new Error("process died after CAS");}return result;};
   await expect(search.advanceSemantic(owner,id)).rejects.toThrow("process died after CAS");
   restartEngine();search=new RetrievalRuns(env.DB,scope,{clock,semantic:{mode:"required",engine}});
   await search.advanceSemantic(owner,id);await search.advanceSemantic(owner,id);
