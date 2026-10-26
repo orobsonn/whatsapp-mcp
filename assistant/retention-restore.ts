@@ -197,6 +197,7 @@ export class CanonicalRestore {
     let declared = record.table === "assistant_sources" ? record.value.id : record.value.canonical_id ?? record.value.source_id ?? record.value.proof_source_id;
     if (record.table === "assistant_fup_provenance") declared = JSON.parse(String(record.value.body_json))?.source?.id;
     if (record.table === "assistant_mission_versions") declared = JSON.parse(String(record.value.body_json))?.sourceId;
+    const workId = ["assistant_missions", "assistant_mission_versions", "assistant_follow_ups"].includes(record.table) ? String(record.value.id) : record.table === "assistant_fup_provenance" ? String(record.value.fup_id) : null;
     if (declared !== undefined && (!header || declared !== sourceId)) throw new Error("restore_source_pair_required");
     if (header && await this.retired(header)) {
       if (!await this.retireTarget(operationId, session, header)) return { state: "pending", reason: "retirement_cleanup", leaf: proven.proof.index };
@@ -211,11 +212,30 @@ export class CanonicalRestore {
       if (record.table === "assistant_follow_ups" && !["closed", "cancelled"].includes(String(value.state))) value.state = "paused";
       if (record.table === "assistant_mandates" && value.status === "active") value.status = "draft";
       if (record.table === "assistant_origin_conversations") value.access_state = "unknown";
+      // Current control rows can disappear because their own source was
+      // retired. An independent B intent/history is not authority to recreate
+      // that parent A or its objective. Preserve it only as typed history.
+      const parentId = record.table === "assistant_mission_versions" ? String(value.id) : record.table === "assistant_follow_ups" && typeof value.mission_id === "string" ? value.mission_id : null;
+      let historicalOnly = false;
+      if (parentId && !await this.sql("SELECT 1 FROM assistant_missions WHERE installation_id=? AND generation=? AND id=?", ...this.keys(), parentId).first()) {
+        const retiredParent = await this.sql("SELECT 1 FROM assistant_retention_restore_rows WHERE installation_id=? AND generation=? AND operation_id=? AND table_name='assistant_missions' AND work_id=? AND state='skipped_retired'", ...this.keys(), operationId, parentId).first();
+        if (!retiredParent) return { state: "pending", reason: "restore_parent_not_admitted", leaf: proven.proof.index, execution: "inactive" };
+        historicalOnly = true;
+      }
+      const history = async (kind: "mission_history" | "follow_up_intent" | "follow_up_provenance", id: unknown, version: unknown, originalCommandId: unknown = null) => {
+        if (!header || !pair?.current || !sourceId) throw new Error("restore_work_provenance");
+        await write("assistant_retention_restored_work", { installation_id: this.target.installationId, generation: this.target.generation, kind, id, version, source_id: sourceId,
+          snapshot_seal: manifest.seal, source_generation: manifest.namespace.generation, original_command_id: originalCommandId,
+          body_json: JSON.stringify({ kind, execution: "historical_only", record: record.value, provenance: { recordHash: record.hash, leafIndex: proven.proof.index, snapshotSeal: manifest.seal, snapshotGeneration: manifest.namespace.generation,
+            sourceAtSnapshot: { id: sourceId, revision: header.value.revision, version: pair.current.record.value.version, hash: pair.current.record.value.content_hash } } }) });
+      };
+      if (record.table === "assistant_mission_versions") await history("mission_history", value.id, value.revision);
+      if (record.table === "assistant_follow_ups") await history("follow_up_intent", value.id, value.version);
       if (record.table === "assistant_fup_provenance") {
-        const body = JSON.parse(String(value.body_json)), history = { installation_id: this.target.installationId, generation: this.target.generation, kind: "follow_up", id: value.fup_id, version: value.version, source_id: sourceId, snapshot_seal: manifest.seal, source_generation: manifest.namespace.generation, original_command_id: value.command_operation_id, body_json: JSON.stringify(body) };
-        await write("assistant_retention_restored_work", history); state = "historical_work";
+        await history("follow_up_provenance", value.fup_id, value.version, value.command_operation_id); state = "historical_work";
       } else if (record.table === "assistant_sources") { if (!header || header.hash !== record.hash) throw new Error("restore_source_header_mismatch"); }
       else if (record.table === "assistant_source_versions" && pair?.current?.record.value.version === record.value.version) { if (pair.current.record.hash !== record.hash) throw new Error("restore_current_version_mismatch"); }
+      else if (historicalOnly) state = "historical_work";
       else await write(record.table, value);
       const quarantine = async (kind: string, key: unknown[], fields: { source?: string; provider?: string; address?: string; mandate?: string; conversation?: string; version: number }) => {
         statements.push(this.sql(`INSERT INTO assistant_retention_quarantines SELECT ?,?,?,?,?,?,?,?,?,?,1,'snapshot_reproof_required',? WHERE EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND table_name='restore_row_admission' AND action='insert') ON CONFLICT DO NOTHING`, ...this.keys(), kind, await bridgeHash(key), fields.source ?? null, fields.provider ?? null, fields.address ?? null, fields.mandate ?? null, fields.conversation ?? null, fields.version, manifest.seal, ...this.keys(), attempt));
@@ -225,7 +245,7 @@ export class CanonicalRestore {
       if (record.table === "assistant_mandates") await quarantine("mandate", [value.id], { mandate: String(value.id), version: Number(value.version) });
       if (record.table === "assistant_conversation_policies") await quarantine("policy", [value.conversation_id], { conversation: String(value.conversation_id), version: Number(value.revision) });
     }
-    statements.push(this.sql(`INSERT INTO assistant_retention_restore_rows SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND table_name='restore_row_admission' AND action='insert') ON CONFLICT(installation_id,generation,operation_id,leaf_index) DO UPDATE SET state=excluded.state WHERE assistant_retention_restore_rows.state='financial_missing' AND assistant_retention_restore_rows.source_hash=excluded.source_hash`, ...this.keys(), operationId, proven.proof.index, record.table, record.row, record.hash, sourceId, state, ...this.keys(), attempt));
+    statements.push(this.sql(`INSERT INTO assistant_retention_restore_rows SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND table_name='restore_row_admission' AND action='insert') ON CONFLICT(installation_id,generation,operation_id,leaf_index) DO UPDATE SET state=excluded.state WHERE assistant_retention_restore_rows.state='financial_missing' AND assistant_retention_restore_rows.source_hash=excluded.source_hash`, ...this.keys(), operationId, proven.proof.index, record.table, record.row, record.hash, sourceId, state, workId, ...this.keys(), attempt));
     statements.push(this.sql("DELETE FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=?", ...this.keys(), attempt));
     try { await this.db.batch(statements); }
     catch { const observed = await this.rowReceipt(operationId, proven.proof.index); if (!observed || observed.source_hash !== record.hash) throw new Error("restore_row_uncertain"); }
@@ -251,7 +271,9 @@ export class CanonicalRestore {
     const missingFinancial = !!progress.missing || !!missingLive, pending = await this.sql("SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied' AND operation IN ('withdraw','access') LIMIT 1", this.target.installationId).first();
     const epoch = await this.sql("SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND (source_epoch<>? OR source_generation<>?) LIMIT 1", ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration).first();
     if (pending || epoch) return { state: "blocked", reason: pending ? "capture_withdrawal_catchup_required" : "capture_epoch_reproof_required", execution: "inactive", finance: missingFinancial ? "missing_live_history" : "preserved_live_all_generations" };
-    const state = missingFinancial ? "budget_blocked" : "inactive_complete", report = { state, operationId, targetGeneration: this.target.generation, mode: "shadow", execution: "inactive", financial: missingFinancial ? "missing_live_history" : "preserved_live_all_generations", budget: "unconfigured_no_account_created", oauth: "credential_generation_unchanged", rows: progress.count!, skippedRetired: progress.skipped!, quarantine: "owner_reproof_required", externalCopies: "pending" };
+    const historicalWork = await this.sql("SELECT COUNT(*) n FROM assistant_retention_restored_work WHERE installation_id=? AND generation=?", ...this.keys()).first<number>("n");
+    const distinctWorkVersions = await this.sql(`SELECT COUNT(*) n FROM(SELECT CASE WHEN kind IN ('mission','mission_history') THEN 'mission' ELSE 'follow_up' END AS entity,id,version FROM assistant_retention_restored_work WHERE installation_id=? AND generation=? AND kind IN ('mission','mission_history','follow_up','follow_up_intent','follow_up_provenance') GROUP BY entity,id,version)`, ...this.keys()).first<number>("n");
+    const state = missingFinancial ? "budget_blocked" : "inactive_complete", report = { state, operationId, targetGeneration: this.target.generation, mode: "shadow", execution: "inactive", financial: missingFinancial ? "missing_live_history" : "preserved_live_all_generations", budget: "unconfigured_no_account_created", oauth: "credential_generation_unchanged", rows: progress.count!, skippedRetired: progress.skipped!, historicalWork, historicalWorkExecution: "historical_only", history: { provenanceRecords: historicalWork, distinctWorkVersions, humanRequests: "not_inferred" }, quarantine: "owner_reproof_required", externalCopies: "pending" };
     const seal = await bridgeHash(["restored-generation-v1", session.ticket_hash, manifest.seal, finance.hash, report]);
     const result = await this.sql(`INSERT INTO assistant_retention_generation_seals SELECT ?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND token=? AND operation_id=? AND target_generation=? AND state='quiescing' AND mutation_revision=? AND financial_revision=?)
       AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied' AND operation IN ('withdraw','access'))

@@ -27,17 +27,18 @@ CREATE TABLE IF NOT EXISTS assistant_retention_restore_sessions (
 );
 CREATE TABLE IF NOT EXISTS assistant_retention_restore_rows (
  installation_id TEXT NOT NULL,generation TEXT NOT NULL,operation_id TEXT NOT NULL,leaf_index INTEGER NOT NULL,table_name TEXT NOT NULL,source_row INTEGER NOT NULL,source_hash TEXT NOT NULL,source_id TEXT,
- state TEXT NOT NULL CHECK(state IN ('imported','skipped_retired','financial_live_verified','financial_missing','historical_work')),
+ state TEXT NOT NULL CHECK(state IN ('imported','skipped_retired','financial_live_verified','financial_missing','historical_work')),work_id TEXT,
  PRIMARY KEY(installation_id,generation,operation_id,leaf_index),UNIQUE(installation_id,generation,operation_id,table_name,source_row)
 );
 CREATE TABLE IF NOT EXISTS assistant_retention_restore_grants (
  installation_id TEXT NOT NULL,generation TEXT NOT NULL,token TEXT NOT NULL,gate_token TEXT NOT NULL,table_name TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('insert','update','delete')),
  PRIMARY KEY(installation_id,generation,token,table_name,action)
 );
+CREATE INDEX IF NOT EXISTS retention_restore_work_parent ON assistant_retention_restore_rows(installation_id,generation,operation_id,table_name,work_id,state);
 CREATE TABLE IF NOT EXISTS assistant_retention_restored_work (
- installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('mission','follow_up')),id TEXT NOT NULL,version INTEGER NOT NULL,source_id TEXT NOT NULL,
+ installation_id TEXT NOT NULL,generation TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('mission','follow_up','mission_history','follow_up_intent','follow_up_provenance')),id TEXT NOT NULL,version INTEGER NOT NULL,source_id TEXT NOT NULL,
  snapshot_seal TEXT NOT NULL,source_generation TEXT NOT NULL,original_command_id TEXT,body_json TEXT NOT NULL CHECK(json_valid(body_json)),
- PRIMARY KEY(installation_id,generation,kind,id,version)
+ PRIMARY KEY(installation_id,generation,kind,id,version,snapshot_seal)
 );
 CREATE TABLE IF NOT EXISTS assistant_retention_generation_seals (
  installation_id TEXT NOT NULL,generation TEXT NOT NULL,snapshot_seal TEXT NOT NULL,ticket_hash TEXT NOT NULL,financial_hash TEXT,
