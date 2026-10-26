@@ -52,6 +52,7 @@ export class RetentionPurge {
     const collect = (kind: string, query: string) => sql(`INSERT INTO assistant_retention_purge_refs SELECT ?1,?2,?3,'${kind}',found.id FROM (${query}) found WHERE found.id IS NOT NULL AND found.id NOT IN (${refs(kind)}) ORDER BY found.id LIMIT 128 ON CONFLICT DO NOTHING`);
     const collection = () => [
       collect("mission", `SELECT id FROM assistant_missions t WHERE ${namespace("t")} AND t.source_id=?4`),
+      collect("mission_version", `SELECT json_array(id,revision) AS id FROM assistant_mission_versions t WHERE ${namespace("t")} AND json_extract(body_json,'$.sourceId')=?4`),
       collect("fup", `SELECT id FROM assistant_follow_ups t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.mission_id IN (${refs("mission")}))`),
       collect("job", `SELECT id FROM assistant_jobs t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.occurrence_id IN (SELECT id FROM assistant_fup_occurrences f WHERE ${namespace("f")} AND f.follow_up_id IN (${refs("fup")})))
        UNION SELECT job_id FROM assistant_episodes t WHERE ${namespace("t")} AND (EXISTS(SELECT 1 FROM json_each(t.binding_json,'$.context.sources') j WHERE json_extract(j.value,'$.id')=?4) OR json_extract(t.binding_json,'$.lease.source_id')=?4)
@@ -61,8 +62,12 @@ export class RetentionPurge {
       collect("run", `SELECT run_id AS id FROM assistant_retrieval_items t WHERE ${namespace("t")} AND t.source_id=?4 UNION SELECT json_extract(binding_json,'$.runId') FROM assistant_episodes t WHERE ${namespace("t")} AND t.job_id IN (${refs("job")})
        UNION SELECT id FROM assistant_retrieval_runs t WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM json_each(t.pack_json) j WHERE json_extract(j.value,'$.id')=?4)`),
       collect("decision", `SELECT id FROM assistant_shadow_decisions t WHERE ${namespace("t")} AND t.job_id IN (${refs("job")})`),
-      collect("command", `SELECT operation_id AS id FROM assistant_owner_commands t WHERE ${namespace("t")} AND (json_extract(t.result_json,'$.id')=?4 OR json_extract(t.result_json,'$.id') IN (${refs("mission")}) OR json_extract(t.result_json,'$.id') IN (${refs("fup")}))
-       UNION SELECT command_operation_id FROM assistant_fup_provenance t WHERE ${namespace("t")} AND t.fup_id IN (${refs("fup")})`),
+      collect("command", `SELECT operation_id AS id FROM assistant_owner_commands t WHERE ${namespace("t")} AND (
+         (json_extract(t.result_json,'$.kind') LIKE 'source.%' AND json_extract(t.result_json,'$.id')=?4)
+         OR (json_extract(t.result_json,'$.kind') LIKE 'mission.%' AND (json_extract(t.result_json,'$.id') IN (${refs("mission")}) OR json_array(json_extract(t.result_json,'$.id'),json_extract(t.result_json,'$.revision')) IN (${refs("mission_version")})))
+         OR (json_extract(t.result_json,'$.kind') LIKE 'fup.%' AND json_extract(t.result_json,'$.id') IN (${refs("fup")})))
+       UNION SELECT t.command_operation_id FROM assistant_fup_provenance t JOIN assistant_owner_commands c ON c.installation_id=t.installation_id AND c.generation=t.generation AND c.operation_id=t.command_operation_id
+         WHERE ${namespace("t")} AND t.fup_id IN (${refs("fup")}) AND json_extract(c.result_json,'$.kind') LIKE 'fup.%' AND json_extract(c.result_json,'$.id')=t.fup_id`),
       collect("object", `SELECT original_object_key AS id FROM assistant_source_versions t WHERE ${namespace("t")} AND t.source_id=?4`),
       ...(routines ? [collect("routine", `SELECT id FROM assistant_routine_items t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.job_id IN (${refs("job")}) OR t.run_id IN (${refs("run")}) OR EXISTS(SELECT 1 FROM json_each(t.index_sources_json) j WHERE json_extract(j.value,'$.id')=?4))`)] : []),
       ...(routines ? [collect("run", `SELECT run_id AS id FROM assistant_routine_items t WHERE ${namespace("t")} AND t.id IN (${refs("routine")})`), collect("job", `SELECT job_id AS id FROM assistant_routine_items t WHERE ${namespace("t")} AND t.id IN (${refs("routine")})`)] : []),
@@ -89,7 +94,7 @@ export class RetentionPurge {
       del("assistant_telegram_notifications", `t.decision_id IN (${refs("decision")})`), del("assistant_telegram_read_admissions", `t.decision_id IN (${refs("decision")})`),
       del("assistant_shadow_decisions", `t.id IN (${refs("decision")})`), del("assistant_decision_jobs", jobs),
       del("assistant_episode_calls", `t.episode_id IN (${episodes})`), del("assistant_episodes", jobs), del("assistant_job_receipts", jobs), del("assistant_job_ledger", jobs), del("assistant_jobs", `t.id IN (${refs("job")})`),
-      del("assistant_fup_provenance", `t.fup_id IN (${refs("fup")})`), del("assistant_fup_occurrences", `t.follow_up_id IN (${refs("fup")})`), del("assistant_follow_ups", `t.id IN (${refs("fup")})`), del("assistant_mission_versions", `t.id IN (${refs("mission")})`), del("assistant_missions", `t.id IN (${refs("mission")})`),
+      del("assistant_fup_provenance", `t.fup_id IN (${refs("fup")})`), del("assistant_fup_occurrences", `t.follow_up_id IN (${refs("fup")})`), del("assistant_follow_ups", `t.id IN (${refs("fup")})`), del("assistant_mission_versions", `t.id IN (${refs("mission")}) OR json_array(t.id,t.revision) IN (${refs("mission_version")})`), del("assistant_missions", `t.id IN (${refs("mission")})`),
       del("assistant_owner_commands", `t.operation_id IN (${refs("command")})`),
       del("assistant_retrieval_items", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_steps", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_semantic", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_runs", `t.id IN (${refs("run")})`),
       del("assistant_relation_batches", sameSource), del("assistant_model_permits", sameSource), del("assistant_model_receipts", `t.operation_key IN (${refs("model")})`), del("assistant_media_artifacts", sameSource), del("assistant_media_receipts", sameSource), del("assistant_origin_versions", "t.canonical_id=?4"),

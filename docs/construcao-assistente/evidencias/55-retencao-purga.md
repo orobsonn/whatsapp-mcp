@@ -39,3 +39,11 @@ Pendentes antes de fechamento: gates dirigidos/nativos/integrados, revisão adve
 ## Revisão independente da composição
 
 Revisão de `semantic_bugs` aprovou a barreira, closure de contexto secundário, financeiro e coleta R2, e encontrou falha de presença no core da autoridade: `null`, `false` e `0` sob uma chave retirada eram tratados como ausência, permitindo lookup com `blocked=[]` e sobrescrita. **3/3 RED** reproduziram isso. O core agora aceita apenas `true` ou ausência `undefined` em lookup, record e append de bootstrap; qualquer outro valor existente é corrupção e permanece sem sobrescrita. Guard de origem também recusa. **12/12** testes da autoridade passaram na composição em12,96s, incluindo as3 contraprovas; revisão independente aprovou a correção. A integração removeu uma declaração duplicada do binding ARTIFACTS trazida pelos dois ramos, preservando um único bucket com seus marcadores de afinidade. Gate completo no HEAD final continua necessário.
+
+## Followup — história de missão e colisão de IDs
+
+Após a revisão C, duas contraprovas **RED** em 10,99 s mostraram: missão M foi atribuída à fonte A na revisão 1 e à fonte B na revisão 2; purgar A conservava `mission_versions` revisão 1/objetivo atribuído a A. Outra prova usou project.id igual ao ID opaco de fonte/missão e perdeu indevidamente o recibo do projeto, porque o collector de comandos comparava somente `result.id`.
+
+O fix acrescenta somente um tipo de referência fixo `mission_version`, chave composta `json_array(id,revision)`, coletado pelo `body_json.sourceId` histórico. Deleta essa versão e seu recibo **mission.*** exato por id/revision. Não amplia o closure da missão corrente B: M revisão 2, fonte B, FUP B e recibo B sobrevivem. O caminho existente de missão **corrente** atribuída a A continua removendo seu closure. Recibos source/mission/FUP são atribuídos pelo kind correspondente; a ligação por provenance FUP também confere o recibo FUP, sem fundir project/source/mission por ID.
+
+Regressão **17/17 GREEN** em 15,86 s (`npm test -- tests/assistant-retention-purge.test.ts`), TypeScript e diff check passaram. A prova verifica também o ledger incerto histórico byte a byte inalterado. Não há nova migração, purga real, inferência ou acesso cloud. Custo adicional: **US$ 0**. O followup não é homologação do piloto e não fecha a issue sem composição/CI.

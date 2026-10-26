@@ -7,6 +7,7 @@ import { RetentionObjects, retentionObjectPrefix } from "../assistant/retention-
 import { InferenceBudget } from "../assistant/budget";
 import { CogneeModelBroker } from "../assistant/model-broker";
 import { JobQueue } from "../assistant/queue";
+import { OwnerControl } from "../assistant/control";
 // @ts-expect-error Vite SQL assets.
 const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const owner = { kind: "owner" } as const, digest = "a".repeat(64), guard = { allow: async () => {}, withdraw: async () => {} };
@@ -78,6 +79,21 @@ test("ordered D1 purge removes attributed payloads and settles known actual whil
   for (const table of ["assistant_source_versions", "assistant_relation_batches", "assistant_model_permits", "assistant_model_receipts", "assistant_media_artifacts", "assistant_media_receipts", "assistant_retention_purge_grants"]) expect(await count(table)).toBe(0);
   expect(await count("assistant_sources")).toBe(1); expect((await budget.status()).committed).toBe(3); expect((await old.status()).committed).toBe(40);
   expect(await purge(source.id)).toEqual(result);
+});
+test("purging source A removes only its historical mission version and typed receipt while current source B intent remains",async()=>{
+  const a=await note("A"),b=await note("B"),control=new OwnerControl(env.DB,scope,owner,()=>100),budget=new InferenceBudget(env.DB,scope);await budget.configure(100);await budget.reserve("historical-uncertain",digest,8);await budget.uncertain("historical-uncertain");
+  await control.execute({kind:"project.put",operationId:"project-shared",id:"shared",expectedVersion:0,name:"Synthetic project"});
+  await control.execute({kind:"mission.put",operationId:"mission-A",id:"shared",expectedRevision:0,objective:"Private historical objective from A",source:{id:a.id,revision:1},state:"active"});await control.execute({kind:"mission.put",operationId:"mission-B",id:"shared",expectedRevision:1,objective:"Current independent objective B",source:{id:b.id,revision:1},state:"active"});
+  await env.DB.prepare("INSERT INTO assistant_follow_ups(installation_id,generation,id,version,mission_id,source_id,source_revision,origin,conversation_id,purpose,timezone,state,next_evaluation_at) VALUES(?,?,'current-B',1,'shared',?,1,'owner_request','chat','Current B follow up','UTC','paused',100)").bind(scope.installationId,scope.generation,b.id).run();
+  const money=JSON.stringify((await env.DB.prepare("SELECT * FROM assistant_budget_reservations WHERE installation_id=? ORDER BY rowid").bind(scope.installationId).all()).results);await controller.withdraw(a.id,1);expect(await purge(a.id)).toMatchObject({state:"complete"});
+  expect(await env.DB.prepare("SELECT 1 FROM assistant_mission_versions WHERE installation_id=? AND generation=? AND id='shared' AND revision=1").bind(scope.installationId,scope.generation).first()).toBeNull();
+  expect(await env.DB.prepare("SELECT source_id FROM assistant_missions WHERE installation_id=? AND generation=? AND id='shared'").bind(scope.installationId,scope.generation).first("source_id")).toBe(b.id);expect(await env.DB.prepare("SELECT json_extract(body_json,'$.sourceId') id FROM assistant_mission_versions WHERE installation_id=? AND generation=? AND id='shared' AND revision=2").bind(scope.installationId,scope.generation).first("id")).toBe(b.id);
+  expect(await env.DB.prepare("SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id='mission-A'").bind(scope.installationId,scope.generation).first()).toBeNull();for(const operation of ["mission-B","project-shared"])expect(await env.DB.prepare("SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=?").bind(scope.installationId,scope.generation,operation).first()).not.toBeNull();
+  expect(await count("assistant_follow_ups")).toBe(1);expect(await new SourceAccess(env.DB,scope).read(owner,b.id)).not.toBeNull();expect(JSON.stringify((await env.DB.prepare("SELECT * FROM assistant_budget_reservations WHERE installation_id=? ORDER BY rowid").bind(scope.installationId).all()).results)).toBe(money);
+});
+test("purge attributes owner receipts by kind as well as opaque ID and preserves colliding project receipts",async()=>{
+  const source=await note(),control=new OwnerControl(env.DB,scope,owner,()=>100);await control.execute({kind:"project.put",operationId:"project-mission-ID",id:"shared",expectedVersion:0,name:"Synthetic project"});await control.execute({kind:"project.put",operationId:"project-source-ID",id:source.id,expectedVersion:0,name:"Synthetic project with a colliding source ID"});await control.execute({kind:"mission.put",operationId:"mission-only",id:"shared",expectedRevision:0,objective:"Attributed mission",source:{id:source.id,revision:1},state:"active"});await controller.withdraw(source.id,1);expect(await purge(source.id)).toMatchObject({state:"complete"});expect(await count("assistant_missions")).toBe(0);
+  for(const operation of ["project-mission-ID","project-source-ID"])expect(await env.DB.prepare("SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=?").bind(scope.installationId,scope.generation,operation).first()).not.toBeNull();expect(await env.DB.prepare("SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id='mission-only'").bind(scope.installationId,scope.generation).first()).toBeNull();
 });
 test("a lost final D1 purge acknowledgement returns the exact committed receipt without repeating deletion", async () => {
   const source = await note(); await controller.withdraw(source.id, 1);
