@@ -353,11 +353,11 @@ export class RetrievalRuns {
     const selectedOrigins=rows.results.filter(row=>row.origin_json).map(row=>JSON.parse(row.origin_json!) as OriginFence);
     if(!await checkOriginsWithin(selectedOrigins,fence=>this.options.origin ? this.options.origin.check(fence) : Promise.resolve(false)))return unavailable("origin_unavailable");
     for (const row of rows.results) {
-      const source = this.access.fromRow(actor, row); bytes += new TextEncoder().encode(source.text ?? "").length;
+      const source = this.access.fromRow(actor, row), mediaEvidence = await this.scorer.evidence(source); bytes += new TextEncoder().encode((source.text ?? "") + JSON.stringify(mediaEvidence ?? "")).length;
       if (bytes > 65536) return unavailable("context_bytes_limit", true);
       const origin = row.origin_json ? JSON.parse(row.origin_json) as OriginFence : undefined;
       if (row.conversation_json) { const guard = this.contextGuard(JSON.parse(row.conversation_json)); if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`, ...guard.values).first()) return unavailable("conversation_changed"); }
-      sources.push({ ...source, ...(origin ? { origin } : {}) });
+      sources.push({ ...source, ...(origin ? { origin } : {}), ...(mediaEvidence ? { mediaEvidence } : {}) });
       selected.push({ id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash });
     }
     const selectedJson = JSON.stringify(selected), ranking=semantic ? semanticRankingSchema.parse({engine:semantic.engine,gaps:semantic.gaps,binding:semantic.binding}) : null, packHash = await bridgeHash([run.request_hash, run.actor_json, selected,...(ranking ? [ranking] : [])]);
@@ -366,7 +366,7 @@ export class RetrievalRuns {
     const saved = ranking ? (await this.db.batch([this.statement(`UPDATE assistant_retrieval_semantic SET ranking_json=? WHERE ${ns} AND run_id=? AND ${fresh.sql}`,JSON.stringify(ranking),...this.keys(),run.id,...fresh.values),savePack])).at(-1)! : await savePack.all();
     if (!saved.results.length) return unavailable("inventory_changed");
     const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose, ...(ranking ? {ranking} : {}) });
-    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: semantic?.gaps ?? baseGaps.slice() } };
+    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: [...new Set([...(semantic?.gaps ?? baseGaps), ...(sources.some(row => row.mediaEvidence) ? ["media_semantic_unsearched"] : []), ...(sources.some(row => row.mediaEvidence?.pages.some(page => page.state === "unreadable")) ? ["media_unreadable_pages"] : [])])] } };
   }
   guard(actor: TrustedActor, fence: SearchFence, now = this.clock()): AccessGuard {
     actor = ownActor(actor);

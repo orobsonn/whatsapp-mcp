@@ -22,6 +22,7 @@
     "@flue/runtime": "2.3.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "jose": "6.2.12",
+    "pdf-lib": "1.17.1",
     "valibot": "1.5.0",
     "zod": "4.6.7"
   },
