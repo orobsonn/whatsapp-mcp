@@ -82,4 +82,4 @@ A busca #41 limita cada operação a um lote autorizado. A continuação por inv
 
 - [ ] [112 · Busca semântica persistente no contexto final](https://github.com/orobsonn/whatsapp-mcp/issues/112) — depende de #44/#100/#39; obrigatória antes de #57. Reutiliza o motor e o broker, com identidade de operação conhecida antes do RPC e prova do inventário autorizado.
 
-- [ ] [114 · Leitura nominal de mídia capturada](https://github.com/orobsonn/whatsapp-mcp/issues/114) — depende de #69/#33; antecede #52. Capacidade somente de leitura, limitada a imagem/PDF de 2 MiB, sem acesso genérico ao R2.
+- [x] [114 · Leitura nominal de mídia capturada](https://github.com/orobsonn/whatsapp-mcp/issues/114) — depende de #69/#33; antecede #52. Capacidade somente de leitura, limitada a imagem/PDF de 2 MiB, sem acesso genérico ao R2.
