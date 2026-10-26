@@ -4,6 +4,20 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-26
+
+### Added
+- Contexto de imagem/PDF capturado com reader nominal, parser isolado, original/hash preservados e derivado atribuído a extração de modelo; áudio reutiliza transcript existente, sem ASR novo (#52).
+
+### Fixed
+- Fonte autorizada com OriginScope/BudgetScope passa a produzir o fence nominal correto; o mesmo artefato pago do PNG é recuperado sem nova inferência ou rekey.
+
+### Validation
+- Três casos sintéticos na Cloudflare (PNG, PDF textual e escaneado), leitura/replay sem chamada nova e retirada remota/canônica recusando cache. Ledger novo liquidado em 4136 microUSD, com zero nova inferência incerta; histórico anterior preservado. Evidência: [ensaio cloud de mídia](docs/construcao-assistente/evidencias/52-media-cloud-vps.md).
+
+### Notes
+- O nome literal Iara/lara do PNG permaneceu ambíguo e não comprova identidade/autoridade. Nenhuma alegação de OCR universal, ASR real novo ou produto completo pronto para piloto. Mídia contínua, envios WhatsApp e escrita Calendar não são ativados por esta entrega.
+
 ## [0.36.0] - 2026-10-26
 
 ### Added
