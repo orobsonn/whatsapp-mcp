@@ -18,6 +18,7 @@ import { MediaContext } from "./media";
 import { createMediaModelPort } from "./media-model";
 import { createTelegramReview } from "./telegram";
 import { engineName } from "./container";
+import type { CogneeContainer, IndexPreflight } from "./container";
 type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string};
 type Item={id:string;subject_json:string;binding_hash:string;binding_json:string;actor_json:string;profile:"owner"|"interlocutor";source_id:string;source_revision:number;state:string;phase:string;index_sources_json:string|null;run_id:string|null;search_checkpoint:number;search_state:string|null;job_id:string|null;episode_id:string|null;last_gap:string|null;created_at:number};
 type Event={sequence:number;chat_id:string;source_kind:string;metadata_hash:string;state:string;canonical_id:string|null;observed_revision:number|null;observed_version:number|null;observed_watermark:number|null;coalesced:number};
@@ -129,13 +130,23 @@ export class AssistantScheduler {
  private async warm(cycle:RoutineCycle,item:Item){
   const engine=this.env.COGNEE!.get(this.env.COGNEE!.idFromName(engineName(this.scope.installationId,this.scope.generation)));
   let state=await engine.lifecycleState();if(!state.index)return {engine,ready:false,gap:"index_uninitialized"};
+  const initial=await this.preflight(cycle,engine,state.index,false);if(initial)return {engine,ready:false,gap:initial};
   if(state.running&&!state.maintenance&&!state.quarantine&&!state.index.lost)return {engine,ready:true,state};
   const checkpoint=state.checkpoint;
   if(!checkpoint||checkpoint.epoch!==state.index.epoch||checkpoint.revision!==state.index.revision)return {engine,ready:false,gap:"index_rebuild_required"};
   await this.routines.phase(cycle,"restore_checkpoint",item.id);
+  const last=await this.preflight(cycle,engine,state.index,false);if(last)return {engine,ready:false,gap:last};
   const restored=await engine.restoreCheckpoint({checkpointId:checkpoint.id,indexEpoch:state.index.epoch,indexRevision:state.index.revision});
   if(restored.state!=="checkpoint_confirmed")return {engine,ready:false,gap:"checkpoint_restore_uncertain"};
-  state=await engine.lifecycleState();return {engine,ready:state.running&&!state.maintenance&&!state.quarantine&&!state.index?.lost,state,gap:"index_unavailable"};
+  state=await engine.lifecycleState();if(!state.index)return {engine,ready:false,gap:"index_unavailable"};
+  const restoredCheck=await this.preflight(cycle,engine,state.index,true);if(restoredCheck)return {engine,ready:false,gap:restoredCheck};
+  return {engine,ready:state.running&&!state.maintenance&&!state.quarantine&&!state.index.lost,state,gap:"index_unavailable"};
+ }
+ private async preflight(cycle:RoutineCycle,engine:DurableObjectStub<CogneeContainer>,index:{epoch:string;revision:string},physical:boolean):Promise<string|null>{
+  let result:IndexPreflight;try{result=await engine.indexPreflight({indexEpoch:index.epoch,indexRevision:index.revision});}catch{return "index_preflight_unavailable";}
+  if(!await this.routines.current(cycle))throw new Error("routine_stale");
+  if(result.state==="maintenance_required")return "index_maintenance_required";
+  return result.state==="verified"||!physical&&result.state==="current_metadata"?null:"index_preflight_unavailable";
  }
  private async index(cycle:RoutineCycle,item:Item,binding:Binding,reconcileOnly:boolean):Promise<string>{
   if(!this.env.COGNEE)return "ready";const inventory=this.access.inventory(binding.actor,binding.projectId,this.clock(),this.scope);
@@ -159,17 +170,21 @@ export class AssistantScheduler {
    if(metadata.sources.some(row=>row.id===ref.id&&row.revision===ref.revision&&row.version===ref.version&&row.hash===ref.hash))continue;
    if(work?.state==="complete")return this.gap(cycle,item.id,"index_rebuild_required");
    if(reconcileOnly)return "uncertain";
+   const beforeIngest=await this.preflight(cycle,engine,metadata,true);if(beforeIngest)return this.gap(cycle,item.id,beforeIngest);
    const owner=this.owned(cycle);await this.sql(`INSERT INTO assistant_routine_ingestions SELECT ?,?,?,?,?,?,?,?,'prepared' WHERE ${owner.sql} ON CONFLICT DO NOTHING`,...this.keys(),item.id,ref.id,JSON.stringify(ref),metadata.epoch,...owner.values).run();
    const claimed=await this.sql(`UPDATE assistant_routine_ingestions SET state='attempting' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND state='prepared' AND index_epoch=? AND ${owner.sql} RETURNING source_id`,...this.keys(),item.id,ref.id,metadata.epoch,...owner.values).all();if(!claimed.results.length)return "uncertain";
-   await this.routines.phase(cycle,"ingest",item.id);const result=await engine.ingest(input) as {state:string};
+   await this.routines.phase(cycle,"ingest",item.id);
+   const result=await engine.ingest(input) as {state:string};
    if(result.state!=="complete"){await this.sql(`UPDATE assistant_routine_ingestions SET state='uncertain' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND state='attempting'`,...this.keys(),item.id,ref.id).run();return this.gap(cycle,item.id,"ingestion_uncertain",true);}
    await this.sql(`UPDATE assistant_routine_ingestions SET state='complete' WHERE ${originScopeSql} AND item_id=? AND source_id=? AND state='attempting'`,...this.keys(),item.id,ref.id).run();
    const current=(await engine.lifecycleState()).index!;await this.routines.phase(cycle,"checkpoint",item.id);
+   const beforeCheckpoint=await this.preflight(cycle,engine,current,true);if(beforeCheckpoint)return this.gap(cycle,item.id,beforeCheckpoint);
    const checkpoint=await engine.checkpoint({indexEpoch:current.epoch,indexRevision:current.revision});if(checkpoint.state!=="checkpoint_confirmed")return this.gap(cycle,item.id,"checkpoint_pending");
    await this.update(cycle,item.id,"state='pending',last_gap='indexing_pending'");return "pending"; // At most one new ingestion per cron.
   }
+  const ready=await this.preflight(cycle,engine,metadata,true);if(ready)return this.gap(cycle,item.id,ready);
   if(metadata.state!=="checkpoint_confirmed"){
-   if(reconcileOnly)return "ready";await this.routines.phase(cycle,"checkpoint",item.id);if((await engine.checkpoint({indexEpoch:metadata.epoch,indexRevision:metadata.revision})).state!=="checkpoint_confirmed")return this.gap(cycle,item.id,"checkpoint_pending");
+   if(reconcileOnly)return "ready";await this.routines.phase(cycle,"checkpoint",item.id);const last=await this.preflight(cycle,engine,metadata,true);if(last)return this.gap(cycle,item.id,last);if((await engine.checkpoint({indexEpoch:metadata.epoch,indexRevision:metadata.revision})).state!=="checkpoint_confirmed")return this.gap(cycle,item.id,"checkpoint_pending");
   }
   return "ready";
  }

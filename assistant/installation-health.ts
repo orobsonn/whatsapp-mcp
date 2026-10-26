@@ -43,10 +43,13 @@ export async function installationHealth(env: InstallEnv) {
     }, "unavailable"),
   ]);
   const scheduler = await bounded(async () => {
-    if (!env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || schema.missingFeatures.includes("routines")) return { observation: "not_observed", lastRunAt: null as number | null };
-    const lastRunAt = await env.DB.prepare("SELECT MAX(last_run_at) FROM assistant_routine_state WHERE installation_id=? AND generation=?").bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION).first<number>("MAX(last_run_at)");
-    return { observation: lastRunAt === null ? "not_observed" : "host_scheduler_receipt", lastRunAt };
-  }, { observation: "unavailable", lastRunAt: null as number | null });
+    if (!env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.BRIDGE_SOURCE_EPOCH || !env.BRIDGE_SOURCE_GENERATION || schema.missingFeatures.includes("routines")) return { observation: "not_observed", lastRunAt: null as number | null, state:null as string|null,latestGap:null as string|null };
+    const keys=[env.INSTALLATION_ID,env.OPERATIONAL_GENERATION,env.BRIDGE_SOURCE_EPOCH,env.BRIDGE_SOURCE_GENERATION];
+    // Full source affinity is the state PK: exactly one current coordinator.
+    const row=await env.DB.prepare("SELECT last_run_at,state,last_gap FROM assistant_routine_state WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=?").bind(...keys).first<{last_run_at:number|null;state:string;last_gap:string|null}>();
+    const pending=await env.DB.prepare("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND state IN ('waiting_context','blocked','uncertain') AND last_gap IN ('index_maintenance_required','index_preflight_unavailable') ORDER BY updated_at DESC,id DESC LIMIT 1").bind(...keys).first<{last_gap:string}>();
+    return { observation: row?.last_run_at==null ? "not_observed" : "host_scheduler_receipt", lastRunAt:row?.last_run_at??null,state:row?.state??null,latestGap:pending?.last_gap??row?.last_gap??null };
+  }, { observation: "unavailable", lastRunAt: null as number | null,state:null as string|null,latestGap:null as string|null });
   return { infrastructure: schema.state === "complete" && schema.coreReady && artifactAffinity === "verified" && capture === "affinity_verified" && artifacts === "reachable" && retention === "sealed" ? "observed_bindings" : "pending",
     schema: { ...schema, observation: "required_feature_table_inventory_not_full_migration_proof" }, capture, artifacts, artifactAffinity, artifactBindingIdentity: "requires_cloud_binding_api_verification", retention, scheduler: { ...scheduler, cloudCron: "requires_platform_schedule_and_live_smoke" },
     gates: { routineMode: env.ROUTINES_ENABLED ?? "off", paused: env.ROUTINES_PAUSED === "true", pauseConfigured: env.ROUTINES_PAUSED !== undefined, semanticRequired: env.SEMANTIC_SEARCH_MODE === "required",

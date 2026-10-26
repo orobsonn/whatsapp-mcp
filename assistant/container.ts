@@ -9,8 +9,9 @@ import { OriginGuard, checkOriginsWithin } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { CheckpointController, type CheckpointFence, type CheckpointManifest, type CheckpointPlan, type CheckpointResult, type CheckpointState, type CheckpointStore, type IndexProof, type SnapshotHandle } from "./checkpoints";
 import build from "./cognee/build-fingerprint.json";
-import { RebuildController, type RebuildState, type RebuildStore } from "./rebuild";
+import { RebuildController, validIndexProof, type RebuildState, type RebuildStore } from "./rebuild";
 import type { SourceStamp } from "./checkpoints";
+import { z } from "zod";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -115,12 +116,13 @@ function coverageHost(env:AssistantEnv,proof:CoverageProof) {
 export class CanonicalEngineGuard implements EngineGuard {
   private access: SourceAccess;
   constructor(private env: AssistantEnv) { const scope = configured(env); this.access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }); }
-  async check(actor: TrustedActor, permits: EnginePermit[]) {
+  async check(actor: TrustedActor, permits: EnginePermit[], isCurrent:()=>boolean=()=>true) {
     try {
       const scope = configured(this.env);
       for (const permit of permits) {
+        if(!isCurrent())return false;
         const guard = this.access.guard(actor, permit.source, Date.now());
-        if (!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()) return false;
+        if (!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()||!isCurrent()) return false;
         if (permit.source.source.origin === "whatsapp" && !permit.origin) return false;
         if (permit.origin) {
           if (permit.origin.canonicalId !== permit.source.source.id || permit.origin.revision !== permit.source.source.revision || permit.origin.version !== permit.source.source.version) return false;
@@ -129,11 +131,11 @@ export class CanonicalEngineGuard implements EngineGuard {
         }
       }
       const origins=permits.filter(permit=>permit.origin).map(permit=>permit.origin!);
-      if(!origins.length)return true;
+      if(!origins.length)return isCurrent();
       const origin=new OriginGuard(scope.db,()=>({installationId:scope.installationId,generation:scope.generation,sourceEpoch:this.env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:this.env.BRIDGE_SOURCE_GENERATION!}),this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!);
-      if(!await checkOriginsWithin(origins,fence=>origin.check(fence)))return false;
+      if(!await checkOriginsWithin(origins,fence=>isCurrent()?origin.check(fence,isCurrent):Promise.resolve(false))||!isCurrent())return false;
       // Recheck local ACLs after the remote observations, before returning.
-      for(const permit of permits){const guard=this.access.guard(actor,permit.source,Date.now());if(!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first())return false;}
+      for(const permit of permits){if(!isCurrent())return false;const guard=this.access.guard(actor,permit.source,Date.now());if(!await scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()||!isCurrent())return false;}
       return true;
     } catch { return false; }
   }
@@ -150,6 +152,10 @@ export class CanonicalEngineGuard implements EngineGuard {
   }
 }
 type IndexMetadata = { namespace: string; epoch: string; revision: string; sources: SourceStamp[]; lost?: boolean; indexState?: string };
+export type IndexPreflight = { state: "verified" | "current_metadata"; indexEpoch: string; indexRevision: string; sourceCount: number }
+  | { state: "maintenance_required" | "unavailable"; reason: string };
+const indexExpectation = z.object({ indexEpoch:z.string().min(1).max(128),indexRevision:z.union([z.literal("empty"),z.string().regex(/^[a-f0-9]{64}$/)]) }).strict();
+const indexStamp = z.object({id:z.string().min(1).max(256),revision:z.number().int().positive().safe(),version:z.number().int().positive().max(2147483647),hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 function samePlan(plan: CheckpointPlan, index: Pick<IndexMetadata, "epoch" | "revision" | "sources">) {
   const stamps = (values: SourceStamp[]) => values.map(({ id, revision, version, hash }) => ({ id, revision, version, hash })).sort((a, b) => a.id.localeCompare(b.id));
   return plan.indexEpoch === index.epoch && plan.indexRevision === index.revision && Array.isArray(index.sources) &&
@@ -186,18 +192,80 @@ export function makeCheckpointStore(storage: DurableObjectStorage, scope: { inst
 export class CogneeContainer extends DurableObject<AssistantEnv> {
   private engine?: CogneeEngine;
   private port?: DirectContainerPort;
-  private async rebuildSource(stamp: SourceStamp): Promise<EngineIngest | null> {
+  /** Global index health, independent of the current guest/project pack. Six
+   * remote checks share one deadline; late observations cannot publish or queue
+   * more work. The body stays on the host, never in the returned metadata. */
+  private async indexedSourcesCurrent(sources:SourceStamp[]):Promise<"current"|"stale"|"unavailable"> {
+    const scope=configured(this.env),access=new SourceAccess(scope.db,{installationId:scope.installationId,generation:scope.generation});
+    let next=0,stopped=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const deadlineAt=Date.now()+5000,current=()=>!stopped&&Date.now()<deadlineAt;
+    const work=Promise.all(Array.from({length:Math.min(6,sources.length)},async()=>{
+      while(current()&&next<sources.length){const stamp=sources[next++];
+        try {
+          const source=await access.read({kind:"owner"},stamp.id,stamp.revision);
+          if(!current())return "unavailable" as const;
+          if(!source||source.fence.source.version!==stamp.version||source.fence.source.hash!==stamp.hash){stopped=true;return "stale" as const;}
+          if(!await this.rebuildSource(stamp,current)){stopped=true;return "unavailable" as const;}
+        }catch{stopped=true;return "unavailable" as const;}
+      }
+      return current()?"current" as const:"unavailable" as const;
+    })).then(results=>results.includes("stale")?"stale" as const:results.includes("unavailable")?"unavailable" as const:"current" as const);
+    try{return await Promise.race([work,new Promise<"unavailable">(resolve=>{timer=setTimeout(()=>{stopped=true;resolve("unavailable");},5000);})]);}
+    finally{stopped=true;clearTimeout(timer);}
+  }
+  /** Read-only host boundary. Never starts/restores/quiesces, creates a model
+   * permit, changes checkpoint phase, or touches receipts and cost ledgers. */
+  async indexPreflight(raw: {indexEpoch:string;indexRevision:string}):Promise<IndexPreflight> {
+    const parsed=indexExpectation.safeParse(raw);if(!parsed.success)return {state:"unavailable",reason:"index_preflight_input"};
+    const expected=parsed.data,host=this.host(),scope=configured(this.env);
+    const read=()=>this.ctx.storage.transaction(async tx=>({index:await tx.get<IndexMetadata>("index"),active:await tx.get<unknown>("active"),maintenance:await tx.get<unknown>("maintenance"),quarantine:await tx.get<unknown>("quarantine"),checkpoint:await tx.get<CheckpointState>("checkpoint")}));
+    const check=(state:Awaited<ReturnType<typeof read>>):IndexPreflight|null=>{
+      const index=state.index;
+      if(!index||index.namespace!==JSON.stringify({installationId:scope.installationId,generation:scope.generation})||!Array.isArray(index.sources)||index.sources.length>128||!z.array(indexStamp).safeParse(index.sources).success||new Set(index.sources.map(source=>source.id)).size!==index.sources.length)return {state:"unavailable",reason:"index_metadata_invalid"};
+      if(index.epoch!==expected.indexEpoch||index.revision!==expected.indexRevision)return {state:"unavailable",reason:"index_changed"};
+      if(state.active!==undefined&&state.active!==null)return {state:"unavailable",reason:"index_operation_uncertain"};
+      if(state.maintenance!==undefined&&state.maintenance!==false||state.quarantine!==undefined&&state.quarantine!==false||index.lost!==undefined&&index.lost!==false)return {state:"maintenance_required",reason:"index_not_ready"};
+      if(state.checkpoint!==undefined&&(!state.checkpoint||state.checkpoint.phase!=="confirmed"))return {state:"maintenance_required",reason:"checkpoint_not_idle"};
+      return null;
+    };
+    const outcome=await host.maintain<IndexPreflight>(async()=>{
+      try{
+        const before=await read(),denied=check(before);if(denied)return {value:denied};
+        const index=before.index!,current=await this.indexedSourcesCurrent(index.sources);
+        if(current!=="current")return {value:{state:current==="stale"?"maintenance_required":"unavailable",reason:current==="stale"?"canonical_sources_changed":"origin_unavailable"}};
+        const after=await read(),changed=check(after);if(changed)return {value:changed};
+        if(!samePlan({indexEpoch:index.epoch,indexRevision:index.revision,sources:index.sources},after.index!))return {value:{state:"unavailable",reason:"index_changed"}};
+        const metadata={indexEpoch:index.epoch,indexRevision:index.revision,sourceCount:index.sources.length};
+        if(!this.port!.running)return {value:{state:"current_metadata",...metadata}};
+        const manifest:CheckpointManifest={identity:{installationId:scope.installationId,generation:scope.generation,imageRef:this.ctx.container!.images.cognee,buildFingerprint:build.buildFingerprint,configurationHash:await bridgeHash(DEFAULT_BROKER_CONFIG),engineVersion:"1.6.5"},indexEpoch:index.epoch,indexRevision:index.revision,sources:index.sources};
+        // Retain physical exclusion even when TCP/body ignores its AbortSignal.
+        const physical=host.checkpointEffect(()=>this.port!.verify(manifest));let timer:ReturnType<typeof setTimeout>|undefined;
+        let proof:IndexProof;
+        try{proof=await Promise.race([physical,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error("preflight_timeout")),60000);})]);}
+        catch{return {value:{state:"unavailable",reason:"index_verification_unavailable"}};}
+        finally{clearTimeout(timer);}
+        if(!await validIndexProof(proof,manifest))return {value:{state:"maintenance_required",reason:"index_proof_invalid"}};
+        const finalCurrent=await this.indexedSourcesCurrent(index.sources),final=await read(),finalDenied=check(final);if(finalDenied)return {value:finalDenied};
+        if(finalCurrent!=="current")return {value:{state:finalCurrent==="stale"?"maintenance_required":"unavailable",reason:finalCurrent==="stale"?"canonical_sources_changed":"origin_unavailable"}};
+        if(!this.port!.running||!samePlan(manifest,final.index!))return {value:{state:"unavailable",reason:"index_changed"}};
+        return {value:{state:"verified",...metadata}};
+      }catch{return {value:{state:"unavailable",reason:"index_preflight_unavailable"}};}
+    },true);
+    return outcome.state==="verified"||outcome.state==="current_metadata"||outcome.state==="maintenance_required"||outcome.state==="unavailable"?outcome:{state:"unavailable",reason:"index_preflight_busy"};
+  }
+  private async rebuildSource(stamp: SourceStamp,isCurrent:()=>boolean=()=>true): Promise<EngineIngest | null> {
+    if(!isCurrent())return null;
     const scope = configured(this.env), actor = { kind: "owner" } as const;
     const source = await new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }).read(actor, stamp.id, stamp.revision);
-    if (!source || source.fence.source.version !== stamp.version || source.fence.source.hash !== stamp.hash) return null;
+    if (!isCurrent()||!source || source.fence.source.version !== stamp.version || source.fence.source.hash !== stamp.hash) return null;
     let origin;
     if (source.fence.source.origin === "whatsapp") {
       if (!this.env.CAPTURE_READER || !this.env.BRIDGE_SECRET || !this.env.BRIDGE_SOURCE_EPOCH || !this.env.BRIDGE_SOURCE_GENERATION) return null;
       origin = await new OriginGuard(scope.db, () => ({ installationId: scope.installationId, generation: scope.generation,
         sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION! }), this.env.CAPTURE_READER, this.env.BRIDGE_SECRET).fence(stamp.id);
-      if (!origin) return null;
+      if (!origin||!isCurrent()) return null;
     }
-    return await new CanonicalEngineGuard(this.env).check(actor, [{ source: source.fence, ...(origin ? { origin } : {}) }]) ? { actor, source, ...(origin ? { origin } : {}) } : null;
+    return isCurrent()&&await new CanonicalEngineGuard(this.env).check(actor, [{ source: source.fence, ...(origin ? { origin } : {}) }],isCurrent)&&isCurrent() ? { actor, source, ...(origin ? { origin } : {}) } : null;
   }
   private async rebuilds() {
     const host = this.host(), scope = configured(this.env);

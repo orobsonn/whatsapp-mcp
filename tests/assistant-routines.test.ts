@@ -13,9 +13,16 @@ import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
 import { InferenceBudget } from "../assistant/budget";
 import { JobQueue } from "../assistant/queue";
 import { SourceController } from "../assistant/sources";
+import { SourceAccess } from "../assistant/access";
+import { assistantHealth } from "../assistant/health";
+import { CogneeContainer, CanonicalEngineGuard } from "../assistant/container";
+import { CogneeEngine } from "../assistant/engine";
+import { bridgeHash } from "../assistant/ingress";
+import type { CheckpointManifest, IndexProof, SourceStamp } from "../assistant/checkpoints";
 import type { AssistantEnv } from "../assistant/env";
 import type { ModelAdapter } from "../assistant/model-broker";
 import type { OriginScope,ReaderQuery } from "../assistant/origin-guard";
+import { OriginGuard } from "../assistant/origin-guard";
 // @ts-expect-error Vite raw SQL imports.
 const migrations=import.meta.glob("../assistant/migrations/*.sql",{query:"?raw",import:"default",eager:true}) as Record<string,string>;
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,author:string|null,fromMe:boolean;
@@ -100,11 +107,106 @@ function semanticEngine(cold=false,dirtyLost=false){
  const state={running:!cold,index:{epoch:"index-e",revision:"a".repeat(64),lost:false,state:"checkpoint_confirmed",sources:[] as {id:string;revision:number;version:number;hash:string}[]},maintenance:false,quarantine:false,checkpoint:{id:"checkpoint-1",epoch:"index-e",revision:"a".repeat(64),phase:"confirmed"}};
  if(dirtyLost){state.running=false;state.index.revision="b".repeat(64);state.index.state="needs_checkpoint";state.index.lost=true;}
  const outcome=()=>({state:"complete",operationId:ticket.operationId,indexRevision:ticket.indexRevision,indexState:"checkpoint_confirmed",result:{candidates:input.allowedSources.map(ref=>({...ref,via:["chunks"],relationCount:0})),missing:[]}});
- const engine={lifecycleState:vi.fn(async()=>structuredClone(state)),restoreCheckpoint:vi.fn(async()=>{state.running=true;return {state:"checkpoint_confirmed"};}),checkpoint:vi.fn(async()=>{state.index.state="checkpoint_confirmed";state.checkpoint.revision=state.index.revision;return {state:"checkpoint_confirmed"};}),
- ingest:vi.fn(async(value:import("../assistant/engine").EngineIngest)=>{const ref=value.source.fence.source;state.index.sources.push({id:ref.id,revision:ref.revision,version:ref.version,hash:ref.hash});state.index.revision="c".repeat(64);state.index.state="needs_checkpoint";return {state:"complete"};}),ingestReceipt:vi.fn(async()=>({state:"uncertain"})),
+ // CPserver stores every physical version, whereas Engine stamps keep latest
+ // by source ID. The strict count is essential: an always-green CP hid #53.
+ const physical=new Map<string,SourceStamp>(),key=(ref:SourceStamp)=>JSON.stringify([ref.id,ref.version,ref.hash]);
+ const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical((value as Record<string,unknown>)[k])])):value;
+ let beforeVerify:(()=>Promise<void>)|undefined;
+ const port={get running(){return state.running;},verify:vi.fn(async(manifest:CheckpointManifest):Promise<IndexProof>=>{
+   if(beforeVerify)await beforeVerify();
+   if(physical.size!==manifest.sources.length||manifest.sources.some(ref=>!physical.has(key(ref))))throw new Error("strict_all_stored_versions_mismatch");
+   const {imageRef:_,...identity}=manifest.identity;return {...identity,indexEpoch:manifest.indexEpoch,indexRevision:manifest.indexRevision,manifestHash:await bridgeHash(canonical(manifest)),closed:false,poisoned:false,pendingOperations:0,sources:manifest.sources.map(({id,version,hash})=>({id,version,hash,originalHash:hash,chunks:1}))};
+ }),start:vi.fn(async()=>{throw new Error("unexpected preflight wake");}),request:vi.fn(async()=>{throw new Error("unexpected preflight request");}),deny:vi.fn(async()=>{}),destroy:vi.fn(async()=>{}),intercept:vi.fn(async()=>{})};
+ const gates=new Map<string,unknown>();const read=async(key:string):Promise<unknown>=>gates.has(key)?gates.get(key):key==="index"?{...state.index,namespace:JSON.stringify({installationId:scope.installationId,generation:scope.generation}),indexState:state.index.state}:key==="checkpoint"?{phase:state.checkpoint.phase}:key==="maintenance"?state.maintenance:key==="quarantine"?state.quarantine:key==="active"?null:undefined;
+ const noWrite=vi.fn(async()=>{throw new Error("preflight cannot write");}),storage={get:read,transaction:async(action:(tx:{get:typeof read})=>Promise<unknown>)=>action({get:read})};
+ const host=new CogneeEngine({installationId:scope.installationId,generation:scope.generation},{get:read as never,put:noWrite},port,new CanonicalEngineGuard(settings),()=>now);
+ const core=Object.assign(Object.create(CogneeContainer.prototype),{ctx:{storage,container:{images:{cognee:"synthetic-pinned-image"}}},env:settings,engine:host,port}) as CogneeContainer;
+ const engine={_state:state,_physical:physical,_port:port,_noWrite:noWrite,_gates:gates,_beforeVerify:(action:()=>Promise<void>)=>{beforeVerify=action;},_holdSources:(action:()=>Promise<null>)=>{Object.assign(core,{rebuildSource:action});},
+ indexPreflight:vi.fn(async(expected:{indexEpoch:string;indexRevision:string})=>core.indexPreflight(expected)),lifecycleState:vi.fn(async()=>structuredClone(state)),restoreCheckpoint:vi.fn(async()=>{state.running=true;return {state:"checkpoint_confirmed"};}),checkpoint:vi.fn(async()=>{
+   if(physical.size!==state.index.sources.length){state.checkpoint.phase="rebuild_required";state.maintenance=true;state.running=false;return {state:"rebuild_required"};}
+   state.index.state="checkpoint_confirmed";state.checkpoint.revision=state.index.revision;return {state:"checkpoint_confirmed"};}),
+ ingest:vi.fn(async(value:import("../assistant/engine").EngineIngest)=>{const ref=value.source.fence.source,stamp={id:ref.id,revision:ref.revision,version:ref.version,hash:ref.hash};physical.set(key(stamp),stamp);state.index.sources=state.index.sources.filter(row=>row.id!==ref.id);state.index.sources.push(stamp);state.index.revision="c".repeat(64);state.index.state="needs_checkpoint";return {state:"complete"};}),ingestReceipt:vi.fn(async()=>({state:"uncertain"})),
  prepare:vi.fn(async(alias:string,request:import("../assistant/engine").EngineSearch)=>{input=request;ticket={alias,requestHash:await import("../assistant/ingress").then(m=>m.bridgeHash(request)),operationId:"b".repeat(64),indexEpoch:state.index.epoch,indexRevision:state.index.revision};return {state:"prepared",ticket};}),submit:vi.fn(async()=>{submitted=true;return outcome();}),lookupTicket:vi.fn(async()=>submitted?outcome():{state:"uncertain",reason:"not_submitted",operationId:ticket.operationId})};
  settings.COGNEE={idFromName:()=>({}),get:()=>engine} as unknown as NonNullable<AssistantEnv["COGNEE"]>;return engine;
 }
+it("requires visible maintenance before warm/ingest when a current source replaces an indexed version",async()=>{
+ const engine=semanticEngine();await event();await scheduler().tick();const original=structuredClone(engine._state.checkpoint);expect(engine.ingest).toHaveBeenCalledTimes(1);
+ now+=60001;await event(2,1,"message","Corrected request");const value=snapshots.get("message:message") as {content:object};snapshots.set("message:message",{...value,sourceVersion:2,content:{...value.content,messageVersion:2}});await scheduler().tick();now+=60001;await scheduler().tick();
+ expect(engine._state.checkpoint).toEqual(original);expect(engine.ingest).toHaveBeenCalledTimes(1);expect(engine.checkpoint).toHaveBeenCalledTimes(1);expect(engine.restoreCheckpoint).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+ expect((await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=? ORDER BY source_revision DESC",...keys()).all<{last_gap:string}>()).results.some(row=>row.last_gap==="index_maintenance_required")).toBe(true);
+});
+it("refuses an already populated multi-version index without moving or destroying its confirmed CP",async()=>{
+ const engine=semanticEngine(),owner=new SourceController(env.DB,scope,{kind:"owner"},()=>now),first=await owner.create({originKey:"old",text:"Old private source",occurredAt:now}),old=(await new SourceAccess(env.DB,scope).read({kind:"owner"},first.id))!;
+ await engine.ingest({actor:{kind:"owner"},source:old});await engine.checkpoint();const original=structuredClone(engine._state.checkpoint);await owner.correct(first.id,1,{text:"Corrected private source",occurredAt:now});const current=(await new SourceAccess(env.DB,scope).read({kind:"owner"},first.id))!;await engine.ingest({actor:{kind:"owner"},source:current});engine.ingest.mockClear();engine.checkpoint.mockClear();
+ await event();await scheduler().tick();expect(engine._physical.size).toBe(2);expect(engine._state.checkpoint).toEqual(original);expect(engine.checkpoint).not.toHaveBeenCalled();expect(engine.ingest).not.toHaveBeenCalled();expect(engine.restoreCheckpoint).not.toHaveBeenCalled();expect(modelCalls).toBe(0);expect(engine._noWrite).not.toHaveBeenCalled();
+});
+async function populatedPrivate(engine:ReturnType<typeof semanticEngine>){
+ const owner=new SourceController(env.DB,scope,{kind:"owner"},()=>now),first=await owner.create({originKey:"private-other-project",text:"Unrelated private owner source",occurredAt:now}),source=(await new SourceAccess(env.DB,scope).read({kind:"owner"},first.id))!;
+ await engine.ingest({actor:{kind:"owner"},source});await engine.checkpoint();engine.ingest.mockClear();engine.checkpoint.mockClear();return {owner,source};
+}
+it("requires visible maintenance before restoring a cold global CP that contains a withdrawn source",async()=>{
+ const engine=semanticEngine(),{owner,source}=await populatedPrivate(engine),original=structuredClone(engine._state.checkpoint);await owner.withdraw(source.id,1);engine._state.running=false;
+ await event();await scheduler().tick();expect(engine.restoreCheckpoint).not.toHaveBeenCalled();expect(engine.ingest).not.toHaveBeenCalled();expect(engine.checkpoint).not.toHaveBeenCalled();expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._state.checkpoint).toEqual(original);expect(modelCalls).toBe(0);
+ expect(await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first("last_gap")).toBe("index_maintenance_required");
+});
+it("keeps an active private source outside the guest pack valid in the global index",async()=>{
+ const engine=semanticEngine(),{source}=await populatedPrivate(engine);await event();expect((await scheduler().tick()).state).toBe("pending");now+=60001;expect((await scheduler().tick()).state).toBe("complete");
+ expect(modelCalls).toBe(1);expect(engine._physical.size).toBe(2);expect(engine._state.checkpoint.phase).toBe("confirmed");expect(engine._state.index.sources.some(row=>row.id===source.id)).toBe(true);expect(engine.submit.mock.calls[0]).toBeDefined();expect(engine._noWrite).not.toHaveBeenCalled();
+ const item=await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first("last_gap");expect(item).toBeNull();
+});
+it("reports an unavailable origin without inferring withdrawal or starting another ingestion",async()=>{
+ const engine=semanticEngine();await event(1,0,"unavailable");await scheduler().tick();const original=structuredClone(engine._state.checkpoint);await query("UPDATE assistant_routine_items SET state='blocked' WHERE installation_id=? AND generation=?",...keys()).run();
+ snapshots.delete("message:unavailable");now+=60001;await event(2,1,"current");await scheduler().tick();expect(engine.ingest).toHaveBeenCalledTimes(1);expect(engine.checkpoint).toHaveBeenCalledTimes(1);expect(engine._state.checkpoint).toEqual(original);expect(modelCalls).toBe(0);
+ expect(await query("SELECT COUNT(*) n FROM assistant_sources WHERE installation_id=? AND generation=? AND status<>'active'",...keys()).first("n")).toBe(0);
+ expect((await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).all<{last_gap:string}>()).results.some(row=>row.last_gap==="index_preflight_unavailable")).toBe(true);
+});
+it("rechecks global source guards after native verification before permitting the next effect",async()=>{
+ const engine=semanticEngine(),{owner,source}=await populatedPrivate(engine),original=structuredClone(engine._state.checkpoint);let changed=false;
+ engine._beforeVerify(async()=>{if(!changed){changed=true;await owner.withdraw(source.id,1);}});await event();await scheduler().tick();expect(changed).toBe(true);expect(engine._port.verify).toHaveBeenCalledTimes(1);expect(engine.ingest).not.toHaveBeenCalled();expect(engine.checkpoint).not.toHaveBeenCalled();expect(engine._state.checkpoint).toEqual(original);expect(modelCalls).toBe(0);expect(engine._noWrite).not.toHaveBeenCalled();
+});
+it("verifies a clean appended physical inventory without lifecycle effects or receipt/ledger writes",async()=>{
+ const engine=semanticEngine();await populatedPrivate(engine);const before=structuredClone(engine._state),budget=await new InferenceBudget(env.DB,{...scope,period:"2026-10-26"}).status();
+ expect(await engine.indexPreflight({indexEpoch:before.index.epoch,indexRevision:before.index.revision})).toMatchObject({state:"verified",sourceCount:1});expect(engine._state).toEqual(before);expect(engine._port.start).not.toHaveBeenCalled();expect(engine._port.destroy).not.toHaveBeenCalled();expect(engine._port.deny).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();expect(await new InferenceBudget(env.DB,{...scope,period:"2026-10-26"}).status()).toEqual(budget);
+});
+it.each([false,0,"",{operationId:"unresolved"}])("refuses persisted active marker %s without physical or financial effects",async active=>{
+ const engine=semanticEngine();await populatedPrivate(engine);engine._gates.set("active",active);const before=structuredClone(engine._state);
+ expect(await engine.indexPreflight({indexEpoch:before.index.epoch,indexRevision:before.index.revision})).toMatchObject({state:"unavailable"});expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();expect(engine._state).toEqual(before);
+});
+it("keeps physical exclusion after the verification deadline until the real TCP promise settles",async()=>{
+ const engine=semanticEngine();await populatedPrivate(engine);vi.useFakeTimers();let release!:()=>void;
+ engine._beforeVerify(()=>new Promise<void>(resolve=>{release=resolve;}));const expected={indexEpoch:engine._state.index.epoch,indexRevision:engine._state.index.revision};
+ const pending=engine.indexPreflight(expected);await vi.waitFor(()=>expect(engine._port.verify).toHaveBeenCalledTimes(1),{timeout:5000});await vi.advanceTimersByTimeAsync(60001);
+ expect(await pending).toMatchObject({state:"unavailable",reason:"index_verification_unavailable"});expect(await engine.indexPreflight(expected)).toMatchObject({state:"unavailable"});expect(engine._port.verify).toHaveBeenCalledTimes(1);expect(engine._noWrite).not.toHaveBeenCalled();
+ engine._beforeVerify(async()=>{});release();await vi.waitFor(async()=>expect(await engine.indexPreflight(expected)).toMatchObject({state:"verified"}),{timeout:5000});expect(engine._state.checkpoint.phase).toBe("confirmed");
+});
+it("bounds all global origin checks by one deadline and six in flight without queuing late work",async()=>{
+ const engine=semanticEngine(),owner=new SourceController(env.DB,scope,{kind:"owner"},()=>now),access=new SourceAccess(env.DB,scope);
+ for(let i=0;i<9;i++){const ref=await owner.create({originKey:"global-"+i,text:"Synthetic global source "+i,occurredAt:now});await engine.ingest({actor:{kind:"owner"},source:(await access.read({kind:"owner"},ref.id))!});}await engine.checkpoint();
+ const releases:(()=>void)[]=[],check=vi.fn(()=>new Promise<null>(resolve=>{releases.push(()=>resolve(null));}));engine._holdSources(check);vi.useFakeTimers();
+ const pending=engine.indexPreflight({indexEpoch:engine._state.index.epoch,indexRevision:engine._state.index.revision});await vi.waitFor(()=>expect(check).toHaveBeenCalledTimes(6),{timeout:1000});await vi.advanceTimersByTimeAsync(5001);
+ expect(await pending).toMatchObject({state:"unavailable",reason:"origin_unavailable"});for(const release of releases)release();await Promise.resolve();await Promise.resolve();expect(check).toHaveBeenCalledTimes(6);expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();
+});
+it("does not begin a late reader RPC when the preflight deadline expires during the local origin snapshot",async()=>{
+ settings.ROUTINES_PAUSED="true";await event();await scheduler().tick();const source=await query("SELECT canonical_id FROM assistant_source_origins WHERE installation_id=? AND generation=?",...keys()).first<string>("canonical_id");
+ const origin=new OriginGuard(env.DB,()=>scope,settings.CAPTURE_READER!,secret),fence=(await origin.fence(source!))!,snapshot=origin.fence.bind(origin),reader=vi.spyOn(settings.CAPTURE_READER!,"readSnapshot");let current=true;
+ vi.spyOn(origin,"fence").mockImplementationOnce(async id=>{const result=await snapshot(id);current=false;return result;});
+ expect(await origin.check(fence,()=>current)).toBe(false);expect(reader).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+});
+it("honors the elapsed preflight budget before its deadline timer has been dispatched",async()=>{
+ settings.ROUTINES_PAUSED="true";await event();await scheduler().tick();const id=await query("SELECT canonical_id FROM assistant_source_origins WHERE installation_id=? AND generation=?",...keys()).first<string>("canonical_id");
+ const source=(await new SourceAccess(env.DB,scope).read({kind:"owner"},id!))!,engine=semanticEngine();await engine.ingest({actor:{kind:"owner"},source});await engine.checkpoint();
+ const reader=vi.spyOn(settings.CAPTURE_READER!,"readSnapshot"),read=SourceAccess.prototype.read;let elapsed=false,timerFired=false;vi.useFakeTimers();
+ const marker=setTimeout(()=>{timerFired=true;},5000);
+ vi.spyOn(SourceAccess.prototype,"read").mockImplementation(async function(this:SourceAccess,...args:Parameters<SourceAccess["read"]>){const value=await read.apply(this,args);if(!elapsed){elapsed=true;vi.setSystemTime(Date.now()+5001);}return value;});
+ expect(await engine.indexPreflight({indexEpoch:engine._state.index.epoch,indexRevision:engine._state.index.revision})).toMatchObject({state:"unavailable",reason:"origin_unavailable"});
+ expect(timerFired).toBe(false);clearTimeout(marker);expect(reader).not.toHaveBeenCalled();expect(engine._port.verify).not.toHaveBeenCalled();expect(engine._noWrite).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+});
+it("shows the current maintenance gap in owner health and cumulative review without bodies or foreign affinity",async()=>{
+ const engine=semanticEngine(),{owner,source}=await populatedPrivate(engine);await owner.withdraw(source.id,1);engine._state.running=false;await event();await scheduler().tick();
+ await query("INSERT INTO assistant_routine_state(installation_id,generation,source_epoch,source_generation,state,last_run_at,last_gap) VALUES(?,?,'foreign-epoch',?,'uncertain',?,'index_preflight_unavailable')",...keys(),scope.sourceGeneration,now+999).run();
+ const health=await assistantHealth(settings,{kind:"owner"},now),review=(await new Routines(env.DB,scope,()=>now).daily(false)).summary;
+ expect(health).toMatchObject({installation:{scheduler:{observation:"host_scheduler_receipt",state:"idle",lastRunAt:now,latestGap:"index_maintenance_required"}}});expect(review.indexGaps).toEqual([{reason:"index_maintenance_required",count:1}]);expect(review.reportingScope).toBe("current_generation_cumulative");expect(review.snapshotAt).toBe(now);expect(review.pipelineGaps).toContain("index_maintenance_required");expect(JSON.stringify(health)).not.toContain(source.id);expect(JSON.stringify(review)).not.toContain(source.text!);expect(modelCalls).toBe(0);
+});
 it("warms the exact checkpoint, indexes once, then performs semantic presearch before claiming a nominal episode",async()=>{
  const engine=semanticEngine(true);await event();expect((await scheduler().tick()).state).toBe("pending");
  expect(engine.restoreCheckpoint).toHaveBeenCalledWith({checkpointId:"checkpoint-1",indexEpoch:"index-e",indexRevision:"a".repeat(64)});expect(engine.ingest).toHaveBeenCalledTimes(1);expect(engine.checkpoint).toHaveBeenCalledWith({indexEpoch:"index-e",indexRevision:"c".repeat(64)});
@@ -113,7 +215,7 @@ it("warms the exact checkpoint, indexes once, then performs semantic presearch b
 });
 it("never restores an older checkpoint over a dirty lost index or starts an empty replacement",async()=>{
  const engine=semanticEngine(false,true);await event();await scheduler().tick();expect(engine.restoreCheckpoint).not.toHaveBeenCalled();expect(engine.ingest).not.toHaveBeenCalled();expect(engine.submit).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
- expect(await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first("last_gap")).toBe("index_rebuild_required");
+ expect(await query("SELECT last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first("last_gap")).toBe("index_maintenance_required");
 });
 it("lost ingest acknowledgement only looks up the existing exact receipt in the original epoch",async()=>{
  const engine=semanticEngine();engine.ingest.mockResolvedValue({state:"uncertain"});await event();await scheduler().tick();now+=60001;await scheduler().tick();expect(engine.ingest).toHaveBeenCalledTimes(1);expect(engine.ingestReceipt).toHaveBeenCalledWith(expect.any(Object),"index-e");expect(modelCalls).toBe(0);expect(engine.submit).not.toHaveBeenCalled();

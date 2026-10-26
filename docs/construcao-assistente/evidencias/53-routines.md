@@ -2,6 +2,8 @@
 
 Implementação na VPS sobre `76a1610`, em três fronteiras: lifecycle/claim nominal; coordenação/metadados/outbox; factory real/scheduled handler/testes. Não é declaração de piloto operacional ou homologação cloud.
 
+Atualização de integração: correção/retirada após povoar o índice exigem [preflight global antes do ciclo de vida](53-index-preflight.md). O adapter inicial não modelava múltiplas versões físicas; as contraprovas posteriores e a proteção contra envenenar o CP estão registradas nesse complemento. Manutenção explícita pode continuar pendente, com lacuna visível.
+
 ## Pipeline e identidade
 
 O handler `scheduled` usa `AssistantScheduler`, que instancia os controladores reais: `CaptureMaterializer.drain(10)/retry(2)`, `Conversations.replay(32)/retryGaps(4)` com cinco conversas por página e cursor persistente, FUPs com página de cinco, `SourceAccess`/`OriginGuard`, mídia limitada já existente, projeção Cognee, `RetrievalRuns`, `JobQueue.claimId`, `EpisodeController`, driver público Flue, diário e revisão Telegram. `jobs.ts` e seu provider sintético não são usados.

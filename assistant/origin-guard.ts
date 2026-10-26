@@ -106,14 +106,14 @@ export class OriginGuard {
       revision: row.revision, version: row.current_version, watermark: row.chat_watermark, hash: row.observation_hash,
       conversationKind: row.kind, policyRevision: row.policy_revision, policyMode: row.policy_mode };
   }
-  async check(fence: OriginFence): Promise<boolean> {
+  async check(fence: OriginFence,isCurrent:()=>boolean=()=>true): Promise<boolean> {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;
-    if (!fence || JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(scopeKeys(fence))) return false;
+    if (!isCurrent()||!fence || JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(scopeKeys(fence))) return false;
     const current = await this.fence(fence.canonicalId);
-    if (!sameFence(current, fence)) return false;
+    if (!isCurrent()||!sameFence(current, fence)) return false;
     const observed = await this.observe(fence, fence);
-    return JSON.stringify(scopeKeys(activeOrigin(this.getScope))) === JSON.stringify(scopeKeys(fence)) && observed.state === "available"
+    return isCurrent()&&JSON.stringify(scopeKeys(activeOrigin(this.getScope))) === JSON.stringify(scopeKeys(fence)) && observed.state === "available"
       && observed.watermark === fence.watermark && observed.hash === fence.hash && observed.kind === fence.conversationKind
-      && sameFence(await this.fence(fence.canonicalId), fence);
+      && sameFence(await this.fence(fence.canonicalId), fence)&&isCurrent();
   }
 }
