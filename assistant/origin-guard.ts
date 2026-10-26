@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { bridgeHash } from "./ingress";
+import type {AccessGuard} from './access';
 export type OriginScope = { installationId: string; generation: string; sourceEpoch: string; sourceGeneration: string };
 export type OriginRef = { sourceKind: "message" | "media" | "derivative" | "conversation"; sourceId: string; chatId: string };
 export type ReaderQuery = OriginRef & { secret: string; sourceEpoch: string; sourceGeneration: string };
-export interface SnapshotReader { readSnapshot(input: ReaderQuery): Promise<unknown> }
+export interface SnapshotReader { readSnapshot(input: ReaderQuery): Promise<unknown>; installationAffinity?(input: { secret: string }): Promise<unknown> }
 export const scopeKeys = (scope: OriginScope) => [scope.installationId, scope.generation, scope.sourceEpoch, scope.sourceGeneration];
 export const originScopeSql = "installation_id=? AND generation=? AND source_epoch=? AND source_generation=?";
 export function activeOrigin(getScope: () => OriginScope) {
@@ -32,6 +33,8 @@ export type Observation = {
 };
 export type OriginFence = OriginScope & OriginRef & { canonicalId: string; revision: number; version: number;
   watermark: number; hash: string; conversationKind: "private" | "group"; policyRevision: number; policyMode: string };
+type OriginRow = { source_kind: OriginRef["sourceKind"]; source_id: string; chat_id: string; watermark: number; observation_hash: string;
+  revision: number; current_version: number; policy_kind: string | null; kind: "private" | "group"; chat_watermark: number; access_state: string; policy_revision: number; policy_mode: string };
 // Persistence/schema parsing may reorder properties. Compare the exact flat
 // field set and values; additional or changed fields still deny the reference.
 function sameFence(current: OriginFence | null, expected: OriginFence): boolean {
@@ -87,9 +90,8 @@ export class OriginGuard {
     if (!parsed.content || (ref.sourceKind !== "conversation" && (!parsed.content.messageId || !parsed.content.messageVersion))) return blocked("snapshot_incomplete");
     return { ...base, hash: await bridgeHash([parsed.sourceVersion ?? null, parsed.access, parsed.content]) };
   }
-  async fence(canonicalId: string): Promise<OriginFence | null> {
-    const scope = activeOrigin(this.getScope);
-    const row = await this.db.prepare(`SELECT o.source_kind,o.source_id,o.chat_id,o.watermark,o.observation_hash,s.revision,s.current_version,
+  private fenceQuery(scope: OriginScope, canonicalId: string):AccessGuard {
+    return {sql:`SELECT o.source_kind,o.source_id,o.chat_id,o.watermark,o.observation_hash,s.revision,s.current_version,
       c.kind,c.watermark AS chat_watermark,c.access_state,p.kind AS policy_kind,COALESCE(p.revision,0) AS policy_revision,
       COALESCE(p.effective_mode,CASE WHEN c.kind='private' THEN 'attend' ELSE 'ignore' END) AS policy_mode
       FROM assistant_source_origins o JOIN assistant_sources s ON s.installation_id=o.installation_id AND s.generation=o.generation AND s.id=o.canonical_id
@@ -97,23 +99,51 @@ export class OriginGuard {
         AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
       LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
       WHERE o.installation_id=? AND o.generation=? AND o.source_epoch=? AND o.source_generation=? AND o.canonical_id=?
-      AND o.tombstoned=0 AND s.status='active'`).bind(...scopeKeys(scope), canonicalId).first<{
-        source_kind: OriginRef["sourceKind"]; source_id: string; chat_id: string; watermark: number; observation_hash: string;
-        revision: number; current_version: number; policy_kind: string | null; kind: "private" | "group"; chat_watermark: number; access_state: string; policy_revision: number; policy_mode: string;
-      }>();
+      AND o.tombstoned=0 AND s.status='active'`,values:[...scopeKeys(scope),canonicalId]};
+  }
+  private fenceStatement(scope: OriginScope, canonicalId: string) {
+    const query=this.fenceQuery(scope,canonicalId);return this.db.prepare(query.sql).bind(...query.values);
+  }
+  /** Local half of the same fence snapshot, for a host-owned D1 effect latch.
+   * A fresh remote check is still required immediately before that transaction. */
+  localGuard(expected:OriginFence):AccessGuard {
+    const scope=activeOrigin(this.getScope);
+    if(!expected||JSON.stringify(scopeKeys(scope))!==JSON.stringify(scopeKeys(expected)))return {sql:'0',values:[]};
+    const query=this.fenceQuery(scope,expected.canonicalId);
+    return {sql:`EXISTS(SELECT 1 FROM (${query.sql}) observed WHERE observed.access_state='available'
+      AND (observed.policy_kind IS NULL OR observed.policy_kind=observed.kind) AND observed.policy_mode<>'ignore'
+      AND observed.source_kind IS ? AND observed.source_id IS ? AND observed.chat_id IS ? AND observed.observation_hash IS ?
+      AND observed.revision IS ? AND observed.current_version IS ? AND observed.chat_watermark IS ?
+      AND observed.kind IS ? AND observed.policy_revision IS ? AND observed.policy_mode IS ?)`,
+      values:[...query.values,expected.sourceKind,expected.sourceId,expected.chatId,expected.hash,expected.revision,expected.version,expected.watermark,expected.conversationKind,expected.policyRevision,expected.policyMode]};
+  }
+  private fenceRow(scope: OriginScope, canonicalId: string, row: OriginRow | null): OriginFence | null {
     if (!row || row.access_state !== "available" || !row.kind || (row.policy_kind !== null && row.policy_kind !== row.kind) || row.policy_mode === "ignore") return null;
     return { ...scope, canonicalId, sourceKind: row.source_kind, sourceId: row.source_id, chatId: row.chat_id,
       revision: row.revision, version: row.current_version, watermark: row.chat_watermark, hash: row.observation_hash,
       conversationKind: row.kind, policyRevision: row.policy_revision, policyMode: row.policy_mode };
   }
-  async check(fence: OriginFence): Promise<boolean> {
+  async fence(canonicalId: string): Promise<OriginFence | null> {
+    const scope = activeOrigin(this.getScope);
+    return this.fenceRow(scope, canonicalId, await this.fenceStatement(scope, canonicalId).first<OriginRow>());
+  }
+  /** Same statement and mapper as fence(), grouped for the bounded host scan. */
+  async fences(canonicalIds: string[]): Promise<(OriginFence | null)[]> {
+    if (canonicalIds.length > 6) throw new Error("origin_fence_batch_limit");
+    const scope = activeOrigin(this.getScope); canonicalIds = [...canonicalIds];
+    if (!canonicalIds.length) return [];
+    const rows = await this.db.batch<OriginRow>(canonicalIds.map(id => this.fenceStatement(scope, id)));
+    if (rows.length !== canonicalIds.length) throw new Error("origin_fence_batch_result");
+    return rows.map((row, index) => this.fenceRow(scope, canonicalIds[index], row.results[0] ?? null));
+  }
+  async check(fence: OriginFence,isCurrent:()=>boolean=()=>true): Promise<boolean> {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;
-    if (!fence || JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(scopeKeys(fence))) return false;
+    if (!isCurrent()||!fence || JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(scopeKeys(fence))) return false;
     const current = await this.fence(fence.canonicalId);
-    if (!sameFence(current, fence)) return false;
+    if (!isCurrent()||!sameFence(current, fence)) return false;
     const observed = await this.observe(fence, fence);
-    return JSON.stringify(scopeKeys(activeOrigin(this.getScope))) === JSON.stringify(scopeKeys(fence)) && observed.state === "available"
+    return isCurrent()&&JSON.stringify(scopeKeys(activeOrigin(this.getScope))) === JSON.stringify(scopeKeys(fence)) && observed.state === "available"
       && observed.watermark === fence.watermark && observed.hash === fence.hash && observed.kind === fence.conversationKind
-      && sameFence(await this.fence(fence.canonicalId), fence);
+      && sameFence(await this.fence(fence.canonicalId), fence)&&isCurrent();
   }
 }

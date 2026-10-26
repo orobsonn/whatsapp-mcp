@@ -1,0 +1,37 @@
+{
+  "issue": 126,
+  "kind": "controlled_local_evidence",
+  "date": "2026-10-26",
+  "base": "3f6fefafb4db0691ed8b07ff5592aa8ac6359495",
+  "baseVersionChanges": "not_part_of_this_delivery_delta",
+  "runs": [
+    {"boundary": "missing resolver and MCP tool", "result": "RED", "failed": 13, "passed": 15, "total": 28, "durationSeconds": 7.70},
+    {"boundary": "resolver and authenticated HTTP MCP", "result": "GREEN", "passed": 28, "failed": 0, "durationSeconds": 13.65},
+    {"boundary": "final resolver plus directory and capture privacy regressions", "result": "GREEN", "passed": 55, "failed": 0, "files": 3, "durationSeconds": 19.50}
+  ],
+  "typecheck": "passed",
+  "contractsObserved": [
+    "new explicit international phone resolves to one scope-bound individual chatId without any message",
+    "directory contact with no history is reused without replacing its name or capture state",
+    "disabled, enabled and legacy_hold choices, capture_since and historical tombstones remain unchanged on existing chat",
+    "new chat inherits the already configured global creation policy through existing triggers",
+    "invalid number, country omission, group/LID, administrative fields and type collision fail closed",
+    "concurrent resolution and real lost D1 ACK recovery preserve one reference and its initial alias",
+    "database connection pin rejects rotation inside the mutation and after its await despite a stale decrypted request Env",
+    "text and image/PDF/audio upload preparation accept the reference without executing an action",
+    "HTTP MCP validates owner, epoch, origin and strict tool input; writable and idempotent annotations observed",
+    "all mocked provider resolution requests are GET status/device only; target registration remains unknown"
+  ],
+  "providerCostUsd": 0,
+  "providerTraffic": "mock_only",
+  "realCredentials": "not_read",
+  "cloudMutation": "none",
+  "whatsappMessagesAttempted": 0,
+  "contactsSavedOnDevice": 0,
+  "migrations": "none",
+  "clientHomologation": {"httpMcpSdk": "controlled_test_passed", "chatGpt": "pending_actual_catalog_refresh_and_tool_call", "claude": "pending_actual_catalog_refresh_and_tool_call"},
+  "independentReview": "pending",
+  "ci": "pending_integrated_commit",
+  "release": "not_performed",
+  "realWhatsAppDelivery": "not_tested_or_claimed"
+}

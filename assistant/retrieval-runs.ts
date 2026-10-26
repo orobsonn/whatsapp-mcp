@@ -336,11 +336,16 @@ export class RetrievalRuns {
     actor = ownActor(actor); const run = await this.load(actor, runId), coverage = this.coverage(actor, run, this.clock());
     const unavailable = (gap: string, complete = false): SearchResult => ({ state: run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations || run.state === "waiting_context" || complete ? "waiting_context" : "pending", sources: [] as RetrievedSource[], coverage: { inventoryComplete: complete, engine: "not_run_capacity", gaps: [...baseGaps, gap] } });
     if (!await this.statement(`SELECT 1 WHERE ${coverage.sql}`, ...coverage.values).first()) return unavailable(run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : run.state === "waiting_context" ? "origin_unavailable" : "inventory_changed");
-    const semantic=this.options.semantic ? await this.semanticOutcome(actor,run) : null;
-    if(semantic?.pending) return {state:"pending",sources:[],coverage:{inventoryComplete:true,engine:semantic.engine,gaps:semantic.gaps}};
     const current = this.inventory(actor, run, this.clock());
+    // OCR is not in the semantic projection, including when its parent loses
+    // the final ranking. Only this run's authorized inventory may reveal a gap.
+    const unindexedMedia = !!await this.statement(`SELECT 1 FROM (${current.sql}) WHERE json_array_length(media_artifacts)>0 LIMIT 1`, ...current.values).first();
+    const hostGaps = unindexedMedia ? ["media_semantic_unsearched"] : [];
+    const semantic=this.options.semantic ? await this.semanticOutcome(actor,run) : null;
+    if (!await this.statement(`SELECT 1 WHERE ${coverage.sql}`, ...coverage.values).first()) return unavailable("inventory_changed");
+    if(semantic?.pending) return {state:"pending",sources:[],coverage:{inventoryComplete:true,engine:semantic.engine,gaps:[...new Set([...semantic.gaps,...hostGaps])]}};
     const rows = await this.statement(`WITH current AS (${current.sql}) SELECT c.*,i.origin_json,i.conversation_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint WHERE i.state='ready' AND i.linked=1 AND (i.score>0 OR c.id IN (SELECT value FROM json_each(?))) ORDER BY i.score DESC,c.id LIMIT 74`, ...current.values, ...this.keys(), run.id, JSON.stringify(semantic?.candidates ?? [])).all<InventoryRow & { origin_json: string | null; conversation_json: string | null }>();
-    if (!rows.results.length) return {state:"waiting_context",sources:[],coverage:{inventoryComplete:true,engine:semantic?.engine ?? "not_run_capacity",gaps:[...(semantic?.gaps ?? baseGaps),"no_matches"]}};
+    if (!rows.results.length) return {state:"waiting_context",sources:[],coverage:{inventoryComplete:true,engine:semantic?.engine ?? "not_run_capacity",gaps:[...new Set([...(semantic?.gaps ?? baseGaps),...hostGaps,"no_matches"])]}};
     if(semantic){
       const lexical=rows.results; // SQL order is the lexical lane; score-zero rows receive no lexical rank.
       const scores=await this.statement(`SELECT source_id,score FROM assistant_retrieval_items WHERE ${ns} AND run_id=?`,...this.keys(),run.id).all<{source_id:string;score:number}>();
@@ -355,11 +360,11 @@ export class RetrievalRuns {
     const selectedOrigins=rows.results.filter(row=>row.origin_json).map(row=>JSON.parse(row.origin_json!) as OriginFence);
     if(!await checkOriginsWithin(selectedOrigins,fence=>this.options.origin ? this.options.origin.check(fence) : Promise.resolve(false)))return unavailable("origin_unavailable");
     for (const row of rows.results) {
-      const source = this.access.fromRow(actor, row); bytes += new TextEncoder().encode(source.text ?? "").length;
+      const source = this.access.fromRow(actor, row), mediaEvidence = await this.scorer.evidence(source); bytes += new TextEncoder().encode((source.text ?? "") + JSON.stringify(mediaEvidence ?? "")).length;
       if (bytes > 65536) return unavailable("context_bytes_limit", true);
       const origin = row.origin_json ? JSON.parse(row.origin_json) as OriginFence : undefined;
       if (row.conversation_json) { const guard = this.contextGuard(JSON.parse(row.conversation_json)); if (!await this.statement(`SELECT 1 WHERE ${guard.sql}`, ...guard.values).first()) return unavailable("conversation_changed"); }
-      sources.push({ ...source, ...(origin ? { origin } : {}) });
+      sources.push({ ...source, ...(origin ? { origin } : {}), ...(mediaEvidence ? { mediaEvidence } : {}) });
       selected.push({ id: source.id, revision: source.fence.source.revision, version: source.fence.source.version, hash: source.fence.source.hash });
     }
     const selectedJson = JSON.stringify(selected), ranking=semantic ? semanticRankingSchema.parse({engine:semantic.engine,gaps:semantic.gaps,binding:semantic.binding}) : null, packHash = await bridgeHash([run.request_hash, run.actor_json, selected,...(ranking ? [ranking] : [])]);
@@ -368,7 +373,7 @@ export class RetrievalRuns {
     const saved = ranking ? (await this.db.batch([this.statement(`UPDATE assistant_retrieval_semantic SET ranking_json=? WHERE ${ns} AND run_id=? AND ${fresh.sql}`,JSON.stringify(ranking),...this.keys(),run.id,...fresh.values),savePack])).at(-1)! : await savePack.all();
     if (!saved.results.length) return unavailable("inventory_changed");
     const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose, ...(ranking ? {ranking} : {}) });
-    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: semantic?.gaps ?? baseGaps.slice() } };
+    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: [...new Set([...(semantic?.gaps ?? baseGaps), ...hostGaps, ...(sources.some(row => row.mediaEvidence?.pages.some(page => page.state === "unreadable")) ? ["media_unreadable_pages"] : [])])] } };
   }
   guard(actor: TrustedActor, fence: SearchFence, now = this.clock()): AccessGuard {
     actor = ownActor(actor);

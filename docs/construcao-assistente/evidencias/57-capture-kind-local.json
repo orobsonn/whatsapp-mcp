@@ -1,0 +1,31 @@
+{
+  "issue": 57,
+  "scope": "capture discovery of conversations whose kind has not been observed",
+  "base": "3bffd33",
+  "realIncident": {
+    "evidence": "private aggregate observation supplied by operator, without identifiers or bodies",
+    "observation": "Natural cron cycles stopped in capture with routine_operation_uncertain; five origin conversations had kind=null and access_state=unknown while other origins and materializations existed.",
+    "cause": "discover selected unknown-kind rows; Conversations.ensure correctly returned null, then replay threw conversation_unobserved before discovery advanced its cursor.",
+    "fixHomologatedInCloud": false
+  },
+  "change": {
+    "unknownKind": "Keep the observed origin and missing-kind gap; skip only its unavailable frame, without inferring kind or access.",
+    "pagination": "Keep all five selected rows and the guarded cursor/wrap; re-examine the origin after a later reader observation supplies its kind.",
+    "visibility": "Current scoped unknown-kind count keeps conversation_kind_unobserved on completed cycles; daily summary includes its count and gap as an immutable metadata snapshot.",
+    "errors": "Other ensure/replay/SQL failures still produce routine_operation_uncertain.",
+    "migration": null
+  },
+  "validation": {
+    "red": "Real D1 receiveCapture/materializer/scheduler path: two causal failures matched the incident; the unrelated replay-error control passed.",
+    "green": "Four directed real D1 tests passed in 27.88s: withdraw-first plus another conversation, five unknown origins with cursor wrap and later real observations, unrelated replay failure remaining uncertain, and a legacy frame not supplying an unobserved kind.",
+    "typescript": "npm run check and git diff --check passed",
+    "providerCalls": 0,
+    "estimatedPaidTestsUsd": 0
+  },
+  "remaining": [
+    "Integrated CI and independent code review",
+    "Deploy review and natural cron observation on the installed Worker",
+    "This correction does not establish that blocked message snapshots or every subsequent pipeline stage are available."
+  ],
+  "pilotReady": false
+}

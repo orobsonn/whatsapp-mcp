@@ -1,0 +1,200 @@
+import {env} from 'cloudflare:test';
+import {beforeEach,afterEach,it,expect,vi} from 'vitest';
+import {CanonicalCandidateExtractor,CANONICAL_EXTRACTION_CONFIG,packCanonicalGuard,canonicalExtractionSummary} from '../assistant/canonical-extraction';
+import {SourceController} from '../assistant/sources';
+import {SourceAccess} from '../assistant/access';
+import {OwnerControl} from '../assistant/control';
+import {InferenceBudget} from '../assistant/budget';
+import {Relations} from '../assistant/relations';
+import {Routines} from '../assistant/routines';
+import type {OriginScope} from '../assistant/origin-guard';
+import type {ModelAdapter} from '../assistant/model-broker';
+import {canonicalSnapshotTables} from '../assistant/retention-snapshot-contract';
+import {restoreRecord} from '../assistant/retention-restore-contract';
+import {AssistantExport} from '../assistant/retention';
+import {OriginGuard} from '../assistant/origin-guard';
+import {CaptureMaterializer} from '../assistant/materialize';
+import {receiveCapture} from '../assistant/ingress';
+import * as ingress from '../assistant/ingress';
+import {Retrieval} from '../assistant/retrieval';
+import {RetentionPurge} from '../assistant/retention-purge';
+// @ts-expect-error Vite SQL fixtures.
+const migrations=import.meta.glob('../assistant/migrations/*.sql',{query:'?raw',import:'default',eager:true}) as Record<string,string>;
+let scope:OriginScope,now:number,sourceId:string,owner:SourceController,controls:OwnerControl,adapter:ReturnType<typeof vi.fn<ModelAdapter>>,guarded:boolean,paused:boolean;
+const keys=()=>[scope.installationId,scope.generation],sql=(q:string,...v:(string|number|null)[])=>env.DB.prepare(q).bind(...v);
+const claims=()=>[{kind:'suggestion',subject:{kind:'mission',id:'mission-a'},object:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}];
+function extractor(db=env.DB){return new CanonicalCandidateExtractor(db,scope,{clock:()=>now,adapter,enabled:()=>!paused,guard:()=>({sql:guarded?'1':'0',values:[]})});}
+async function catalog(){await controls.execute({kind:'project.put',operationId:'project',id:'project-a',expectedVersion:0,name:'Marina'});await controls.execute({kind:'mission.put',operationId:'mission',id:'mission-a',expectedRevision:0,objective:'Follow the source, with no action authority',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});}
+beforeEach(async()=>{
+ for(const [,migration]of Object.entries(migrations).sort(([a],[b])=>a.localeCompare(b))){const parts=migration.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(p=>p.trim());if(parts.length)await env.DB.batch(parts.map(p=>env.DB.prepare(p)));}
+ scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'epoch',sourceGeneration:'capture'};now=Date.parse('2026-10-26T12:00:00Z');guarded=true;paused=false;
+ owner=new SourceController(env.DB,scope,{kind:'owner'},()=>now);controls=new OwnerControl(env.DB,scope,{kind:'owner'},()=>now);sourceId=(await owner.create({originKey:'note',text:'Marina sugeriu sexta. Marina sugeriu segunda.',authorId:'literal-source-author',authorLabel:'Marina',occurredAt:now})).id;
+ await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).configure(100000);
+ adapter=vi.fn<ModelAdapter>(async()=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:claims()})}}]})}));
+});
+afterEach(async()=>{vi.restoreAllMocks();if(scope)await sql("UPDATE assistant_retention_installation_gate SET state='idle' WHERE installation_id=? AND state='quiescing'",scope.installationId).run();});
+it('publishes attributed canonical candidates through one durable broker receipt and no identity inference',async()=>{
+ await catalog();expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:1});expect(adapter).toHaveBeenCalledTimes(1);
+ expect(await new Relations(env.DB,scope).read({kind:'owner'},sourceId)).toMatchObject([{authorId:'literal-source-author',authorLabel:'Marina',claims:[{subject:{kind:'mission',id:'mission-a'},object:{kind:'project',id:'project-a'}}]}]);
+ expect(await sql('SELECT COUNT(*) n FROM assistant_people WHERE installation_id=?',scope.installationId).first('n')).toBe(0);
+ expect(await sql('SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+});
+it.each(['unknown','unbound_project','outside','person','fake_quote','empty_quote','admin','kind'])('rejects %s output atomically, without freeing its paid receipt',async variant=>{
+ await catalog();const value:any={claims:claims()};if(variant==='unknown')value.claims[0].subject.id='invented';if(variant==='outside'){await sql('INSERT INTO assistant_people VALUES(?,?,?,?)','outside','g1','outside','Marina').run();value.claims[0].subject={kind:'person',id:'outside'};}if(variant==='person'){await sql('INSERT INTO assistant_people VALUES(?,?,?,?)',...keys(),'homonym','Marina').run();value.claims[0].subject={kind:'person',id:'homonym'};}if(variant==='fake_quote')value.claims[0].quote='Marina decidiu sexta.';if(variant==='empty_quote')value.claims[0].quote='';if(variant==='admin')value.grantAccess=true;if(variant==='kind')value.claims[0].kind='permission';
+ if(variant==='unbound_project'){await controls.execute({kind:'project.put',operationId:'unbound',id:'unbound',expectedVersion:0,name:'Marina'});value.claims[0].subject={kind:'project',id:'unbound'};}
+ adapter.mockImplementation(async()=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify(value)}}]})}));
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'blocked'});expect(await new Relations(env.DB,scope).read({kind:'owner'},sourceId)).toEqual([]);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'blocked'});expect(adapter).toHaveBeenCalledTimes(1);
+});
+it.each(['correct','withdraw','hold','lease','catalog','origin_quarantine'])('vetoes %s during adapter while retaining settlement and preventing publication',async change=>{
+ await catalog();adapter.mockImplementation(async()=>{if(change==='correct')await owner.correct(sourceId,1,{text:'Changed',occurredAt:now});if(change==='withdraw')await owner.withdraw(sourceId,1);if(change==='hold')await sql("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','g2',1,?)",scope.installationId,now).run();if(change==='lease')guarded=false;if(change==='catalog')await controls.execute({kind:'mission.set_state',operationId:'cancel',id:'mission-a',expectedRevision:1,state:'cancelled'});if(change==='origin_quarantine')await sql("INSERT INTO assistant_retention_quarantines VALUES(?,?,'origin_source','q',?,NULL,NULL,NULL,NULL,1,1,'test','seal')",...keys(),sourceId).run();return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:claims()})}}]})};});
+ expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+});
+it('catalog overflow refuses a prefix without creating a slot or reserving budget',async()=>{
+ await catalog();for(let i=0;i<16;i++)await controls.execute({kind:'mission.put',operationId:'m'+i,id:'mission-'+i,expectedRevision:0,objective:'Known canonical',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'blocked',gap:'canonical_catalog_overflow'});expect(adapter).not.toHaveBeenCalled();expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(0);
+});
+it('does not rekey an uncertain attempt after catalog changes or restart',async()=>{
+ await catalog();adapter.mockImplementation(async()=>{throw Error('ACK unknown');});expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'uncertain'});
+ await controls.execute({kind:'project.put',operationId:'project-rename',id:'project-a',expectedVersion:1,name:'Changed label'});expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+ expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(CANONICAL_EXTRACTION_CONFIG.chatCeiling);
+});
+it('zero claims is terminal without publishing an invalid empty batch; another eligible source keeps global gap',async()=>{
+ await catalog();adapter.mockImplementation(async()=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:'{"claims":[]}'}}]})}));expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:0});expect(await new Relations(env.DB,scope).read({kind:'owner'},sourceId)).toEqual([]);
+ await owner.create({originKey:'other',text:'Unprocessed source',occurredAt:now});const summary=await new Routines(env.DB,scope,()=>now).daily(false);expect(summary.summary.pipelineGaps).toContain('canonical_relations_unpublished');
+});
+it('empty catalog is reconsiderable without slot/admission; overflow refuses a prefix; paused and exhausted call no adapter',async()=>{
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'empty_catalog'});const large=await owner.create({originKey:'large-without-catalog',text:'x'.repeat(17000),occurredAt:now});expect(await extractor().extract({kind:'owner'},large.id,1)).toMatchObject({state:'empty_catalog'});expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(0);await catalog();paused=true;expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'blocked'});paused=false;
+ await sql('UPDATE assistant_budget_accounts SET cap_units=0 WHERE installation_id=? AND generation=?',...keys()).run();expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter).not.toHaveBeenCalled();
+});
+it('records publication and terminal slot atomically so lost batch ACK never invokes the provider again',async()=>{
+ await catalog();const batch=env.DB.batch.bind(env.DB);let lost=false;const db={prepare:env.DB.prepare.bind(env.DB),batch:async(statements:D1PreparedStatement[])=>{const result=await batch(statements);if(!lost&&await sql('SELECT 1 FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).first()){lost=true;throw Error('batch ACK lost');}return result;}} as D1Database;
+ expect((await extractor(db).extract({kind:'owner'},sourceId,1)).state).not.toBe('empty_catalog');expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published'});expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+});
+it('compacted host SQL is equivalent for 0/1/NULL/text and current source guards, rejecting ambiguous placeholders',async()=>{
+ for(const values of [[0],[1],[null],['1'],['quoted ? value']]){const raw={sql:'? IS 1',values},packed=packCanonicalGuard(raw);expect(await sql('SELECT 1 WHERE '+packed.sql,...packed.values).first()).toEqual(await sql('SELECT 1 WHERE '+raw.sql,...raw.values).first());expect(packed.values).toHaveLength(1);}
+ const access=new SourceAccess(env.DB,scope,()=>now),source=await access.read({kind:'owner'},sourceId);const raw=access.guard({kind:'owner'},source!.fence,now),packed=packCanonicalGuard(raw);expect(await sql('SELECT 1 WHERE '+packed.sql,...packed.values).first()).toEqual(await sql('SELECT 1 WHERE '+raw.sql,...raw.values).first());await owner.withdraw(sourceId,1);expect(await sql('SELECT 1 WHERE '+packed.sql,...packed.values).first()).toBeNull();
+ for(const bad of [{sql:'?1',values:[1]},{sql:':named',values:[1]},{sql:"'?'",values:[]},{sql:'1 -- ?',values:[]},{sql:'? /* ? */',values:[1]},{sql:'?',values:[undefined]},{sql:'?',values:[true]},{sql:'?',values:[Infinity]},{sql:'?',values:[1,2]},{sql:'?',values:new Array(1)},{sql:'?',values:['a'.repeat(32768)]}])expect(()=>packCanonicalGuard(bad as any)).toThrow();
+});
+it('the complete guest broker flow stays within D1 bind quota and rejects ACL revocation after provider admission',async()=>{
+ await catalog();const guest={kind:'interlocutor' as const,provider:'fixture',address:'opaque',conversationId:'chat',conversationKind:'private' as const,action:'reply_text' as const};
+ const source=(await owner.create({originKey:'public',text:'Marina sugeriu sexta.',authorId:'author',occurredAt:now,audience:'public',projectId:'project-a'})).id;
+ adapter.mockImplementation(async()=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}]})}}]})}));
+ let max=0;const prepare=env.DB.prepare.bind(env.DB),db={prepare:(q:string)=>{const wrap=(s:D1PreparedStatement):D1PreparedStatement=>new Proxy(s,{get(target,key){if(key==='bind')return(...values:unknown[])=>{max=Math.max(max,values.length);expect(values.length).toBeLessThanOrEqual(100);return wrap(target.bind(...values));};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});return wrap(prepare(q));},batch:env.DB.batch.bind(env.DB)} as D1Database;
+ expect(await extractor(db).extract(guest,source,1)).toMatchObject({state:'published',claims:1});expect(max).toBeLessThanOrEqual(100);expect(max).toBeGreaterThan(10);
+ const other=(await owner.create({originKey:'public-two',text:'Marina sugeriu sexta.',occurredAt:now,audience:'public',projectId:'project-a'})).id;
+ adapter.mockImplementation(async()=>{await controls.execute({kind:'policy.put',operationId:'guest-revoke',id:'chat',expectedRevision:0,conversationKind:'private',groupMode:'ignore',excluded:true});return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}]})}}]})};});
+ expect((await extractor(db).extract(guest,other,1)).state).not.toBe('published');expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=? AND source_id=?',scope.installationId,other).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(6);
+});
+it('attempts are exportable operational evidence, excluded from canonical restore, and frozen during quiescence',async()=>{
+ await catalog();await extractor().extract({kind:'owner'},sourceId,1);expect(canonicalSnapshotTables.has('assistant_canonical_extractions')).toBe(false);expect(restoreRecord.safeParse({table:'assistant_canonical_extractions',row:1,hash:'a'.repeat(64),value:{installation_id:scope.installationId,generation:scope.generation}}).success).toBe(false);
+ const all=new AssistantExport(env.DB,scope,{kind:'owner'});let cursor:string|undefined,found=false;do{const page=await all.page({limit:50,...(cursor?{cursor}:{})});found ||= page.parts.some(p=>p.table==='assistant_canonical_extractions');cursor=page.nextCursor;}while(cursor&&!found);expect(found).toBe(true);
+ await sql("INSERT INTO assistant_retention_installation_gate(installation_id,generation,operation_id,request_hash,token,state,started_at) VALUES(?,?,'freeze','hash','token','quiescing',?)",...keys(),now).run();
+ await expect(sql("UPDATE assistant_canonical_extractions SET state='attempting' WHERE installation_id=?",scope.installationId).run()).rejects.toThrow('canonical_writers_quiesced');
+});
+it.each(['draft','active'] as const)('materializes %s WhatsApp evidence, publishes an explicit mission/project lane, then fences a remote withdrawal',async state=>{
+ const secret='fixture-canonical-reader-secret-fixed';let withdrawn=false,watermark=1;
+ const reader={readSnapshot:async(input:{sourceId:string})=>({observation:'capture_snapshot',state:withdrawn?'withdrawn':'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:'message',sourceId:input.sourceId,chatId:'chat',sourceVersion:1,watermark,conversationKind:'private',access:{captureEnabled:!withdrawn,captureSince:0,discontinuous:false},content:withdrawn?undefined:{kind:'text',text:'Marina sugeriu sexta.',authorId:'opaque-author',authorName:'Marina',occurredAt:now,messageId:input.sourceId,messageVersion:1}})};
+ const response=await receiveCapture(new Request('https://fixture.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify({protocol:1,...scope,sequence:1,previousSequence:0,chatId:'chat',sourceId:'message',sourceKind:'message',operation:'upsert',recordedAt:now})}),{DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret});expect(response.status).toBe(200);
+ await new CaptureMaterializer(env.DB,()=>scope,reader,secret,()=>now).drain(1);sourceId=(await sql("SELECT id FROM assistant_sources WHERE installation_id=? AND origin='whatsapp'",scope.installationId).first<string>('id'))!;expect(sourceId).toBeTruthy();await catalog();
+ if(state==='active')await controls.execute({kind:'mission.put',operationId:'mission-active',id:'mission-a',expectedRevision:1,objective:'Active explicit source binding',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'active'});
+ const origin=new OriginGuard(env.DB,()=>scope,reader,secret),source=await new SourceAccess(env.DB,scope,()=>now).read({kind:'owner'},sourceId);expect(source!.fence.source.projectId).toBeNull();
+ const extractorWA=(db=env.DB)=>new CanonicalCandidateExtractor(db,scope,{clock:()=>now,adapter,enabled:()=>true,guard:()=>({sql:'1',values:[]}),origin});expect(await extractorWA().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:1});
+ expect(await new Relations(env.DB,scope).read({kind:'owner'},sourceId)).toMatchObject([{authorId:'opaque-author',claims:[{subject:{id:'mission-a'}}]}]);
+ const retrieval=new Retrieval(env.DB,scope,undefined,origin,()=>now),pack=await retrieval.search({kind:'owner'},{query:'deadline',entities:[{kind:'mission',id:'mission-a'}],limit:10});expect(pack.sources.map(source=>source.id)).toContain(sourceId);expect(pack.coverage.gaps).not.toContain('relation_unavailable');
+ withdrawn=true;expect((await extractorWA().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);
+ for(const when of ['before_adapter','during_adapter']){
+  withdrawn=false;watermark++;const message='message-'+watermark,mission='mission-'+watermark;
+  expect((await receiveCapture(new Request('https://fixture.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify({protocol:1,...scope,sequence:watermark,previousSequence:watermark-1,chatId:'chat',sourceId:message,sourceKind:'message',operation:'upsert',recordedAt:now})}),{DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret})).status).toBe(200);
+  await new CaptureMaterializer(env.DB,()=>scope,reader,secret,()=>now).drain(1);sourceId=(await sql('SELECT canonical_id FROM assistant_source_origins WHERE installation_id=? AND source_id=?',scope.installationId,message).first<string>('canonical_id'))!;
+  await controls.execute({kind:'mission.put',operationId:mission,id:mission,expectedRevision:0,objective:'Explicitly bound next source',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});
+  adapter.mockImplementation(async()=>{if(when==='during_adapter')withdrawn=true;return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'mission',id:mission},predicate:'deadline',quote:'Marina sugeriu sexta.'}]})}}]})};});
+  const before=adapter.mock.calls.length,batch=env.DB.batch.bind(env.DB);let armed=false;
+  const db={prepare:env.DB.prepare.bind(env.DB),batch:async(statements:D1PreparedStatement[])=>{const result=await batch(statements);if(when==='before_adapter'&&!armed&&await sql("SELECT 1 FROM assistant_model_receipts WHERE installation_id=? AND source_id=? AND state='attempting'",scope.installationId,sourceId).first()){armed=true;withdrawn=true;}return result;}} as D1Database;
+  expect((await extractorWA(db).extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter.mock.calls.length-before).toBe(when==='before_adapter'?0:1);expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=? AND source_id=?',scope.installationId,sourceId).first('n')).toBe(0);
+ }
+ expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(CANONICAL_EXTRACTION_CONFIG.chatCeiling+6);
+});
+it.each(['draft','active'] as const)('admits a standalone %s mission without inventing a project, and summary uses identical eligibility',async state=>{
+ await controls.execute({kind:'mission.put',operationId:'standalone',id:'mission-a',expectedRevision:0,objective:'Explicit standalone source binding',source:{id:sourceId,revision:1},state});
+ expect(await canonicalExtractionSummary(env.DB,scope)).toMatchObject({sources:1,missingCatalog:0,pending:1});
+ adapter.mockImplementation(async request=>{const input=JSON.parse(JSON.parse(request.body).messages.at(-1).content);expect(input.catalog).toEqual([{kind:'mission',id:'mission-a',revision:1,projectId:null}]);return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'mission',id:'mission-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}]})}}]})};});
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:1});expect(adapter).toHaveBeenCalledTimes(1);expect(await canonicalExtractionSummary(env.DB,scope)).toMatchObject({published:1,pending:0,missingCatalog:0});
+});
+it.each(['paused','resolved','cancelled'] as const)('stopped mission %s is not a fresh extraction catalog',async state=>{
+ await controls.execute({kind:'mission.put',operationId:'standalone',id:'mission-a',expectedRevision:0,objective:'Stopped standalone source binding',source:{id:sourceId,revision:1},state:'draft'});await controls.execute({kind:'mission.set_state',operationId:'stop',id:'mission-a',expectedRevision:1,state});expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'empty_catalog'});expect(await canonicalExtractionSummary(env.DB,scope)).toMatchObject({missingCatalog:1,pending:1});expect(adapter).not.toHaveBeenCalled();
+});
+it('stale mission source revisions are not eligible after a source correction',async()=>{
+ await controls.execute({kind:'mission.put',operationId:'standalone',id:'mission-a',expectedRevision:0,objective:'Old source revision',source:{id:sourceId,revision:1},state:'active'});await owner.correct(sourceId,1,{text:'Marina sugeriu sexta.',occurredAt:now});expect(await extractor().extract({kind:'owner'},sourceId,2)).toMatchObject({state:'empty_catalog'});expect(await canonicalExtractionSummary(env.DB,scope)).toMatchObject({missingCatalog:1,pending:1});expect(adapter).not.toHaveBeenCalled();
+});
+it('17 real project renames keep one current revision and do not create catalog overflow',async()=>{
+ await controls.execute({kind:'project.put',operationId:'project',id:'project-a',expectedVersion:0,name:'Initial'});for(let version=1;version<=17;version++)await controls.execute({kind:'project.put',operationId:'rename-'+version,id:'project-a',expectedVersion:version,name:'Renamed '+version});
+ expect(await sql('SELECT COUNT(*) n FROM assistant_project_revisions WHERE installation_id=? AND project_id=?',scope.installationId,'project-a').first('n')).toBe(1);
+ sourceId=(await owner.create({originKey:'renamed-project',text:'Marina sugeriu sexta.',projectId:'project-a',occurredAt:now})).id;adapter.mockImplementation(async request=>{const input=JSON.parse(JSON.parse(request.body).messages.at(-1).content);expect(input.catalog).toEqual([{kind:'project',id:'project-a',revision:18,projectId:null}]);return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:'{"claims":[]}'}}]})};});expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:0});expect(adapter).toHaveBeenCalledTimes(1);
+});
+it('restricted guest proof withdrawal during the adapter cannot publish a paid answer',async()=>{
+ await catalog();await controls.execute({kind:'policy.put',operationId:'private-policy',id:'chat',expectedRevision:0,conversationKind:'private',groupMode:'ignore',excluded:false});
+ const proof=await owner.create({originKey:'identity-proof',text:'Synthetic owner-confirmed identity',occurredAt:now}),target=await owner.create({originKey:'restricted',text:'Marina sugeriu sexta.',audience:'restricted',projectId:'project-a',occurredAt:now});
+ await sql("INSERT INTO assistant_people VALUES(?,?,'person','Marina')",...keys()).run();await sql("INSERT INTO assistant_provider_identities VALUES(?,?,'fixture','opaque','person',?,1,'owner_confirmed',?)",...keys(),proof.id,now).run();
+ await controls.execute({kind:'mandate.put',operationId:'restricted-mandate',id:'mandate',expectedVersion:0,conversationId:'chat',policyRevision:1,project:{id:'project-a',revision:1},purpose:'Synthetic explicitly authorized source',expiresAt:now+60000,status:'active',actions:['reply_text'],sources:[{id:target.id,revision:1}]});
+ const guest={kind:'interlocutor' as const,provider:'fixture',address:'opaque',conversationId:'chat',conversationKind:'private' as const,action:'reply_text' as const,mandateId:'mandate'};expect(await new SourceAccess(env.DB,scope,()=>now).read(guest,target.id)).not.toBeNull();
+ adapter.mockImplementation(async()=>{await owner.withdraw(proof.id,1);return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}]})}}]})};});
+ expect((await extractor().extract(guest,target.id,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=? AND source_id=?',scope.installationId,target.id).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+});
+it('purges the private extraction payload while preserving its exact financial commitment',async()=>{
+ await catalog();expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published'});const retirement={allow:async()=>{},withdraw:async()=>{}};
+ await new SourceController(env.DB,scope,{kind:'owner'},()=>now,retirement).withdraw(sourceId,1);const purge=new RetentionPurge(env.DB,scope,{kind:'owner'},()=>now,retirement);let result:any;
+ for(let i=0;i<20;i++){result=await purge.advance({kind:'source.purge',operationId:'purge',sourceId});if(result.state!=='pending')break;}expect(result).toMatchObject({state:'complete',d1:'purged'});
+ for(const table of ['assistant_canonical_extractions','assistant_model_receipts','assistant_relation_batches'])expect(await sql(`SELECT COUNT(*) n FROM ${table} WHERE installation_id=?`,scope.installationId).first('n')).toBe(0);
+ expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);expect(await sql('SELECT state FROM assistant_budget_reservations WHERE installation_id=?',scope.installationId).first('state')).toBe('settled');
+});
+it.each([0,1])('reuses a proven %i-claim terminal under a newly permitted guest without rewriting the original actor',async count=>{
+ await catalog();sourceId=(await owner.create({originKey:'guest-terminal',text:'Marina sugeriu sexta.',audience:'public',projectId:'project-a',occurredAt:now})).id;
+ const value=count?[{kind:'suggestion',subject:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}]:[];
+ adapter.mockImplementation(async()=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:value})}}]})}));expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:count});
+ const original=await sql('SELECT actor_json FROM assistant_canonical_extractions WHERE installation_id=? AND source_id=?',scope.installationId,sourceId).first('actor_json'),guest={kind:'interlocutor' as const,provider:'fixture',address:'opaque',conversationId:'chat',conversationKind:'private' as const,action:'reply_text' as const};
+ expect(await extractor().extract(guest,sourceId,1)).toMatchObject({state:'published',claims:count});expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT actor_json FROM assistant_canonical_extractions WHERE installation_id=? AND source_id=?',scope.installationId,sourceId).first('actor_json')).toBe(original);
+ await controls.execute({kind:'policy.put',operationId:'deny-guest',id:'chat',expectedRevision:0,conversationKind:'private',excluded:true,groupMode:'ignore'});expect((await extractor().extract(guest,sourceId,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);
+});
+it.each(['receipt','batch','settlement'])('refuses terminal reuse with missing or inconsistent %s without rekeying or inference',async missing=>{
+ await catalog();await extractor().extract({kind:'owner'},sourceId,1);
+ if(missing==='receipt')await sql('DELETE FROM assistant_model_receipts WHERE installation_id=?',scope.installationId).run();if(missing==='batch')await sql('DELETE FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).run();if(missing==='settlement')await sql('UPDATE assistant_budget_reservations SET actual_units=4 WHERE installation_id=?',scope.installationId).run();
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'blocked',gap:'canonical_terminal_unproven'});expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+ expect(await canonicalExtractionSummary(env.DB,scope)).toMatchObject({sources:1,published:0,pending:1});
+});
+it('checks the source ACL in the actual publication transaction after every preceding observation',async()=>{
+ await catalog();const batch=env.DB.batch.bind(env.DB);let revoked=false;const db={prepare:env.DB.prepare.bind(env.DB),batch:async(statements:D1PreparedStatement[])=>{
+  if(!revoked&&await sql("SELECT 1 FROM assistant_model_receipts WHERE installation_id=? AND state='complete'",scope.installationId).first()){revoked=true;await owner.correct(sourceId,1,{text:'The source was corrected before SQL publication.',occurredAt:now});}return batch(statements);
+ }} as D1Database;
+ expect((await extractor(db).extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(revoked).toBe(true);expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+});
+it('rechecks pause after the last local admission await before invoking the adapter',async()=>{
+ await catalog();const prepare=env.DB.prepare.bind(env.DB);let flipped=false;
+ const db={prepare:(q:string)=>{const wrap=(statement:D1PreparedStatement):D1PreparedStatement=>new Proxy(statement,{get(target,key){if(key==='bind')return(...v:unknown[])=>wrap(target.bind(...v));if(key==='first'&&q.startsWith('SELECT 1 WHERE')&&q.includes('canonical_extraction_bound_args')&&q.includes('assistant_canonical_extractions'))return async()=>{const result=await target.first();flipped=true;paused=true;return result;};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});return wrap(prepare(q));},batch:env.DB.batch.bind(env.DB)} as D1Database;
+ expect((await extractor(db).extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(flipped).toBe(true);expect(adapter).not.toHaveBeenCalled();expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(CANONICAL_EXTRACTION_CONFIG.chatCeiling);
+});
+it('samples initial admission guards after slot hashing so pause creates no slot or reservation',async()=>{
+ await catalog();const original=ingress.bridgeHash;let pausedDuringHash=false;vi.spyOn(ingress,'bridgeHash').mockImplementation(async value=>{const result=await original(value);if(Array.isArray(value)&&JSON.stringify(value)===JSON.stringify([...keys(),sourceId,1])){pausedDuringHash=true;paused=true;}return result;});
+ expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(pausedDuringHash).toBe(true);expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(0);expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(0);expect(adapter).not.toHaveBeenCalled();
+});
+it.each(['project','mission'] as const)('reuses a published terminal after only %s CAS metadata changes, without touching pinned rows or calling the provider',async change=>{
+ await catalog();expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published'});const original=await sql('SELECT * FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first();
+ if(change==='project')await controls.execute({kind:'project.put',operationId:'rename',id:'project-a',expectedVersion:1,name:'A new display label'});
+ else await controls.execute({kind:'mission.put',operationId:'objective',id:'mission-a',expectedRevision:1,objective:'Updated objective; same explicit source and project',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published',claims:1});expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT * FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first()).toEqual(original);expect(await sql('SELECT COUNT(*) n FROM assistant_relation_batches WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+});
+it.each(['add','remove','id','mapping'] as const)('does not reuse or replan a published terminal after topology %s',async change=>{
+ await catalog();if(change==='mapping'){await controls.execute({kind:'project.put',operationId:'project-b',id:'project-b',expectedVersion:0,name:'Other project'});await controls.execute({kind:'mission.put',operationId:'mission-b',id:'mission-b',expectedRevision:0,objective:'Second explicit mapping',source:{id:sourceId,revision:1},project:{id:'project-b',revision:1},state:'draft'});}
+ expect(await extractor().extract({kind:'owner'},sourceId,1)).toMatchObject({state:'published'});
+ if(change==='add'){await controls.execute({kind:'project.put',operationId:'project-b',id:'project-b',expectedVersion:0,name:'Other project'});await controls.execute({kind:'mission.put',operationId:'mission-b',id:'mission-b',expectedRevision:0,objective:'Added explicit binding',source:{id:sourceId,revision:1},project:{id:'project-b',revision:1},state:'draft'});}
+ if(change==='remove'||change==='id')await controls.execute({kind:'mission.set_state',operationId:'cancel',id:'mission-a',expectedRevision:1,state:'cancelled'});
+ if(change==='id')await controls.execute({kind:'mission.put',operationId:'replacement',id:'replacement',expectedRevision:0,objective:'Different canonical ID',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});
+ if(change==='mapping')for(const [id,projectId]of [['mission-a','project-b'],['mission-b','project-a']])await controls.execute({kind:'mission.put',operationId:'move-'+id,id,expectedRevision:1,objective:'Changed explicit mapping',source:{id:sourceId,revision:1},project:{id:projectId,revision:1},state:'draft'});
+ expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);expect(await sql('SELECT COUNT(*) n FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+});
+it.each(['source_revision','source_author','source_text','system','model','max_tokens','catalog_extra','user_extra','root_extra'] as const)('terminal compatibility never ignores protected %s payload data',async change=>{
+ await catalog();await extractor().extract({kind:'owner'},sourceId,1);const row=(await sql('SELECT payload_json,catalog_json FROM assistant_canonical_extractions WHERE installation_id=?',scope.installationId).first<{payload_json:string;catalog_json:string}>())!,payload=JSON.parse(row.payload_json),user=JSON.parse(payload.messages[1].content);
+ if(change==='source_revision')user.source.revision++;if(change==='source_author')user.source.authorId='different-author';if(change==='source_text')user.source.text+=' changed';if(change==='system')payload.messages[0].content+=' changed';if(change==='model')payload.model='different-model';if(change==='max_tokens')payload.max_completion_tokens++;
+ if(change==='catalog_extra'){user.catalog[0].authority=true;await sql('UPDATE assistant_canonical_extractions SET catalog_json=? WHERE installation_id=?',JSON.stringify(user.catalog),scope.installationId).run();}if(change==='user_extra')user.authority=true;if(change==='root_extra')payload.authority=true;payload.messages[1].content=JSON.stringify(user);await sql('UPDATE assistant_canonical_extractions SET payload_json=? WHERE installation_id=?',JSON.stringify(payload),scope.installationId).run();
+ expect((await extractor().extract({kind:'owner'},sourceId,1)).state).not.toBe('published');expect(adapter).toHaveBeenCalledTimes(1);
+});

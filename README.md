@@ -26,6 +26,7 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 ## Uso e documentação
 
 - [Instalação, ativação e uso diário](docs/18-instalacao.md).
+- Assistente pessoal em sombra: [export, retirada e restauração lógica](docs/construcao-assistente/55-retencao-restore.md). Os comandos de restauração são privados do operador; não fazem deploy nem ativam a geração automaticamente.
 - [PRD e critérios de aceitação](PRD.md), [plano](docs/09-plano-de-implementacao.md) e [evidências da entrega inicial](docs/10-entrega.md) e [entrega de grupos](docs/25-entrega-grupos.md).
 - [Autenticação e confirmação](docs/13-auth.md), [transporte](docs/14-zapi.md), [mídia/áudio](docs/15-media.md), [ações](docs/16-acoes.md) e [operação](docs/17-operacao.md).
 - [Issues](https://github.com/orobsonn/whatsapp-mcp/issues), [changelog](CHANGELOG.md) e [releases](https://github.com/orobsonn/whatsapp-mcp/releases).
@@ -41,6 +42,8 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 ## Confirmações
 
 Envios e ações comuns são autorizados no chat, sem abrir página. O pedido exato do dono já pode autorizar; alvos ou conteúdo ambíguos precisam de esclarecimento. A página fica para ações críticas, com nomes e consequências legíveis. A decisão de risco é do servidor, não do modelo. [Política e limites](docs/31-confirmacoes-simples.md).
+
+Para telefone internacional explícito sem conversa anterior, `resolver_destinatario` retorna uma referência local utilizável no preparo individual. Resolver não envia nem salva contato no celular; formato aceito não comprova conta WhatsApp. [Contrato, captura e validação por fronteira](docs/36-destinatario-explicito.md).
 
 ## Limites explícitos
 

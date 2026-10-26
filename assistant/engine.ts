@@ -11,6 +11,13 @@ export type EnginePermit = { source: SourceFence; origin?: OriginFence };
 export type EngineSearch = { query: string; allowedSources: Ref[]; limit: number; actor: TrustedActor; permits: EnginePermit[]; coverage?: CoverageProof };
 export type EngineRequest = EngineSearch;
 export type EngineIngest = { source: SourceRead; actor: TrustedActor; origin?: OriginFence };
+export type InitialIngestAdmission = {itemId:string;owner:string};
+export type InitialIngestCheckInput = {actor:TrustedActor;source:{fence:SourceFence}};
+export type InitialIngestTicket = {itemId:string;inputHash:string;indexEpoch:string;operationId:string};
+type InitialIngest = {ticket:InitialIngestTicket;state:'reserved'|'attempting'|'complete'|'uncertain'};
+const initialTicketSchema=z.object({itemId:z.string().regex(/^[a-f0-9]{64}$/),inputHash:z.string().regex(/^[a-f0-9]{64}$/),indexEpoch:z.string().uuid(),operationId:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+const initialStateSchema=z.object({ticket:initialTicketSchema,state:z.enum(['reserved','attempting','complete','uncertain'])}).strict();
+const sameInitial=(a:InitialIngestTicket,b:InitialIngestTicket)=>a.itemId===b.itemId&&a.inputHash===b.inputHash&&a.indexEpoch===b.indexEpoch&&a.operationId===b.operationId;
 export type EngineSearchOutcome = { state: "complete"; operationId: string; result: { candidates: (Ref & { via: string[]; relationCount: number })[]; missing: Ref[] }; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" }
   | { state: "blocked" | "uncertain"; reason: string; operationId?: string };
 export interface EnginePort { search(input: EngineSearch): Promise<EngineSearchOutcome> }
@@ -24,7 +31,7 @@ export interface EngineStore { get<T>(key: string): Promise<T | undefined>; put(
   putFenced?(key: string, value: unknown, indexEpoch: string, owner: string): Promise<void> }
 export interface ContainerPort {
   readonly running: boolean;
-  start(): Promise<void>;
+  start(check?:()=>Promise<void>): Promise<void>;
   intercept(epoch: string): Promise<void>;
   deny(): Promise<void>;
   destroy(): Promise<void>;
@@ -35,8 +42,9 @@ export interface EngineGuard {
   checkCoverage?(proof: CoverageProof): Promise<boolean>;
   issue(source: SourceFence, expiresAt: number): Promise<string>;
   revoke(token: string): Promise<void>;
+  checkInitialAdmission?(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string):Promise<boolean>;
 }
-type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number; coverage?: CoverageProof; searchIndex?: { epoch: string; revision: string }; mode?: "replay_only"; indexEpoch?: string; owner?: string };
+type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number; coverage?: CoverageProof; searchIndex?: { epoch: string; revision: string }; mode?: "replay_only"; indexEpoch?: string; owner?: string;initial?:{admission:InitialIngestAdmission;indexEpoch:string} };
 type Meta = { namespace: string; revision: string; lost: boolean; epoch?: string; sources?: SourceStamp[]; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
 type Receipt = { state: "complete"; operationId: string; result: unknown; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" };
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
@@ -64,19 +72,73 @@ export class CogneeEngine implements EnginePort {
   async ingest(input: EngineIngest): Promise<unknown> {
     return this.ingestSource(input);
   }
+  private async initialInput(input:EngineIngest,itemId:string){
+    if(!/^[a-f0-9]{64}$/.test(itemId)||bytes(input)>65536||!input.source.text?.trim())throw Error('initial_input');
+    const owned=await this.ingestInput(input),inputHash=await bridgeHash(canonical(owned.input));return {...owned,inputHash};
+  }
+  private async initialState(store:EngineStore=this.store):Promise<InitialIngest|undefined>{
+    const raw=await store.get('initial-ingest-v1');return raw===undefined?undefined:initialStateSchema.parse(raw);
+  }
+  private async pristine(store:EngineStore){
+    if(this.container.running||!store.list)return false;
+    for(const key of ['index','active','checkpoint','rebuild','maintenance','quarantine']){const value=await store.get(key);if(value!==undefined)return false;}
+    for(const prefix of ['access:','receipt:','search-ticket:','search-operation:','search-operation-history-v1'])if((await store.list({prefix,limit:1})).size)return false;
+    return !this.container.running;
+  }
+  /** Metadata reservation only: no index, process, permit or model operation. */
+  async reserveInitialIngest(input:EngineIngest,admission:InitialIngestAdmission):Promise<{state:'reserved';ticket:InitialIngestTicket}|{state:'blocked'|'uncertain';reason:string}>{
+    if(this.busy||!this.store.transaction)return {state:'blocked',reason:'initial_ingest_busy'};this.busy=true;
+    try{admission={...admission};const owned=await this.initialInput(input,admission.itemId);
+      if(!await this.guard.check(owned.input.actor,[{source:owned.input.source.fence,...(owned.input.origin?{origin:owned.input.origin}:{})}])||!await this.guard.checkInitialAdmission?.(admission,owned.input))return {state:'blocked',reason:'initial_ingest_denied'};
+      return await this.store.transaction(async tx=>{const prior=await this.initialState(tx);
+        if(prior){if(prior.state!=='reserved'||prior.ticket.itemId!==admission.itemId||prior.ticket.inputHash!==owned.inputHash)return {state:'uncertain' as const,reason:'initial_ingest_exists'};
+          return await this.pristine(tx)?{state:'reserved' as const,ticket:prior.ticket}:{state:'blocked' as const,reason:'initial_index_not_pristine'};}
+        if(!await this.pristine(tx))return {state:'blocked' as const,reason:'initial_index_not_pristine'};
+        const indexEpoch=crypto.randomUUID(),operationId=await bridgeHash([this.scope,indexEpoch,'/ingest',{source:owned.source},null]);
+        if(this.container.running)return {state:'blocked' as const,reason:'initial_index_not_pristine'};
+        const ticket={itemId:admission.itemId,inputHash:owned.inputHash,indexEpoch,operationId};await tx.put('initial-ingest-v1',{ticket,state:'reserved'} satisfies InitialIngest);return {state:'reserved' as const,ticket};});
+    }catch{return {state:'uncertain',reason:'initial_reservation_unknown'};}finally{this.busy=false;}
+  }
+  async initialIngestReceipt(input:EngineIngest,itemId:string,indexEpoch:string):Promise<Receipt|{state:'uncertain'}>{
+    try{const owned=await this.initialInput(input,itemId),slot=await this.initialState();
+      if(!slot||slot.ticket.itemId!==itemId||slot.ticket.inputHash!==owned.inputHash||slot.ticket.indexEpoch!==indexEpoch)return {state:'uncertain'};
+      const result=await this.ingestReceipt(owned.input,indexEpoch);if(result.state!=='complete'||result.operationId!==slot.ticket.operationId)return {state:'uncertain'};return result;
+    }catch{return {state:'uncertain'};}
+  }
+  async commitInitialIngest(input:EngineIngest,ticket:InitialIngestTicket,admission:InitialIngestAdmission):Promise<unknown>{
+    try{ticket=initialTicketSchema.parse(ticket);admission={...admission};const owned=await this.initialInput(input,admission.itemId);
+      if(ticket.itemId!==admission.itemId||ticket.inputHash!==owned.inputHash)return {state:'blocked',reason:'initial_input_changed'};
+      const slot=await this.initialState();if(!slot||!sameInitial(slot.ticket,ticket))return {state:'blocked',reason:'initial_ticket_changed'};
+      if(slot.state!=='reserved')return this.initialIngestReceipt(owned.input,admission.itemId,ticket.indexEpoch);
+      return this.ingestSource(owned.input,undefined,undefined,{ticket,admission});
+    }catch{return {state:'blocked',reason:'initial_input_changed'};}
+  }
   async ingestForRebuild(input: EngineIngest, indexEpoch: string, owner: string): Promise<unknown> {
     if (!this.busy || !this.rebuilding) return { state: "blocked", reason: "rebuild_fenced" };
     return this.ingestSource(input, indexEpoch, owner);
   }
-  private async ingestSource(input: EngineIngest, rebuildEpoch?: string, rebuildOwner?: string): Promise<unknown> {
+  private async ingestInput(input: EngineIngest) {
+    input = JSON.parse(JSON.stringify(input)) as EngineIngest;
+    const s = input.source, f = s.fence.source;
+    if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
+    const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
+      ...(s.authorId !== null ? { authorId: s.authorId } : {}), ...(f.projectId !== null ? { projectId: f.projectId } : {}) });
+    return { input, source };
+  }
+  private async ingestSource(input: EngineIngest, rebuildEpoch?: string, rebuildOwner?: string,initial?:{ticket:InitialIngestTicket;admission:InitialIngestAdmission}): Promise<unknown> {
     try {
-      input = JSON.parse(JSON.stringify(input)) as EngineIngest;
-      const s = input.source, f = s.fence.source;
-      if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
-      const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
-        ...(s.authorId !== null ? { authorId: s.authorId } : {}), ...(f.projectId !== null ? { projectId: f.projectId } : {}) });
-      return this.run("/ingest", { source }, input.actor, [{ source: s.fence, ...(input.origin ? { origin: input.origin } : {}) }], rebuildEpoch, rebuildOwner);
+      const owned = await this.ingestInput(input), s = owned.input.source;
+      return this.run("/ingest", { source: owned.source }, owned.input.actor, [{ source: s.fence, ...(owned.input.origin ? { origin: owned.input.origin } : {}) }], rebuildEpoch, rebuildOwner,undefined,undefined,initial?{...initial,input:owned.input}:undefined);
     } catch { return { state: "blocked", reason: "invalid_source" }; }
+  }
+  /** Exact existing receipt only. Never starts, ingests or changes an epoch. */
+  async ingestReceipt(input: EngineIngest, indexEpoch: string): Promise<Receipt | { state: "uncertain" }> {
+    try {
+      const owned = await this.ingestInput(input), meta = await this.store.get<Meta>("index");
+      if (!meta || meta.epoch !== indexEpoch || meta.lost || !await this.guard.check(owned.input.actor,[{source:owned.input.source.fence,...(owned.input.origin?{origin:owned.input.origin}:{})}])) return {state:"uncertain"};
+      const id = await bridgeHash([this.scope,indexEpoch,"/ingest",{source:owned.source},null]);
+      return this.lookup(id);
+    } catch { return {state:"uncertain"}; }
   }
   private validateSearch(input: EngineSearch) {
     input = JSON.parse(JSON.stringify(input)) as EngineSearch;
@@ -298,6 +360,7 @@ export class CogneeEngine implements EnginePort {
     if (!epoch || epoch !== this.activeEpoch) return null;
     const active = await this.store.get<Active>("active");
     if (!active || active.epoch !== epoch || active.until <= this.clock() || !await this.guard.check(active.actor, active.permits) || !await this.coverageValid(active.coverage)) return null;
+    if(active.initial&&(!active.permits[0]||!await this.guard.checkInitialAdmission?.(active.initial.admission,{actor:active.actor,source:{fence:active.permits[0].source}},active.initial.indexEpoch)))return null;
     if (active.searchIndex && !await this.ticketCurrent({ indexEpoch: active.searchIndex.epoch,indexRevision: active.searchIndex.revision } as SearchTicket)) return null;
     const maintenance = await this.store.get<boolean>("maintenance");
     if (maintenance && active.mode !== "replay_only") return null;
@@ -317,12 +380,16 @@ export class CogneeEngine implements EnginePort {
     // deny/revoke/storage failed. A new DO can only reconcile, never re-admit it.
     try { await this.container.destroy(); if (!this.container.running) await this.store.put("active", null); } catch { /* Quarantine remains. */ }
   }
-  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof;admissionToken:string}, submitOwner?: symbol): Promise<unknown> {
+  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof;admissionToken:string}, submitOwner?: symbol,initial?:{ticket:InitialIngestTicket;admission:InitialIngestAdmission;input:EngineIngest}): Promise<unknown> {
     const nested = (!!rebuildEpoch && this.busy && this.rebuilding) || (!!submitOwner && this.busy && this.submitOwner === submitOwner);
     if (this.busy && !nested) return { state: "blocked", reason: "busy" }; if (!nested) this.busy = true;
     let active: Active | undefined, timer: ReturnType<typeof setTimeout> | undefined; const controller = new AbortController();
     const write = (key: string, value: unknown) => rebuildEpoch ? this.store.putFenced ? this.store.putFenced(key, value, rebuildEpoch, rebuildOwner!) : Promise.reject(new Error("rebuild_fenced")) : this.store.put(key, value);
+    const initialCheck=async()=>{if(!initial)return;const slot=await this.initialState();
+      if(!slot||slot.state!=='attempting'||!sameInitial(slot.ticket,initial.ticket)||!await this.guard.check(actor,permits)||!await this.guard.checkInitialAdmission?.(initial.admission,initial.input,initial.ticket.indexEpoch))throw Error('initial_ingest_fenced');};
     try {
+      let initialSlot:InitialIngest|undefined;
+      try{initialSlot=await this.initialState();}catch{return {state:'blocked',reason:'initial_state_invalid'};}
       if (bytes({ wire, actor, permits }) > 65536 || permits.some(p => p.source.installationId !== this.scope.installationId || p.source.generation !== this.scope.generation)
         || !await this.guard.check(actor, permits) || !await this.coverageValid(prepared?.coverage)) return { state: "blocked", reason: "source_denied" };
       if (prepared && !await this.ticketCurrent(prepared.ticket)) return {state:"blocked",reason:"index_changed",operationId:prepared.ticket.operationId};
@@ -334,16 +401,27 @@ export class CogneeEngine implements EnginePort {
           !expected || expected.id !== source.id || expected.revision !== source.revision || expected.version !== source.version || expected.hash !== source.hash) return { state: "blocked", reason: "rebuild_fenced" };
       } else if (await this.store.get<boolean>("maintenance")) return { state: "blocked", reason: "checkpoint_pending" };
       if (this.quarantined || await this.store.get<boolean>("quarantine")) return { state: "blocked", reason: "index_lost" };
-      let meta = await this.store.get<Meta>("index"); const namespace = JSON.stringify(this.scope);
+      const rawMeta=await this.store.get<unknown>("index");
+      if(rawMeta!==undefined&&(!rawMeta||typeof rawMeta!=='object'||Array.isArray(rawMeta)))return {state:'blocked',reason:'index_lost'};
+      let meta = rawMeta as Meta|undefined; const namespace = JSON.stringify(this.scope);
+      if(!initial&&!rebuildEpoch&&initialSlot&&initialSlot.state!=='complete'&&(!meta||meta.epoch===initialSlot.ticket.indexEpoch))return {state:'blocked',reason:'initial_ingest_reserved'};
       if (meta && (meta.namespace !== namespace || meta.lost || !this.container.running)) return { state: "blocked", reason: "index_lost" };
       if (!meta) {
-        meta = { namespace, revision: "empty", epoch: crypto.randomUUID(), sources: [], indexState: "needs_checkpoint", lost: false }; await this.store.put("index", meta);
-        await this.container.deny(); await this.container.start();
+        if(initial&&!await this.guard.checkInitialAdmission?.(initial.admission,initial.input,initial.ticket.indexEpoch))return {state:'blocked',reason:'initial_ingest_denied'};
+        meta = { namespace, revision: "empty", epoch: initial?.ticket.indexEpoch??crypto.randomUUID(), sources: [], indexState: "needs_checkpoint", lost: false };
+        const next=meta,claimed=this.store.transaction?await this.store.transaction(async tx=>{
+          if(await tx.get('index')!==undefined)return false;let slot:InitialIngest|undefined;try{slot=await this.initialState(tx);}catch{return false;}
+          if(initial){if(!slot||slot.state!=='reserved'||!sameInitial(slot.ticket,initial.ticket)||!await this.pristine(tx))return false;await tx.put('initial-ingest-v1',{...slot,state:'attempting'} satisfies InitialIngest);}
+          else if(slot)return false;await tx.put('index',next);return true;
+        }):!initial&&!initialSlot?(await this.store.put('index',next),true):false;
+        if(!claimed)return {state:'blocked',reason:'initial_index_not_pristine'};
+        await initialCheck();await this.container.deny();await initialCheck();if(initial&&this.container.running)throw Error('initial_process_not_stopped');await this.container.start(initial?initialCheck:undefined);await initialCheck();
         const health = await this.container.request("/health", {});
         const h = health as { namespace?: { installationId: string; generation: string }; ready?: boolean; poisoned?: boolean };
         if (bytes(health) > 4096 || h.namespace?.installationId !== this.scope.installationId || h.namespace.generation !== this.scope.generation || !h.ready || h.poisoned) throw 0;
       }
       const operationId = await bridgeHash([this.scope, meta.epoch, path, wire, path === "/search" ? meta.revision : null]);
+      if(initial&&operationId!==initial.ticket.operationId)throw Error('initial_operation_changed');
       const prior = await this.store.get<Receipt>(`receipt:${operationId}`);
       if (prior) return await this.guard.check(actor, permits) && await this.coverageValid(prepared?.coverage) ? { ...prior, indexState: meta.indexState ?? "needs_checkpoint" } : { state: "blocked", reason: "source_denied", operationId };
       if (path === "/search") {
@@ -359,13 +437,14 @@ export class CogneeEngine implements EnginePort {
       }
       await write(`access:${operationId}`, { actor, permits, ...(prepared?.coverage ? {coverage:prepared.coverage} : {}) });
       active = { epoch: crypto.randomUUID(), operationId, token: await this.guard.issue(permits[0].source, this.clock() + 300000),
+        ...(initial?{initial:{admission:initial.admission,indexEpoch:initial.ticket.indexEpoch}}:{}),
         ...(prepared ? {searchIndex:{epoch:prepared.ticket.indexEpoch,revision:prepared.ticket.indexRevision},...(prepared.coverage ? {coverage:prepared.coverage}: {})} : {}),
         period: new Date(this.clock()).toISOString().slice(0, 10), actor, permits, until: this.clock() + 250000,
         ...(rebuildEpoch ? { mode: "replay_only" as const, indexEpoch: rebuildEpoch, owner: rebuildOwner } : {}) };
       await write("active", active); this.activeEpoch = active.epoch; await this.container.intercept(active.epoch);
       if (rebuildEpoch && !await this.authorize(active.epoch)) throw new Error("rebuild_fenced");
       const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("engine_timeout")); }, 250000); });
-      const request = () => this.container.request(path, { operationId, ...wire }, controller.signal);
+      const request = async() => {await initialCheck();return this.container.request(path, { operationId, ...wire }, controller.signal);};
       const value = await Promise.race([submitOwner ? this.submitEffect(submitOwner,request) : request(), deadline]);
       if (!await this.authorize(active.epoch)) { if (!rebuildEpoch) await this.stop(active); return { state: "blocked", reason: "source_denied", operationId }; }
       if (bytes(value) > 65536 || !(value as { ok: boolean }).ok) throw 0;
@@ -382,13 +461,16 @@ export class CogneeEngine implements EnginePort {
       }
       const receipt: Receipt = { state: "complete", operationId, result, indexRevision: meta.revision, indexState: meta.indexState ?? "needs_checkpoint" };
       await write(`receipt:${operationId}`, receipt);
+      if(initial){const slot=await this.initialState();if(slot?.state==='attempting'&&slot.ticket.operationId===operationId)await this.store.put('initial-ingest-v1',{...slot,state:'complete'} satisfies InitialIngest);}
       if (!await this.authorize(active.epoch)) { if (!rebuildEpoch) await this.stop(active); return { state: "blocked", reason: "source_denied", operationId }; }
       this.activeEpoch = null; await this.container.deny(); await this.guard.revoke(active.token); await write("active", null);
       return await this.guard.check(actor, permits) && await this.coverageValid(prepared?.coverage) && (!prepared || await this.ticketCurrent(prepared.ticket)) ? receipt : { state: "blocked", reason: "source_denied", operationId };
     } catch {
+      if(initial){try{const slot=await this.initialState();if(slot?.state==='attempting'&&slot.ticket.operationId===initial.ticket.operationId)await this.store.put('initial-ingest-v1',{...slot,state:'uncertain'} satisfies InitialIngest);}catch{/* Persisted attempting is already fail closed. */}}
       if (!rebuildEpoch) await this.stop(active).catch(() => {});
       else if (this.activeEpoch === active?.epoch) this.activeEpoch = null;
       return { state: "uncertain", reason: "engine_operation_uncertain", ...(active ? { operationId: active.operationId } : {}) };
     } finally { clearTimeout(timer); controller.abort(); if (!nested) this.busy = false; }
   }
 }
+function canonical(value:unknown):unknown{return Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical((value as Record<string,unknown>)[k])])):value;}

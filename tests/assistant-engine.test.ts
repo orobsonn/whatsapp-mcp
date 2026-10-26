@@ -136,6 +136,14 @@ it("a checkpoint restore fenced while its configuration hash yields never starts
   await expect(pending).rejects.toThrow("checkpoint_fenced"); expect(start).not.toHaveBeenCalled();
   expect(hashing).toHaveBeenCalledTimes(1);
 });
+it.each(['revoked','unexpected_running'] as const)('initial boot rechecks %s after the configuration hash yields without allocating a process',async fault=>{
+  let permitted=true,running=false,resume!:()=>void;const digest=crypto.subtle.digest.bind(crypto.subtle);
+  vi.spyOn(crypto.subtle,'digest').mockImplementationOnce(async(...args)=>{await new Promise<void>(resolve=>{resume=resolve;});return digest(...args);});
+  const start=vi.fn(),container={get running(){return running;},images:{cognee:'synthetic-pinned'},start,interceptOutboundHttp:vi.fn(),setInactivityTimeout:vi.fn(),getTcpPort:vi.fn()} as unknown as Container;
+  const port=new DirectContainerPort(container,()=>({} as Fetcher),scope),pending=port.start(async()=>{if(!permitted)throw Error('initial_fenced');});
+  await vi.waitFor(()=>expect(resume).toBeTypeOf('function'));if(fault==='revoked')permitted=false;else running=true;resume();
+  await expect(pending).rejects.toThrow(fault==='revoked'?'initial_fenced':'initial_process_not_stopped');expect(start).not.toHaveBeenCalled();expect(container.getTcpPort).not.toHaveBeenCalled();
+});
 it("a checkpoint destroy must confirm the process stopped before any restore", async () => {
   const container = { running: true, destroy: vi.fn(async () => {}) } as unknown as Container;
   const adapter = new DirectContainerPort(container, () => ({} as Fetcher), scope);

@@ -198,6 +198,17 @@ export async function resolveRuntimeEnv(env: Env): Promise<Env> {
     return closed;
   }
 }
+/** Host-only mutation fence. The provider Env may have been decrypted before
+ * an await; recheck it against the current cipher and pin that exact DB row.
+ * No credential or cipher leaves the host through a tool result. */
+export async function runtimeConnectionGuard(env:Env):Promise<{sql:string;values:(string|number|null)[]}> {
+  if(env.RUNTIME_CONFIG==='static'&&env.DEVELOPMENT==='true')return {sql:'NOT EXISTS(SELECT 1 FROM connection_state WHERE id=1)',values:[]};
+  configured(env);const saved=await row(env);
+  if(!saved||saved.state!=='active'||saved.epoch!==env.INSTALLATION_EPOCH||!Number.isSafeInteger(saved.version)||saved.version<1)throw new AppError('connection_changed',409);
+  const current=await decrypt(env,saved.cipher);
+  if(current.generation!==env.CONNECTION_GENERATION||current.phone!==env.CONNECTED_PHONE||current.instanceId!==env.ZAPI_INSTANCE_ID||current.instanceToken!==env.ZAPI_TOKEN||current.clientToken!==env.ZAPI_CLIENT_TOKEN)throw new AppError('connection_changed',409);
+  return {sql:"EXISTS(SELECT 1 FROM connection_state WHERE id=1 AND epoch=? AND state='active' AND attempt_id=? AND version=? AND cipher=?)",values:[saved.epoch,saved.attempt_id,saved.version,saved.cipher]};
+}
 class SetupProvider {
   constructor(
     private c: ConnectionCredentials,

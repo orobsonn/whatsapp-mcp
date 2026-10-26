@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
+import { bridgeHash } from "../assistant/ingress";
 import { DecisionJournal, type DecisionSubject } from "../assistant/decisions";
 import { SourceController } from "../assistant/sources";
 import { JobQueue } from "../assistant/queue";
@@ -32,13 +33,16 @@ import episodes from "../assistant/migrations/0013_episodes.sql?raw";
 // @ts-expect-error Vite raw SQL imports.
 import retrieval from "../assistant/migrations/0014_retrieval_runs.sql?raw";
 // @ts-expect-error Vite raw SQL imports.
+import semanticSchema from "../assistant/migrations/0015_semantic_retrieval.sql?raw";
+import type { SemanticEnginePort, EngineSearch, SearchTicket } from "../assistant/engine";
+// @ts-expect-error Vite raw SQL imports.
 import decisions from "../assistant/migrations/0017_shadow_decisions.sql?raw";
 let database: D1Database;
 let scope: { installationId: string; generation: string }, source: { id: string; revision: number }, journal: DecisionJournal;
 const now = 100;
 const query = (sql: string, ...values: (string | number | null)[]) => env.DB.prepare(sql).bind(...values);
 beforeEach(async () => {
-  for (const sql of [sources, policy, work, inbox, jobs, origins, admissions, budget, relations, models, conversations, commands, episodes, retrieval, decisions]) {
+  for (const sql of [sources, policy, work, inbox, jobs, origins, admissions, budget, relations, models, conversations, commands, episodes, retrieval, semanticSchema, decisions]) {
     const parts = sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim());
     if (parts.length) await env.DB.batch(parts.map((part: string) => env.DB.prepare(part)));
   }
@@ -67,15 +71,16 @@ import { InferenceBudget } from "../assistant/budget";
 import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
 import { SourceAccess } from "../assistant/access";
 import { OriginGuard } from "../assistant/origin-guard";
-async function computed(options: { key?: string; decision?: "proposed" | "no_reply"; fail?: boolean; origin?: OriginGuard; subject?: DecisionSubject; anchor?: typeof source } = {}) {
+async function computed(options: { key?: string; decision?: "proposed" | "no_reply"; fail?: boolean; origin?: OriginGuard; subject?: DecisionSubject; anchor?: typeof source; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort } } = {}) {
   const key = options.key ?? "computed", anchor = options.anchor ?? source, purpose = options.subject?.kind === "capture_event" ? "automation" : "owner_read";
   const runtimeScope = options.origin ? { ...scope, sourceEpoch: "epoch", sourceGeneration: "origin" } : scope;
   const queue = new JobQueue(database, runtimeScope);
   const job = await queue.enqueue({ kind: "reasoning", dedupeKey: key, sourceId: anchor.id, sourceRevision: 1, request: "Synthetic request", runtime: "flue",
     subject: options.subject ?? { kind: "owner_request", sourceId: anchor.id, sourceRevision: 1, requestKey: key } }, now);
-  const lease = (await queue.claim(now, 90000))!, search = new RetrievalRuns(database, runtimeScope, { clock: () => now, purpose, origin: options.origin });
+  const lease = (await queue.claim(now, 90000))!, search = new RetrievalRuns(database, runtimeScope, { clock: () => now, purpose, origin: options.origin, semantic: options.semantic });
   let run = await search.start({ kind: "owner" }, "run-" + key, { query: "Synthetic request" });
   for (let i = 0; run.state === "pending" && i < 10; i++) run = await search.step({ kind: "owner" }, { runId: run.runId, stepId: "step-" + i, expectedCheckpoint: run.checkpoint });
+  if(options.semantic){await search.result({kind:"owner"},run.runId);await search.advanceSemantic({kind:"owner"},run.runId);}
   await new InferenceBudget(database, { ...scope, period: "synthetic-period" }).configure(1000);
   const original = (await new SourceAccess(database, scope).read({ kind: "owner" }, anchor.id, 1, now))!;
   let calls = 0;
@@ -359,4 +364,63 @@ test("a policy mutation during remote revalidation is denied by the final local 
   expect(mutations).toBeGreaterThan(0);
   expect(await query("SELECT revision FROM assistant_conversations WHERE installation_id=? AND chat_id='chat'", scope.installationId).first()).toEqual({ revision: before!.revision + mutations });
   expect(detail).toMatchObject({ freshness: "stale" }); expect(detail).not.toHaveProperty("proposal"); expect(result.calls()).toBe(1);
+});
+
+test("owner journal reads required semantic decisions without engine calls and rejects changed ranking configuration", async()=>{
+  let input:EngineSearch, ticket:SearchTicket, submitted=false, reads=0;
+  const engine:SemanticEnginePort={
+    prepare:async(alias,request)=>{input=request;ticket={alias,requestHash:await bridgeHash(request),operationId:"a".repeat(64),indexEpoch:"synthetic-index",indexRevision:"b".repeat(64)};return {state:"prepared",ticket};},
+    submit:async()=>{submitted=true;return outcome();},
+    lookupTicket:async()=>{reads++;return submitted?outcome():{state:"uncertain",reason:"not_submitted",operationId:ticket.operationId};},
+  };
+  const outcome=()=>({state:"complete" as const,operationId:ticket.operationId,indexRevision:ticket.indexRevision,indexState:"checkpoint_confirmed" as const,
+    result:{candidates:input.allowedSources.map(ref=>({...ref,via:["chunks"],relationCount:0})),missing:[]}});
+  const {host,episode,reply}=await computed({semantic:{mode:"required",engine}}),published=await host.publish(episode.id,reply),before=reads;
+  engine.prepare=async()=>{throw new Error("unexpected_engine_prepare");};
+  engine.submit=async()=>{throw new Error("unexpected_engine_submit");};
+  engine.lookupTicket=async()=>{throw new Error("unexpected_engine_lookup");};
+  const current=await new DecisionJournal(database,scope,{kind:"owner"},{clock:()=>now,semantic:{mode:"required",engine}}).get(published.decisionId!);
+  expect(current).toMatchObject({phase:"proposed",freshness:"current",proposal:{text:"Synthetic proposal"}});
+  expect(reads).toBe(before);
+  expect(await new DecisionJournal(database,scope,{kind:"owner"},{clock:()=>now,semantic:{mode:"lexical_fallback",engine}}).get(published.decisionId!)).toMatchObject({freshness:"stale"});
+  await query("UPDATE assistant_retrieval_semantic SET ranking_json='{}' WHERE installation_id=?",scope.installationId).run();
+  const changed=await new DecisionJournal(database,scope,{kind:"owner"},{clock:()=>now,semantic:{mode:"required",engine}}).get(published.decisionId!);
+  expect(changed).toMatchObject({freshness:"stale"});expect(changed).not.toHaveProperty("proposal");expect(reads).toBe(before);
+});
+
+async function reviewAdmissionFixture() {
+  await env.DB.exec("CREATE TABLE IF NOT EXISTS assistant_telegram_read_admissions (installation_id TEXT,generation TEXT,token TEXT,decision_id TEXT,proposal_hash TEXT,publication_nonce TEXT,PRIMARY KEY(installation_id,generation,token));CREATE TABLE IF NOT EXISTS telegram_admission_effects (installation_id TEXT,id TEXT,PRIMARY KEY(installation_id,id));");
+  const result=await computed(),published=await result.host.publish(result.episode.id,result.reply),detail=await journal.get(published.decisionId!);
+  if(!("proposal"in detail))throw new Error("proposal missing");
+  const hash=await bridgeHash(detail.proposal),id=published.decisionId!;
+  const build=(guard:{sql:string;values:(string|number|null)[]})=>[env.DB.prepare(`INSERT INTO telegram_admission_effects SELECT ?,? WHERE ${guard.sql} ON CONFLICT DO NOTHING RETURNING id`).bind(scope.installationId,"effect",...guard.values)];
+  return {id,hash,build};
+}
+test("host review admission consumes a same-batch nonce and supports ten source guards without one giant predicate",async()=>{
+  for(let i=0;i<9;i++)await new SourceController(env.DB,scope,{kind:"owner"},()=>now).create({originKey:`review-${i}`,text:`Synthetic request background ${i}`,occurredAt:now});
+  const {id,hash,build}=await reviewAdmissionFixture();
+  expect((await journal.admitReview(id,hash,build))?.[0].results).toEqual([{id:"effect"}]);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test.each(["source","nonce"])("host review admission rejects %s mutation immediately before the atomic batch",async kind=>{
+  const {id,hash,build}=await reviewAdmissionFixture(),batch=env.DB.batch.bind(env.DB);let changed=false;
+  const fault=vi.spyOn(env.DB,"batch").mockImplementation(async statements=>{
+    if(!changed){changed=true;if(kind==="source")await query("UPDATE assistant_sources SET revision=revision+1 WHERE installation_id=? AND id=?",scope.installationId,source.id).run();else await query("UPDATE assistant_shadow_decisions SET publication_nonce='stale-nonce' WHERE installation_id=? AND id=?",scope.installationId,id).run();}
+    return batch(statements);
+  });
+  expect(await journal.admitReview(id,hash,build)).toBeNull();fault.mockRestore();
+  expect(await query("SELECT COUNT(*) n FROM telegram_admission_effects WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test.each(["rollback","lost_ack"])("host review admission leaves no reusable attestation after %s",async mode=>{
+  const {id,hash,build}=await reviewAdmissionFixture(),batch=env.DB.batch.bind(env.DB);
+  const fault=mode==="lost_ack"?vi.spyOn(env.DB,"batch").mockImplementationOnce(async statements=>{await batch(statements);throw new Error("ACK lost");}):null;
+  expect(await journal.admitReview(id,hash,guard=>[...build(guard),...(mode==="rollback"?[env.DB.prepare("SELECT json('invalid-json')")]:[])])).toBeNull();fault?.mockRestore();
+  expect(await query("SELECT COUNT(*) n FROM telegram_admission_effects WHERE installation_id=?",scope.installationId).first("n")).toBe(mode==="lost_ack"?1:0);
+  expect(await query("SELECT COUNT(*) n FROM assistant_telegram_read_admissions WHERE installation_id=?",scope.installationId).first("n")).toBe(0);
+});
+test("host review admission denies a remotely withdrawn proposal without yielding any action statement",async()=>{
+  const remote=await remoteProposal(),detail=await remote.diary.get(remote.id);if(!("proposal"in detail))throw new Error("proposal missing");
+  remote.setState("withdrawn");const build=vi.fn(()=>[]);
+  expect(await remote.diary.admitReview(remote.id,await bridgeHash(detail.proposal),build)).toBeNull();expect(build).not.toHaveBeenCalled();
 });

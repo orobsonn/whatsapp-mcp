@@ -259,6 +259,7 @@ it("reconstructs a nominal WhatsApp CoverageProof without database bindings and 
   const proof=JSON.parse(record!.proof_json) as CoverageProof;
   const host=new CanonicalEngineGuard({DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,OPENAI_API_KEY:"synthetic-unused",BRIDGE_SOURCE_EPOCH:nominal.sourceEpoch,BRIDGE_SOURCE_GENERATION:nominal.sourceGeneration,BRIDGE_SECRET:"synthetic-reader-secret",CAPTURE_READER:reader});
   expect(await host.checkCoverage(proof)).toBe(true);
+  expect(await origin.fences([selected])).toEqual([await origin.fence(selected)]);
   const source=await new SourceAccess(env.DB,scope,clock).read(owner,selected);
   expect(await host.check(owner,[{source:source!.fence,origin:(await origin.fence(selected))!}])).toBe(true);
   const original=(await origin.fence(selected))!,reordered=Object.fromEntries(Object.entries(original).reverse()) as OriginFence;
@@ -266,6 +267,19 @@ it("reconstructs a nominal WhatsApp CoverageProof without database bindings and 
   expect(await origin.check({...reordered,watermark:2})).toBe(false);
   expect(await origin.check({...reordered,extra:"untrusted"} as OriginFence)).toBe(false);
   withdrawn=true;expect(await host.checkCoverage(proof)).toBe(false);
+});
+it("bounded reads inherit the same owner/guest restricted ACL and quarantine predicate as canonical read",async()=>{
+  const visible=await create("Synthetic public batch evidence"),restricted=await controller.create({originKey:"restricted-batch",text:"Synthetic restricted evidence",audience:"restricted",occurredAt:100}),privateNote=await create("Synthetic owner evidence","owner"),access=new SourceAccess(env.DB,scope,clock);
+  const refs=[visible,restricted,privateNote].map(row=>({id:row.id,revision:row.revision}));
+  for(const actor of [owner,guest])expect(await access.readMany(actor,refs)).toEqual(await Promise.all(refs.map(ref=>access.read(actor,ref.id,ref.revision))));
+  expect((await access.readMany(owner,refs)).every(Boolean)).toBe(true);expect((await access.readMany(guest,refs)).map(Boolean)).toEqual([true,false,false]);
+  await controller.withdraw(privateNote.id,1);for(const actor of [owner,guest]){expect(await access.readMany(actor,[{id:privateNote.id,revision:1}])).toEqual([await access.read(actor,privateNote.id,1)]);expect(await access.readMany(actor,[{id:privateNote.id,revision:1}])).toEqual([null]);}
+  await controller.correct(visible.id,1,{text:"Current public batch evidence",occurredAt:101});
+  await env.DB.prepare("INSERT INTO assistant_retention_quarantines(installation_id,generation,kind,record_key,source_id,version,active,reason,snapshot_seal) VALUES(?,?,'origin_source','old-origin',?,1,1,'synthetic-origin-reproof-required',?)").bind(...keys(),visible.id,"a".repeat(64)).run();
+  // current() owns ANY-active quarantine semantics (including #55's fix), so
+  // batching cannot diverge or recreate an earlier version-specific predicate.
+  for(const actor of [owner,guest])expect(await access.readMany(actor,[{id:visible.id,revision:2}])).toEqual([await access.read(actor,visible.id,2)]);
+  await expect(access.readMany(owner,Array.from({length:7},()=>refs[0]))).rejects.toThrow("source_read_batch_limit");
 });
 it("cannot reuse a current proof with another query, allowed reference subset or actor",async()=>{
   selected=(await create("Breno cuida das faturas.")).id;await create("Outra fonte pública.");const id=await inventory();await search.result(owner,id);

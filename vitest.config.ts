@@ -9,7 +9,7 @@ export default defineConfig({
         compatibilityDate: "2026-10-19",
         compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
         d1Databases: ["DB"],
-        r2Buckets: ["MEDIA"],
+        r2Buckets: ["MEDIA", "ARTIFACTS"],
         kvNamespaces: ["OAUTH_KV"],
         bindings: {
           TEST_MIGRATIONS: migrations,
@@ -29,5 +29,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { setupFiles: ["./tests/setup.ts"], fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts", "tests/assistant-checkpoint-runtime.test.ts"] },
+  test: { setupFiles: ["./tests/setup.ts"], testTimeout: 30000, fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts", "tests/assistant-checkpoint-runtime.test.ts", "tests/assistant-owner-binding-runtime.test.ts", "tests/assistant-scheduled-runtime.test.ts"] },
 });

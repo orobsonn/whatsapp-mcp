@@ -10,6 +10,8 @@ O marco entregue é um produto integrado pronto para observação em sombra. Dec
 
 Cada issue concluída recebe release minor, conforme pedido atual, com evidência de teste e revisão. Issues só fecham após entrega comprovada. Sem copiar dados, configuração ou código do Elo. Sem instalar o harness; adotar seu padrão de issues, planejamento, revisão e evidência.
 
+Atualização de produto em 26/10: MCP e assistente também devem iniciar uma conversa com destinatário sem histórico, inclusive telefone novo, sem exigir que o dono abra o chat antes. É uma capacidade geral; cotação de MacBook foi apenas exemplo e não define feature exclusiva. Contrato em [iniciar conversa sem histórico](ENVIO-PROATIVO.md), issues #126 e #128. O isolamento deste marco sombra continua vigente.
+
 ## Arquitetura proposta pela engenharia
 
 - Worker da assistente separado do MCP atual: sem credenciais Z-API e sem capacidade de escrita de agenda. O arquivo/manual atual continua operando. Controle de sombra não depende somente de prompt ou feature flag.

@@ -101,7 +101,7 @@ export class RebuildController {
       }
       const manifest: CheckpointManifest = { identity: copy(this.identity), indexEpoch: epoch, indexRevision: owned.indexRevision, sources: copy(owned.sources) };
       const proof = await bounded(this.port.inspect(manifest, owned.owner), 60000);
-      if (!await validProof(proof, manifest) || !await this.current(copy(owned.sources))) return this.fail(owned, "rebuild_validation_failed");
+      if (!await validIndexProof(proof, manifest) || !await this.current(copy(owned.sources))) return this.fail(owned, "rebuild_validation_failed");
       const next = await this.change(owned, epoch, { ...owned, revision: owned.revision + 1, phase: "ready" });
       if (!next) return { state: "uncertain", reason: "rebuild_fenced" };
       owned = next;
@@ -117,8 +117,9 @@ const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 function canonical(value: unknown): unknown {
   return Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value;
 }
-async function validProof(value: IndexProof, manifest: CheckpointManifest) {
-  if (new TextEncoder().encode(JSON.stringify(value)).length > 65536 || value.closed || value.poisoned || value.pendingOperations !== 0 ||
+/** Exact open-index proof shared by reconstruction and read-only preflight. */
+export async function validIndexProof(value: IndexProof, manifest: CheckpointManifest) {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > 65536 || value.closed !== false || value.poisoned !== false || value.pendingOperations !== 0 ||
     value.indexEpoch !== manifest.indexEpoch || value.indexRevision !== manifest.indexRevision || value.manifestHash !== await bridgeHash(canonical(manifest)) ||
     Object.entries(manifest.identity).some(([key, expected]) => key !== "imageRef" && (value as unknown as Record<string, unknown>)[key] !== expected) ||
     !Array.isArray(value.sources) || value.sources.length !== manifest.sources.length) return false;

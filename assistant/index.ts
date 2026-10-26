@@ -1,8 +1,11 @@
 import type { AssistantEnv } from "./env";
 import { receiveCapture } from "./ingress";
+import { receiveTelegram } from "./telegram-webhook";
+import { runScheduledAssistant } from "./scheduler";
 export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
+  async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) { ctx.waitUntil(runScheduledAssistant(env)); },
   async fetch(request: Request, env: AssistantEnv): Promise<Response> {
     const headers = {
       "Cache-Control": "no-store",
@@ -20,6 +23,9 @@ export default {
 
     if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
       return receiveCapture(request, env);
+
+    if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")
+      return receiveTelegram(request, env);
 
     // Deny by default. Request content cannot grant an effect capability.
     return Response.json({ error: "shadow_only" }, { status: 403, headers });

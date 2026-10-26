@@ -21,7 +21,7 @@ Gerenciar pelo chat conversas individuais e grupos: localizar destinos, consulta
 
 ## Padrões reversíveis escolhidos pela engenharia
 
-- Instalação de um dono, sem SaaS/multi-tenancy, motor genérico de provedores, embeddings, agendador de campanhas ou memória automática.
+- Instalação de um dono, sem SaaS/multi-tenancy, motor genérico de provedores, embeddings, agendador de campanhas ou memória automática neste marco inicial. O pedido posterior de 26/10/2026 inclui iniciar conversas sem histórico pelo MCP e pela assistente, com pessoa ou empresa, sem exigir abrir o chat antes; pesquisa de MacBook é apenas exemplo; escopo atualizado em [contato proativo](docs/construcao-assistente/ENVIO-PROATIVO.md).
 - Nenhuma conversa é capturada até liberada pelo dono. Cadastro de destino/diretório não libera captura implicitamente. Temporárias/visualização única são registradas apenas como indisponíveis.
 - Arquivo não expira automaticamente antes de uma política explícita. Dados de ensaio são sintéticos. Ativação real requer nova instância/credenciais, lista de chats e política escolhidas pelo dono.
 - Nomes e conteúdo necessários podem aparecer nos resultados; endereços externos, URLs de mídia e segredos permanecem no backend. Saída sempre tratada como conteúdo não confiável, nunca autorização.

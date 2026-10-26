@@ -1,5 +1,6 @@
 import { decisionSubject, type DecisionSubject } from "./agent/contracts";
 import { seedDecisionJob } from "./decisions";
+import { dueFollowUpGuard } from "./followups";
 import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
@@ -67,10 +68,11 @@ export class JobQueue {
       input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
+    const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;
     await this.db.batch([
       this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts,occurrence_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
-      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null),
+        SELECT ?,?,?,?,?,?,?,?,?,? ${due?`WHERE ${due.sql} AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND occurrence_id=?)`:""} ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
+      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null,...(due?[...due.values,this.scope.installationId,this.scope.generation,input.subject?.kind==="fup_occurrence"?input.subject.occurrenceId:null]:[])),
       this.raw(`INSERT INTO assistant_job_ledger(installation_id,generation,job_id,request_hash,request_json)
         SELECT installation_id,generation,id,?,? FROM assistant_jobs
         WHERE installation_id=? AND generation=? AND dedupe_key=? ON CONFLICT DO NOTHING`, hash, request,
@@ -100,6 +102,14 @@ export class JobQueue {
         AND ((state='pending' AND next_attempt_at<=?) OR (state='processing' AND lease_until<=?))
         ORDER BY next_attempt_at,id LIMIT 1) RETURNING *`, now + leaseMs,
     this.scope.installationId, this.scope.generation, this.scope.installationId, this.scope.generation, now, now).first<JobLease>();
+  }
+  /** Nominal presearch admission. Never claims a neighboring pending job. */
+  async claimId(id: string, now: number, leaseMs = 90000): Promise<JobLease | null> {
+    integer(now);integer(leaseMs,1);integer(now+leaseMs);
+    if(typeof id!=="string"||!id||id.length>256)throw new Error("invalid_job_id");
+    return this.raw(`UPDATE assistant_jobs SET state='processing',attempts=attempts+1,lease_generation=lease_generation+1,lease_until=?
+      WHERE installation_id=? AND generation=? AND id=? AND state='pending' AND next_attempt_at<=? AND attempts<max_attempts
+      AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='prepared') RETURNING *`,now+leaseMs,this.scope.installationId,this.scope.generation,id,now).first<JobLease>();
   }
   get(id: string) {
     return this.statement("SELECT * FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?", id).first<Job>();

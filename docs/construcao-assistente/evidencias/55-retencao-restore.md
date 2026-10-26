@@ -1,0 +1,76 @@
+# #55 — produtor selado, restore inativo e reproof (etapa C)
+
+Engenharia local em 26/10/2026. Sem dado real, paid API, provisionamento/deploy Cloudflare, restore ou ativação real. Custo dos testes: **US$ 0**. Não é homologação do piloto. O [runbook](../55-retencao-restore.md) distingue o export vivo de A, o bundle produzido sob quiescência e o restore lógico.
+
+## Gates executados
+
+| Gate | Evidência |
+| --- | --- |
+| TypeScript | `npm run check` passou após o patch final |
+| Producer + importer/reproof/activation/ACL, após revisão independente | **35/35** em 106,85 s: `npm test -- tests/assistant-retention-snapshot.test.ts tests/assistant-retention-restore.test.ts` |
+| Financeiro vivo ausente, contraprova adicional | **1/1**, 12 ignorados, em 10,31 s: `npm test -- tests/assistant-retention-restore.test.ts -t 'missing live financial history'` |
+| Codec + operador local | **11/11** em 0,88 s, com nova checagem do token fora de vars imprimíveis **5/5** em 0,66 s |
+| CLI | `node scripts/assistant-retention.mjs --help` e `node --check scripts/assistant-retention.mjs` passaram; nenhuma conexão remota foi iniciada |
+| Whitespace | `git diff --check` passou |
+
+O histórico anterior foi 23/23 + uma contraprova financeira isolada; depois da revisão independente houve 29/29, os três casos FK/roundtrip e agora os 35 casos passaram em uma única execução. Suite geral, nativa, build e CI da composição final são gates do coordenador. Authority/reader externos são controlados nos testes; D1, runtime Workers e transações são locais reais.
+
+## Antes/depois e contraprovas
+
+A primeira composição capturada teve **3 falhas reais**: `assistant_source_origins.source_id` do transporte era escolhido antes de `canonical_id`, fazendo o planner/importer buscar um header inexistente. A correção prioriza `canonical_id` nos dois, mantendo membership e hash. Depois, **21/21** passaram em 36,11 s. A primeira execução anterior, 13/14, também identificou uma contagem de fixture incorreta: são três membros retirados (fonte, versão e admission), não dois; a fixture foi corrigida sem relaxar a purga.
+
+Revisão adversarial do root apontou a recuperação pré-ticket: se DO/mirror falhasse depois de adquirir o gate, uma tentativa nova gerava outro token e deixava o anterior preso. Contraprovas executadas provam agora: schema é conferido antes do gate; uma falha anterior ao ticket e ACK D1 perdido recuperam exatamente o token/operationId; alias diferente não assume a posse; pause/resume liberam e retomam o mesmo trabalho. Outra contraprova falha na nona gravação de retirement depois de uma página de oito, reinicia o controller e completa sem repetir as oito gravações concluídas.
+
+O próprio patch fechou o interleaving pause→row batch: uma admissão efêmera no mesmo batch condiciona grants, escrita canônica, quarentenas e recibo. O teste pausa depois das consultas de validação e antes da transação; não nasce corpo, recibo ou grant residual. A operação original retoma e admite o membro. Nenhum receipt “imported” é inferido de batch sem corpo.
+
+O teste de concorrência de privacy devolve o lookup externo antigo e faz **retirada legítima local-barrier-first** antes do fim do await. O final não publica a cópia antiga: counter/guard reiniciam o passe, mirror adota a retirada e closure B purga o target. O teste cobre a janela DO/D1 com o fluxo host legítimo. `authority.record` cru não é um comando público/CLI/modelo. Substituição física do D1 e host externo malicioso não são promessas desse teste.
+
+A revisão independente identificou cinco bugs adicionais, todos reproduzidos contra `068ac5c` **antes** dos fixes: (1) prova A com watermark de fonte 1 e conversa 2 nunca vinculava identidade, RED em 9,12 s; (2) política que mudava de revisão 2 para exclusão 3 antes do batch ainda admitia vínculo, e (3) resposta antiga de A durante chegada de B podia regredir a conversa de 2 para 1, dois RED em 13,88 s; (4) missão que mudou fonte A→B associava o histórico A ao par B e falhava no importer, RED em 8,15 s; (5) pause A depois de perder o gate para restore B sobrescrevia hold/cancelava trabalho B, RED em 8,45 s.
+
+O followup fixa separadamente watermark/referência/hash da fonte e watermark da conversa, inclui policy revision/kind/mode na admissão SQL final, torna o primer monotônico e escolhe a fonte no corpo de **cada** versão histórica. Pause agora adquire admissão efêmera no mesmo batch com pin de operação/token/target/generation/hash/state; sem ela nenhum efeito ocorre. Release transfere hold apenas sob seu guard atômico atual. Os cinco cenários passaram juntos **5/5** em 17,27 s; a regressão C completa passou **29/29** em 46,83 s. Isso não depende de forçar uma edição da fonte A nem converter LID/nomes.
+
+## Resultados observados
+
+- Um produtor real gera páginas verificáveis e recibo no core externo. Export vivo sem wrapper/recibo não passa. Chunks multibyte, alteração de bytes, namespace errado, página incompleta, inputs mutados durante await e caminhos de membership corrompidos são recusados. Merkle/fronteira são verificados com 13 folhas, inclusive montanhas que não são potência de dois.
+- As 21 tabelas canônicas têm 63 triggers de freeze; o financeiro continua liquidando e invalida um candidato em movimento. Snapshot cancel libera o próprio gate. Perda de ACK da página e do selo reconcilia o recibo exato, sem novo operationId.
+- Foram exercitados 80 sources/paginação real, 300 reservas incertas de geração/período antigo e dez retiradas. Financeiro usa duas páginas de 128 por comando; retiradas usam oito; chain de recibos usa 128. Cursores ficam em metadata D1, sem cache intermediário dos corpos do bundle. O limite de formato 64 MiB/100.000 linhas não é benchmark dessa escala nem uma RPC com 100.000 consultas.
+- Import aceita somente nova geração reservada externamente no mesmo D1, grava fontes/versões por pares com membership, preserva atribuição e configura trabalho como pausado. Não importa jobs, episodes, latches, Telegram, OAuth, índice ou orçamento. A conta nova continua ausente até ação externa explícita.
+- Fonte de identidade WhatsApp ativa no snapshot e retirada depois, tanto aplicada quanto pendente em inbox, nunca reabilita leitura de nota restrita. Pending withdrawal impede selo; pause/catchup real aplica a retirada; resume/mirror/purge eliminam o corpo antigo no target. Tombstones e custo permanecem.
+- Fonte capturada com literal inalterado conserva revisão 1 depois de catchup e permanece ilegível pela quarentena. Fresh policy + `reprove_source` conferem reader/fence/SQL atual e liberam somente a prova. Identidade exige CAS exato e `CommandLedger`; replay retorna o recibo original, stale overwrite é recusado. O resultado é afirmação explícita do owner. Nota restrita só volta ao interlocutor depois de nova versão de mandato também explícita.
+- Release libera writers e mantém hold, cancelando jobs anteriores. Settlement antigo desconhecido de teto 8 pode liquidar uso conhecido 3 depois, sem payload ou reserva nova. Budget ausente/incompleto retorna `budget_blocked`; a contraprova apaga somente o ledger **sintético da fixture** e confirma que nenhuma conta/reserva é importada/criada a partir do backup.
+- Activation é um comando separado, não chamado por restore/release. Teste exige configuração externa já em G2/sombra/selo exato, conta UTC previamente criada e gates atuais. O batch cancela pendências antigas, grava marcador de geração atual e remove o hold. Job futuro G2 pode adquirir lease; jobs antigos G1/G2 seguem cancelados e nova reserva/callback G1 é recusado. Missão restaurada continua pausada. Q de política antiga 1 não bloqueia política atual 2 após reproof; nenhuma flag de rotina ou credential generation OAuth é alterada.
+- O operador recusa token incorreto, origem browser, query, localhost genérico, expiry, SQL, URL/actor/extras antes de RPC. Falha de resposta do owner resulta `uncertain` na mesma operação sem retry automático. A config local tem um único binding remoto nominal OwnerAssistant; nenhum D1/R2/route nem token em vars imprimíveis. `verify` offline sempre mantém `authority=unchecked`.
+
+## Composição e escopo de revisão
+
+Etapas anteriores preservadas: A `f0404b0`, B `635368d`; o fix de marker falsy da autoridade, feito pelo root em `a257b7b`, está portado localmente em `7bbb6c2` apenas para compor esta árvore. O coordenador já possui o fix: não reaplicar esse commit inteiro sobre produto. C não altera migrações antigas; 0025 adiciona freeze, metadados de snapshot/restore, quarantine/hold e geração ativa. `AssistantExport`/purga reconhecem explicitamente esses contratos.
+
+A base desta worktree antecede as integrações #53/#54/#56. Ao integrar, preservar o contrato mais novo de engine #112 e OAuth, schema22/23 e fixtures do produto; inserir os hooks de readiness na factory #53/#56. Metadata receiveCapture continua admitido durante quiescência/hold. Leitura atual/execução exigem o selo/marcador nos locais adequados; não usar um snapshot de diagnóstico como prova da instalação atual.
+
+O volume excede o alvo de ~400 linhas: produtor/codec/membership, autoridade externa, freeze de todos os writers, import por grants, quarantine/reproof, financeiro vivo e selo não podem ser ligados separadamente sem abrir uma janela de restauração indevida. A/B foram commits separados; C é a composição de segurança que permanece inativa até os gates externos e de CI. A CLI não tem config de publicação. Revisão final do root e de agente independente permanece gate antes da integração.
+
+## Pendências declaradas
+
+Não houve homologação do binding OwnerAssistant remoto via operador, sessão Cloudflare local, instalação real dos novos campos privados, bootstrap real da autoridade ou restore em nova geração real. Não houve ativação real. A prova do bucket separado e recursos reais continua de #56; objetos R2 externos, arquivo original, Telegram, provider/snapshots/checkpoints e cópias externas não são apagados por esse bundle. A disponibilidade de referências a objetos não equivale a copiar seus bytes.
+
+Não são provas desta etapa: qualidade de busca Cognee, custo/latência reais, escala máxima do formato, revalidação humana da identidade por conteúdo, consentimento de canais ou homologação do piloto. Não se habilitou WhatsApp automático nem Calendar write; o projeto Elo não foi acessado/modificado. Versão/changelog/tag/release e fechamento da issue cabem à composição final com CI aprovada, nunca a estas provas isoladas.
+
+## Followup — parent retirado e roundtrip histórico
+
+Duas contraprovas **RED** em 10,94 s confirmaram: missão corrente atribuída a A retirada **antes** do import fazia `mission_versions` B falhar por FK; A retirada **depois** do import eliminava também histórico/FUP B ao purgar seu parent. O fix não inventa parent nem objetivo A. `work_id` no recibo é somente metadata de membro autenticado, indexada para comprovar parent `skipped_retired`. Source B é mantida em envelopes históricos fixos, com source ref, record hash/leaf, selo/geração originais e execução inativa. Quando parent está ausente sem esse recibo, a linha fica pendente, não recebe autorização.
+
+A revisão independente acrescentou a contraprova normal G1→G2→G3, com missão/FUP vivos: **RED** em 14,39 s por colisão do histórico `(kind,id,version)`. A chave inclui agora o selo de snapshot. G1 original e projeção autêntica G2 coexistem sem overwrite. A cópia de linha histórica não gera outra cópia recursiva; apenas um registro canônico de missão/FUP gera a camada nova daquele selo. O relatório conta registros de proveniência e versões distintas de trabalho, nunca novos pedidos humanos.
+
+Os três casos passaram **3/3 GREEN** em 16,38 s, com TypeScript aprovado: parent retirado antes/depois + segundo roundtrip normal. Testes verificam ausência de corpo/objetivo A e controles parent/FUP ativos, conservação de intenção/provenance B, reexport/import dos tipos, proveniência G1 byte-igual, missão/FUP normais ainda pausados e purga B de todas as camadas em G2/G3. A edição adicional da 0025 permanece anterior à ativação/deploy real dessa migração. Sua composição final ainda exige gates do produto; o followup não fecha a issue, e ACL de nota restaurada tem gate separado.
+
+## Followup — ACL de nota e reproof independente de revisão
+
+Dois **RED** em 14,85 s comprovaram vazamento de permissão: uma nota public no snapshot e posteriormente owner no D1 vivo voltava a ser legível por interlocutor depois do restore. Também era possível incrementar revisão de fonte WhatsApp por change_audience e escapar de uma origin quarantine antiga, sem observação atual do reader.
+
+O fix mantém nota public/restricted como ACL candidata histórica, com leitura owner permitida e guest/activation bloqueados. `source_authorization` é removida somente pela admissão de um **novo** source.change_audience autenticado, com CAS/token/registro do owner no mesmo batch. Correção do corpo não remove essa proteção; um recibo antigo continua idempotente e não reabilita acesso depois de nova revogação. Kinds de ACL e envelopes foram adicionados à 0025 ainda inativa, sem copiar outro corpo privado. O relatório conta essas linhas apenas como provenance records, com zero work versions/intents atribuídos quando só existem registros de ACL.
+
+`SourceAccess.current` e o join da prova de identidade negam qualquer origin quarantine ativa, independentemente da revisão. Raw reader reproof com fence/policy/source/selo atuais pode remover q de versões anteriores; remainingANY impede declarar sucesso se outra q continua ativa. Quarentena de identidade permanece e ainda exige seu vínculo explícito.
+
+O novo roundtrip confirma: grant public fresco em G2 é preservado como metadata no snapshot de G2, mas não autoriza G3. Header/selo/revisões 1 e 2 permanecem históricos; owner lê, guest não, até um novo grant G3. A fixture capturada positiva recebeu também fresh grant da nota restrita e CAS de mandato na revisão atual, sem relaxar identidade ou reader. Uma primeira seleção passou os três casos novos e teve somente timeout dessa fixture antiga em 5 s (6,007 s); seu limite de fixture passou a 30 s, coerente com o gate D1 do produto. Nenhum deadline de produção foi aumentado. A regressão completa final passou **35/35** em **106,85 s**, TypeScript e diff check aprovados. Custo adicional: **US$ 0**, sem CLI/Cloud/ativação real.
+
+O fix de quota/readMany e os hooks de admissão de modelo/mídia foram implementados pelo coordenador/outros agentes no produto; esta árvore não os substitui. Preservar `SourceAccess.readMany` ao integrar os predicados `current()` e manter os fixes Ops/CLI e do catálogo export installation-wide que já existem no produto. Fechamento da issue depende da composição e CI finais; homologação real permanece separada.

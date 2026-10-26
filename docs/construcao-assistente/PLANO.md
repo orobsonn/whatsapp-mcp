@@ -3,6 +3,8 @@
 > Execução autorizada pelo dono até piloto sombra. Procedimento do claude-harness consultado e aplicado sem instalação. Engenharia pode ajustar mecanismos preservando critérios e registrar a razão.
 
 **Goal:** entregar instalação integrada e verificável pronta para observação em sombra.
+
+Pedido adicional de 26/10: capacidade geral de iniciar conversa com pessoa sem histórico, pelo MCP e pela assistente, sem abrir o chat antes. MacBook foi apenas exemplo. Contrato em [destinatário sem histórico](ENVIO-PROATIVO.md), issues [#126](https://github.com/orobsonn/whatsapp-mcp/issues/126) e [#128](https://github.com/orobsonn/whatsapp-mcp/issues/128). A fatia #127 de fornecedores/cotações foi cancelada como escopo inferido. Ativação real permanece separada do piloto sombra.
 **Architecture:** Worker isolado, D1/R2 canônicos, projeção Cognee recuperável, Flue por episódio, controle autenticado e filas persistentes.
 **Tech Stack:** TypeScript, Workers, D1, R2, Durable Objects, Flue, Cognee/Python Container.
 **Spec:** [PRD](PRD.md), [revisão adversarial](REVISAO-PLANO.md).
@@ -42,7 +44,7 @@ Ler issue e antecessores; definir interfaces locais; congelar testes de aceite; 
 - [x] [41 · Buscar texto, significado e relações com cobertura](https://github.com/orobsonn/whatsapp-mcp/issues/41) — requisito 7; antecedentes: #38, #39, #70.
 - [x] [42 · Selecionar recorte e apresentar linguagem sustentada](https://github.com/orobsonn/whatsapp-mcp/issues/42) — requisito 7; antecedentes: #41, #37.
 - [x] [43 · Agrupar mensagens e recuperar contexto após pausa](https://github.com/orobsonn/whatsapp-mcp/issues/43) — requisito 5; antecedentes: #34, #36, #35.
-- [ ] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #36, #37, #42, #43, #79, #93, #96, #100.
+- [x] [44 · Executar perfis dono e interlocutor isolados no Flue](https://github.com/orobsonn/whatsapp-mcp/issues/44) — requisito 9; antecedentes: #36, #37, #42, #43, #79, #93, #96, #100.
 - [ ] [45 · Registrar respostas, pendências e silêncios em sombra](https://github.com/orobsonn/whatsapp-mcp/issues/45) — requisito 10; antecedentes: #44.
 - [ ] [46 · Ensinar contexto e dirigir assistente pelo MCP](https://github.com/orobsonn/whatsapp-mcp/issues/46) — requisito 11; antecedentes: #35, #38, #31, #45, #93.
 - [ ] [47 · Vincular Telegram privado do dono](https://github.com/orobsonn/whatsapp-mcp/issues/47) — requisito 14; antecedentes: #28, #46.
@@ -82,4 +84,4 @@ A busca #41 limita cada operação a um lote autorizado. A continuação por inv
 
 - [ ] [112 · Busca semântica persistente no contexto final](https://github.com/orobsonn/whatsapp-mcp/issues/112) — depende de #44/#100/#39; obrigatória antes de #57. Reutiliza o motor e o broker, com identidade de operação conhecida antes do RPC e prova do inventário autorizado.
 
-- [ ] [114 · Leitura nominal de mídia capturada](https://github.com/orobsonn/whatsapp-mcp/issues/114) — depende de #69/#33; antecede #52. Capacidade somente de leitura, limitada a imagem/PDF de 2 MiB, sem acesso genérico ao R2.
+- [x] [114 · Leitura nominal de mídia capturada](https://github.com/orobsonn/whatsapp-mcp/issues/114) — depende de #69/#33; antecede #52. Capacidade somente de leitura, limitada a imagem/PDF de 2 MiB, sem acesso genérico ao R2.
