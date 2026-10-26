@@ -22,3 +22,5 @@ Verificação dirigida na VPS: quatro arquivos (`assistant-routines`, `assistant
 Custos pagos destes testes: US$0; zero requisição de rede, modelo, Container ou escrita cloud. Migrações, capacidade/latência cloud e piloto integrado permanecem provas separadas.
 
 Fontes primárias de limites verificadas pelo coordenador em26/10: [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) e [mudança do limite Paid em11/02/2026](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/).
+
+Composição do coordenador com C-ACL `b5236a0`: a correção de `current()` foi preservada após o batch. Duas contraprovas fortes adicionais usam `readMany` real: origem com q revisão1 depois de mudança de audiência para revisão2 permanece `[null]` até raw reader reproof; nota com autorização histórica revisão1 permanece `[null]` para guest após correção do corpo para revisão2. **2/2 GREEN** em19,02s no arquivo de restore (22 casos fora do filtro); nenhum teste pesado simultâneo. Tipos e9/9 Node de quota também passaram na composição. CI final permanece obrigatória.
