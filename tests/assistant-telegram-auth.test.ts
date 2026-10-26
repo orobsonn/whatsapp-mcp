@@ -220,3 +220,23 @@ it("bounds malformed structures and rejects an unsafe configured bot URL", async
   await expect(controller().receive(input)).rejects.toThrow("telegram_input");
   expect(() => new TelegramLink(env.DB, scope, "bad/path?token=unsafe", secret)).toThrow("telegram_unconfigured");
 });
+
+it("rejects an A capability issued under the previous webhook secret without admitting an update", async () => {
+  const a = await begin(), update = start(1, a.link), rotated = controller("rotated-synthetic-webhook-secret");
+  expect(await rotated.receive(update)).toBe("denied");
+  expect(await query("SELECT state,user_id FROM assistant_telegram_pairings WHERE installation_id=? AND generation=? AND bot_instance=? AND id=?", a.pairingId).first()).toEqual({ state: "issued", user_id: null });
+  expect(await query("SELECT update_id FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=1").first()).toBeNull();
+  expect(await controller().receive(update)).toBe("pairing_claimed");
+  expect(await rotated.receive(update)).toBe("pairing_claimed"); // receipt recovery has no authority/mutation
+});
+it("rejects a B capability confirmed under the previous webhook secret without activating the link", async () => {
+  const a = await begin(); await controller().receive(start(1, a.link));
+  const b = await controller().execute({ kind: "telegram_link.confirm", operationId: "confirm", pairingId: a.pairingId }) as { link: string };
+  const update = start(2, b.link), rotated = controller("rotated-synthetic-webhook-secret");
+  expect(await rotated.receive(update)).toBe("denied");
+  expect(await controller().execute({ kind: "telegram_link.status" })).toMatchObject({ state: "unlinked", revision: 0, pairing: { state: "confirmable" } });
+  expect(await query("SELECT update_id FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=2").first()).toBeNull();
+  expect(await controller().receive(update)).toBe("linked");
+  expect(await rotated.receive(update)).toBe("linked");
+  expect(await controller().execute({ kind: "telegram_link.status" })).toMatchObject({ state: "active", revision: 1 });
+});
