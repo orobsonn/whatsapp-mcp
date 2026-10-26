@@ -15,6 +15,7 @@ export interface AssistantEnv {
   OPENAI_API_KEY?: string;
   FLUE_EPISODES_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
+  SEMANTIC_SEARCH_MODE?: string;
   CAPTURE_READER?: SnapshotReader;
   CAPTURE_MEDIA_READER?: MediaReader;
   MEDIA_PDF_PARSER?: PdfAdmissionReader;
