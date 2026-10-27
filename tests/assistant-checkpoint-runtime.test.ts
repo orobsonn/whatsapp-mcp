@@ -154,6 +154,27 @@ test.each(["rollback","ack_lost"])("native operation and ticket claims survive %
   expect((await call({op:"engineSubmit",ticket:second})).data.state).toBe(mode==="ack_lost"?"uncertain":"complete");
   const after=(await call({op:"read"})).data;expect(after.effectCalls??0).toBe(mode==="ack_lost"?0:1);
 });
+test("restoring a confirmed checkpoint preserves an uncertain search claim and refuses its old submit", async () => {
+  const { first, second } = await engineTickets();
+  expect((await call({ op: "engineSubmit", ticket: first, ackLostClaim: true })).status).toBe(409);
+  const before = (await call({ op: "read" })).data;
+  const record = structuredClone(records().state.candidate!);
+  record.manifest.indexEpoch = before.index.epoch; record.manifest.indexRevision = before.index.revision; record.manifest.sources = [];
+  record.manifestHash = hash(canonical(record.manifest)); record.id = hash([record.manifestHash, record.snapshot.id]);
+  const index = { indexEpoch: record.manifest.indexEpoch, indexRevision: record.manifest.indexRevision, sources: [] };
+  const state = { ...before, index: { ...before.index, lost: true }, quarantine: true, maintenance: false,
+    checkpoint: { revision: 1, owner: "synthetic-confirmed-owner", phase: "confirmed", confirmed: record, index } };
+  await call({ op: "seed", data: state });
+  expect((await call({ op: "restore" })).data).toMatchObject({ result: { state: "checkpoint_confirmed", id: record.id }, snapshots: 0 });
+  const restored = (await call({ op: "read" })).data;
+  const searches = (data: Record<string, unknown>) => Object.fromEntries(Object.entries(data).filter(([key]) => key.startsWith("search-")));
+  expect(searches(restored)).toEqual(searches(before));
+  expect(restored).toMatchObject({ index: { lost: false }, quarantine: false, maintenance: false, active: null });
+  expect((await call({ op: "engineLookup", ticket: second })).data.state).toBe("uncertain");
+  expect((await call({ op: "engineSubmit", ticket: second })).data.state).toBe("uncertain");
+  const after = (await call({ op: "read" })).data;
+  expect(after.effectCalls ?? 0).toBe(0); expect(after.permitCalls ?? 0).toBe(0);
+});
 test("native SQLite admits one physical search for concurrent aliases and shares only its exact completed receipt",async()=>{
   const {first,second}=await engineTickets();
   const results=await Promise.all([call({op:"engineSubmit",ticket:first,holdPermit:true}),call({op:"engineSubmit",ticket:second,holdPermit:true})]);
