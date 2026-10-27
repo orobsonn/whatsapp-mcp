@@ -1,4 +1,5 @@
 import type { SourceScope } from "./sources";
+import { compactStatement } from "./d1-statement";
 export type CommandValue = string | number | null;
 /** One token gates every mutation in the same D1 batch. A receipt is never
  * inferred from today's resource: it records the originally admitted result. */
@@ -19,9 +20,9 @@ export class CommandLedger {
     return JSON.parse(row.result_json) as T;
   }
   admit(result: unknown, now: number, condition: string, values: CommandValue[]) {
-    return this.db.prepare(`INSERT INTO assistant_owner_commands SELECT ?,?,?,?,?,?,?
-      WHERE ${condition} ON CONFLICT DO NOTHING`).bind(...this.keys(), this.operationId,
-      this.hash, this.token, JSON.stringify(result), now, ...values);
+    return compactStatement(this.db, `INSERT INTO assistant_owner_commands SELECT ?,?,?,?,?,?,?
+      WHERE ${condition} ON CONFLICT DO NOTHING`, [...this.keys(), this.operationId,
+      this.hash, this.token, JSON.stringify(result), now, ...values]);
   }
   statement(sql: string, ...values: CommandValue[]) {
     const gate = `EXISTS(SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=? AND token=?)`;

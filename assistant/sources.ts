@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { TrustedActor } from "./access";
+import type { TrustedActor, AccessGuard } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger, type CommandValue } from "./command-ledger";
 import type { SourceRetirementGuard } from "./retention-authority";
@@ -73,7 +73,8 @@ type Statement = (sql: string, ...values: CommandValue[]) => D1PreparedStatement
 export class SourceController {
     private readonly scope: SourceScope;
     private readonly actor: TrustedActor;
-    constructor(private readonly db: D1Database, scope: SourceScope, actor: TrustedActor, private readonly clock = Date.now, private readonly retirement?: SourceRetirementGuard) {
+    constructor(private readonly db: D1Database, scope: SourceScope, actor: TrustedActor, private readonly clock = Date.now, private readonly retirement?: SourceRetirementGuard,
+        private readonly admission?: () => AccessGuard) {
         if (!scope.installationId || !scope.generation)
             throw new Error("invalid_source_scope");
         this.scope = Object.freeze({ ...scope });
@@ -81,6 +82,13 @@ export class SourceController {
     }
     private owner() { if (this.actor.kind !== "owner")
         throw new Error("owner_required"); }
+    private direct() { this.owner(); if (this.admission) throw new Error("source_command_required"); }
+    private authority() {
+        if (!this.admission) return undefined;
+        const guard = this.admission();
+        if (!guard) throw new Error("source_admission_required");
+        return guard;
+    }
     private statement = (query: string, ...values: CommandValue[]) => this.db.prepare(query).bind(...values);
     private plain: Statement = (query, ...values) => this.statement(query.replaceAll("$gate", "1"), ...values);
     private keys() { return [this.scope.installationId, this.scope.generation]; }
@@ -122,8 +130,8 @@ export class SourceController {
         }>();
     }
     async create(input: SourceInput): Promise<SourceRef> {
+        this.direct();
         input = { ...input };
-        this.owner();
         const now = this.clock();
         integer(now);
         const data = await this.prepared(input);
@@ -156,8 +164,8 @@ export class SourceController {
         text: string;
         occurredAt: number;
     }): Promise<SourceRef> {
+        this.direct();
         input = { ...input };
-        this.owner();
         integer(expected, 1);
         integer(input.occurredAt);
         const now = this.clock();
@@ -174,8 +182,8 @@ export class SourceController {
         return [s(`UPDATE assistant_sources SET revision=revision+1,${assignment} WHERE installation_id=? AND generation=? AND id=?
       AND revision=? AND status='active' AND $gate RETURNING id,revision,current_version AS version`, ...values, ...this.keys(), id, expected), this.change(s, id, expected, kind, now)];
     }
-    async changeAudience(id: string, expected: number, visibility: Audience) { this.owner(); audience(visibility); return this.update(id, expected, "access_changed", "audience=?", [visibility]); }
-    async withdraw(id: string, expected: number) { this.owner(); integer(expected, 1); const now = this.clock(); integer(now); return new WithdrawalBarrier(this.db, this.scope, this.retirement).direct(id, expected, now); }
+    async changeAudience(id: string, expected: number, visibility: Audience) { this.direct(); audience(visibility); return this.update(id, expected, "access_changed", "audience=?", [visibility]); }
+    async withdraw(id: string, expected: number) { this.direct(); integer(expected, 1); const now = this.clock(); integer(now); return new WithdrawalBarrier(this.db, this.scope, this.retirement).direct(id, expected, now); }
     private async update(id: string, expected: number, kind: string, assignment: string, values: string[]) {
         integer(expected, 1);
         const now = this.clock();
@@ -195,12 +203,19 @@ export class SourceController {
         const now = this.clock();
         integer(now);
         if (item.kind === 'source.withdraw') {
-            const barrier = new WithdrawalBarrier(this.db, this.scope, this.retirement), ref = await barrier.begin(item.id, item.expectedRevision, item.operationId, requestHash, now);
+            const barrier = new WithdrawalBarrier(this.db, this.scope, this.retirement), ref = await barrier.begin(item.id, item.expectedRevision, item.operationId, requestHash, now, this.authority());
             const result: SourceCommandReceipt = { ...ref, operationId: item.operationId, kind: item.kind, shadow: true };
+            // Settlement of an EXACT already-admitted monotone withdrawal may
+            // finish after channel revocation. The initial barrier owns authority;
+            // recovering its receipt does not authorize another command/reply.
             await this.db.batch([ledger.admit(result, now, `EXISTS(SELECT 1 FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=? AND operation_id=? AND request_hash=?)`, [...this.keys(), item.id, item.operationId, requestHash]), barrier.finish(item.id, item.operationId, requestHash)]);
             const receipt = await ledger.recover<SourceCommandReceipt>(); if (!receipt) throw new Error("retention_withdraw_uncertain"); return receipt;
         }
         const s: Statement = (query, ...values) => ledger.statement(query, ...values);
+        const admit = (result: unknown, condition: string, values: CommandValue[]) => {
+            const guard = this.authority();
+            return ledger.admit(result, now, guard ? `(${condition}) AND (${guard.sql})` : condition, guard ? [...values, ...guard.values] : values);
+        };
         let batch: D1PreparedStatement[];
         if (item.kind === 'source.create') {
             const data = await this.prepared(item.input), existing = await this.origin(item.input.originKey);
@@ -210,7 +225,7 @@ export class SourceController {
             const condition = `NOT EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND origin='owner_note' AND origin_key=?)
         OR EXISTS(SELECT 1 FROM assistant_sources s JOIN assistant_source_admissions a ON a.installation_id=s.installation_id AND a.generation=s.generation AND a.source_id=s.id
         WHERE s.installation_id=? AND s.generation=? AND s.origin='owner_note' AND s.origin_key=? AND a.request_hash=?)`;
-            batch = [ledger.admit({}, now, condition, [...this.keys(), item.input.originKey, ...this.keys(), item.input.originKey, data.requestHash]),
+            batch = [admit({}, condition, [...this.keys(), item.input.originKey, ...this.keys(), item.input.originKey, data.requestHash]),
                 ...this.creation(s, crypto.randomUUID(), data, now),
                 // Resolve a concurrent origin alias inside the admitting transaction.
                 s(`UPDATE assistant_owner_commands SET result_json=(SELECT json_object('operationId',?,'kind',?,'id',id,'revision',1,'version',1,'shadow',json('true'))
@@ -225,7 +240,7 @@ export class SourceController {
             const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' ? 1 : 0), shadow: true };
             // A future expectedRevision must not make a previously read version
             // valid after somebody else's correction wins before this batch.
-            batch = [ledger.admit(result, now, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' ? "AND origin='owner_note'" : ""})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
+            batch = [admit(result, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' ? "AND origin='owner_note'" : ""})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
             if (item.kind === 'source.correct')
                 batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now));
             else

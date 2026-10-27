@@ -76,7 +76,8 @@ function command(input: unknown) {
 export class OwnerControl {
   private readonly scope: OwnerControlScope;
   private readonly principal: TrustedActor;
-  constructor(private readonly db: D1Database, scope: OwnerControlScope, principal: TrustedActor, private readonly clock = Date.now,private readonly outgoing?:OutgoingPort) {
+  constructor(private readonly db: D1Database, scope: OwnerControlScope, principal: TrustedActor, private readonly clock = Date.now,private readonly outgoing?:OutgoingPort,
+    private readonly admission?: () => AccessGuard) {
     if (![scope.installationId, scope.generation].every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
     const origin = [scope.sourceEpoch, scope.sourceGeneration];
     if (origin.some(value => value !== undefined) && !origin.every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
@@ -149,6 +150,9 @@ export class OwnerControl {
       }
     }
     if(provenance?.body.outgoing){if(!await this.outgoing!.check(provenance.body.outgoing))throw Error('control_precondition');const gate=outgoingAuthorityGuard(this.scope,provenance.body.outgoing.authorization,provenance.source.id,provenance.body.outgoing.envelope.chatId,this.clock());require(gate.sql,...gate.values);}
+    // A channel-derived Owner principal is insufficient by itself. Its nominal
+    // host guard must win in the SAME transaction as this command's receipt.
+    if (this.admission) { const guard = this.admission(); require(`(${guard.sql})`, ...guard.values); }
     const gated = (sql: string, ...binds: Value[]) => ledger.statement(sql, ...binds);
     const batch = [ledger.admit(result, now, conditions.join(" AND "), values)];
     if (item.kind === "mission.put" || item.kind === "mission.set_state") {

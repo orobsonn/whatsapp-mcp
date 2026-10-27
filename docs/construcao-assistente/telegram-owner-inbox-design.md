@@ -27,3 +27,9 @@ O dono escreve em português no bot privado e recebe resposta verificável; pode
 Revisão adversarial confirmou o P1 e identificou o menor encaixe conceitual: adaptador nominal de entrada Owner, controllers/leitores existentes e outbox próprio. Ela rejeitou um wrapper que checa o vínculo uma vez e depois chama MCP: os controllers atuais usam principal Owner do host sem telegramLinkGuard no próprio batch. Também rejeitou fake decision/dailySummary para enviar resposta. Perguntas semânticas devem manter fontes/cobertura e orçamento, sem bypass do modo pausado por boolean arbitrário.
 
 Ainda é necessário escolher interfaces concretas após ler as APIs de broker/runtime/control e definir o guard durável de mensagem, confirmação, retomada e retenção. Essas escolhas serão explicitamente atacadas antes de código. O plano deverá cobrir teste causal RED, contraprovas de duplicata/revogação/ACK perdido, CI exata e homologação real no bot próprio.
+
+## Implementação parcial em andamento
+
+As unidades de autoridade/inbox e admissão nos controllers foram definidas após a revisão adversarial e implementadas no branch, conforme [plano parcial](telegram-owner-inbox-authority-plan.md). A primeira só persiste metadados de ativação/tentativa; a segunda compõe o guard Telegram na mesma admissão dos comandos existentes. Não existe ainda ligação ao consumidor do webhook, interpretação natural ou outbox de resposta. Não equivalem a requisito11 cumprido nem a nova homologação Telegram.
+
+A futura factory host Telegram deverá exigir o callback nominal em todos os controllers; construir principal Owner sem ele é bypass. Perguntas não viram fontes de memória só para obter permissão de modelo. Flue, broker, orçamento, retomada e retenção da resposta ainda precisam de desenho completo e prova antes de ativação.
