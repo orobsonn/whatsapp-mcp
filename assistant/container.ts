@@ -14,6 +14,7 @@ import type { SourceStamp } from "./checkpoints";
 import { z } from "zod";
 import { assertRestoredGeneration } from "./retention-runtime";
 import {retentionExecutionGuard} from './retention-execution';
+import { onceAuthority, onceScope } from "./owner-once-guard";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -120,7 +121,24 @@ export class CanonicalEngineGuard implements EngineGuard {
   private access: SourceAccess;
   constructor(private env: AssistantEnv) { const scope = configured(env); this.access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }); }
   async checkInitialAdmission(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string){
-    try{if(!/^[a-f0-9]{64}$/.test(admission.itemId)||typeof admission.owner!=='string'||admission.owner.length>256||this.env.ROUTINES_ENABLED!=='shadow'||this.env.ROUTINES_PAUSED==='true')return false;
+    try{
+      const base = { itemId: z.string().regex(/^[a-f0-9]{64}$/), owner: z.string().min(1).max(256) };
+      admission = z.union([z.object(base).strict(), z.object({ ...base, kind: z.literal("owner_once"), owner: z.string().uuid() }).strict()]).parse(admission);
+      if (admission.kind === "owner_once") {
+        await assertRestoredGeneration(this.env);
+        const scope = onceScope.parse({ installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION,
+          sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION });
+        const authority = await onceAuthority(this.env, scope, { id: admission.itemId, token: admission.owner }, Date.now());
+        const ref = input.source.fence.source;
+        if (input.actor.kind !== "owner" || ref.origin !== "owner_note" || ref.audience !== "owner" || ref.projectId !== authority.receipt.projectId
+          || !authority.receipt.corpus.refs.some(pin => pin.id === ref.id && pin.revision === ref.revision && pin.version === ref.version)
+          || (indexEpoch !== undefined && !z.string().uuid().safeParse(indexEpoch).success) || Date.now() >= authority.receipt.deadlineAt) return false;
+        const access = this.access.guard(input.actor, input.source.fence, Date.now());
+        const valid = !!await this.env.DB!.prepare(`SELECT 1 WHERE (${authority.guard.sql}) AND (${access.sql})`)
+          .bind(...authority.guard.values, ...access.values).first();
+        return valid && Date.now() < authority.receipt.deadlineAt;
+      }
+      if(this.env.ROUTINES_ENABLED!=='shadow'||this.env.ROUTINES_PAUSED==='true')return false;
       await assertRestoredGeneration(this.env);const scope=configured(this.env),now=Date.now(),ref=input.source.fence.source,guard=this.access.guard(input.actor,input.source.fence,now),execution=retentionExecutionGuard(scope);
       return !!await scope.db.prepare(`SELECT 1 FROM assistant_routine_state c JOIN assistant_routine_items r USING(installation_id,generation,source_epoch,source_generation)
         WHERE c.installation_id=? AND c.generation=? AND c.source_epoch=? AND c.source_generation=? AND c.owner_token=? AND c.state='running' AND c.paused=0 AND c.lease_until>? AND c.active_item_id=r.id AND r.id=? AND r.actor_json=?

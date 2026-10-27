@@ -18,6 +18,9 @@ import type {AssistantEnv} from '../assistant/env';
 import type {OriginScope,ReaderQuery} from '../assistant/origin-guard';
 import type {ModelAdapter} from '../assistant/model-broker';
 import type {EngineIngest} from '../assistant/engine';
+import {OwnerOnce} from '../assistant/owner-once';
+import {OwnerControl} from '../assistant/control';
+import {readOnceGrant,onceReceipt} from '../assistant/owner-once-guard';
 // @ts-expect-error Vite migration fixtures.
 const migrations=import.meta.glob('../assistant/migrations/*.sql',{query:'?raw',import:'default',eager:true}) as Record<string,string>;
 let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number;
@@ -128,4 +131,25 @@ it('recovers a lost RPC ACK through the original epoch receipt, then checkpoints
   const commit=engine.commitInitialIngest.bind(engine);vi.spyOn(engine,'commitInitialIngest').mockImplementationOnce(async(...args)=>{await commit(...args);throw Error('RPC_ACK_lost_after_complete');});await capture();await scheduler().tick();const before=await sql('SELECT index_epoch,state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first<{index_epoch:string;state:string}>();expect(before?.state).toBe('attempting');
   now+=60001;vi.setSystemTime(now);await scheduler().tick();now+=60001;vi.setSystemTime(now);await scheduler().tick();
   expect(await sql('SELECT index_epoch,state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({index_epoch:before!.index_epoch,state:'complete'});expect(port.request.mock.calls.filter(([p])=>p==='/ingest')).toHaveLength(1);expect(port.start).toHaveBeenCalledTimes(1);expect(dispatches).toBe(1);expect(modelCalls).toBe(1);
+});
+it('binds the paused Owner bootstrap ticket to its admission family and commits the same original once',async()=>{
+  settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
+  // Isolated synthetic account; no real resource or reservation is changed.
+  await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
+  await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'once',name:'Synthetic Owner bootstrap',expectedVersion:0,operationId:'once-project'});
+  const source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'own-first',text:'Synthetic bounded Owner original.',audience:'owner',projectId:'once',occurredAt:now});
+  const once=new OwnerOnce(settings,scope,()=>now),plan=await once.execute({kind:'owner_once.plan',operationId:'once-first',sourceId:source.id,expectedRevision:1,projectId:'once',query:'Explain this synthetic original.',deadlineAt:now+600000,maxCostMicroUsd:600000});
+  expect(plan.state).toBe('planned');await once.execute({kind:'owner_once.advance',operationId:'once-first'});
+  const raw=await sql("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id LIKE 'owner-once-v1:%'",...keys()).first<string>('result_json');
+  const receipt=onceReceipt.parse(JSON.parse(raw!)),grant=(await readOnceGrant(settings,receipt))!;
+  const input:EngineIngest={actor:{kind:'owner'},source:(await new SourceAccess(env.DB,scope).read({kind:'owner'},source.id))!};
+  const admission={kind:'owner_once' as const,itemId:grant.id,owner:grant.token};
+  const reserved=await engine.reserveInitialIngest(input,admission);expect(reserved.state).toBe('reserved');if(reserved.state!=='reserved')throw Error('synthetic_own_not_reserved');
+  expect(reserved.ticket).toMatchObject({admissionKind:'owner_once'});
+  expect(await engine.commitInitialIngest(input,reserved.ticket,{itemId:admission.itemId,owner:admission.owner})).toMatchObject({state:'blocked',reason:'initial_admission_changed'});
+  expect(port.start).not.toHaveBeenCalled();
+  expect(await engine.commitInitialIngest(input,reserved.ticket,admission)).toMatchObject({state:'complete'});
+  expect(await engine.commitInitialIngest(input,reserved.ticket,admission)).toMatchObject({state:'complete'});
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+  expect(settings.ROUTINES_PAUSED).toBe('true');
 });

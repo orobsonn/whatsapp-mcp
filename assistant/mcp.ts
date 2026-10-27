@@ -25,6 +25,7 @@ import { RetentionObjects, objectCommand } from "./retention-objects";
 import { retentionServices, assertRestoredGeneration } from "./retention-runtime";
 import { snapshotCommand } from "./retention-snapshot";
 import { restoreCommand } from "./retention-restore-contract";
+import { OwnerOnce } from "./owner-once";
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -50,6 +51,7 @@ export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 export interface OwnerAssistantRPC {
   installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
   retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
+  ownerOnce?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   telegramLink(expected: OwnerAffinity, command: TelegramLinkCommand): Promise<unknown>;
   telegramReview(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   evaluate(expected: OwnerAffinity, command: unknown): Promise<unknown>;
@@ -169,6 +171,10 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   async telegramReview(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);
     return (await createTelegramReview(this.env, scope)).execute(command);
+  }
+  async ownerOnce(expected: OwnerAffinity, command: unknown) {
+    const scope = this.#affinity(expected);
+    return new OwnerOnce(this.env, scope).execute(command);
   }
   async source(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
