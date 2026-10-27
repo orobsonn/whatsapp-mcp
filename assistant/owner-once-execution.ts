@@ -42,6 +42,7 @@ export class OnceExecution {
     const state = await engine.lifecycleState();
     if (state.busy) return this.result("pending", "index_busy");
     if (state.quarantine || state.index?.lost || state.maintenance) return this.result("blocked", "index", "index_maintenance_required");
+    if (!state.index && !state.imageConfigured) return this.result("blocked", "index", "engine_image_unconfigured");
     // The shared Cognee dataset may process pending documents. This first
     // capability therefore refuses foreign/stale indexed originals entirely.
     if (state.index?.sources.some(ref => !this.receipt.corpus.refs.some(pin => pin.id === ref.id && pin.revision === ref.revision && pin.version === ref.version)))

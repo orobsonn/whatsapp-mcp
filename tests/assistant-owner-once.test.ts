@@ -69,6 +69,33 @@ async function fixture(text = "Synthetic private blue marker") {
     projectId: "once-project", query: "Explain the private blue marker", deadlineAt: now + 600000, maxCostMicroUsd: 600000 };
   return { sources, source, rpc, command };
 }
+it("inspects the same expired Owner operation without granting execution or forwarding private Core fields", async () => {
+  const {rpc,command}=await fixture();const plan=await rpc.ownerOnce(scope,command) as {id:string};
+  const observe=vi.fn(async()=>({state:"observed",imageConfigured:true,activePresent:false,quarantine:true,
+    index:{state:"present",epoch:crypto.randomUUID(),revision:"empty",sourceCount:0,lost:true},
+    initial:{state:"present",itemId:plan.id,admissionState:"uncertain",indexEpoch:crypto.randomUUID(),operationId:"b".repeat(64),hasAccess:false,hasReceipt:false},
+    token:"PRIVATE_MUST_NOT_ESCAPE"}));
+  Object.assign(settings.COGNEE!.get(settings.COGNEE!.idFromName("synthetic")),{initialObservation:observe});
+  vi.setSystemTime(command.deadlineAt+1);
+  const result=await rpc.ownerOnce(scope,{kind:"owner_once.inspect",operationId:command.operationId});
+  expect(result).toMatchObject({state:"blocked",executionMetadata:{state:"observed",initial:{state:"present",itemId:plan.id,hasAccess:false}}});
+  expect(JSON.stringify(result)).not.toContain("PRIVATE_MUST_NOT_ESCAPE");expect(observe).toHaveBeenCalledTimes(1);expect(bootstrap).not.toHaveBeenCalled();
+});
+it("does not probe Core for a missing Owner plan and never attributes another root's initial ticket",async()=>{
+  const {rpc,command}=await fixture(),observe=vi.fn(async()=>({state:"observed",imageConfigured:true,activePresent:false,quarantine:true,index:{state:"absent"},
+    initial:{state:"present",itemId:"f".repeat(64),admissionState:"uncertain",indexEpoch:crypto.randomUUID(),operationId:"b".repeat(64),hasAccess:false,hasReceipt:false}}));
+  Object.assign(settings.COGNEE!.get(settings.COGNEE!.idFromName("synthetic")),{initialObservation:observe});
+  expect(await rpc.ownerOnce(scope,{kind:"owner_once.inspect",operationId:command.operationId})).toMatchObject({state:"unavailable"});expect(observe).not.toHaveBeenCalled();
+  await rpc.ownerOnce(scope,command);
+  const result=await rpc.ownerOnce(scope,{kind:"owner_once.inspect",operationId:command.operationId});expect(result).toMatchObject({state:"blocked",reason:"execution_metadata_unavailable"});
+  expect(JSON.stringify(result)).not.toContain("b".repeat(64));expect(bootstrap).not.toHaveBeenCalled();
+});
+it("rejects inspection after the active generation changes without asking Core for metadata",async()=>{
+  const {rpc,command}=await fixture();await rpc.ownerOnce(scope,command);
+  const observe=vi.fn();Object.assign(settings.COGNEE!.get(settings.COGNEE!.idFromName("synthetic")),{initialObservation:observe});
+  await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,?,?,?,?,1)").bind(scope.installationId,"other-generation","a".repeat(64),"b".repeat(64),"synthetic-inspection-gate").run();
+  expect(await rpc.ownerOnce(scope,{kind:"owner_once.inspect",operationId:command.operationId})).toMatchObject({state:"blocked",reason:"execution_metadata_unavailable"});expect(observe).not.toHaveBeenCalled();
+});
 const retirement = { allow: async () => {}, withdraw: async () => {} };
 async function purge(id: string) {
   const retention = new RetentionPurge(env.DB, scope, { kind: "owner" }, Date.now, retirement);

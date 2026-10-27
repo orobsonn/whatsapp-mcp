@@ -1,5 +1,9 @@
 # Construção na VPS — atualização27/10/2026
 
+## Execução Owner própria em homologação — #140/#48
+
+A composição Owner passou na CI40531323462 e foi publicada preservando o trabalho OAuth0.48.1 integrado à main. Plano/admissão reais aceitaram uma nota técnica de471bytes, mas o processamento retornou incerto e não publicou decisão. O mapa de imagem do motor estava ausente no runtime, inclusive na versão anterior de secrets; foi restaurado pela versão histórica exata, com mesmo código,37bindings/cron/exposição preservados e sem alterar o Core. A tentativa e seu prazo expirado continuam intactos. Inspeção readonly está em validação própria antes de observar o estágio da falha. [Evidência e limites](evidencias/140-owner-once-cloud-20261027.md). #140/#48 e o piloto integral permanecem pendentes; sem nova reserva de modelo observada, WhatsApp automático, escrita Calendar ou avaliação humana fabricada. Os checkpoints seguintes conservam a história anterior.
+
 ## Calendar real somente leitura e limpeza Telegram — marco #51
 
 O dono confirmou o acesso readonly e concluiu o consentimento Google próprio. O bootstrap validou callback/PKCE e salvou credencial0600; autorização canônica privada e oito secrets foram configurados no Worker para somenteprimary. Consulta real observou conflito; proposta real retornou horário/fuso/destinatário explícitos e `reservation=not_created`, sem criar evento. Readback confirmou módulos,29 bindings anteriores, cron e pausa preservados; a falha do snapshot imediato e a recuperação por baseline anterior estão registradas. O marco #51 prepara0.48.0, condicionado a revisão/CI/tag próprias. [Matriz de aceite e limites](evidencias/51-calendar-google-real-20261027.md).

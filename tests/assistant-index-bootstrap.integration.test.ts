@@ -72,6 +72,17 @@ beforeEach(async()=>{
   driver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'submission-first',uid:'uid-first',acceptedAt:new Date(now).toISOString()};},read:async receipt=>{const {search}=hostConfiguredSearch(settings,'automation',()=>now),host=new EpisodeController(env.DB,{...scope,period:'2026-10-26'},search,model,DEFAULT_BROKER_CONFIG,{purpose:'automation',clock:()=>now});const row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
+it('observes initial metadata and the current image binding without waking or changing the engine',async()=>{
+  const context=(engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx;
+  delete context.container.images.cognee;
+  const before=clone([...data]);
+  expect(await engine.initialObservation()).toMatchObject({state:'observed',imageConfigured:false,initial:{state:'absent'},index:{state:'absent'},activePresent:false});
+  context.container.images.cognee='synthetic-pinned-image';
+  expect(await engine.initialObservation()).toMatchObject({state:'observed',imageConfigured:true});
+  expect([...data]).toEqual(before);
+  for(const effect of [port.start,port.deny,port.destroy,port.intercept,port.request])expect(effect).not.toHaveBeenCalled();
+  expect(modelCalls).toBe(0);
+});
 async function capture(){const response=await receiveCapture(new Request('https://synthetic.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+settings.BRIDGE_SECRET},body:JSON.stringify({protocol:1,...scope,sequence:1,previousSequence:0,chatId:'chat',sourceId:'first',sourceKind:'message',operation:'upsert',recordedAt:now})}),settings);expect(response.status).toBe(200);}
 const scheduler=()=>new AssistantScheduler(settings,{clock:()=>now,driver,model});
 async function admission(){settings.ROUTINES_PAUSED='true';await capture();await scheduler().tick();settings.ROUTINES_PAUSED='false';now+=60001;vi.setSystemTime(now);
@@ -175,7 +186,7 @@ it.each(['complete','uncertain'] as const)('binds the paused Owner bootstrap tic
   expect(await engine.lookup(reserved.ticket.operationId)).toMatchObject({state:'uncertain'});
   expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
 });
-it.each(['complete','uncertain_search'] as const)('advances only the selected Owner request through existing ledgers (%s)',async outcome=>{
+it.each(['complete','uncertain_search','missing_image'] as const)('advances only the selected Owner request through existing ledgers (%s)',async outcome=>{
   settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
   await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
   await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'selected',name:'Synthetic selected Owner work',expectedVersion:0,operationId:'selected-project'});
@@ -187,7 +198,13 @@ it.each(['complete','uncertain_search'] as const)('advances only the selected Ow
   const options={model,driver:ownDriver},command={kind:'owner_once.plan',operationId:'selected-owner',sourceId:source.id,expectedRevision:1,projectId:'selected',query:'Explain the blue test marker.',deadlineAt:now+600000,maxCostMicroUsd:600000};
   let once=new OwnerOnce(settings,scope,()=>now,options);await once.execute(command);
   expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'admitted'});
+  if(outcome==='missing_image')delete (engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx.container.images.cognee;
   const first=await once.execute({kind:'owner_once.advance',operationId:command.operationId});
+  if(outcome==='missing_image'){
+    expect(first).toMatchObject({state:'blocked',phase:'index',reason:'engine_image_unconfigured'});
+    expect(data.has('initial-ingest-v1')).toBe(false);expect(data.has('index')).toBe(false);expect(port.start).not.toHaveBeenCalled();expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+    expect(await sql('SELECT COUNT(*) n FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);return;
+  }
   expect(first).toMatchObject({state:'pending',phase:'indexed'});
   expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
   if(outcome==='uncertain_search'){

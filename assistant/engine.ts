@@ -77,6 +77,22 @@ export class CogneeEngine implements EnginePort {
   constructor(scope: { installationId: string; generation: string }, private store: EngineStore, private container: ContainerPort,
     private guard: EngineGuard, private clock = Date.now) { this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation }); }
   isBusy() { return this.busy; }
+  /** One durable readonly snapshot; no attempt classification or recovery. */
+  async observeInitial() {
+    if (!this.store.transaction) throw Error("initial_observation_unavailable");
+    return this.store.transaction(async store => {
+      const raw = await store.get("initial-ingest-v1"), index = await store.get("index"), active = await store.get("active");
+      const initial = raw === undefined ? undefined : initialStateSchema.safeParse(raw);
+      const parsedIndex = index === undefined ? undefined : z.object({namespace:z.literal(JSON.stringify(this.scope)),epoch:z.uuid(),
+        revision:z.union([z.literal("empty"),z.string().regex(/^[a-f0-9]{64}$/)]),sources:z.array(z.unknown()),lost:z.boolean()}).safeParse(index);
+      return {state:"observed" as const,activePresent:active!==undefined&&active!==null,quarantine:!!await store.get("quarantine"),
+        index:index===undefined?{state:"absent" as const}:parsedIndex?.success?{state:"present" as const,epoch:parsedIndex.data.epoch,
+          revision:parsedIndex.data.revision,sourceCount:parsedIndex.data.sources.length,lost:parsedIndex.data.lost}:{state:"invalid" as const},
+        initial:raw===undefined?{state:"absent" as const}:initial?.success?{state:"present" as const,itemId:initial.data.ticket.itemId,
+          admissionState:initial.data.state,indexEpoch:initial.data.ticket.indexEpoch,operationId:initial.data.ticket.operationId,
+          hasAccess:await store.get(`access:${initial.data.ticket.operationId}`)!==undefined,hasReceipt:await store.get(`receipt:${initial.data.ticket.operationId}`)!==undefined}:{state:"invalid" as const}};
+    });
+  }
   async ingest(input: EngineIngest): Promise<unknown> {
     return this.ingestSource(input);
   }

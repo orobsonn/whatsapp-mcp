@@ -11,7 +11,7 @@ import { retentionExecutionGuard } from "./retention-execution";
 import { combineOnceGuards, currentOnceGuard, onceBudgetGuard, onceConfiguration, onceInventory, onceKey,
   oncePeriod, onceReceipt, type OnceReceipt, type OnceScope } from "./owner-once-guard";
 import { onceAdmitKey, onceAdmittedReceipt, oncePlanGuard, readOnceGrant, onceAuthority, completedOwnerOnce } from "./owner-once-guard";
-import { onceCommand } from "./owner-once-contract";
+import { onceCommand, onceExecutionMetadata } from "./owner-once-contract";
 
 export { onceCommand } from "./owner-once-contract";
 
@@ -48,6 +48,19 @@ export class OwnerOnce {
     const command = onceCommand.parse(raw), root = await bridgeHash(["owner-once-v1", this.scope, command.operationId]);
     const existing = await this.find(root);
     if (command.kind === "owner_once.status") return existing ? this.status(existing) : { state: "unavailable", id: root };
+    if (command.kind === "owner_once.inspect") {
+      if (!existing) return {state:"unavailable",id:root};
+      try {
+        await assertRestoredGeneration(this.env,false);
+        const raw=await this.env.COGNEE!.get(this.env.COGNEE!.idFromName(JSON.stringify(["cognee",this.scope.installationId,this.scope.generation]))).initialObservation();
+        // Pick the metadata DTO explicitly; a remote extra field is never echoed.
+        const metadata=onceExecutionMetadata.parse({state:raw.state,imageConfigured:raw.imageConfigured,activePresent:raw.activePresent,
+          quarantine:raw.quarantine,index:raw.index,initial:raw.initial});
+        if(metadata.initial.state==="present"&&metadata.initial.itemId!==existing.id)throw Error("initial_root_mismatch");
+        const status=await this.status(existing);await assertRestoredGeneration(this.env,false);
+        return {...status,executionMetadata:metadata};
+      } catch {return {state:"blocked",id:root,reason:"execution_metadata_unavailable"};}
+    }
     if (command.kind === "owner_once.advance") {
       if (!existing) return { state: "unavailable", id: root };
       const status = await this.status(existing);

@@ -15,6 +15,7 @@ import { z } from "zod";
 import { assertRestoredGeneration } from "./retention-runtime";
 import {retentionExecutionGuard} from './retention-execution';
 import { onceAuthority, onceScope, oncePlanReader, combineOnceGuards, type OnceGrant } from "./owner-once-guard";
+import { onceExecutionMetadata } from "./owner-once-contract";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -458,10 +459,17 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   async initialIngestReceipt(input:EngineIngest,itemId:string,indexEpoch:string){await assertRestoredGeneration(this.env);const result=await this.host().initialIngestReceipt(input,itemId,indexEpoch);return result.state==='complete'?{state:'complete' as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:'uncertain' as const};}
   async ingestReceipt(input: EngineIngest, indexEpoch: string) { await assertRestoredGeneration(this.env); const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
   /** Host-only metadata: no source bodies, broker tokens or snapshot handles. */
+  async initialObservation() {
+    await assertRestoredGeneration(this.env,false);
+    const snapshot=await this.host().observeInitial();
+    await assertRestoredGeneration(this.env,false);
+    return onceExecutionMetadata.parse({...snapshot,imageConfigured:typeof this.ctx.container?.images?.cognee==="string"&&this.ctx.container.images.cognee.length>0});
+  }
   async lifecycleState() {
     this.host(); const index = await this.ctx.storage.get<IndexMetadata>("index"), checkpoint = await this.checkpointStore().read();
     const record = checkpoint?.phase === "restoring" ? checkpoint.candidate ?? checkpoint.confirmed : checkpoint?.confirmed;
-    return { running: this.port!.running, busy: this.host().isBusy(), index: index ? { epoch:index.epoch,revision:index.revision,lost:!!index.lost,state:index.indexState??"needs_checkpoint",sources:index.sources??[] } : null,
+    return { running: this.port!.running, busy: this.host().isBusy(), imageConfigured:typeof this.ctx.container?.images?.cognee==="string"&&this.ctx.container.images.cognee.length>0,
+      index: index ? { epoch:index.epoch,revision:index.revision,lost:!!index.lost,state:index.indexState??"needs_checkpoint",sources:index.sources??[] } : null,
       maintenance:!!await this.ctx.storage.get<boolean>("maintenance"),quarantine:!!await this.ctx.storage.get<boolean>("quarantine"),
       checkpoint: record ? {id:record.id,epoch:record.manifest.indexEpoch,revision:record.manifest.indexRevision,phase:checkpoint!.phase} : null };
   }
