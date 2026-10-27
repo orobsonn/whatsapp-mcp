@@ -12,17 +12,26 @@
     "verification": "GitHub read-only run metadata"
   },
   "scope": "installed_integrated_paused_shadow_not_functional_pilot_homologation",
-  "pendingRemoteProbe": true,
+  "pendingRemoteProbe": false,
   "remoteProbe": {
-    "state": "pending",
+    "state": "observed_readonly_cloud",
     "checks": [
       "assistant.health",
       "nominal_reader_affinity",
       "wrong_reader_secret_denied"
     ],
-    "results": null,
-    "proofSha256": null,
-    "modelCallsExpected": 0
+    "results": {
+      "pausedShadowHealthVerified": true,
+      "captureAffinityVerified": true,
+      "retentionSealed": true,
+      "ownArtifactsVerified": true,
+      "newRecipientReaderWrongSecretDenied": "reader_denied",
+      "denialBeforeStatus": "inferred_from_exact_source_code_path_not_network_counter",
+      "cleanupVerified": true
+    },
+    "proofSha256": "708118f22a5a431890af41a362cf8c74a6e419ae8fe2260be3f4098c5533d99c",
+    "inferenceCalls": 0,
+    "mutations": 0
   },
   "criteria": {
     "ac-16.301": {
@@ -41,12 +50,13 @@
       "markersProveProviderFunctionality": false
     },
     "ac-16.302": {
-      "status": "implementation_ci_and_platform_metadata_proven_new_nominal_probe_pending",
+      "status": "cloud_nominal_health_and_readonly_recipient_denial_observed",
       "evidence": [
         "source_readback",
-        "own_readback"
+        "own_readback",
+        "readonly_remote_probe"
       ],
-      "newRemoteHealthResult": null
+      "newRemoteHealthResult": "paused_shadow_sealed_affinity_verified"
     },
     "ac-16.303": {
       "status": "natural_cloud_cron_proven_paused",
@@ -64,12 +74,14 @@
       "evidence": [
         "source_bridge_baseline",
         "source_readback",
-        "own_readback"
+        "own_readback",
+        "existing_authenticated_mcp_diagnostic"
       ],
       "sourceExpectedHandlerAddition": "CaptureReader.readRecipientEnvelope",
       "eloModified": false,
       "accessModified": false,
-      "newMcpToolsClientHomologated": false
+      "newMcpToolsClientHomologated": false,
+      "existingMcpDiagnosticObservedVersion": "0.40.0"
     },
     "ac-16.305": {
       "status": "compatible_code_config_rollback_contract_documented",
@@ -147,6 +159,14 @@
     "source_bridge_baseline": {
       "privatePath": "live-capture-v1/verification.private.json",
       "sha256": "376a548d9fb4042fd3b0833f43a7584cfab45440494b39fdb57e33a76555e86b"
+    },
+    "readonly_remote_probe": {
+      "privatePath": "readonly128-54-56-v1/verified.private.json",
+      "sha256": "708118f22a5a431890af41a362cf8c74a6e419ae8fe2260be3f4098c5533d99c"
+    },
+    "existing_authenticated_mcp_diagnostic": {
+      "privatePath": "readonly128-54-56-v1/mcp-existing-diagnostic.private.json",
+      "sha256": "118cbf9793caa9e67b6d9866903ec8910eb2e77ebeca7674504e6ef6a85b054e"
     }
   },
   "repositoryProofs": {
@@ -177,7 +197,6 @@
     "MCP client catalog refresh and homologation"
   ],
   "remainingEngineeringOrEvidence": [
-    "Pending readonly remote health/reader probe and hashes",
     "Functional end-to-end pipeline57 proof",
     "Release exact commit CI/version/changelog/tag"
   ],

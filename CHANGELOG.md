@@ -4,6 +4,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-27
+
+- Conclui #56 com instalação própria reproduzível, schema26, bindings/secrets privados, ponte de captura e cron natural independente do operador local.
+- Readbacks dos builds oficiais Source/Own preservam configurações, rotas, cron, namespaces e imagem. RPC real confirmou saúde/afinidade em sombra pausada; diagnóstico MCP existente respondeu autenticado na versão0.40.0.
+- Rollback é de código/configuração compatível: não desfaz migrações, apaga ledger ou reativa trabalhos restaurados. Google, Telegram, catálogo novo no cliente e homologação funcional #57 continuam pendentes. [Evidências e limites](docs/construcao-assistente/evidencias/56-instalacao-integrada-vps.md).
+
 ## [0.42.0] - 2026-10-27
 
 - Conclui #54 com instrumentação integrada de amostras, avaliações explícitas do dono, custo, latência, revisão e saúde; fixtures de owner_report não são julgamentos humanos reais.
