@@ -2,6 +2,8 @@
 
 Homologação técnica com a atuação global pausada e captura ativa. O resultado não ativa WhatsApp automático, escrita Calendar, processamento de todo o acervo ou observação contínua. Avaliação longitudinal e benefício humano continuam trabalho do piloto. A publicação dos marcos #140/#48 exige CI do commit entregue, versão/tag/release e encerramento coerentes; esse gate é separado das provas funcionais abaixo.
 
+O marco #140 foi publicado na [v0.49.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.49.0), com CI do PR/main aprovada e readback Source em0.49.0 preservando30bindings/runtime/cron/exposição; só então a issue foi encerrada. A v0.50.0 formaliza o marco próprio da #48, sem nova inferência ou código funcional. Seus resultados de CI e implantação pertencem ao commit/asset dessa release, sem reutilizar a CI anterior como prova de um novo SHA. O estado final pode ser conferido na [release0.50.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.50.0) e na [issue48](https://github.com/orobsonn/whatsapp-mcp/issues/48).
+
 ## Fronteiras atuais
 
 - **Cliente MCP:** ferramentas da assistente chamadas realmente pelo conector autenticado; #46 e #47 têm releases próprias. O pareamento Telegram/revogação/novo vínculo já foi comprovado, sem supor que publicar plugin atualizasse o catálogo.
