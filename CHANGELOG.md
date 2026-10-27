@@ -4,6 +4,22 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-10-27
+
+### Added
+- FUPs autorizados pelo pedido exato do dono ou mandato future_contact podem produzir proposta individual em sombra para destinatário sem histórico, reutilizando a referência de #126 e o envelope existente de texto/imagem/PDF/áudio (#128).
+- Prova nominal de destinatário/envelope somente de leitura, com pins persistidos no comando, FUP, job, episódio e diário; proposta identifica mode=shadow e externalAttempted=false, sem ação enviável ou aceitação fictícia.
+
+### Fixed
+- Captura desabilitada no alvo não vira proibição de contato nem é reativada; fonte associada a atendimento retirado continua bloqueada. Política ausente ou revisão vigente ficam fixadas e mudanças posteriores recusam a proposta.
+- Fonte, mandato, política, conexão e envelope são revalidados; expiração durante await não libera modelo, publicação ou leitura. Replay, concorrência e incerteza conservam a operação original, sem repin ou nova tentativa para contornar o estado.
+
+### Validation
+- Na branch do autor passaram 36 casos D1 dirigidos, TypeScript e contrato de imports puros, com adaptadores sintéticos; revisão independente aprovou a implementação. Um caso integrado Flue nativo foi incluído na suíte da CI da composição. [Contrato e limites](docs/construcao-assistente/128-INICIATIVA-SOMBRA.md) e [evidências locais](docs/construcao-assistente/evidencias/128-outgoing-local.json).
+
+### Notes
+- Entrega de engenharia em sombra: upgrade do CaptureReader e Own, RPC cloud, cliente MCP e fronteira real de contato continuam sem homologação própria. Nenhum envio WhatsApp, binding de envio ou escrita Calendar foi acrescentado; ativação futura não executa propostas antigas automaticamente. Não representa prontidão do piloto nem produto de campanhas/cotações.
+
 ## [0.39.0] - 2026-10-27
 
 ### Added
