@@ -24,6 +24,9 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])]));
   return value;
 }
+/** One canonical configuration identity shared by admission and private projections. */
+export function brokerConfigurationHash(config:BrokerConfig){return bridgeHash(canonical(config));}
+
 // JSON is copied and bounded before hashing yields; the adapter receives an immutable string.
 function normalize(path: string, payload: unknown, config: BrokerConfig): { path: ModelPath; body: string } {
   try {
@@ -80,7 +83,7 @@ export class CogneeModelBroker {
     this.scope = Object.freeze({ ...scope }); this.config = Object.freeze({ ...config });
     if (!Object.values(this.config).every(value => typeof value === "number" || (typeof value === "string" && value.length > 0 && value.length <= 256)) ||
       !safeInteger(config.maxOutputTokens, 1) || config.maxOutputTokens > 6000 || !safeInteger(config.chatCeiling, 1) || !safeInteger(config.embeddingCeiling, 1)) throw new Error("broker_invalid_configuration");
-    this.configHash = bridgeHash(canonical(this.config)); this.budget = new InferenceBudget(db, this.scope);
+    this.configHash = brokerConfigurationHash(this.config); this.budget = new InferenceBudget(db, this.scope);
     this.access = new SourceAccess(db, this.scope, clock);
   }
   private keys() { return [this.scope.installationId, this.scope.generation]; }

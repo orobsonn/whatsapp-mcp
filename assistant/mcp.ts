@@ -1,3 +1,4 @@
+import {readOwnerCanonical} from './owner-canonical-context';
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { z } from "zod";
 import type { AssistantEnv } from "./env";
@@ -92,7 +93,14 @@ export class OwnerQueries {
       } else if (first.fence.source.origin !== "owner_note") return { state: "unavailable", reason: "origin_guard_unavailable" };
       const current = await access.read(actor, query.id, first.fence.source.revision);
       if (!current || JSON.stringify(current) !== JSON.stringify(first)) return { state: "unavailable", reason: "source_changed" };
-      return { state: "available", source: current, observation: "current_source", execution: "unconfirmed" };
+      const canonicalCandidates=await readOwnerCanonical(this.db,this.scope,current,{origin:this.origin});
+      // Available candidates include the final anchor+support SQL guard. With no
+      // projection, independently recheck the original after these new awaits.
+      if(canonicalCandidates.state!=='available'){
+        if(current.fence.source.origin==='whatsapp'){const ref=await this.origin?.fence(query.id);if(!ref||!await this.origin!.check(ref))return {state:'unavailable',reason:'origin_unavailable'};}
+        if(!await access.revalidate(actor,current.fence))return {state:'unavailable',reason:'source_changed'};
+      }
+      return { state: "available", source: current,canonicalCandidates, observation: "current_source", execution: "unconfirmed" };
     }
     if (query.kind === "decision") return this.journal ? this.journal.get(query.id) : { state: "pending_dependency", dependency: 45 };
     if (query.kind === "decisions") return this.journal ? this.journal.list({ cursor: query.cursor, limit: query.limit }) : { state: "pending_dependency", dependency: 45 };

@@ -1,3 +1,4 @@
+import {sqlAnd} from './sql-conjunction';
 import type { AccessGuard, TrustedActor } from "./access";
 import { activeOrigin, originScopeSql, scopeKeys, type OriginScope } from "./origin-guard";
 export type ConversationFence = { installationId: string; generation: string; chatId: string; sourceEpoch: string | null; sourceGeneration: string | null;
@@ -36,20 +37,17 @@ export async function jobConversationFence(db: D1Database, scope: { installation
     .bind(scope.installationId, scope.generation, canonicalId, scope.sourceEpoch!, scope.sourceGeneration!).first())) return null;
   return row && ready(row) ? fence(row) : null;
 }
-export function conversationGuard(value: ConversationFence): AccessGuard {
-  const values: (string | number | null)[] = [value.installationId, value.generation, value.chatId];
-  if (value.revision === 0) {
-    const nominal = value.sourceEpoch !== null && value.sourceGeneration !== null;
-    if (nominal) values.push(value.sourceEpoch, value.sourceGeneration);
-    const where = `installation_id=? AND generation=? AND chat_id=?${nominal ? " AND source_epoch=? AND source_generation=?" : ""}`;
-    return { sql: `NOT EXISTS(SELECT 1 FROM assistant_conversations WHERE ${where}) AND NOT EXISTS(SELECT 1 FROM assistant_origin_conversations WHERE ${where})`, values: [...values, ...values] };
-  }
-  return { sql: `EXISTS(SELECT 1 FROM (${frameSql} WHERE c.installation_id=? AND c.generation=? AND c.chat_id=?) current
-   WHERE source_epoch=? AND source_generation=? AND revision=? AND paused=0 AND current_policy_revision=? AND policy_revision=current_policy_revision
-   AND current_mode=? AND mode=current_mode AND current_mode<>'ignore' AND access_state='available'
-   AND applied_sequence=? AND received=? AND coverage_from=? AND applied_sequence=received AND gaps=0)`,
-  values: [...values, value.sourceEpoch, value.sourceGeneration, value.revision, value.policyRevision, value.mode, value.applied, value.received, value.coverageFrom] };
-}
+type ConversationField=keyof ConversationFence;
+function absentConversation(ref:(field:ConversationField)=>string,nominal:boolean){const where=()=>`installation_id=${ref('installationId')} AND generation=${ref('generation')} AND chat_id=${ref('chatId')}${nominal?` AND source_epoch=${ref('sourceEpoch')} AND source_generation=${ref('sourceGeneration')}`:''}`;return `NOT EXISTS(SELECT 1 FROM assistant_conversations WHERE ${where()}) AND NOT EXISTS(SELECT 1 FROM assistant_origin_conversations WHERE ${where()})`;}
+function presentConversation(ref:(field:ConversationField)=>string,frames?:'owner_context_frames'){const keys=sqlAnd([`c.installation_id=${ref('installationId')}`,`c.generation=${ref('generation')}`,`c.chat_id=${ref('chatId')}`]);const where=sqlAnd([`source_epoch=${ref('sourceEpoch')}`,`source_generation=${ref('sourceGeneration')}`,`revision=${ref('revision')}`,'paused=0',`current_policy_revision=${ref('policyRevision')}`,'policy_revision=current_policy_revision',`current_mode=${ref('mode')}`,'mode=current_mode',"current_mode<>'ignore'","access_state='available'",`applied_sequence=${ref('applied')}`,`received=${ref('received')}`,`coverage_from=${ref('coverageFrom')}`,'applied_sequence=received','gaps=0']);return `EXISTS(SELECT 1 FROM ${frames?`${frames} c`:`(${frameSql}) c`} WHERE ${keys} AND ${where.replaceAll('current.','c.')})`;}
+
+export function conversationGuard(value:ConversationFence):AccessGuard{const values:(string|number|null)[]=[],ref=(field:ConversationField)=>{values.push(value[field]);return '?';};return {sql:value.revision===0?absentConversation(ref,value.sourceEpoch!==null&&value.sourceGeneration!==null):presentConversation(ref),values};}
+/** Same readiness as jobConversationFence(observed=false), for host catalog rows. */
+export function conversationEligibleSQL(installation:string,generation:string,chat:string,epoch:string,sourceGeneration:string,frames?:'owner_context_frames'){const ready=sqlAnd([`eligible.installation_id=${installation}`,`eligible.generation=${generation}`,`eligible.chat_id=${chat}`,`eligible.source_epoch=${epoch}`,`eligible.source_generation=${sourceGeneration}`,'paused=0',"current_mode<>'ignore'","access_state='available'",'policy_revision=current_policy_revision','mode=current_mode','applied_sequence=received','gaps=0']);return `(${chat} IS NULL OR (EXISTS(SELECT 1 FROM ${frames??`(${frameSql})`} eligible WHERE ${ready}) OR (NOT EXISTS(SELECT 1 FROM assistant_origin_conversations WHERE installation_id=${installation} AND generation=${generation} AND chat_id=${chat} AND source_epoch=${epoch} AND source_generation=${sourceGeneration}) AND NOT EXISTS(SELECT 1 FROM assistant_conversations WHERE installation_id=${installation} AND generation=${generation} AND chat_id=${chat} AND source_epoch=${epoch} AND source_generation=${sourceGeneration}))))`;}
+
+/** Shared metadata row projection; callers still bind scope and apply readiness. */
+export function conversationFrameRowsSQL(){return frameSql;}
+
 function limit(value: number) { if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new Error("conversation_page_limit"); }
 export class Conversations {
   private readonly actor: TrustedActor;

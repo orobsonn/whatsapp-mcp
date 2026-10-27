@@ -62,7 +62,7 @@ export class RetrievalRuns {
     this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation, ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) }); this.options = Object.freeze({ ...options, ...(options.semantic ? {semantic:Object.freeze({...options.semantic})} : {}) }); this.clock = options.clock ?? Date.now;
     if (options.semantic && !["required","lexical_fallback"].includes(options.semantic.mode)) throw new Error("retrieval_run_configuration");
     this.purpose = options.purpose ?? "automation"; if (!["automation","owner_read"].includes(this.purpose)) throw new Error("retrieval_run_purpose");
-    this.access = new SourceAccess(db, this.scope, this.clock); this.scorer = new Retrieval(db, this.scope);
+    this.access = new SourceAccess(db, this.scope, this.clock); this.scorer = new Retrieval(db, this.scope,undefined,options.origin,this.clock);
     this.limits = { pageSize: options.pageSize ?? 64, maxEvaluations: options.maxEvaluations ?? 4096, maxSteps: options.maxSteps ?? 80 };
     for (const [key, maximum] of [["pageSize", 64], ["maxEvaluations", 4096], ["maxSteps", 80]] as const) if (!Number.isSafeInteger(this.limits[key]) || this.limits[key] < 1 || this.limits[key] > maximum) throw new Error("retrieval_run_limits");
     if (options.leaseMs !== undefined && (!Number.isSafeInteger(options.leaseMs) || options.leaseMs < 1 || options.leaseMs > 180000)) throw new Error("retrieval_run_limits");

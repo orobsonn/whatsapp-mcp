@@ -1,3 +1,5 @@
+import {sourceRef,sourceFence,conversationFence} from '../source-proof-contract';
+export {sourceRef,sourceFence,conversationFence} from '../source-proof-contract';
 import { z } from "zod";
 import {outgoingProof} from '../outgoing';
 import { semanticRankingSchema } from "../retrieval-runs";
@@ -11,13 +13,7 @@ const purpose = z.enum(["automation", "owner_read"]);
 const action = z.enum(["reply_text", "reply_audio", "ask_clarification", "future_contact", "read_github", "read_calendar", "propose_calendar_change"]);
 const actor = z.discriminatedUnion("kind", [z.object({ kind: z.literal("owner") }).strict(), z.object({ kind: z.literal("interlocutor"),
   provider: label, address: label, conversationId: label, conversationKind: z.enum(["private", "group"]), action, mandateId: label.optional() }).strict()]);
-export const sourceRef = z.object({ id: label, revision: version, version, hash }).strict();
-export const sourceFence = z.object({ ...scope, ...originScope, actor: z.string().max(2048),
-  source: sourceRef.extend({ audience: z.enum(["owner", "restricted", "public"]), origin: label, conversationId: label.nullable(), projectId: label.nullable() }).strict(),
-  policy: z.object({ conversationId: label, kind: label, revision: time, mode: label }).strict().nullable(),
-  identity: z.object({ personId: label, proofId: label, proofRevision: version }).strict().nullable(),
-  mandate: z.object({ id: label, version, expiresAt: time, action: label }).strict().nullable(),
-}).strict();
+
 const origin = z.object({ ...scope, sourceEpoch: label, sourceGeneration: label, sourceKind: z.enum(["message", "media", "derivative", "conversation"]),
   sourceId: label, chatId: label, canonicalId: label, revision: version, version, watermark: time, hash,
   conversationKind: z.enum(["private", "group"]), policyRevision: time, policyMode: label }).strict();
@@ -31,8 +27,6 @@ const config = z.object({ extractionConfig: label, priceVersion: label, chatMode
   maxOutputTokens: version.max(6000), chatCeiling: version, embeddingCeiling: version }).strict();
 const work = z.object({ ...scope, kind: z.literal("follow_up"), jobId: label, occurrenceId: label, occurrenceState: label, followUpId: label,
   version, state: label, sourceId: label, sourceRevision: version, missionId: label.nullable(), missionRevision: version.nullable(), mandateId: label.nullable(), mandateVersion: version.nullable() }).strict();
-export const conversationFence = z.object({ ...scope, chatId: label, sourceEpoch: label.nullable(), sourceGeneration: label.nullable(),
-  revision: time, policyRevision: time, mode: label, applied: time, received: time, coverageFrom: time }).strict();
 const target = z.object({ fence: conversationFence.nullable(), policy: z.object({ kind: z.enum(["private", "group"]), revision: time, mode: label }).strict() }).strict();
 
 export const decisionSubject = z.discriminatedUnion("kind", [

@@ -1,14 +1,24 @@
 {
   "issue": 57,
   "base": "7157b54",
-  "status": "partial_storage_privacy_only",
-  "phases": [{
-    "phase": "storage_and_permanent_visibility_marker",
-    "red": "Real D1:17 missing-proof Owner batches caused relation_scope_too_large for an authorized interlocutor.",
-    "green": "3/3 directed real D1 cases passed in455ms (8.54s total): invisible rows filtered before read LIMIT, scoring and inventory fingerprint;27 reapplies; immutable Owner marker and namespace/slot/pin FKs; deleting proof leaves the single attempt intact.",
-    "types": "tsc --noEmit and git diff --check passed",
-    "scope": "Partial boundary. Valid Owner context production/read, descriptor catalog, runtime integration and support purge remain work in progress."
-  }],
+  "status": "partial_owner_producer_consumer_scheduler_pending",
+  "phases": [
+    {
+      "phase": "storage_and_permanent_visibility_marker",
+      "red": "Real D1:17 missing-proof Owner batches caused relation_scope_too_large for an authorized interlocutor.",
+      "green": "3/3 directed real D1 cases passed in455ms (8.54s total): invisible rows filtered before read LIMIT, scoring and inventory fingerprint;27 reapplies; immutable Owner marker and namespace/slot/pin FKs; deleting proof leaves the single attempt intact.",
+      "types": "tsc --noEmit and git diff --check passed",
+      "scope": "Partial boundary. Valid Owner context production/read, descriptor catalog, runtime integration and support purge remain work in progress."
+    },
+    {
+      "phase": "authorized_context_catalog_and_owner_consumer",
+      "red": "Another active private owner note associated with a project left a new unassociated source at empty_catalog.",
+      "guardBoundary": "A correlated JSON guard exceeded D1 expression depth100. Replaced with the existing concrete SourceAccess/conversation guards plus the complete current catalog query. Local SQLite profiler measured depth55/packed70; controlled D1 asserts actual SQL<=100KB and<=100 binds. Read returns use one transaction of SELECT guards, with no persistent authorization grant.",
+      "green": "6/6 directed D1 cases passed,2.37s tests/10.68s total. Another owner note teaches project descriptors; one settled receipt publishes private candidates exposed by existing Owner querySource. Guest read/scoring/fingerprint unchanged. Exact16 entities/16 supports succeed;17 rejects without another reservation/adapter; zero claims is observable without a fictitious batch.",
+      "types": "tsc --noEmit and git diff --check passed",
+      "scope": "Runtime scheduler/status/summary and remaining adversarial/regression cases are still pending; no cloud proof claimed."
+    }
+  ],
   "estimatedPaidTestsUsdThisTask": 0,
   "providerCalls": 0,
   "cloudCalls": 0,

@@ -1,4 +1,4 @@
-import {sourceRelationAudience} from './relation-visibility';
+import {relationAudience,ownerContextStamp} from './relation-visibility';
 import type { Audience, SourceScope } from "./sources";
 export type TrustedActor = Readonly<{ kind: "owner" }> | Readonly<{ kind: "extractor" }> | Readonly<{
   kind: "interlocutor"; provider: string; address: string; conversationId: string; conversationKind: "private" | "group";
@@ -81,6 +81,8 @@ export class SourceAccess {
           now, now, actor.action] };
     }
   }
+  /** Host SQL snapshot used by private context proofs; no caller permission SQL. */
+  ownerRows(now=this.clock()):AccessGuard{return this.current({kind:'owner'},null,undefined,now)!;}
   async read(actor: TrustedActor, id: string, expectedRevision?: number, now = this.clock()): Promise<SourceRead | null> {
     actor = Object.freeze({ ...actor });
     const query = this.current(actor, id, expectedRevision, now);
@@ -122,12 +124,12 @@ export class SourceAccess {
    * a UNIQUE canonical_id. Seventeen relation refs detect the scorer's overflow
    * (maximum sixteen batches), without copying an unbounded extraction list. */
   inventory(actor: TrustedActor, projectId: string | undefined, now: number, control: { sourceEpoch?: string; sourceGeneration?: string; includePaused?: boolean } = {}): AccessGuard {
-    const query = this.current(actor, null, undefined, now);
+    const query = this.current(actor, null, undefined, now),relations=relationAudience(actor,'b',this.ownerRows(now));
     if (!query) return { sql: "SELECT NULL AS id,NULL AS fingerprint WHERE 0", values: [] };
     const authority = actor.kind === "owner" ? "'owner'" : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
-    const keys = [this.scope.installationId, this.scope.generation];
+    const keys = [this.scope.installationId, this.scope.generation],ownerMeta=actor.kind==='owner'?ownerContextStamp(this.scope,this.ownerRows(now),control):null;
     return { sql: `WITH visible AS (${query.sql}), facts AS (
-      SELECT visible.*,
+      SELECT visible.*,${ownerMeta?`${ownerMeta.sql} owner_catalog_state,(SELECT json_group_array(json_array(m.id,m.revision,m.state,m.project_id,m.objective,p.name,r.revision)) FROM assistant_missions m LEFT JOIN assistant_projects p ON p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id LEFT JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE m.installation_id=? AND m.generation=? AND m.source_id=visible.id AND m.source_revision=visible.revision) owner_mission_state,`:""}
        (SELECT json_group_array(json_array(source_epoch,source_generation,chat_id,revision,paused,applied_sequence,policy_revision,mode,coverage_from,received,gaps,watermark,access_state,current_kind,current_policy_kind,current_policy_revision,current_mode,unapplied)) FROM (
         SELECT o.source_epoch,o.source_generation,o.chat_id,c.revision,c.paused,c.applied_sequence,c.policy_revision,c.mode,c.coverage_from,o.watermark,o.access_state,o.kind AS current_kind,p.kind AS current_policy_kind,COALESCE(p.revision,0) AS current_policy_revision,
          COALESCE(p.effective_mode,CASE WHEN o.kind='private' THEN 'attend' ELSE 'ignore' END) AS current_mode,
@@ -146,12 +148,12 @@ export class SourceAccess {
         FROM assistant_source_origins o LEFT JOIN assistant_origin_conversations c ON c.installation_id=o.installation_id AND c.generation=o.generation AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
         LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
         WHERE o.installation_id=? AND o.generation=? AND o.canonical_id=visible.id) origins,
-       (SELECT json_group_array(json_array(operation_key,request_hash)) FROM (SELECT operation_key,request_hash FROM assistant_relation_batches b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17)) relations,
+       (SELECT json_group_array(json_array(operation_key,request_hash)) FROM (SELECT operation_key,request_hash FROM assistant_relation_batches b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash AND (${relations.sql}) ORDER BY operation_key LIMIT 17)) relations,
        (SELECT json_group_array(json_array(operation_key,text_hash,config_hash,blob_hash)) FROM (SELECT operation_key,text_hash,config_hash,blob_hash FROM assistant_media_artifacts b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash ORDER BY operation_key)) media_artifacts
       FROM visible WHERE (? IS NULL OR project_id=?))
-      SELECT facts.*,json_array(id,revision,version,content_hash,audience,origin,conversation_id,project_id,${authority},conversations,inboxes,origins,relations,media_artifacts) fingerprint
+      SELECT facts.*,json_array(id,revision,version,content_hash,audience,origin,conversation_id,project_id,${authority},conversations,inboxes,origins,relations,media_artifacts${ownerMeta?",owner_catalog_state,owner_mission_state":""}) fingerprint
       FROM facts WHERE (?=1 OR NOT EXISTS(SELECT 1 FROM json_each(conversations) c WHERE json_extract(c.value,'$[4]')=1))`,
-      values: [...query.values, ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, ...keys, ...keys, projectId ?? null, projectId ?? null, control.includePaused ? 1 : 0] };
+      values: [...query.values,...(ownerMeta?[...ownerMeta.values,...keys]:[]), ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, actor.kind === "interlocutor" ? actor.conversationId : null, control.sourceEpoch ?? null, control.sourceEpoch ?? null, control.sourceGeneration ?? null, ...keys, ...keys, ...relations.values, ...keys, projectId ?? null, projectId ?? null, control.includePaused ? 1 : 0] };
   }
   // Fixed SELECT shared with read(); embed this predicate in the protected mutation.
   guard(actor: TrustedActor, fence: SourceFence, now: number): AccessGuard {

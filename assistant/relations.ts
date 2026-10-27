@@ -1,14 +1,16 @@
+import {readOwnerCanonical} from './owner-canonical-context';
+import type {OriginGuard} from './origin-guard';
 import type {SourceScope} from './sources';
 import {SourceAccess,type TrustedActor,type AccessGuard} from './access';
 import {z} from 'zod';
 import {bridgeHash} from './ingress';
-import {sourceRelationAudience} from './relation-visibility';
+import {sourceRelationAudience,relationAudience,ownerRelationKey} from './relation-visibility';
 export type EntityRef={kind:'person'|'project'|'mission';id:string};
 export type CandidateClaim={kind:'assertion'|'suggestion'|'decision'|'observation';subject:EntityRef;object?:EntityRef;predicate:string;quote:string};
 export type ExtractionBatch={key:string;sourceId:string;revision:number;version:number;hash:string;claims:CandidateClaim[]};
 /** Only the host constructs SQL/whitelist/final statements, never a model or
  * request body. All statements commit together with the candidate batch. */
-export type RelationPublication={before:()=>Promise<boolean>;guard:()=>AccessGuard;whitelist:EntityRef[];after:(hash:string,guard:AccessGuard)=>D1PreparedStatement[]};
+export type RelationPublication={before:()=>Promise<boolean>;guard:()=>AccessGuard;whitelist:EntityRef[];after:(hash:string,guard:AccessGuard)=>D1PreparedStatement[];owner?:{pinHash:string;catalogHash:string;payloadHash:string;supportHash:string;configHash:string}};
 const id=z.string().min(1).max(256);
 const entity=z.object({kind:z.enum(['person','project','mission']),id}).strict();
 const schema=z.object({key:id,sourceId:id,revision:z.number().int().positive(),version:z.number().int().positive(),
@@ -22,10 +24,11 @@ function known(ref:string){
 }
 export class Relations {
  private readonly scope:SourceScope;
- constructor(private readonly db:D1Database,scope:SourceScope){this.scope=Object.freeze({...scope});}
+ constructor(private readonly db:D1Database,scope:SourceScope,private readonly options:{origin?:Pick<OriginGuard,'fence'|'check'> & Partial<Pick<OriginGuard,'localGuard'>>;clock?:()=>number}={}){this.scope=Object.freeze({...scope});}
  async publish(input:ExtractionBatch,host?:RelationPublication):Promise<void>{
   // parse creates an owned deep snapshot before any await.
-  const batch=schema.parse(input),json=JSON.stringify(batch.claims),hash=await bridgeHash(batch);
+  const batch=schema.parse(input),json=JSON.stringify(batch.claims),owned=host?.owner?z.object({pinHash:z.string().regex(/^[a-f0-9]{64}$/),catalogHash:z.string().regex(/^[a-f0-9]{64}$/),payloadHash:z.string().regex(/^[a-f0-9]{64}$/),supportHash:z.string().regex(/^[a-f0-9]{64}$/),configHash:z.string().regex(/^[a-f0-9]{64}$/)}).strict().parse(host.owner):undefined;
+  if(owned&&!ownerRelationKey(batch.key))throw Error('owner_relation_key');const hash=await bridgeHash(owned?{...batch,visibility:'owner',context:owned}:batch);
   const whitelist=host?JSON.stringify(z.array(entity).min(1).max(16).parse(host.whitelist)):null;
   if(new TextEncoder().encode(json).length>32768)throw new Error('extraction_too_large');
   const keys=[this.scope.installationId,this.scope.generation];
@@ -45,7 +48,8 @@ export class Relations {
       NOT EXISTS(SELECT 1 FROM json_each(?) a WHERE json_extract(a.value,'$.kind')=json_extract(c.value,'$.subject.kind') AND json_extract(a.value,'$.id')=json_extract(c.value,'$.subject.id'))
       OR (json_type(c.value,'$.object') IS NOT NULL AND NOT EXISTS(SELECT 1 FROM json_each(?) a WHERE json_extract(a.value,'$.kind')=json_extract(c.value,'$.object.kind') AND json_extract(a.value,'$.id')=json_extract(c.value,'$.object.id'))))`:''}
    ON CONFLICT DO NOTHING`).bind(batch.key,hash,json,...keys,batch.sourceId,batch.revision,batch.version,batch.hash,json,...(guard?[...guard.values,json,whitelist,whitelist]:[]));
-  if(host)await this.db.batch([statement,...host.after(hash,guard!)]);else await statement.run();
+  const ownerProof=owned?this.db.prepare(`INSERT INTO assistant_owner_relation_proofs SELECT x.installation_id,x.generation,?,x.source_id,x.source_revision,x.source_version,x.source_hash,x.slot_key,x.pin_hash,x.config_hash,?,?,?,'owner' FROM assistant_canonical_extractions x JOIN assistant_owner_canonical_supports s ON s.installation_id=x.installation_id AND s.generation=x.generation AND s.source_id=x.source_id AND s.source_revision=x.source_revision AND s.slot_key=x.slot_key AND s.pin_hash=x.pin_hash WHERE x.installation_id=? AND x.generation=? AND x.source_id=? AND x.source_revision=? AND x.source_version=? AND x.source_hash=? AND x.slot_key=? AND x.pin_hash=? AND x.config_hash=? AND x.actor_json='{"kind":"owner"}' AND x.state IN ('attempting','uncertain') AND s.proof_hash=? AND json_extract(s.proof_json,'$.binding.catalogHash')=? AND json_extract(s.proof_json,'$.binding.payloadHash')=? AND json_extract(s.proof_json,'$.binding.configHash')=? ON CONFLICT DO NOTHING`).bind(batch.key,owned.catalogHash,owned.payloadHash,owned.supportHash,...keys,batch.sourceId,batch.revision,batch.version,batch.hash,batch.key,owned.pinHash,owned.configHash,owned.supportHash,owned.catalogHash,owned.payloadHash,owned.configHash):null;
+  if(host)await this.db.batch([statement,...(ownerProof?[ownerProof]:[]),...host.after(hash,guard!)]);else await statement.run();
   const stored=await this.db.prepare('SELECT request_hash FROM assistant_relation_batches WHERE installation_id=? AND generation=? AND operation_key=?')
    .bind(...keys,batch.key).first<{request_hash:string}>();
   if(!stored)throw new Error('extraction_rejected');
@@ -54,14 +58,17 @@ export class Relations {
  async read(actor:TrustedActor,sourceId:string):Promise<unknown[]>{
   const access=new SourceAccess(this.db,this.scope),source=await access.read(actor,sourceId);
   if(!source)return [];
+  const visible={sql:sourceRelationAudience('b'),values:[]};
   const rows=await this.db.prepare(`SELECT author_id,author_label,claims_json FROM assistant_relation_batches b
-   WHERE installation_id=? AND generation=? AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17`)
-   .bind(this.scope.installationId,this.scope.generation,sourceId,source.fence.source.revision,source.fence.source.version,source.fence.source.hash)
+   WHERE installation_id=? AND generation=? AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${visible.sql}) ORDER BY operation_key LIMIT 17`)
+   .bind(this.scope.installationId,this.scope.generation,sourceId,source.fence.source.revision,source.fence.source.version,source.fence.source.hash,...visible.values)
    .all<{author_id:string|null;author_label:string|null;claims_json:string}>();
   if(rows.results.length>16 || rows.results.reduce((n,row)=>n+new TextEncoder().encode(row.claims_json).length,0)>65536)
    throw new Error('relation_scope_too_large');
   if(!await access.revalidate(actor,source.fence))return [];
   // These are candidates plus a fence, not permission to invoke or publish.
-  return rows.results.map(row=>({authorId:row.author_id,authorLabel:row.author_label,claims:JSON.parse(row.claims_json),fence:source.fence}));
+  const result=rows.results.map(row=>({authorId:row.author_id,authorLabel:row.author_label,claims:JSON.parse(row.claims_json),fence:source.fence}));
+  if(actor.kind==='owner'){const current=await readOwnerCanonical(this.db,this.scope,source,this.options);if(current.state==='available'&&current.claims.length){if(result.length>=16)throw Error('relation_scope_too_large');result.push({authorId:source.authorId,authorLabel:source.authorLabel,claims:current.claims,fence:source.fence});}}
+  return result;
  }
 }

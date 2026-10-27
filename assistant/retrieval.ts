@@ -1,3 +1,4 @@
+import {readOwnerCanonical} from './owner-canonical-context';
 import {sourceRelationAudience} from './relation-visibility';
 import { z } from "zod";
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
@@ -71,15 +72,17 @@ export class Retrieval {
   private readonly scope: SourceScope;
   private readonly access: SourceAccess;
   constructor(private readonly db: D1Database, scope: SourceScope, private readonly engine?: EnginePort,
-    private readonly origin?: OriginGuard, private readonly clock = Date.now, private readonly timeoutMs = 2000) {
+    private readonly origin?: Pick<OriginGuard,'fence'|'check'> & Partial<Pick<OriginGuard,'localGuard'>>, private readonly clock = Date.now, private readonly timeoutMs = 2000) {
     this.scope = Object.freeze({ ...scope }); this.access = new SourceAccess(db, this.scope, clock);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) throw new Error("retrieval_deadline");
   }
   private async relationScore(source: SourceRead, terms: string[], entities: EntityRef[], gap: (reason: string) => void) {
+    const visible={sql:sourceRelationAudience('b'),values:[]};
     const rows = await this.db.prepare(`SELECT claims_json FROM assistant_relation_batches b WHERE installation_id=? AND generation=?
-      AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17`)
-      .bind(this.scope.installationId, this.scope.generation, source.id, source.fence.source.revision, source.fence.source.version, source.fence.source.hash).all<{ claims_json: string }>();
+      AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${visible.sql}) ORDER BY operation_key LIMIT 17`)
+      .bind(this.scope.installationId, this.scope.generation, source.id, source.fence.source.revision, source.fence.source.version, source.fence.source.hash,...visible.values).all<{ claims_json: string }>();
     if (rows.results.length > 16 || rows.results.reduce((sum, row) => sum + row.claims_json.length, 0) > 65536) { gap("relation_limit"); return { score: 0, linked: false }; }
+    if(source.fence.actor==='owner'){const current=await readOwnerCanonical(this.db,this.scope,source,{clock:this.clock,origin:this.origin});if(current.state==='available'&&current.claims.length)rows.results.push({claims_json:JSON.stringify(current.claims)});}
     let score = 0, linked = false;
     for (const row of rows.results) {
       const claims: unknown = JSON.parse(row.claims_json);

@@ -1,15 +1,19 @@
 import {env} from 'cloudflare:test';
-import {beforeEach,it,expect} from 'vitest';
+import {beforeEach,it,expect,vi} from 'vitest';
+import {buildOwnerContext,ownerSnapshotGuard} from '../assistant/owner-canonical-context';
+import {CanonicalCandidateExtractor} from '../assistant/canonical-extraction';
+import {InferenceBudget} from '../assistant/budget';
+import {OwnerQueries} from '../assistant/mcp';
 import {SourceController} from '../assistant/sources';
 import {SourceAccess} from '../assistant/access';
 import {OwnerControl} from '../assistant/control';
 import {Relations} from '../assistant/relations';
 import {Retrieval} from '../assistant/retrieval';
 const owner={kind:'owner'} as const,guest={kind:'interlocutor',provider:'whatsapp',address:'synthetic-guest',conversationId:'chat',conversationKind:'private',action:'reply_text'} as const;
-let scope:{installationId:string;generation:string},sourceId:string,relations:Relations,now:number;
+let scope:{installationId:string;generation:string;sourceEpoch:string;sourceGeneration:string},sourceId:string,relations:Relations,now:number;
 const privateKey=(i:number)=>'canonical-owner-v2:'+i.toString(16).padStart(64,'0');
 beforeEach(async()=>{
- scope={installationId:crypto.randomUUID(),generation:'g1'};now=Date.now();const control=new OwnerControl(env.DB,scope,owner,()=>now);for(const id of ['public-project','private-project'])await control.execute({kind:'project.put',operationId:id,id,expectedVersion:0,name:id});
+ scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e',sourceGeneration:'g'};now=Date.now();const control=new OwnerControl(env.DB,scope,owner,()=>now);for(const id of ['public-project','private-project'])await control.execute({kind:'project.put',operationId:id,id,expectedVersion:0,name:id});
  sourceId=(await new SourceController(env.DB,scope,owner,()=>now).create({originKey:'original',audience:'public',text:'Public original quote.',occurredAt:now})).id;relations=new Relations(env.DB,scope);await batch('legacy','public-project');
 });
 async function batch(key:string,project='private-project'){
@@ -33,4 +37,21 @@ it('pins support sidecars to the exact namespace/slot and preserves the single a
  const support=(p:string)=>env.DB.prepare('INSERT INTO assistant_owner_canonical_supports VALUES(?,?,?,1,?,?,?,?)').bind(scope.installationId,scope.generation,sourceId,key,p,'c'.repeat(64),'{}').run();await expect(support('d'.repeat(64))).rejects.toThrow();await support(pin);
  await expect(env.DB.prepare('UPDATE assistant_owner_canonical_supports SET proof_json=? WHERE installation_id=? AND generation=?').bind('{"changed":true}',scope.installationId,scope.generation).run()).rejects.toThrow('owner_context_proof_immutable');await env.DB.prepare('DELETE FROM assistant_owner_canonical_supports WHERE installation_id=? AND generation=?').bind(scope.installationId,scope.generation).run();expect(await env.DB.prepare('SELECT slot_key FROM assistant_canonical_extractions WHERE installation_id=? AND generation=? AND source_id=?').bind(scope.installationId,scope.generation,sourceId).first('slot_key')).toBe(key);
  await expect(env.DB.prepare('UPDATE assistant_canonical_extractions SET slot_key=? WHERE installation_id=? AND generation=? AND source_id=?').bind('canonical-new-key',scope.installationId,scope.generation,sourceId).run()).rejects.toThrow('owner_context_slot_immutable');
+});
+
+it('compiles a complete current Owner snapshot guard on real D1 before model admission',async()=>{
+ await new SourceController(env.DB,scope,owner,()=>now).create({originKey:'context',projectId:'private-project',text:'Context',occurredAt:now});const source=(await new SourceAccess(env.DB,scope).read(owner,sourceId))!,context=(await buildOwnerContext(env.DB,scope,source,()=>now))!,proof={...context.proof,binding:{configHash:'a'.repeat(64),catalogHash:'a'.repeat(64),payloadHash:'a'.repeat(64)}},guard=ownerSnapshotGuard(env.DB,scope,source,context.catalog,proof,()=>now);expect(await env.DB.prepare('SELECT 1 WHERE '+guard.sql).bind(...guard.values).first()).not.toBeNull();
+});
+it('discovers a private project from another authorized owner note and exposes its candidate in the existing Owner source query without guest leakage',async()=>{
+ const note=await new SourceController(env.DB,scope,owner,()=>now).create({originKey:'project-context',projectId:'private-project',text:'Private project descriptor taught by the owner.',occurredAt:now});await new InferenceBudget(env.DB,{...scope,period:new Date(now).toISOString().slice(0,10)}).configure(100000);
+ const adapter=vi.fn(async(_request:{body:string})=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({claims:[{kind:'suggestion',subject:{kind:'project',id:'private-project'},predicate:'candidate',quote:'Public original quote.'}]})}}]})})),extractor=new CanonicalCandidateExtractor(env.DB,scope,{clock:()=>now,adapter,enabled:()=>true,guard:()=>({sql:'1',values:[]})});const before=await fingerprint();expect(await extractor.extract(owner,sourceId,1)).toMatchObject({state:'published',claims:1});expect(adapter).toHaveBeenCalledTimes(1);
+ const body=JSON.parse(adapter.mock.calls[0][0].body),input=JSON.parse(body.messages.at(-1).content);expect(input.catalog).toContainEqual(expect.objectContaining({id:'private-project',name:'private-project',supports:[expect.objectContaining({id:note.id,text:'Private project descriptor taught by the owner.'})]}));
+ const detail=await new OwnerQueries(env.DB,scope).execute({kind:'source',id:sourceId});expect(detail).toMatchObject({state:'available',canonicalCandidates:{state:'available',visibility:'owner',review:'unreviewed',claims:[expect.objectContaining({subject:{kind:'project',id:'private-project'}})]}});expect(await relations.read(owner,sourceId)).toHaveLength(2);expect(await relations.read(guest,sourceId)).toHaveLength(1);expect(await fingerprint()).toBe(before);
+});
+
+it('admits the exact16-support16-entity boundary within D1 SQL/binds and rejects17 without prefixing or another reservation',async()=>{
+ const controls=new OwnerControl(env.DB,scope,owner,()=>now),sources=new SourceController(env.DB,scope,owner,()=>now);for(let i=0;i<16;i++){await controls.execute({kind:'project.put',operationId:'max-'+i,id:'max-'+i,expectedVersion:0,name:'Project '+i});await sources.create({originKey:'support-'+i,projectId:'max-'+i,text:'Bounded context '+i,occurredAt:now});}
+ await new InferenceBudget(env.DB,{...scope,period:new Date(now).toISOString().slice(0,10)}).configure(100000);let maxBytes=0,maxBinds=0;const counted={prepare(q:string){maxBytes=Math.max(maxBytes,new TextEncoder().encode(q).length);const statement=env.DB.prepare(q);return new Proxy(statement,{get(t,key){if(key==='bind')return(...values:unknown[])=>{maxBinds=Math.max(maxBinds,values.length);return t.bind(...values)};const v=Reflect.get(t,key,t);return typeof v==='function'?v.bind(t):v;}});},batch:env.DB.batch.bind(env.DB)} as D1Database;
+ const adapter=vi.fn(async(_request:{body:string})=>({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:'{"claims":[]}'}}]})})),extractor=new CanonicalCandidateExtractor(counted,scope,{clock:()=>now,adapter,enabled:()=>true,guard:()=>({sql:'1',values:[]})});expect(await extractor.extract(owner,sourceId,1)).toMatchObject({state:'published',claims:0});const input=JSON.parse(JSON.parse(adapter.mock.calls[0][0].body).messages.at(-1).content);expect(input.catalog).toHaveLength(16);expect(input.catalog.flatMap((c:any)=>c.supports)).toHaveLength(16);expect(maxBytes).toBeLessThanOrEqual(100000);expect(maxBinds).toBeLessThanOrEqual(100);
+ expect(await new OwnerQueries(counted,scope).execute({kind:'source',id:sourceId})).toMatchObject({canonicalCandidates:{state:'available',claims:[]}});await controls.execute({kind:'project.put',operationId:'over17',id:'over17',expectedVersion:0,name:'Overflow'});await sources.create({originKey:'over17',projectId:'over17',text:'New context beyond the complete cap.',occurredAt:now});const next=await sources.create({originKey:'next',text:'Another original',occurredAt:now});expect(await extractor.extract(owner,next.id,1)).toEqual({state:'blocked',gap:'canonical_context_overflow'});expect(adapter).toHaveBeenCalledTimes(1);expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_budget_reservations WHERE installation_id=? AND generation=?').bind(scope.installationId,scope.generation).first('n')).toBe(1);expect(await new OwnerQueries(counted,scope).execute({kind:'source',id:sourceId})).not.toMatchObject({canonicalCandidates:{state:'available'}});
 });
