@@ -17,6 +17,7 @@ Admitir explicitamente uma nova operação Owner, ligada à falha anterior, que 
 - Mesma instalação, geração, períodoUTC, conta/cap acumulados, projeto, fonte/revisão, manifesto e pergunta. Nenhuma conta nova, reset ou aumento de cap.
 - Apenas bootstrap Owner com `admissionKind=owner_once`. Não serve para busca, modelo, ingest já despachado, snapshot, rebuild ou histórico desconhecido.
 - Uma recuperação por linhagem original. Uma operação que já recupera outra é inelegível; não existe recuperação da recuperação ou renovação automática.
+- O primeiro plano de recuperação comprometido consome a linhagem na admissão D1: o guard atômico recusa planos irmãos, excluindo somente o próprio Root em sua manutenção. Expirar esse plano não autoriza outro descendente.
 - Sem rota pública, SQL/URL/chave de storage arbitrários, alteração de imagem ou start dentro da manutenção. WhatsApp automático e escrita Calendar continuam indisponíveis.
 
 ## Nova admissão Owner

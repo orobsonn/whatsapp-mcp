@@ -7,6 +7,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ### Added
 - Execução pontual Owner em sombra com operação, projeto, corpus, prazo e orçamento vinculados, reutilizando os ledgers de ingestão, busca, episódio e diário. Operador local autenticado avança somente a operação selecionada, mantendo o processamento global pausado.
 - Inspeção nominal somente de leitura para metadados da operação existente, com snapshot durável atômico, geração atual e distinção entre ticket ausente e corrompido. Não reabre tentativas incertas ou grants expirados.
+- Recuperação separada e limitada do primeiro bootstrap Owner quando o Core comprova falha anterior ao dispatch. Preserva a tentativa expirada, custos e arquivo anterior; admite uma única linhagem com autoridade nova, mesmo wire/epoch e manutenção atômica sem modelo.
 
 ### Fixed
 - Composição das autorizações de modelo usa parâmetros D1 ordenados para preservar todos os predicados sem exceder o limite de bindings repetidos. Recuperação de recibos completos mantém acesso atual às fontes; retenção remove caches dependentes sem apagar custos.

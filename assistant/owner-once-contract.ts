@@ -5,6 +5,8 @@ export const onceCommand = z.union([
   z.object({ kind: z.literal("owner_once.plan"), operationId, sourceId: id, expectedRevision: integer, projectId: id,
     query: z.string().min(1).refine(text => new TextEncoder().encode(text).length <= 2048), deadlineAt: integer,
     maxCostMicroUsd: integer.max(600000) }).strict(),
+  z.object({ kind: z.literal("owner_once.recovery_plan"), operationId, previousOperationId: operationId,
+    deadlineAt: integer, maxCostMicroUsd: integer.max(600000) }).strict(),
   z.object({ kind: z.literal("owner_once.status"), operationId }).strict(),
   z.object({ kind: z.literal("owner_once.inspect"), operationId }).strict(),
   z.object({ kind: z.literal("owner_once.advance"), operationId }).strict(),

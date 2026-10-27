@@ -37,6 +37,18 @@ export class OnceExecution {
     await this.sql(`UPDATE assistant_routine_ingestions SET state='complete' WHERE ${ns} AND item_id=? AND source_id=?
       AND index_epoch=? AND state IN ('attempting','uncertain')`, ...this.keys(), this.receipt.id, sourceId, epoch).run();
   }
+  private async ensureRecovery(): Promise<ReturnType<OnceExecution["result"]> | null> {
+    if (!this.receipt.recovery) return null;
+    const source = await new SourceAccess(this.env.DB!, this.scope).read({ kind: "owner" }, this.receipt.sourceId, this.receipt.expectedRevision, this.clock());
+    if (!source || !source.text?.trim()) return this.result("blocked", "recovery", "source_changed");
+    const engine = this.env.COGNEE!.get(this.env.COGNEE!.idFromName(engineName(this.scope.installationId, this.scope.generation)));
+    const input: EngineIngest = { actor: { kind: "owner" }, source, ownerOnce: this.grant };
+    await this.authority();
+    const result = await engine.reserveRecoveredInitialIngest(input,
+      { kind: "owner_once", itemId: this.receipt.id, owner: this.grant.token }, this.receipt.recovery);
+    if (result.state === "blocked" || result.state === "uncertain") return this.result(result.state, "recovery", result.reason);
+    return result.created ? this.result("pending", "recovery_reserved") : null;
+  }
   private async index(): Promise<ReturnType<OnceExecution["result"]> | null> {
     const engine = this.env.COGNEE!.get(this.env.COGNEE!.idFromName(engineName(this.scope.installationId, this.scope.generation)));
     const state = await engine.lifecycleState();
@@ -146,6 +158,7 @@ export class OnceExecution {
         : this.result(result.state, "episode");
     }
     if (!["pending", "processing"].includes(job.state) || ledger.state !== "prepared") return this.result("uncertain", "job", "job_not_retriable");
+    const recovered = await this.ensureRecovery(); if (recovered) return recovered;
     const indexed = await this.index(); if (indexed) return indexed;
     const { search } = hostConfiguredSearch(this.env, "owner_read", this.clock), guard = await this.authority();
     const progress = await search.start({ kind: "owner" }, onceKey(this.receipt.id), { query: request.input, projectId: this.receipt.projectId }, { ownerOnceId: this.receipt.id, guard });

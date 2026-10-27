@@ -12,6 +12,7 @@ import { combineOnceGuards, currentOnceGuard, onceBudgetGuard, onceConfiguration
   oncePeriod, onceReceipt, type OnceReceipt, type OnceScope } from "./owner-once-guard";
 import { onceAdmitKey, onceAdmittedReceipt, oncePlanGuard, readOnceGrant, onceAuthority, completedOwnerOnce } from "./owner-once-guard";
 import { onceCommand, onceExecutionMetadata } from "./owner-once-contract";
+import { resolveOwnerRecoveryPlan } from "./owner-once-recovery";
 
 export { onceCommand } from "./owner-once-contract";
 
@@ -81,31 +82,45 @@ export class OwnerOnce {
       if (existing.requestHash !== requestHash) throw new Error("control_operation_conflict");
       return this.status(existing);
     }
-    normalizeRetrievalInput({ query: command.query, projectId: command.projectId, limit: 10 });
     const now = this.clock(), period = oncePeriod(now), nextDay = Date.parse(`${period}T00:00:00Z`) + 86400000;
     if (command.deadlineAt <= now || command.deadlineAt > Math.min(now + 900000, nextDay)) throw new Error("owner_once_deadline");
+    const predecessor = command.kind === "owner_once.recovery_plan" ? await resolveOwnerRecoveryPlan(this.env, this.scope,
+      await bridgeHash(["owner-once-v1", this.scope, command.previousOperationId]), now, root) : null;
+    const planning = command.kind === "owner_once.plan" ? command : { ...command,
+      sourceId: predecessor!.previous.sourceId, expectedRevision: predecessor!.previous.expectedRevision,
+      projectId: predecessor!.previous.projectId, query: predecessor!.query };
+    normalizeRetrievalInput({ query: planning.query, projectId: planning.projectId, limit: 10 });
     const configHash = await onceConfiguration(this.env, this.scope);
     await assertRestoredGeneration(this.env);
-    const anchor = await new SourceAccess(this.env.DB!, this.scope).read({ kind: "owner" }, command.sourceId, command.expectedRevision, now);
+    const anchor = await new SourceAccess(this.env.DB!, this.scope).read({ kind: "owner" }, planning.sourceId, planning.expectedRevision, now);
     if (!anchor || anchor.fence.source.origin !== "owner_note" || anchor.fence.source.audience !== "owner"
-      || anchor.fence.source.projectId !== command.projectId) throw new Error("owner_once_anchor");
+      || anchor.fence.source.projectId !== planning.projectId) throw new Error("owner_once_anchor");
     const budget = await new InferenceBudget(this.env.DB!, { ...this.scope, period }).status();
     if (budget.blocked || budget.cap < 1 || budget.cap > command.maxCostMicroUsd || budget.committed >= budget.cap) throw new Error("owner_once_budget");
-    const inventory = await onceInventory(this.env.DB!, this.scope, command.projectId, now);
+    const inventory = await onceInventory(this.env.DB!, this.scope, planning.projectId, now);
+    if (predecessor && (predecessor.previous.capMicroUsd !== budget.cap || predecessor.previous.maxCostMicroUsd !== command.maxCostMicroUsd
+      || JSON.stringify(predecessor.previous.corpus) !== JSON.stringify(inventory.corpus))) throw Error("owner_recovery_scope_changed");
+    const witness = predecessor ? await this.env.COGNEE!.get(this.env.COGNEE!.idFromName(JSON.stringify(["cognee", this.scope.installationId, this.scope.generation])))
+      .prepareInitialRecovery(predecessor.previous.id) : null;
+    if (predecessor && (!witness || witness.state !== "available")) throw Error("owner_recovery_witness_unavailable");
     const jobId = crypto.randomUUID();
     const receipt = onceReceipt.parse({ kind: "owner_once.plan", id: root, scope: this.scope, requestHash,
-      sourceId: command.sourceId, expectedRevision: command.expectedRevision, projectId: command.projectId,
-      queryHash: await bridgeHash(command.query), jobId, period, createdAt: now, deadlineAt: command.deadlineAt,
-      maxCostMicroUsd: command.maxCostMicroUsd, capMicroUsd: budget.cap, configHash, corpus: inventory.corpus });
+      sourceId: planning.sourceId, expectedRevision: planning.expectedRevision, projectId: planning.projectId,
+      queryHash: await bridgeHash(planning.query), jobId, period, createdAt: now, deadlineAt: command.deadlineAt,
+      maxCostMicroUsd: command.maxCostMicroUsd, capMicroUsd: budget.cap, configHash, corpus: inventory.corpus,
+      ...(predecessor && witness?.state === "available" ? { recovery: { previousId: predecessor.previous.id,
+        previousPlanHash: predecessor.previousPlanHash, previousJobHash: predecessor.previousJobHash,
+        indexEpoch: witness.indexEpoch, operationId: witness.operationId, witnessHash: witness.witnessHash } } : {}) });
     if (await onceConfiguration(this.env, this.scope) !== configHash || this.clock() >= command.deadlineAt || oncePeriod(this.clock()) !== period)
       throw new Error("owner_once_expired_or_changed");
-    const guard = combineOnceGuards(inventory.guard, onceBudgetGuard(this.scope, period, budget.cap), retentionExecutionGuard(this.scope));
+    const guard = combineOnceGuards(inventory.guard, onceBudgetGuard(this.scope, period, budget.cap), retentionExecutionGuard(this.scope),
+      ...(predecessor ? [predecessor.guard] : []));
     const ledger = new CommandLedger(this.env.DB!, this.scope, onceKey(root), requestHash);
     const admitted = { sql: "EXISTS(SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=? AND token=?)",
       values: [this.scope.installationId, this.scope.generation, onceKey(root), ledger.token] };
     await new JobQueue(this.env.DB!, this.scope).enqueue({ kind: "reasoning", dedupeKey: onceKey(root),
-      sourceId: command.sourceId, sourceRevision: command.expectedRevision, request: command.query, maxAttempts: 1,
-      runtime: "flue", subject: { kind: "owner_request", sourceId: command.sourceId, sourceRevision: command.expectedRevision, requestKey: onceKey(root) } }, now,
+      sourceId: planning.sourceId, sourceRevision: planning.expectedRevision, request: planning.query, maxAttempts: 1,
+      runtime: "flue", subject: { kind: "owner_request", sourceId: planning.sourceId, sourceRevision: planning.expectedRevision, requestKey: onceKey(root) } }, now,
       { id: jobId, guard: admitted, statements: [ledger.admit(receipt, now, guard.sql, guard.values)] });
     const recovered = await ledger.recover<unknown>();
     if (!recovered) throw new Error("owner_once_admission_changed");

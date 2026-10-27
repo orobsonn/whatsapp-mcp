@@ -16,6 +16,9 @@ import { assertRestoredGeneration } from "./retention-runtime";
 import {retentionExecutionGuard} from './retention-execution';
 import { onceAuthority, onceScope, oncePlanReader, combineOnceGuards, type OnceGrant } from "./owner-once-guard";
 import { onceExecutionMetadata } from "./owner-once-contract";
+import { initialRecoveryProof, type InitialRecoveryProof } from "./initial-ingest-contract";
+import { resolveOwnerRecoveryPlan } from "./owner-once-recovery";
+import { compactStatement } from "./d1-statement";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -147,6 +150,26 @@ export function engineModelAdmission(env: AssistantEnv, period: string, proof?: 
 export class CanonicalEngineGuard implements EngineGuard {
   private access: SourceAccess;
   constructor(private env: AssistantEnv) { const scope = configured(env); this.access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }); }
+  async checkInitialRecovery(admission: InitialIngestAdmission, input: InitialIngestCheckInput, raw: InitialRecoveryProof) {
+    try {
+      await assertRestoredGeneration(this.env);
+      const proof = initialRecoveryProof.parse(raw), scope = onceScope.parse({ installationId: this.env.INSTALLATION_ID,
+        generation: this.env.OPERATIONAL_GENERATION, sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION });
+      if (admission.kind !== "owner_once" || input.actor.kind !== "owner") return false;
+      const authority = await onceAuthority(this.env, scope, { id: admission.itemId, token: admission.owner }, Date.now());
+      if (!authority.receipt.recovery || await bridgeHash(authority.receipt.recovery) !== await bridgeHash(proof)) return false;
+      const predecessor = await resolveOwnerRecoveryPlan(this.env, scope, proof.previousId, Date.now(), admission.itemId);
+      if (predecessor.previousPlanHash !== proof.previousPlanHash || predecessor.previousJobHash !== proof.previousJobHash
+        || predecessor.previous.period !== authority.receipt.period || predecessor.previous.capMicroUsd !== authority.receipt.capMicroUsd
+        || predecessor.previous.maxCostMicroUsd !== authority.receipt.maxCostMicroUsd
+        || predecessor.previous.sourceId !== input.source.fence.source.id
+        || predecessor.previous.expectedRevision !== input.source.fence.source.revision
+        || JSON.stringify(predecessor.previous.corpus) !== JSON.stringify(authority.receipt.corpus)) return false;
+      const guard = combineOnceGuards(authority.guard, predecessor.guard, this.access.guard(input.actor, input.source.fence, Date.now()));
+      const valid = !!await compactStatement(this.env.DB!, `SELECT 1 WHERE ${guard.sql}`, guard.values).first();
+      await assertRestoredGeneration(this.env); return valid && Date.now() < authority.receipt.deadlineAt;
+    } catch { return false; }
+  }
   async checkInitialAdmission(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string,continuing=false){
     try{
       const base = { itemId: z.string().regex(/^[a-f0-9]{64}$/), owner: z.string().min(1).max(256) };
@@ -455,6 +478,20 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   fetch() { return Promise.resolve(deny()); }
   async ingest(input: EngineIngest) { const host=this.host(); await assertRestoredGeneration(this.env); return host.ingest(input); }
   async reserveInitialIngest(input:EngineIngest,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().reserveInitialIngest(input,admission);}
+  async prepareInitialRecovery(previousId: string) {
+    await assertRestoredGeneration(this.env, false);
+    if (typeof this.ctx.container?.images?.cognee !== "string" || !this.ctx.container.images.cognee)
+      return { state: "blocked" as const, reason: "engine_image_unconfigured" };
+    const result = await this.host().prepareInitialRecovery(previousId);
+    await assertRestoredGeneration(this.env, false); return result;
+  }
+  async reserveRecoveredInitialIngest(input: EngineIngest, admission: InitialIngestAdmission, proof: InitialRecoveryProof) {
+    await assertRestoredGeneration(this.env);
+    if (typeof this.ctx.container?.images?.cognee !== "string" || !this.ctx.container.images.cognee)
+      return { state: "blocked" as const, reason: "engine_image_unconfigured" };
+    const result = await this.host().reserveRecoveredInitialIngest(input, admission, proof);
+    await assertRestoredGeneration(this.env); return result;
+  }
   async commitInitialIngest(input:EngineIngest,ticket:InitialIngestTicket,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().commitInitialIngest(input,ticket,admission);}
   async initialIngestReceipt(input:EngineIngest,itemId:string,indexEpoch:string){await assertRestoredGeneration(this.env);const result=await this.host().initialIngestReceipt(input,itemId,indexEpoch);return result.state==='complete'?{state:'complete' as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:'uncertain' as const};}
   async ingestReceipt(input: EngineIngest, indexEpoch: string) { await assertRestoredGeneration(this.env); const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }

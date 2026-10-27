@@ -33,7 +33,7 @@ const keys=()=>[scope.installationId,scope.generation],sql=(query:string,...args
 const clone=<T>(value:T):T=>structuredClone(value);
 const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical((value as Record<string,unknown>)[k])])):value;
 function memoryStorage(){
-  const tx=(map:Map<string,unknown>)=>({get:async<T>(key:string)=>clone(map.get(key) as T|undefined),put:async(key:string,value:unknown)=>{map.set(key,clone(value));if(key.startsWith('receipt:'))await onReceipt?.();},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map([...map].filter(([k])=>k.startsWith(prefix)).slice(0,limit).map(([k,v])=>[k,clone(v as T)]))});
+  const tx=(map:Map<string,unknown>)=>({get:async<T>(key:string)=>clone(map.get(key) as T|undefined),put:async(key:string,value:unknown)=>{map.set(key,clone(value));if(key.startsWith('receipt:'))await onReceipt?.();},delete:async(key:string)=>{map.delete(key);},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map([...map].filter(([k])=>k.startsWith(prefix)).slice(0,limit).map(([k,v])=>[k,clone(v as T)]))});
   return {...tx(data),transaction:<T>(action:(store:ReturnType<typeof tx>)=>Promise<T>)=>{const result=tail.then(async()=>{const copy=new Map(data);const result=await action(tx(copy));data.clear();for(const [k,v]of copy)data.set(k,v);return result;});tail=result.then(()=>{},()=>{});return result;}};
 }
 function physicalPort(){let saved:Map<string,SourceStamp>|undefined,last:CheckpointManifest|undefined;
@@ -224,5 +224,42 @@ it.each(['complete','uncertain_search','missing_image'] as const)('advances only
   expect((await queue.get(neighbor.id))?.attempts).toBe(0);expect((await queue.get(neighbor.id))?.state).toBe('pending');
   expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'complete'});
   expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);expect(modelCalls).toBe(1);
+  expect(settings.ROUTINES_PAUSED).toBe('true');
+});
+it('recovers a proven pre-dispatch Owner boot failure using a separate grant, preserves old uncertainty and publishes exactly one new decision',async()=>{
+  settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
+  await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
+  await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'recovery',name:'Synthetic bootstrap recovery',expectedVersion:0,operationId:'recovery-project'});
+  const source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'recovery-original',text:'Synthetic recovery blue marker. No external action.',audience:'owner',projectId:'recovery',occurredAt:now});
+  const ownDriver:EpisodeDriver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'recovery-submission',uid:'recovery-uid',acceptedAt:new Date(now).toISOString()};},
+    read:async receipt=>{const host=runtimeHost(settings,'owner_read',{model,clock:()=>now}),row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();
+      const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
+  const options={model,driver:ownDriver},command={kind:'owner_once.plan',operationId:'old-failed-bootstrap',sourceId:source.id,expectedRevision:1,projectId:'recovery',query:'Explain the synthetic blue marker.',deadlineAt:now+600000,maxCostMicroUsd:600000};
+  let once=new OwnerOnce(settings,scope,()=>now,options);const old=await once.execute(command) as {id:string;jobId:string};await once.execute({kind:'owner_once.advance',operationId:command.operationId});
+  const start=port.start.getMockImplementation()!;port.start.mockImplementationOnce(async()=>{throw Error('synthetic_pre_dispatch_boot_failure');});
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'uncertain',reason:'ingestion_unconfirmed'});
+  const original=clone(data.get('initial-ingest-v1')) as {state:string;ticket:{indexEpoch:string;operationId:string;inputHash:string}};
+  expect(original.state).toBe('uncertain');expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);expect(data.get('quarantine')).toBe(true);
+  now=command.deadlineAt+1;vi.setSystemTime(now);port.start.mockImplementation(start);
+  const recovery={kind:'owner_once.recovery_plan',operationId:'separate-recovery-bootstrap',previousOperationId:command.operationId,deadlineAt:now+600000,maxCostMicroUsd:600000};
+  const plan=await once.execute(recovery) as {id:string;jobId:string};expect(plan.id).not.toBe(old.id);expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'admitted'});
+  const beforeCalls=port.start.mock.calls.length;
+  expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'pending',phase:'recovery_reserved'});
+  expect(port.start).toHaveBeenCalledTimes(beforeCalls);expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+  const reserved=clone(data.get('initial-ingest-v1')) as typeof original;expect(reserved.ticket).toMatchObject({indexEpoch:original.ticket.indexEpoch,operationId:original.ticket.operationId});expect(reserved.ticket.inputHash).not.toBe(original.ticket.inputHash);
+  let result:Record<string,unknown>={state:'pending'};
+  for(let i=0;i<20&&!['complete','uncertain','blocked'].includes(String(result.state));i++){
+    once=new OwnerOnce(settings,scope,()=>now,options);result=await once.execute({kind:'owner_once.advance',operationId:recovery.operationId});
+  }
+  expect(result).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+  expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);
+  const queue=new JobQueue(env.DB,scope);expect(await queue.get(old.jobId)).toMatchObject({state:'pending',attempts:0});expect(await queue.ledger(old.jobId)).toMatchObject({state:'prepared'});
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'blocked'});
+  expect(await sql('SELECT state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=? AND item_id=?',...keys(),old.id).first('state')).toBe('uncertain');
+  expect(await sql('SELECT COUNT(*) n FROM assistant_shadow_decisions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);
+  expect((data.get('initial-recovery-v1:'+old.id) as {previous:{initial:unknown}}).previous.initial).toEqual(original);
+  expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+  const reservations=(await sql('SELECT state,actual_units FROM assistant_budget_reservations WHERE installation_id=? AND generation=?',...keys()).all()).results;expect(reservations).toEqual([{state:'settled',actual_units:3}]);
   expect(settings.ROUTINES_PAUSED).toBe('true');
 });

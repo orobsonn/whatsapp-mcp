@@ -23,6 +23,8 @@ A inspeção real do mesmo Root expirado observou imagem atual configurada, acti
 
 ## Gates restantes e custos
 
+A recuperação foi implementada separadamente, com journal atômico e nova admissão Owner. A revisão independente verificou CAS do predecessor, SHA256 bruto do ledger, unicidade de plano por linhagem, período/cap fixos e separação entre gate financeiro de criação e replay após gasto. Uma omissão nos scans globais do replay reservado foi corrigida antes da composição. Nos testes dirigidos passaram120casos, incluindo falha real simulada do boot, arquivo completo e quarentena em memória, ACK perdido, rollback, guard de retenção e uma proposta pelo fluxo normal. Após acrescentar o CAS de planos irmãos,14casos de recuperação e o integrado completo passaram novamente; tipos, build e6checks do operador passaram. São provas sintéticas, sem chamada paga ou operação Telegram. CI do commit completo e execução cloud dessa recuperação continuam pendentes.
+
 #140 permanece aberta: ainda falta decisão cloud atual pelo diário normal. #48 continua dependente de notificação e callbacks reais nos tópicos privados. Nenhuma proposta, recibo de modelo ou assessment humano foi inserido por SQL. Não houve WhatsApp automático ou escrita Calendar.
 
 O censo das bases próprias conhecidas anterior ao ensaio registrou 55.310microUSD comprometidos, incluindo40.000incertos; a geração própria continuou sem reservas de modelo na observação da falha. Conta/teto/histórico não foram reconfigurados. Infraestrutura e fatura permanecem separados do ledger de inferência. Não se declara prontidão integral ou qualidade longitudinal.

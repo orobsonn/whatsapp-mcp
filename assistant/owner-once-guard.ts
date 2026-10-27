@@ -4,6 +4,7 @@ import type { AssistantEnv } from "./env";
 import { bridgeHash } from "./ingress";
 import { DEFAULT_BROKER_CONFIG } from "./model-transport";
 import { retentionExecutionGuard } from "./retention-execution";
+import { initialRecoveryProof } from "./initial-ingest-contract";
 
 const id = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -17,6 +18,7 @@ export const onceReceipt = z.object({
   corpus: z.object({ sourceCount: integer.min(1).max(24), utf8Bytes: integer.max(24000),
     refs: z.array(z.object({ id, revision: integer.min(1), version: integer.min(1), fingerprintHash: hash }).strict()).min(1).max(24),
   }).strict(),
+  recovery: initialRecoveryProof.optional(),
 }).strict();
 export type OnceReceipt = z.infer<typeof onceReceipt>;
 export const onceKey = (id: string) => `owner-once-v1:${id}`;

@@ -69,6 +69,76 @@ async function fixture(text = "Synthetic private blue marker") {
     projectId: "once-project", query: "Explain the private blue marker", deadlineAt: now + 600000, maxCostMicroUsd: 600000 };
   return { sources, source, rpc, command };
 }
+async function recoveryFixture(){
+ const f=await fixture(),old=await f.rpc.ownerOnce(scope,f.command) as {id:string;jobId:string};
+ await f.rpc.ownerOnce(scope,{kind:"owner_once.advance",operationId:f.command.operationId});
+ vi.setSystemTime(f.command.deadlineAt+1);
+ const witness={state:"available",indexEpoch:crypto.randomUUID(),operationId:"d".repeat(64),witnessHash:"e".repeat(64)};
+ const prepare=vi.fn(async()=>witness);Object.assign(settings.COGNEE!.get(settings.COGNEE!.idFromName("synthetic")),{prepareInitialRecovery:prepare});
+ const recovery={kind:"owner_once.recovery_plan",operationId:"once-recovery",previousOperationId:f.command.operationId,deadlineAt:Date.now()+600000,maxCostMicroUsd:600000};
+ return {...f,old,recovery,witness,prepare};
+}
+it("admits a separate expired-bootstrap recovery with the same private question and original budget period, without granting execution",async()=>{
+ const f=await recoveryFixture(),result=await f.rpc.ownerOnce(scope,f.recovery) as {id:string;jobId:string};
+ expect(result).toMatchObject({state:"planned",period:"2026-10-27",maxCostMicroUsd:600000});expect(result.id).not.toBe(f.old.id);
+ const row=await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id=?").bind(scope.installationId,onceKey(result.id)).first<string>("result_json");
+ const receipt=JSON.parse(row!);expect(receipt).toMatchObject({queryHash:await bridgeHash(f.command.query),recovery:{previousId:f.old.id,indexEpoch:f.witness.indexEpoch,witnessHash:f.witness.witnessHash}});
+ expect(JSON.stringify(result)).not.toContain(f.command.query);expect(row).not.toContain(f.command.query);
+ expect(await new JobQueue(env.DB,scope).ledger(result.jobId)).toMatchObject({state:"prepared",request_json:expect.stringContaining(f.command.query)});
+ expect(await f.rpc.ownerOnce(scope,f.recovery)).toEqual(result);expect(f.prepare).toHaveBeenCalledTimes(1);
+ expect(await f.rpc.ownerOnce(scope,{kind:"owner_once.status",operationId:f.command.operationId})).toMatchObject({state:"blocked",id:f.old.id});
+ await expect(f.rpc.ownerOnce(scope,{...f.recovery,deadlineAt:f.recovery.deadlineAt+1})).rejects.toThrow("control_operation_conflict");expect(bootstrap).not.toHaveBeenCalled();
+});
+it("does not resurrect a predecessor's private ledger when it is purged between reading and the admission batch",async()=>{
+ const f=await recoveryFixture(),batch=env.DB.batch.bind(env.DB),fault=vi.spyOn(env.DB,"batch").mockImplementationOnce(async statements=>{
+  fault.mockRestore();await env.DB.prepare("UPDATE assistant_job_ledger SET request_json='{}' WHERE installation_id=? AND job_id=?").bind(scope.installationId,f.old.jobId).run();return batch(statements);
+ });
+ await expect(f.rpc.ownerOnce(scope,f.recovery)).rejects.toThrow("job_admission_changed");
+ expect(await env.DB.prepare("SELECT COUNT(*) FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("COUNT(*)")).toBe(1);
+ expect(bootstrap).not.toHaveBeenCalled();
+});
+it("admits one recovery plan per predecessor atomically, even with competing Owner operation IDs",async()=>{
+ const f=await recoveryFixture(),results=await Promise.allSettled([f.rpc.ownerOnce(scope,f.recovery),f.rpc.ownerOnce(scope,{...f.recovery,operationId:"competing-recovery"})]);
+ expect(results.filter(x=>x.status==="fulfilled")).toHaveLength(1);
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_owner_commands WHERE installation_id=? AND json_extract(result_json,'$.recovery.previousId')=?").bind(scope.installationId,f.old.id).first("n")).toBe(1);
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(2);expect(bootstrap).not.toHaveBeenCalled();
+});
+it.each(["live","day","cap","max_cost","withdraw","addition","lease","ledger_hash","actor","paid","chain"])("refuses a new recovery after predecessor %s changes",async mode=>{
+ const f=await recoveryFixture();
+ if(mode==="live")vi.setSystemTime(f.command.deadlineAt-1);
+ if(mode==="day")vi.setSystemTime(Date.parse("2026-10-28T00:00:00Z"));
+ if(mode==="cap")await env.DB.prepare("UPDATE assistant_budget_accounts SET cap_units=500000 WHERE installation_id=?").bind(scope.installationId).run();
+ if(mode==="max_cost")f.recovery.maxCostMicroUsd=500000;
+ if(mode==="withdraw")await f.sources.withdraw(f.source.id,1);
+ if(mode==="addition")await f.sources.create({originKey:"recovery-new-support",text:"Another support",audience:"owner",projectId:f.command.projectId,occurredAt:Date.now()});
+ if(mode==="lease")await env.DB.prepare("UPDATE assistant_jobs SET attempts=1,lease_generation=1 WHERE installation_id=? AND id=?").bind(scope.installationId,f.old.jobId).run();
+ if(mode==="ledger_hash")await env.DB.prepare("UPDATE assistant_job_ledger SET request_json='{}' WHERE installation_id=? AND job_id=?").bind(scope.installationId,f.old.jobId).run();
+ if(mode==="actor"){
+  const old=await new JobQueue(env.DB,scope).ledger(f.old.jobId),raw=JSON.stringify({...JSON.parse(old!.request_json),actor:{kind:"interlocutor",provider:"synthetic",address:"guest",conversationId:"foreign",conversationKind:"private",action:"reply_text"}});
+  await env.DB.prepare("DELETE FROM assistant_decision_jobs WHERE installation_id=? AND job_id=?").bind(scope.installationId,f.old.jobId).run();
+  const {sourceTextHash}=await import("../assistant/sources");await env.DB.prepare("UPDATE assistant_job_ledger SET request_json=?,request_hash=? WHERE installation_id=? AND job_id=?").bind(raw,await sourceTextHash(raw),scope.installationId,f.old.jobId).run();
+ }
+ if(mode==="paid")await new InferenceBudget(env.DB,{...scope,period:"2026-10-27"}).reserve("synthetic-previous-paid","f".repeat(64),1);
+ if(mode==="chain"){
+  await f.rpc.ownerOnce(scope,f.recovery);await f.rpc.ownerOnce(scope,{kind:"owner_once.advance",operationId:f.recovery.operationId});vi.setSystemTime(f.recovery.deadlineAt+1);
+  f.recovery={...f.recovery,operationId:"third-descendant",previousOperationId:f.recovery.operationId,deadlineAt:Date.now()+600000};
+ }
+ const before=await env.DB.prepare("SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("n");
+ await expect(f.rpc.ownerOnce(scope,{...f.recovery,deadlineAt:Date.now()+600000})).rejects.toThrow();
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(before);expect(bootstrap).not.toHaveBeenCalled();
+});
+it("requires the new admission, exact predecessor and zero-history guard at the Core maintenance boundary, without authorizing the old grant",async()=>{
+ const f=await recoveryFixture(),plan=await f.rpc.ownerOnce(scope,f.recovery) as {id:string};
+ const raw=await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id=?").bind(scope.installationId,onceKey(plan.id)).first<string>("result_json"),receipt=onceReceipt.parse(JSON.parse(raw!));
+ const input={actor:{kind:"owner"} as const,source:(await new SourceAccess(env.DB,scope).read({kind:"owner"},f.source.id))!},guard=new CanonicalEngineGuard(settings);
+ const admission={kind:"owner_once" as const,itemId:plan.id,owner:crypto.randomUUID()};expect(await guard.checkInitialRecovery(admission,input,receipt.recovery!)).toBe(false);
+ await f.rpc.ownerOnce(scope,{kind:"owner_once.advance",operationId:f.recovery.operationId});admission.owner=(await readOnceGrant(settings,receipt))!.token;
+ expect(await guard.checkInitialRecovery(admission,input,receipt.recovery!)).toBe(true);
+ expect(await guard.checkInitialRecovery(admission,input,{...receipt.recovery!,previousJobHash:"f".repeat(64)})).toBe(false);
+ await new InferenceBudget(env.DB,{...scope,period:"2026-10-27"}).reserve("synthetic-new-paid","f".repeat(64),1);
+ expect(await guard.checkInitialRecovery(admission,input,receipt.recovery!)).toBe(false);
+ expect(await guard.checkInitialAdmission(admission,input)).toBe(true);
+});
 it("inspects the same expired Owner operation without granting execution or forwarding private Core fields", async () => {
   const {rpc,command}=await fixture();const plan=await rpc.ownerOnce(scope,command) as {id:string};
   const observe=vi.fn(async()=>({state:"observed",imageConfigured:true,activePresent:false,quarantine:true,
