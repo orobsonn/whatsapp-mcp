@@ -1,30 +1,24 @@
-import { z } from "zod";
 import type { AssistantEnv } from "./env";
 import { SourceAccess } from "./access";
 import { InferenceBudget } from "./budget";
 import { CommandLedger } from "./command-ledger";
 import { bridgeHash } from "./ingress";
 import { JobQueue } from "./queue";
+import { normalizeRetrievalInput } from "./retrieval";
+import type { OnceExecutionOptions } from "./owner-once-execution";
 import { assertRestoredGeneration } from "./retention-runtime";
 import { retentionExecutionGuard } from "./retention-execution";
 import { combineOnceGuards, currentOnceGuard, onceBudgetGuard, onceConfiguration, onceInventory, onceKey,
   oncePeriod, onceReceipt, type OnceReceipt, type OnceScope } from "./owner-once-guard";
-import { onceAdmitKey, onceAdmittedReceipt, oncePlanGuard, readOnceGrant, onceAuthority } from "./owner-once-guard";
+import { onceAdmitKey, onceAdmittedReceipt, oncePlanGuard, readOnceGrant, onceAuthority, completedOwnerOnce } from "./owner-once-guard";
+import { onceCommand } from "./owner-once-contract";
 
-const id = z.string().min(1).max(256), integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-const operationId = z.string().min(1).max(128).trim();
-export const onceCommand = z.union([
-  z.object({ kind: z.literal("owner_once.plan"), operationId, sourceId: id, expectedRevision: integer, projectId: id,
-    query: z.string().min(1).refine(text => new TextEncoder().encode(text).length <= 2048), deadlineAt: integer,
-    maxCostMicroUsd: integer.max(600000) }).strict(),
-  z.object({ kind: z.literal("owner_once.status"), operationId }).strict(),
-  z.object({ kind: z.literal("owner_once.advance"), operationId }).strict(),
-]);
+export { onceCommand } from "./owner-once-contract";
 
 /** Internal Owner capability. Planning never claims a job or grants model,
  * bootstrap or Flue authority. Progress belongs to existing execution ledgers. */
 export class OwnerOnce {
-  constructor(private readonly env: AssistantEnv, private readonly scope: OnceScope, private readonly clock = Date.now) {}
+  constructor(private readonly env: AssistantEnv, private readonly scope: OnceScope, private readonly clock = Date.now, private readonly options: OnceExecutionOptions = {}) {}
   private async find(root: string) {
     const row = await this.env.DB!.prepare(`SELECT request_hash,result_json FROM assistant_owner_commands
       WHERE installation_id=? AND generation=? AND operation_id=?`)
@@ -35,6 +29,8 @@ export class OwnerOnce {
     return receipt;
   }
   private async status(receipt: OnceReceipt) {
+    const completed = await completedOwnerOnce(this.env, this.scope, receipt);
+    if (completed) return { state: "complete", id: receipt.id, jobId: receipt.jobId, decisionId: completed, observation: "historical_shadow_completion" };
     let state: "planned" | "admitted" | "blocked" = "planned";
     try {
       await assertRestoredGeneration(this.env);
@@ -54,7 +50,10 @@ export class OwnerOnce {
     if (command.kind === "owner_once.status") return existing ? this.status(existing) : { state: "unavailable", id: root };
     if (command.kind === "owner_once.advance") {
       if (!existing) return { state: "unavailable", id: root };
-      if ((await this.status(existing)).state === "blocked") return this.status(existing);
+      const status = await this.status(existing);
+      if (status.state === "blocked" || status.state === "complete") return status;
+      const grant = await readOnceGrant(this.env, existing);
+      if (grant) { const { OnceExecution } = await import("./owner-once-execution"); return new OnceExecution(this.env, this.scope, existing, grant, this.clock, this.options).advance(); }
       const ledger = new CommandLedger(this.env.DB!, this.scope, onceAdmitKey(root), await bridgeHash(existing));
       if (!await ledger.recover()) {
         const now = this.clock(), current = combineOnceGuards(await currentOnceGuard(this.env, existing, now), oncePlanGuard(existing));
@@ -69,6 +68,7 @@ export class OwnerOnce {
       if (existing.requestHash !== requestHash) throw new Error("control_operation_conflict");
       return this.status(existing);
     }
+    normalizeRetrievalInput({ query: command.query, projectId: command.projectId, limit: 10 });
     const now = this.clock(), period = oncePeriod(now), nextDay = Date.parse(`${period}T00:00:00Z`) + 86400000;
     if (command.deadlineAt <= now || command.deadlineAt > Math.min(now + 900000, nextDay)) throw new Error("owner_once_deadline");
     const configHash = await onceConfiguration(this.env, this.scope);

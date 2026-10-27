@@ -3,6 +3,7 @@ import { InferenceBudget, type BudgetScope } from "./budget";
 import { SourceAccess, type AccessGuard, type SourceFence } from "./access";
 import { bridgeHash } from "./ingress";
 import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
+import { compactStatement } from "./d1-statement";
 export type ModelPath = "/v1/chat/completions" | "/v1/embeddings";
 export type BrokerConfig = { extractionConfig: string; priceVersion: string; chatModel: string; embeddingModel: string;
   maxOutputTokens: number; chatCeiling: number; embeddingCeiling: number };
@@ -116,9 +117,9 @@ export class CogneeModelBroker {
     const permit = await this.permit(token), guard = this.access.guard(owner, permit.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     // Last local snapshot: a purged body cannot escape from an earlier JS copy
     // while its unrelated anchor source/permit remains active.
-    return this.db.prepare(`SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
-      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) AND (${execution.sql}) ${additional ? `AND (${additional.sql})` : ""}`)
-      .bind(...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...execution.values, ...(additional?.values ?? [])).first<{ response_json: string }>();
+    return compactStatement(this.db, `SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
+      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) AND (${execution.sql}) ${additional ? `AND (${additional.sql})` : ""}`,
+      [...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...execution.values, ...(additional?.values ?? [])]).first<{ response_json: string }>();
   }
   private async requestKey(fence: SourceFence, request: { path: ModelPath; body: string }) {
     const configHash = await this.configHash, requestHash = await bridgeHash([configHash, request.path, request.body]);
@@ -166,7 +167,7 @@ export class CogneeModelBroker {
       if (!settled) return this.uncertainAdmission(key);
       const host = await this.admission!.prepare({ key, hash, recovered: true });
       if (!host) return this.uncertainAdmission(key);
-      const result = await this.db.batch([...host.statements, this.db.prepare(`SELECT 1 WHERE ${host.guard.sql}`).bind(...host.guard.values)]);
+      const result = await this.db.batch([...host.statements, compactStatement(this.db, `SELECT 1 WHERE ${host.guard.sql}`, host.guard.values)]);
       if (result.at(-1)!.results.length !== 1) return this.uncertainAdmission(key);
       const current = await this.currentReceipt(key, hash, token, row, host.guard);
       if (!current) return this.uncertainAdmission(key);
@@ -191,12 +192,12 @@ export class CogneeModelBroker {
     try {
       const host = this.admission ? await this.admission.prepare({ key, hash: requestHash, recovered: false }) : null;
       if (this.admission && !host) return this.uncertainAdmission(key);
-      const statement = this.db.prepare(`INSERT INTO assistant_model_receipts
+      const statement = compactStatement(this.db, `INSERT INTO assistant_model_receipts
         (installation_id,generation,operation_key,request_hash,source_id,source_revision,config_hash,state,created_at)
         SELECT ?,?,?,?,?,?,?,'attempting',? WHERE ${guard.sql} AND ${execution.sql} AND EXISTS(SELECT 1 FROM assistant_model_permits
-          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`)
-        .bind(...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
-          ...guard.values, ...execution.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? []));
+          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`,
+        [...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
+          ...guard.values, ...execution.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? [])]);
       admitted = host ? (await this.db.batch([...host.statements, statement])).at(-1)! : await statement.all();
     } catch { return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key }; }
     if (admitted.results.length !== 1) {

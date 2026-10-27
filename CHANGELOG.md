@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+### Added
+- Execução pontual Owner em sombra com operação, projeto, corpus, prazo e orçamento vinculados, reutilizando os ledgers de ingestão, busca, episódio e diário. Operador local autenticado avança somente a operação selecionada, mantendo o processamento global pausado.
+
+### Fixed
+- Composição das autorizações de modelo usa parâmetros D1 ordenados para preservar todos os predicados sem exceder o limite de bindings repetidos. Recuperação de recibos completos mantém acesso atual às fontes; retenção remove caches dependentes sem apagar custos.
+
+### Notes
+- A homologação cloud da #140 e os callbacks reais da #48 ainda são necessários antes da release deste marco. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.
+
 ## [0.48.0] - 2026-10-27
 
 ### Added

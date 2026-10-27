@@ -26,6 +26,19 @@ export const onceAdmittedReceipt = z.object({ kind: z.literal("owner_once.admit"
 /** Internal service grant. It never enters prompts, tool responses or status. */
 export const onceGrant = z.object({ id: hash, token: z.string().uuid() }).strict();
 export type OnceGrant = z.infer<typeof onceGrant>;
+export type OncePlanReader = (id: string) => Promise<{ receipt: OnceReceipt; grant: OnceGrant } | null>;
+/** Historical completion only; review freshness belongs to the existing diary.
+ * Kept free of native runtime imports for local operational adapters. */
+export async function completedOwnerOnce(env: AssistantEnv, scope: OnceScope, receipt: OnceReceipt) {
+  return env.DB!.prepare(`SELECT d.id FROM assistant_jobs j JOIN assistant_job_ledger l
+    ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
+    JOIN assistant_shadow_decisions d ON d.installation_id=j.installation_id AND d.generation=j.generation AND d.job_id=j.id
+    JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id
+    WHERE j.installation_id=? AND j.generation=? AND j.id=? AND j.dedupe_key=? AND j.state='shadow_completed'
+    AND e.state='settled' AND d.request_hash=l.request_hash AND d.binding_hash=e.binding_hash AND d.proposal_json=e.result_json
+    AND d.proposal_json IS NOT NULL AND d.publication_nonce=e.search_nonce AND d.publication_nonce IS NOT NULL`)
+    .bind(scope.installationId, scope.generation, receipt.jobId, onceKey(receipt.id)).first<string>("id");
+}
 export const oncePeriod = (now: number) => new Date(now).toISOString().slice(0, 10);
 
 /** This configuration contains no credential values or source text. It pins the
@@ -111,16 +124,35 @@ export async function readOnceGrant(env: AssistantEnv, receipt: OnceReceipt): Pr
     || admitted.admittedAt >= receipt.deadlineAt) throw new Error("owner_once_admission_receipt");
   return onceGrant.parse({ id: receipt.id, token: row.token });
 }
+export async function readOncePlan(env: AssistantEnv, scope: OnceScope, id: string): Promise<OnceReceipt | null> {
+  hash.parse(id);
+  const row = await env.DB!.prepare(`SELECT request_hash,result_json FROM assistant_owner_commands
+    WHERE installation_id=? AND generation=? AND operation_id=?`).bind(scope.installationId, scope.generation, onceKey(id))
+    .first<{ request_hash: string; result_json: string }>();
+  if (!row) return null;
+  const receipt = onceReceipt.parse(JSON.parse(row.result_json));
+  if (receipt.id !== id || receipt.requestHash !== row.request_hash || JSON.stringify(receipt.scope) !== JSON.stringify(scope))
+    throw new Error("owner_once_receipt_scope");
+  return receipt;
+}
+/** Composition-only reader; no new RPC grants authority from a known root ID.
+ * Recovery reads preserve the original token even after execution expires. */
+export function oncePlanReader(env: AssistantEnv): OncePlanReader | undefined {
+  const scope = onceScope.safeParse({ installationId: env.INSTALLATION_ID, generation: env.OPERATIONAL_GENERATION,
+    sourceEpoch: env.BRIDGE_SOURCE_EPOCH, sourceGeneration: env.BRIDGE_SOURCE_GENERATION });
+  if (!scope.success || !env.DB) return undefined;
+  return async id => {
+    const receipt = await readOncePlan(env, scope.data, id);
+    if (!receipt) return null;
+    const grant = await readOnceGrant(env, receipt);
+    return grant ? { receipt, grant } : null;
+  };
+}
 /** Resolve authority from the original two receipts, then fence the live corpus
  * in the protected batch. An operation ID or a new ledger instance is no grant. */
 export async function onceAuthority(env: AssistantEnv, scope: OnceScope, raw: OnceGrant, now: number) {
-  const grant = onceGrant.parse(raw), row = await env.DB!.prepare(`SELECT request_hash,result_json FROM assistant_owner_commands
-    WHERE installation_id=? AND generation=? AND operation_id=?`).bind(scope.installationId, scope.generation, onceKey(grant.id))
-    .first<{ request_hash: string; result_json: string }>();
-  if (!row) throw new Error("owner_once_plan_missing");
-  const receipt = onceReceipt.parse(JSON.parse(row.result_json));
-  if (receipt.id !== grant.id || receipt.requestHash !== row.request_hash || JSON.stringify(receipt.scope) !== JSON.stringify(scope))
-    throw new Error("owner_once_receipt_scope");
+  const grant = onceGrant.parse(raw), receipt = await readOncePlan(env, scope, grant.id);
+  if (!receipt) throw new Error("owner_once_plan_missing");
   const durable = await readOnceGrant(env, receipt);
   if (!durable || durable.token !== grant.token) throw new Error("owner_once_not_admitted");
   const current = await currentOnceGuard(env, receipt, now);

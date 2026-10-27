@@ -6,6 +6,7 @@ import { conversationGuard, jobConversationFence, type ConversationFence } from 
 import { z } from "zod";
 import { searchTicketSchema, parseSearchTicket, type EngineSearch, type SearchTicket, type SemanticEnginePort } from "./engine";
 import { bridgeHash } from "./ingress";
+import { onceReceipt, onceGrant, onceKey, type OncePlanReader } from "./owner-once-guard";
 const semanticConfigurationSchema=z.object({version:z.literal("rrf-60-v1"),mode:z.enum(["required","lexical_fallback"])}).strict();
 const semanticRef=z.object({id:z.string().min(1).max(256),version:z.number().int().positive().max(2147483647),hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 const semanticBinding=z.discriminatedUnion("state",[
@@ -32,7 +33,8 @@ type InventoryRow = AccessRow & { fingerprint: string; inboxes: string };
 type Item = { id: string; fingerprint: string; score: number; linked: number; state: string; origin: OriginFence | null; conversation: ConversationFence | ReadCoverageFence | null };
 export type CoverageProof = { scope: SearchScope; runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; purpose: "automation" | "owner_read"; configuration: {version:string;mode:"required"|"lexical_fallback"}; inputHash:string; manifestHash: string };
 type SemanticRow = { proof_json:string; ticket_json:string|null;outcome_json:string|null };
-type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read" };
+type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read"; ownerOncePlan?: OncePlanReader };
+export type OwnerSearchAdmission = { ownerOnceId: string; guard: AccessGuard };
 const ns = "installation_id=? AND generation=?";
 const baseGaps = ["index_capacity", "index_missing"];
 const identifier = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256;
@@ -109,18 +111,39 @@ export class RetrievalRuns {
     if (!hashId(id)) throw new Error("retrieval_run_denied");
     const row = await this.statement(`SELECT * FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND actor_json=?`, ...this.keys(), id, JSON.stringify(actor)).first<Run>();
     if (!row || (JSON.stringify(JSON.parse(row.request_json).scope) !== JSON.stringify(this.scope) || JSON.parse(row.request_json).purpose !== this.purpose)) throw new Error("retrieval_run_denied");
-    if (JSON.stringify(JSON.parse(row.request_json).semantic) !== JSON.stringify(this.options.semantic ? this.semanticConfiguration() : undefined)) throw new Error("retrieval_run_configuration"); return row;
+    if (JSON.stringify(JSON.parse(row.request_json).semantic) !== JSON.stringify(this.options.semantic ? this.semanticConfiguration() : undefined)) throw new Error("retrieval_run_configuration");
+    await this.ownerPlan(actor, row); return row;
+  }
+  private async ownerPlan(actor: TrustedActor, run: Pick<Run, "id" | "request_json">) {
+    const request = JSON.parse(run.request_json);
+    if (!Object.hasOwn(request, "ownerOnceId")) return null;
+    const id = request.ownerOnceId;
+    if (!hashId(id) || actor.kind !== "owner" || this.purpose !== "owner_read" || this.options.semantic?.mode !== "required" || !this.options.ownerOncePlan)
+      throw new Error("retrieval_owner_admission");
+    const recovered = await this.options.ownerOncePlan(id);
+    if (!recovered) throw new Error("retrieval_owner_admission");
+    const receipt = onceReceipt.parse(recovered.receipt), grant = onceGrant.parse(recovered.grant);
+    if (receipt.id !== id || grant.id !== id || JSON.stringify(receipt.scope) !== JSON.stringify(this.scope)
+      || receipt.projectId !== request.input.projectId || await bridgeHash(request.input.query) !== receipt.queryHash
+      || request.input.limit !== 10 || request.input.entities !== undefined
+      || request.limits.pageSize !== 64 || request.limits.maxSteps !== 80 || request.limits.maxEvaluations !== 4096
+      || run.id !== await bridgeHash([this.keys(), JSON.stringify(actor), onceKey(id)])) throw new Error("retrieval_owner_admission");
+    return { receipt, grant };
   }
   private inventory(actor: TrustedActor, run: Run, now: number) { return this.access.inventory(actor, JSON.parse(run.request_json).input.projectId, now, { ...this.scope, includePaused: this.purpose === "owner_read" }); }
   private progress(run: Run): SearchProgress {
     return { runId: run.id, checkpoint: run.checkpoint, state: run.state, gaps: [...baseGaps, ...(run.state === "waiting_context" ? [run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : "origin_unavailable"] : [])] };
   }
-  async start(actor: TrustedActor, key: string, input: RetrievalInput): Promise<SearchProgress> {
+  async start(actor: TrustedActor, key: string, input: RetrievalInput, admission?: OwnerSearchAdmission): Promise<SearchProgress> {
     actor = ownActor(actor); if (actor.kind === "extractor" || (this.purpose === "owner_read" && actor.kind !== "owner") || !identifier(key)) throw new Error("retrieval_run_denied");
-    const request = { input: normalizeRetrievalInput(input), scope: this.scope, purpose: this.purpose, limits: this.limits, ...(this.options.semantic ? {semantic:this.semanticConfiguration()} : {}) }, actorJson = JSON.stringify(actor);
+    if (key.startsWith("owner-once-v1:") !== !!admission || admission && key !== onceKey(admission.ownerOnceId)) throw new Error("retrieval_owner_admission");
+    if (admission && Object.keys(input).some(key => !["query", "projectId", "limit"].includes(key))) throw new Error("retrieval_owner_admission");
+    const request = { input: normalizeRetrievalInput(input), scope: this.scope, purpose: this.purpose, limits: this.limits,
+      ...(admission ? { ownerOnceId: admission.ownerOnceId } : {}), ...(this.options.semantic ? {semantic:this.semanticConfiguration()} : {}) }, actorJson = JSON.stringify(actor);
     const id = await bridgeHash([this.keys(), actorJson, key]), requestHash = await bridgeHash(request);
+    if (admission) await this.ownerPlan(actor, { id, request_json: JSON.stringify(request) });
     await this.statement(`INSERT INTO assistant_retrieval_runs(installation_id,generation,id,actor_json,request_json,request_hash,run_token,page_size,max_steps,max_evaluations)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, ...this.keys(), id, actorJson, JSON.stringify(request), requestHash, crypto.randomUUID(), this.limits.pageSize, this.limits.maxSteps, this.limits.maxEvaluations).run();
+      SELECT ?,?,?,?,?,?,?,?,?,? ${admission ? `WHERE ${admission.guard.sql}` : ""} ON CONFLICT DO NOTHING`, ...this.keys(), id, actorJson, JSON.stringify(request), requestHash, crypto.randomUUID(), this.limits.pageSize, this.limits.maxSteps, this.limits.maxEvaluations,...(admission?.guard.values ?? [])).run();
     const run = await this.load(actor, id); if (run.request_hash !== requestHash) throw new Error("retrieval_run_conflict"); return this.progress(run);
   }
   private storedStep(runId: string, stepId: string) { return this.statement(`SELECT * FROM assistant_retrieval_steps WHERE ${ns} AND run_id=? AND step_id=?`, ...this.keys(), runId, stepId).first<Step>(); }
@@ -248,6 +271,7 @@ export class RetrievalRuns {
     const fresh=await this.proofGuard(proof); return !!await this.statement(`SELECT 1 WHERE ${fresh.sql}`,...fresh.values).first();
   }
   private async semanticRequest(actor:TrustedActor,run:Run):Promise<{proof:CoverageProof;input:EngineSearch}|{reason:"capacity"|"stale"}> {
+    const owned = await this.ownerPlan(actor, run);
     const inventory=this.inventory(actor,run,this.clock());
     const rows=await this.statement(`WITH current AS (${inventory.sql}) SELECT c.*,i.origin_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint ORDER BY c.id LIMIT 65`,...inventory.values,...this.keys(),run.id).all<InventoryRow & {origin_json:string|null}>();
     if(rows.results.length>64) {
@@ -257,7 +281,7 @@ export class RetrievalRuns {
     }
     const proof:CoverageProof={scope:this.scope,runId:run.id,runToken:run.run_token,requestHash:run.request_hash,checkpoint:run.checkpoint,actor:run.actor_json,purpose:this.purpose,configuration:this.semanticConfiguration(),inputHash:await bridgeHash([actor,JSON.parse(run.request_json).input.query,rows.results.map(row=>({id:row.id,version:row.version,hash:row.content_hash})),10]),manifestHash:await bridgeHash(rows.results.map(row=>[row.id,row.fingerprint]))};
     const input:EngineSearch={query:JSON.parse(run.request_json).input.query,limit:10,actor,coverage:proof,allowedSources:[],permits:[]};
-    for(const row of rows.results){const source=this.access.fromRow(actor,row);input.allowedSources.push({id:source.id,version:source.fence.source.version,hash:source.fence.source.hash});input.permits.push({source:source.fence,...(row.origin_json ? {origin:JSON.parse(row.origin_json)} : {})});}
+    for(const row of rows.results){const source=this.access.fromRow(actor,row);input.allowedSources.push({id:source.id,version:source.fence.source.version,hash:source.fence.source.hash});input.permits.push({source:source.fence,...(row.origin_json ? {origin:JSON.parse(row.origin_json)} : {}),...(owned ? {ownerOnce:owned.grant} : {})});}
     const gate=this.coverage(actor,run,this.clock());
     await this.statement(`INSERT INTO assistant_retrieval_semantic(installation_id,generation,run_id,proof_json) SELECT ?,?,?,? WHERE ${gate.sql} ON CONFLICT DO NOTHING`,...this.keys(),run.id,JSON.stringify(proof),...gate.values).run();
     const prior=await this.semanticRow(run.id);

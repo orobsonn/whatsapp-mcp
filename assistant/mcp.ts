@@ -192,8 +192,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     return new OwnerControl(this.env.DB!, scope, { kind: "owner" },Date.now,outgoingPort(this.env)).execute(input);
   }
   async evaluate(expected: OwnerAffinity, input: unknown) {
-    const scope = this.#affinity(expected), { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
-    return new Evaluation(this.env.DB!, scope, { kind: "owner" }, new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) }), { origin }).execute(input);
+    const scope = this.#affinity(expected), { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read");
+    return new Evaluation(this.env.DB!, scope, { kind: "owner" }, new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic, ownerOncePlan,outgoing:outgoingPort(this.env) }), { origin }).execute(input);
   }
   async query(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
@@ -201,8 +201,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     if (query.kind === "assistant.health") return assistantHealth(this.env, { kind: "owner" });
     await assertRestoredGeneration(this.env, false);
     if (query.kind === "evaluation.sample" || query.kind === "evaluation.metrics" || query.kind === "evaluation.exposure") {
-      const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read"), evaluation = new Evaluation(this.env.DB!, scope, { kind: "owner" },
-        new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) }), { origin });
+      const { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read"), evaluation = new Evaluation(this.env.DB!, scope, { kind: "owner" },
+        new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic, ownerOncePlan,outgoing:outgoingPort(this.env) }), { origin });
       if (query.kind === "evaluation.metrics") return evaluation.metrics();
       if (query.kind === "evaluation.exposure") return evaluation.exposure(query.id);
       const { kind: _, ...input } = query; return evaluation.sample(input);
@@ -220,8 +220,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       const token = () => this.env.CALENDAR_OAUTH!.get(this.env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(expected.data))).token(expected.data);
       return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), token).execute({ kind: "owner" }, query);
     }
-    const { origin, semantic } = hostConfiguredSearch(this.env, "owner_read");
-    const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic,outgoing:outgoingPort(this.env) });
+    const { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read");
+    const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic, ownerOncePlan,outgoing:outgoingPort(this.env) });
     return new OwnerQueries(this.env.DB!, scope, origin, journal,outgoingPort(this.env)).execute(input);
   }
 }

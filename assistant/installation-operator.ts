@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { bridgeHash } from "./ingress";
 import { installationCommand, type OwnerAssistantRPC } from "./mcp";
+export { handleOwnerOnceOperator } from "./owner-once-operator";
 export type InstallationOperatorEnv = {
   OWNER: Pick<OwnerAssistantRPC, "installation">; INSTALLATION_ID: string; OPERATIONAL_GENERATION: string;
   INSTALLATION_OPERATOR_TOKEN: string; INSTALLATION_OPERATOR_EXPIRES: string; INSTALLATION_OPERATOR_PORT: string;

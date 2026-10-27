@@ -6,6 +6,7 @@ import { conversationGuard, type ConversationFence } from "./conversations";
 import { Episodes } from "./agent/episodes";
 import type { SemanticEnginePort } from "./engine";
 import { RetrievalRuns } from "./retrieval-runs";
+import type { OncePlanReader } from "./owner-once-guard";
 import type { OriginGuard } from "./origin-guard";
 import type { EpisodeSearch, ValidatedProposal } from "./agent/controller";
 import { bridgeHash } from "./ingress";
@@ -64,7 +65,7 @@ export async function seedDecisionJob(db: D1Database, scope: Scope, jobId: strin
 export type DecisionMetadata = { id: string; subject?: DecisionSubject; jobId?: string; episodeId?: string; phase: JournalPhase; reason?: JournalReason; freshness: "unchecked" | "current" | "stale" | "unavailable"; recordedAt: number | null; effects: { mode: "shadow"; external: "none" }; capture?: { operation: string; applicationState: string; replayState: string | null } };
 type ReviewAdmission = { hash: string; build: (guard: AccessGuard) => D1PreparedStatement[]; results: D1Result[] | null };
 type Plan = { proposal: ValidatedProposal; statements: D1PreparedStatement[]; publicationIndex: number; journalGuard: AccessGuard };
-type Options = { clock?: () => number; origin?: OriginGuard; search?: EpisodeSearch; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort }; timeoutMs?: number;outgoing?:OutgoingPort };
+type Options = { clock?: () => number; origin?: OriginGuard; search?: EpisodeSearch; semantic?: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort }; timeoutMs?: number;outgoing?:OutgoingPort; ownerOncePlan?: OncePlanReader };
 type MetadataRow = { family: string; key: string; sort: number; recorded: number | null; job_id: string | null; episode_id: string | null; subject_json: string | null; phase: string; reason: string | null; coalesced: number | null; observed_revision: number | null; observed_watermark: number | null; operation: string | null; application_state: string; replay_state: string | null };
 const committed = `j.state='shadow_completed' AND e.state='settled' AND d.request_hash=l.request_hash AND d.binding_hash=e.binding_hash AND d.proposal_json=e.result_json AND d.proposal_json IS NOT NULL AND d.publication_nonce=e.search_nonce AND d.publication_nonce IS NOT NULL`;
 const invalidRequest = `CASE WHEN json_valid(l.request_json) THEN json_extract(l.request_json,'$.runtime') IS NOT 'flue' ELSE 1 END`;
@@ -223,7 +224,7 @@ export class DecisionJournal {
       if (JSON.stringify(actual) !== JSON.stringify(refs) || JSON.stringify(value) !== JSON.stringify(episode.result) || value.binding.bindingHash !== episode.binding_hash || JSON.stringify(metadata.subject) !== JSON.stringify(request.subject) || JSON.stringify(request.subject) !== JSON.stringify(binding.subject)) throw 0;
       if(JSON.stringify(request.outgoing)!==JSON.stringify(binding.outgoing)||JSON.stringify(value.outgoing)!==JSON.stringify(binding.outgoing))throw 0;
       const access = new SourceAccess(this.db, this.scope), now = this.clock(), ownerFences: SourceFence[] = [];
-      const search = this.options.search ?? new RetrievalRuns(this.db, this.scope, { purpose: binding.purpose, origin: this.options.origin, clock: this.clock, semantic: this.options.semantic });
+      const search = this.options.search ?? new RetrievalRuns(this.db, this.scope, { purpose: binding.purpose, origin: this.options.origin, clock: this.clock, semantic: this.options.semantic, ownerOncePlan: this.options.ownerOncePlan });
       for (const source of binding.context.sources) {
         const current = await access.read({ kind: "owner" }, source.id, source.fence.source.revision, now);
         if (!current) return { ...metadata, freshness: "stale" };

@@ -6,11 +6,14 @@ import { z } from "zod";
 import type { CheckpointPlan, CheckpointState, SourceStamp } from "./checkpoints";
 import type { RebuildState } from "./rebuild";
 import type { CoverageProof } from "./retrieval-runs";
+import type { OnceGrant } from "./owner-once-guard";
 export type Ref = { id: string; version: number; hash: string };
-export type EnginePermit = { source: SourceFence; origin?: OriginFence };
+export type EnginePermit = { source: SourceFence; origin?: OriginFence; ownerOnce?: OnceGrant };
 export type EngineSearch = { query: string; allowedSources: Ref[]; limit: number; actor: TrustedActor; permits: EnginePermit[]; coverage?: CoverageProof };
 export type EngineRequest = EngineSearch;
-export type EngineIngest = { source: SourceRead; actor: TrustedActor; origin?: OriginFence };
+export type EngineIngest = { source: SourceRead; actor: TrustedActor; origin?: OriginFence; ownerOnce?: OnceGrant; expectedIndex?: { indexEpoch: string; indexRevision: string } };
+const ingestPermit = (input: EngineIngest): EnginePermit => ({ source: input.source.fence,
+  ...(input.origin ? { origin: input.origin } : {}), ...(input.ownerOnce ? { ownerOnce: input.ownerOnce } : {}) });
 export type InitialIngestAdmission = {itemId:string;owner:string;kind?:"owner_once"};
 export type InitialIngestCheckInput = {actor:TrustedActor;source:{fence:SourceFence}};
 export type InitialIngestTicket = {itemId:string;inputHash:string;indexEpoch:string;operationId:string;admissionKind?:"owner_once"};
@@ -42,15 +45,19 @@ export interface EngineGuard {
   checkCoverage?(proof: CoverageProof): Promise<boolean>;
   issue(source: SourceFence, expiresAt: number): Promise<string>;
   revoke(token: string): Promise<void>;
-  checkInitialAdmission?(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string):Promise<boolean>;
+  checkInitialAdmission?(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string,continuing?:boolean):Promise<boolean>;
 }
-type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number; coverage?: CoverageProof; searchIndex?: { epoch: string; revision: string }; mode?: "replay_only"; indexEpoch?: string; owner?: string;initial?:{admission:InitialIngestAdmission;indexEpoch:string} };
+type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number; coverage?: CoverageProof; searchIndex?: { epoch: string; revision: string }; mode?: "replay_only"; indexEpoch?: string; owner?: string;initial?:{admission:InitialIngestAdmission;indexEpoch:string;ticket?:InitialIngestTicket} };
 type Meta = { namespace: string; revision: string; lost: boolean; epoch?: string; sources?: SourceStamp[]; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
 type Receipt = { state: "complete"; operationId: string; result: unknown; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" };
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/);
 const refSchema = z.object({ id: identifier, version: z.number().int().positive().max(2147483647), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const counter = z.number().int().nonnegative().safe();
+const ingestExpectation = z.object({ indexEpoch: z.string().uuid(), indexRevision: z.union([z.literal("empty"), z.string().regex(/^[a-f0-9]{64}$/)]) }).strict();
+const completeReceiptSchema = z.object({ state: z.literal("complete"), operationId: z.string().regex(/^[a-f0-9]{64}$/),
+  result: z.unknown(), indexRevision: z.union([z.literal("empty"), z.string().regex(/^[a-f0-9]{64}$/)]),
+  indexState: z.enum(["needs_checkpoint", "checkpoint_confirmed"]) }).strict();
 const searchAdmissionSchema = z.object({ token: z.string().min(1).max(256), alias: z.string().max(256).nullable(), requestHash: z.string().regex(/^[a-f0-9]{64}$/).nullable() }).strict();
 const searchResult = z.object({ candidates: z.array(refSchema.extend({ via: z.array(z.enum(["chunks", "graph"])).max(2), relationCount: counter })).max(10), missing: z.array(refSchema).max(64) }).strict();
 export const searchTicketSchema = z.object({alias:z.string().min(1).max(256),requestHash:z.string().regex(/^[a-f0-9]{64}$/),operationId:z.string().regex(/^[a-f0-9]{64}$/),indexEpoch:z.string().min(1).max(256),indexRevision:z.union([z.literal("empty"),z.string().regex(/^[a-f0-9]{64}$/)])}).strict();
@@ -69,6 +76,7 @@ export class CogneeEngine implements EnginePort {
   private scope: Readonly<{ installationId: string; generation: string }>;
   constructor(scope: { installationId: string; generation: string }, private store: EngineStore, private container: ContainerPort,
     private guard: EngineGuard, private clock = Date.now) { this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation }); }
+  isBusy() { return this.busy; }
   async ingest(input: EngineIngest): Promise<unknown> {
     return this.ingestSource(input);
   }
@@ -89,7 +97,7 @@ export class CogneeEngine implements EnginePort {
   async reserveInitialIngest(input:EngineIngest,admission:InitialIngestAdmission):Promise<{state:'reserved';ticket:InitialIngestTicket}|{state:'blocked'|'uncertain';reason:string}>{
     if(this.busy||!this.store.transaction)return {state:'blocked',reason:'initial_ingest_busy'};this.busy=true;
     try{admission={...admission};const owned=await this.initialInput(input,admission.itemId);
-      if(!await this.guard.check(owned.input.actor,[{source:owned.input.source.fence,...(owned.input.origin?{origin:owned.input.origin}:{})}])||!await this.guard.checkInitialAdmission?.(admission,owned.input))return {state:'blocked',reason:'initial_ingest_denied'};
+      if(!await this.guard.check(owned.input.actor,[ingestPermit(owned.input)])||!await this.guard.checkInitialAdmission?.(admission,owned.input))return {state:'blocked',reason:'initial_ingest_denied'};
       return await this.store.transaction(async tx=>{const prior=await this.initialState(tx);
         if(prior){if(prior.state!=='reserved'||prior.ticket.itemId!==admission.itemId||prior.ticket.inputHash!==owned.inputHash||prior.ticket.admissionKind!==admission.kind)return {state:'uncertain' as const,reason:'initial_ingest_exists'};
           return await this.pristine(tx)?{state:'reserved' as const,ticket:prior.ticket}:{state:'blocked' as const,reason:'initial_index_not_pristine'};}
@@ -120,6 +128,7 @@ export class CogneeEngine implements EnginePort {
   }
   private async ingestInput(input: EngineIngest) {
     input = JSON.parse(JSON.stringify(input)) as EngineIngest;
+    if (input.expectedIndex !== undefined) input.expectedIndex = ingestExpectation.parse(input.expectedIndex);
     const s = input.source, f = s.fence.source;
     if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
     const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
@@ -128,16 +137,18 @@ export class CogneeEngine implements EnginePort {
   }
   private async ingestSource(input: EngineIngest, rebuildEpoch?: string, rebuildOwner?: string,initial?:{ticket:InitialIngestTicket;admission:InitialIngestAdmission}): Promise<unknown> {
     try {
-      const owned = await this.ingestInput(input), s = owned.input.source;
-      return this.run("/ingest", { source: owned.source }, owned.input.actor, [{ source: s.fence, ...(owned.input.origin ? { origin: owned.input.origin } : {}) }], rebuildEpoch, rebuildOwner,undefined,undefined,initial?{...initial,input:owned.input}:undefined);
+      const owned = await this.ingestInput(input);
+      return this.run("/ingest", { source: owned.source }, owned.input.actor, [ingestPermit(owned.input)], rebuildEpoch, rebuildOwner,undefined,undefined,initial?{...initial,input:owned.input}:undefined,owned.input.expectedIndex);
     } catch { return { state: "blocked", reason: "invalid_source" }; }
   }
   /** Exact existing receipt only. Never starts, ingests or changes an epoch. */
   async ingestReceipt(input: EngineIngest, indexEpoch: string): Promise<Receipt | { state: "uncertain" }> {
     try {
       const owned = await this.ingestInput(input), meta = await this.store.get<Meta>("index");
-      if (!meta || meta.epoch !== indexEpoch || meta.lost || !await this.guard.check(owned.input.actor,[{source:owned.input.source.fence,...(owned.input.origin?{origin:owned.input.origin}:{})}])) return {state:"uncertain"};
+      if (!meta || meta.epoch !== indexEpoch || meta.lost) return {state:"uncertain"};
       const id = await bridgeHash([this.scope,indexEpoch,"/ingest",{source:owned.source},null]);
+      if (!this.completeReceipt(await this.store.get(`receipt:${id}`), id)
+        || !await this.guard.check(owned.input.actor, this.receiptPermits([ingestPermit(owned.input)]))) return { state: "uncertain" };
       return this.lookup(id);
     } catch { return {state:"uncertain"}; }
   }
@@ -220,11 +231,13 @@ export class CogneeEngine implements EnginePort {
     const row = await this.ticketRecord(ticket);
     if (!row) return {state:"blocked",reason:"ticket_denied"};
     if (!await this.ticketCurrent(ticket)) return {state:"blocked",reason:"index_changed",operationId:ticket.operationId};
-    if (!await this.guard.check(row.input.actor,row.input.permits) || !await this.coverageValid(row.input.coverage)) return {state:"blocked",reason:"source_denied",operationId:ticket.operationId};
+    const receipt = this.completeReceipt(await this.store.get(`receipt:${ticket.operationId}`), ticket.operationId);
+    const completed = receipt?.indexRevision === ticket.indexRevision;
+    const permits = completed ? this.receiptPermits(row.input.permits) : row.input.permits;
+    if (!await this.guard.check(row.input.actor,permits) || !await this.coverageValid(row.input.coverage)) return {state:"blocked",reason:"source_denied",operationId:ticket.operationId};
     // The ticket owns the current principal/proof. A shared exact receipt may
     // have been produced under an earlier proof, whose revocation is unrelated.
-    const receipt = await this.store.get<Receipt>(`receipt:${ticket.operationId}`);
-    if (receipt?.state === "complete" && receipt.operationId===ticket.operationId && receipt.indexRevision===ticket.indexRevision && await this.ticketCurrent(ticket) && await this.coverageValid(row.input.coverage)) return receipt as EngineSearchOutcome;
+    if (completed && await this.ticketCurrent(ticket) && await this.coverageValid(row.input.coverage)) return receipt as EngineSearchOutcome;
     if (!this.store.transaction) return { state: "blocked", reason: "operation_history_unavailable", operationId: ticket.operationId };
     const sealed = z.object({ version: z.literal(1) }).strict().safeParse(await this.store.get("search-operation-history-v1")).success;
     // The seal and operation claims are monotonic. Once migrated, lookup only
@@ -288,9 +301,24 @@ export class CogneeEngine implements EnginePort {
     } catch { return {state:"blocked",reason:"invalid_search"}; }
   }
   async lookup(id: string): Promise<Receipt | { state: "uncertain" }> {
-    if (!/^[a-f0-9]{64}$/.test(id) || await this.store.get<boolean>("maintenance")) return { state: "uncertain" };
-    const receipt = await this.store.get<Receipt>(`receipt:${id}`), auth = await this.store.get<Pick<Active, "actor" | "permits" | "coverage">>(`access:${id}`);
-    return receipt && auth && await this.guard.check(auth.actor, auth.permits) && await this.coverageValid(auth.coverage) ? receipt : { state: "uncertain" };
+    try {
+      if (!/^[a-f0-9]{64}$/.test(id) || await this.store.get<boolean>("maintenance")) return { state: "uncertain" };
+      const receipt = this.completeReceipt(await this.store.get(`receipt:${id}`), id), auth = await this.store.get<Pick<Active, "actor" | "permits" | "coverage">>(`access:${id}`);
+      return receipt && auth && await this.guard.check(auth.actor, this.receiptPermits(auth.permits)) && await this.coverageValid(auth.coverage) ? receipt : { state: "uncertain" };
+    } catch { return { state: "uncertain" }; }
+  }
+  private completeReceipt(raw: unknown, id: string): Receipt | null {
+    try {
+      const parsed = completeReceiptSchema.safeParse(raw);
+      return parsed.success && parsed.data.operationId === id && Object.hasOwn(parsed.data, "result") && bytes(raw) <= 65536
+        ? parsed.data as Receipt : null;
+    } catch { return null; }
+  }
+  /** Only strict completed-receipt branches use these transient copies. Current
+   * ACL/origin/coverage still govern reads; an expired execution grant cannot
+   * start work or conceal an already completed attempt. No persisted mutation. */
+  private receiptPermits(permits: EnginePermit[]): EnginePermit[] {
+    return permits.map(({ ownerOnce: _execution, ...permit }) => permit);
   }
   /** Named host lifecycle only. Normal calls cannot interleave with destruction
    * or reuse the rebuild capability; immutable callback epochs remain separate. */
@@ -357,11 +385,15 @@ export class CogneeEngine implements EnginePort {
     try { return await pending; }
     finally { this.maintenanceEffects.delete(pending); this.releaseMaintenance(); }
   }
-  async authorize(epoch: string): Promise<{ token: string; period: string; mode?: "replay_only"; coverage?: CoverageProof } | null> {
+  async authorize(epoch: string): Promise<{ token: string; period: string; mode?: "replay_only"; coverage?: CoverageProof; ownerOnce?: OnceGrant } | null> {
     if (!epoch || epoch !== this.activeEpoch) return null;
     const active = await this.store.get<Active>("active");
     if (!active || active.epoch !== epoch || active.until <= this.clock() || !await this.guard.check(active.actor, active.permits) || !await this.coverageValid(active.coverage)) return null;
-    if(active.initial&&(!active.permits[0]||!await this.guard.checkInitialAdmission?.(active.initial.admission,{actor:active.actor,source:{fence:active.permits[0].source}},active.initial.indexEpoch)))return null;
+    if(active.initial){
+      const slot=await this.initialState(),continuing=!!slot&&!!active.initial.ticket&&sameInitial(slot.ticket,active.initial.ticket)&&['attempting','complete'].includes(slot.state);
+      if(active.initial.admission.kind==='owner_once'&&!continuing)return null;
+      if(!active.permits[0]||!await this.guard.checkInitialAdmission?.(active.initial.admission,{actor:active.actor,source:{fence:active.permits[0].source}},active.initial.indexEpoch,continuing))return null;
+    }
     if (active.searchIndex && !await this.ticketCurrent({ indexEpoch: active.searchIndex.epoch,indexRevision: active.searchIndex.revision } as SearchTicket)) return null;
     const maintenance = await this.store.get<boolean>("maintenance");
     if (maintenance && active.mode !== "replay_only") return null;
@@ -370,7 +402,8 @@ export class CogneeEngine implements EnginePort {
       if (!maintenance || run?.phase !== "materializing" || run.indexEpoch !== active.indexEpoch || run.owner !== active.owner) return null;
     }
     const current = await this.store.get<Active>("active");
-    return current?.epoch === epoch ? { token: active.token, period: active.period, ...(active.mode ? { mode: active.mode } : {}), ...(active.coverage ? {coverage:active.coverage} : {}) } : null;
+    const grant = active.initial?.admission.kind === "owner_once" ? { id: active.initial.admission.itemId, token: active.initial.admission.owner } : active.permits[0]?.ownerOnce;
+    return current?.epoch === epoch ? { token: active.token, period: active.period, ...(active.mode ? { mode: active.mode } : {}), ...(active.coverage ? {coverage:active.coverage} : {}), ...(grant ? { ownerOnce: grant } : {}) } : null;
   }
   private async stop(active?: Active) {
     // Stop admission first. Never hand a surviving old process a new permit.
@@ -381,16 +414,17 @@ export class CogneeEngine implements EnginePort {
     // deny/revoke/storage failed. A new DO can only reconcile, never re-admit it.
     try { await this.container.destroy(); if (!this.container.running) await this.store.put("active", null); } catch { /* Quarantine remains. */ }
   }
-  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof;admissionToken:string}, submitOwner?: symbol,initial?:{ticket:InitialIngestTicket;admission:InitialIngestAdmission;input:EngineIngest}): Promise<unknown> {
+  private async run(path: "/ingest" | "/search", wire: Record<string, unknown>, actor: TrustedActor, permits: EnginePermit[], rebuildEpoch?: string, rebuildOwner?: string, prepared?: {ticket:SearchTicket;coverage?:CoverageProof;admissionToken:string}, submitOwner?: symbol,initial?:{ticket:InitialIngestTicket;admission:InitialIngestAdmission;input:EngineIngest},expectedIndex?:EngineIngest['expectedIndex']): Promise<unknown> {
     const nested = (!!rebuildEpoch && this.busy && this.rebuilding) || (!!submitOwner && this.busy && this.submitOwner === submitOwner);
     if (this.busy && !nested) return { state: "blocked", reason: "busy" }; if (!nested) this.busy = true;
     let active: Active | undefined, timer: ReturnType<typeof setTimeout> | undefined; const controller = new AbortController();
     const write = (key: string, value: unknown) => rebuildEpoch ? this.store.putFenced ? this.store.putFenced(key, value, rebuildEpoch, rebuildOwner!) : Promise.reject(new Error("rebuild_fenced")) : this.store.put(key, value);
     const initialCheck=async()=>{if(!initial)return;const slot=await this.initialState();
-      if(!slot||slot.state!=='attempting'||!sameInitial(slot.ticket,initial.ticket)||!await this.guard.check(actor,permits)||!await this.guard.checkInitialAdmission?.(initial.admission,initial.input,initial.ticket.indexEpoch))throw Error('initial_ingest_fenced');};
+      if(!slot||slot.state!=='attempting'||!sameInitial(slot.ticket,initial.ticket)||!await this.guard.check(actor,permits)||!await this.guard.checkInitialAdmission?.(initial.admission,initial.input,initial.ticket.indexEpoch,true))throw Error('initial_ingest_fenced');};
     try {
       let initialSlot:InitialIngest|undefined;
       try{initialSlot=await this.initialState();}catch{return {state:'blocked',reason:'initial_state_invalid'};}
+      if(expectedIndex){const observed=await this.store.get<Meta>('index');if(!observed||observed.epoch!==expectedIndex.indexEpoch||observed.revision!==expectedIndex.indexRevision)return {state:'blocked',reason:'index_changed'};}
       if (bytes({ wire, actor, permits }) > 65536 || permits.some(p => p.source.installationId !== this.scope.installationId || p.source.generation !== this.scope.generation)
         || !await this.guard.check(actor, permits) || !await this.coverageValid(prepared?.coverage)) return { state: "blocked", reason: "source_denied" };
       if (prepared && !await this.ticketCurrent(prepared.ticket)) return {state:"blocked",reason:"index_changed",operationId:prepared.ticket.operationId};
@@ -438,7 +472,7 @@ export class CogneeEngine implements EnginePort {
       }
       await write(`access:${operationId}`, { actor, permits, ...(prepared?.coverage ? {coverage:prepared.coverage} : {}) });
       active = { epoch: crypto.randomUUID(), operationId, token: await this.guard.issue(permits[0].source, this.clock() + 300000),
-        ...(initial?{initial:{admission:initial.admission,indexEpoch:initial.ticket.indexEpoch}}:{}),
+        ...(initial?{initial:{admission:initial.admission,indexEpoch:initial.ticket.indexEpoch,ticket:initial.ticket}}:{}),
         ...(prepared ? {searchIndex:{epoch:prepared.ticket.indexEpoch,revision:prepared.ticket.indexRevision},...(prepared.coverage ? {coverage:prepared.coverage}: {})} : {}),
         period: new Date(this.clock()).toISOString().slice(0, 10), actor, permits, until: this.clock() + 250000,
         ...(rebuildEpoch ? { mode: "replay_only" as const, indexEpoch: rebuildEpoch, owner: rebuildOwner } : {}) };

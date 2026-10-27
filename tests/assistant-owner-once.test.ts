@@ -7,10 +7,20 @@ import { InferenceBudget } from "../assistant/budget";
 import type { AssistantEnv } from "../assistant/env";
 import { JobQueue } from "../assistant/queue";
 import { RetentionPurge } from "../assistant/retention-purge";
-import { SourceAccess } from "../assistant/access";
-import { CanonicalEngineGuard } from "../assistant/container";
-import { readOnceGrant, onceReceipt } from "../assistant/owner-once-guard";
+import { SourceAccess, type AccessGuard } from "../assistant/access";
+import { CanonicalEngineGuard, handleBrokerRequest, engineModelAdmission } from "../assistant/container";
+import { readOnceGrant, onceReceipt, onceAuthority, onceKey, type OnceGrant } from "../assistant/owner-once-guard";
 import type { InitialIngestAdmission } from "../assistant/engine";
+import { CogneeModelBroker } from "../assistant/model-broker";
+import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
+import { hostConfiguredSearch } from "../assistant/configured-search";
+import { RetrievalRuns, type CoverageProof } from "../assistant/retrieval-runs";
+import { bridgeHash } from "../assistant/ingress";
+import { EpisodeController } from "../assistant/agent/controller";
+import { runtimeHost } from "../assistant/agent-runtime/runtime";
+import type { EpisodeDriver } from "../assistant/agent/controller";
+import type { EngineSearch, SearchTicket } from "../assistant/engine";
+import { compactStatement } from "../assistant/d1-statement";
 
 // @ts-expect-error Vite raw migration fixtures, including future additive files.
 const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -222,6 +232,7 @@ it("admits bootstrap under pause only with the separate current Owner receipt", 
   const grant = (await readOnceGrant(settings, onceReceipt.parse(JSON.parse(raw!))))!;
   admission.owner = grant.token;
   expect(await guard.checkInitialAdmission(admission, input)).toBe(true);
+  expect(await guard.checkInitialAdmission(admission, input, crypto.randomUUID())).toBe(false);
   expect(await guard.checkInitialAdmission({ itemId: admission.itemId, owner: admission.owner }, input)).toBe(false);
   expect(await guard.checkInitialAdmission({ ...admission, owner: crypto.randomUUID() }, input)).toBe(false);
 });
@@ -247,4 +258,222 @@ it("redacts durable admission grants from the paginated MCP export, including re
   expect(JSON.stringify(exported)).not.toContain(token!);
   expect(exported.find(row => row.operation_id.startsWith("owner-once-admit-v1:"))).toMatchObject({ token: null });
   expect(await rpc.ownerOnce(scope, { kind: "owner_once.status", operationId: command.operationId })).toMatchObject({ state: "admitted" });
+});
+it("fences the broker after a stale host grant when a supporting source is withdrawn", async () => {
+  const { rpc, command, source, sources } = await fixture();
+  const support = await sources.create({ originKey: "broker-support", text: "Synthetic broker support PRIVATE_SUPPORT_MARKER", audience: "owner", projectId: "once-project", occurredAt: now });
+  await rpc.ownerOnce(scope, command); await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const grant = (await readOnceGrant(settings, onceReceipt.parse(JSON.parse(raw!))))!;
+  const bodies: string[] = [];
+  const adapter = async (request: { body: string }) => { bodies.push(request.body); return { status: 200, actualUnits: 2,
+    body: JSON.stringify({ choices: [{ message: { content: "Synthetic reply PRIVATE_SUPPORT_MARKER" } }] }) }; };
+  const permit = await new CogneeModelBroker(env.DB, { ...scope, period: "2026-10-27" }, DEFAULT_BROKER_CONFIG, adapter)
+    .issuePermit(source.id, 1, now + 600000);
+  let revoke = false;
+  const rawAuthority = await onceAuthority(settings, scope, grant, Date.now());
+  expect(await env.DB.prepare(`SELECT 1 WHERE ${rawAuthority.guard.sql}`).bind(...rawAuthority.guard.values).first()).not.toBeNull();
+  const preflight = await engineModelAdmission(settings, "2026-10-27", undefined, grant)!.prepare({ key: "synthetic-preflight", hash: "a".repeat(64), recovered: false });
+  expect(preflight).not.toBeNull();
+  expect(await env.DB.prepare(`SELECT 1 WHERE ${preflight!.guard.sql}`).bind(...preflight!.guard.values).first()).not.toBeNull();
+  const host = { authorize: async () => { if (revoke) await sources.withdraw(support.id, 1);
+    return { token: permit, period: "2026-10-27", ownerOnce: grant }; } };
+  const invoke = (text: string) => handleBrokerRequest(new Request("http://broker.internal/v1/chat/completions", { method: "POST",
+    body: JSON.stringify({ model: DEFAULT_BROKER_CONFIG.chatModel, messages: [{ role: "user", content: text }] }) }), "synthetic-epoch", host,
+    (period: string, _proof: unknown, admitted?: OnceGrant) => new CogneeModelBroker(env.DB, { ...scope, period }, DEFAULT_BROKER_CONFIG, adapter, Date.now,
+      engineModelAdmission(settings, period, undefined, admitted)));
+  expect((await invoke("First authorized synthetic request")).status).toBe(200);
+  revoke = true;
+  expect((await invoke("A different request after revocation")).status).toBe(403);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]).not.toContain(grant.token);
+  const held = (await new InferenceBudget(env.DB, { ...scope, period: "2026-10-27" }).status()).committed;
+  expect(JSON.stringify((await env.DB.prepare("SELECT response_json FROM assistant_model_receipts WHERE installation_id=? AND source_id=?").bind(scope.installationId, source.id).all()).results)).toContain("PRIVATE_SUPPORT_MARKER");
+  await purge(support.id);
+  expect((await env.DB.prepare("SELECT response_json FROM assistant_model_receipts WHERE installation_id=? AND source_id=?").bind(scope.installationId, source.id).all()).results).toEqual([]);
+  expect((await new InferenceBudget(env.DB, { ...scope, period: "2026-10-27" }).status()).committed).toBe(held);
+});
+it("rechecks the full Owner manifest for late engine permits instead of just the anchor", async () => {
+  const { rpc, command, source, sources } = await fixture();
+  const support = await sources.create({ originKey: "late-ingest-support", text: "Synthetic ingestion support", audience: "owner", projectId: "once-project", occurredAt: now });
+  await rpc.ownerOnce(scope, command); await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const grant = (await readOnceGrant(settings, onceReceipt.parse(JSON.parse(raw!))))!;
+  const current = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, source.id))!;
+  const guard = new CanonicalEngineGuard(settings), permits = [{ source: current.fence, ownerOnce: grant }];
+  expect(await guard.check({ kind: "owner" }, permits)).toBe(true);
+  await sources.withdraw(support.id, 1);
+  expect(await guard.check({ kind: "owner" }, permits)).toBe(false);
+});
+type SelectedSearch = { start(actor: { kind: "owner" }, key: string, input: { query: string; projectId: string },
+  admission: { ownerOnceId: string; guard: AccessGuard }): Promise<{ runId: string }> };
+it("binds the retrieval question to its Owner plan and purges the run when a supporting original is removed", async () => {
+  const { rpc, command, sources } = await fixture();
+  const support = await sources.create({ originKey: "search-support", text: "Private planned retrieval support", audience: "owner", projectId: "once-project", occurredAt: now });
+  await rpc.ownerOnce(scope, command); await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!;
+  const authority = await onceAuthority(settings, scope, grant, Date.now());
+  const selected = hostConfiguredSearch(settings, "owner_read").search as unknown as SelectedSearch;
+  const admission = { ownerOnceId: receipt.id, guard: authority.guard };
+  const run = await selected.start({ kind: "owner" }, onceKey(receipt.id), { query: command.query, projectId: command.projectId }, admission);
+  const stored = await env.DB.prepare("SELECT request_json FROM assistant_retrieval_runs WHERE installation_id=? AND id=?").bind(scope.installationId, run.runId).first<string>("request_json");
+  expect(JSON.parse(stored!).ownerOnceId).toBe(receipt.id); expect(stored).not.toContain(grant.token);
+  await sources.withdraw(support.id, 1); await purge(support.id);
+  expect(await env.DB.prepare("SELECT 1 FROM assistant_retrieval_runs WHERE installation_id=? AND id=?").bind(scope.installationId, run.runId).first()).toBeNull();
+  await expect(selected.start({ kind: "owner" }, onceKey(receipt.id), { query: command.query, projectId: command.projectId }, admission)).rejects.toThrow();
+});
+it("does not treat the reserved Owner key as an ordinary unadmitted retrieval", async () => {
+  const { rpc, command } = await fixture(); const plan = await rpc.ownerOnce(scope, command) as { id: string };
+  const { search } = hostConfiguredSearch(settings, "owner_read");
+  await expect(search.start({ kind: "owner" }, onceKey(plan.id), { query: command.query, projectId: command.projectId })).rejects.toThrow();
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM assistant_retrieval_runs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+});
+it.each(["query", "project", "limit", "entities", "missing_provider", "fallback"])("refuses Owner retrieval with %s outside its admitted contract", async mode => {
+  const { rpc, command } = await fixture(); await rpc.ownerOnce(scope, command);
+  await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!;
+  const authority = await onceAuthority(settings, scope, grant, Date.now()), configured = hostConfiguredSearch(settings, "owner_read");
+  const search = mode === "missing_provider" ? new RetrievalRuns(env.DB, scope, { purpose: "owner_read", semantic: configured.semantic })
+    : mode === "fallback" ? new RetrievalRuns(env.DB, scope, { purpose: "owner_read", semantic: { ...configured.semantic!, mode: "lexical_fallback" }, ownerOncePlan: configured.ownerOncePlan }) : configured.search;
+  const input = { query: mode === "query" ? "Another question" : command.query, projectId: mode === "project" ? "foreign-project" : command.projectId,
+    ...(mode === "limit" ? { limit: 1 } : {}), ...(mode === "entities" ? { entities: [{ kind: "project" as const, id: "foreign" }] } : {}) };
+  await expect(search.start({ kind: "owner" }, onceKey(receipt.id), input, { ownerOnceId: receipt.id, guard: authority.guard })).rejects.toThrow();
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM assistant_retrieval_runs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+});
+it.each(["   ", Array.from({ length: 33 }, (_, i) => `distinct${i}`).join(" ")])("refuses an unusable retrieval question before any indexing admission: %s", async query => {
+  const { rpc, command } = await fixture();
+  await expect(rpc.ownerOnce(scope, { ...command, query })).rejects.toThrow();
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+  expect(bootstrap).not.toHaveBeenCalled();
+});
+it("carries the original grant only into internal semantic permits, keeping it out of retrieval records", async () => {
+  const { rpc, command } = await fixture(); await rpc.ownerOnce(scope, command);
+  await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!, authority = await onceAuthority(settings, scope, grant, Date.now());
+  const { search, semantic } = hostConfiguredSearch(settings, "owner_read");
+  const prepare = vi.fn(async (_key: string, _input: unknown) => ({ state: "blocked" as const, reason: "synthetic_no_model_submission" }));
+  Object.assign(semantic!.engine, { prepare });
+  let progress = await search.start({ kind: "owner" }, onceKey(receipt.id), { query: command.query, projectId: command.projectId }, { ownerOnceId: receipt.id, guard: authority.guard });
+  for (let i = 0; i < 3 && progress.state === "pending"; i++) progress = await search.step({ kind: "owner" }, { runId: progress.runId, stepId: `semantic-${i}`, expectedCheckpoint: progress.checkpoint });
+  await search.result({ kind: "owner" }, progress.runId);
+  expect(prepare).toHaveBeenCalled();
+  const request = prepare.mock.calls[0][1] as { permits: { ownerOnce?: OnceGrant }[] };
+  expect(request.permits.length).toBeGreaterThan(0);
+  expect(request.permits.every(permit => JSON.stringify(permit.ownerOnce) === JSON.stringify(grant))).toBe(true);
+  const stored = await env.DB.prepare("SELECT r.request_json,s.proof_json FROM assistant_retrieval_runs r LEFT JOIN assistant_retrieval_semantic s ON s.installation_id=r.installation_id AND s.generation=r.generation AND s.run_id=r.id WHERE r.installation_id=? AND r.id=?").bind(scope.installationId, progress.runId).first();
+  expect(JSON.stringify(stored)).not.toContain(grant.token);
+  const proof=JSON.parse((stored as {proof_json:string}).proof_json) as CoverageProof;
+  const combined=await engineModelAdmission(settings,"2026-10-27",proof,grant)!.prepare({key:"synthetic-combined-proof",hash:"b".repeat(64),recovered:false});
+  expect(combined).not.toBeNull();
+  expect(await compactStatement(env.DB,`SELECT 1 WHERE ${combined!.guard.sql}`,combined!.guard.values).first()).not.toBeNull();
+  const current=(await new SourceAccess(env.DB,scope).read({kind:"owner"},receipt.sourceId))!;
+  const adapter=vi.fn(async()=>({status:200,actualUnits:1,body:'{"choices":[{"message":{"content":"Synthetic combined reply"}}]}'}));
+  const broker=new CogneeModelBroker(env.DB,{...scope,period:"2026-10-27"},DEFAULT_BROKER_CONFIG,adapter,Date.now,engineModelAdmission(settings,"2026-10-27",proof,grant));
+  const permit=await broker.issuePermit(current.id,1,now+600000);
+  const invoke=()=>handleBrokerRequest(new Request("http://broker.internal/v1/chat/completions",{method:"POST",body:JSON.stringify({model:DEFAULT_BROKER_CONFIG.chatModel,messages:[{role:"user",content:"Synthetic combined proof"}]})}),"synthetic-epoch",{authorize:async()=>({token:permit,period:"2026-10-27",coverage:proof,ownerOnce:grant})},()=>broker);
+  expect((await invoke()).status).toBe(200);expect((await invoke()).status).toBe(200);expect(adapter).toHaveBeenCalledTimes(1);
+  await new SourceController(env.DB,scope,{kind:"owner"}).withdraw(current.id,1);
+  expect((await invoke()).status).not.toBe(200);expect(adapter).toHaveBeenCalledTimes(1);
+  expect(bootstrap).not.toHaveBeenCalled();
+});
+async function readyOwnerWork() {
+  const { rpc, command } = await fixture(); const planned = await rpc.ownerOnce(scope, command) as { jobId: string };
+  await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!, authority = await onceAuthority(settings, scope, grant, Date.now());
+  const { search, semantic } = hostConfiguredSearch(settings, "owner_read"), epoch = crypto.randomUUID();
+  const records = new Map<string, { ticket: SearchTicket; input: EngineSearch; submitted: boolean }>();
+  const complete = (record: { ticket: SearchTicket; input: EngineSearch }) => ({ state: "complete" as const, operationId: record.ticket.operationId,
+    indexRevision: record.ticket.indexRevision, indexState: "checkpoint_confirmed" as const,
+    result: { candidates: record.input.allowedSources.map(ref => ({ ...ref, via: ["chunks"], relationCount: 0 })), missing: [] } });
+  // Synthetic semantic dependency only; the real controller/budget/D1 are used.
+  Object.assign(semantic!.engine, {
+    prepare: async (alias: string, input: EngineSearch) => {
+      const old = records.get(alias); if (old) return { state: "prepared", ticket: old.ticket };
+      const ticket = { alias, requestHash: await bridgeHash(input), operationId: await bridgeHash(["synthetic-owner-search", alias, input]), indexEpoch: epoch, indexRevision: "c".repeat(64) };
+      records.set(alias, { ticket, input, submitted: false }); return { state: "prepared", ticket };
+    },
+    lookupTicket: async (ticket: SearchTicket) => { const record = records.get(ticket.alias)!; return record.submitted ? complete(record)
+      : { state: "uncertain", reason: "not_submitted", operationId: ticket.operationId }; },
+    submit: async (ticket: SearchTicket) => { const record = records.get(ticket.alias)!; record.submitted = true; return complete(record); },
+  });
+  let progress = await search.start({ kind: "owner" }, onceKey(receipt.id), { query: command.query, projectId: command.projectId }, { ownerOnceId: receipt.id, guard: authority.guard });
+  for (let i = 0; i < 3 && progress.state === "pending"; i++) progress = await search.step({ kind: "owner" }, { runId: progress.runId, stepId: `ready-${i}`, expectedCheckpoint: progress.checkpoint });
+  await search.advanceSemantic({ kind: "owner" }, progress.runId);
+  expect((await search.result({ kind: "owner" }, progress.runId)).state).toBe("ready");
+  const lease = (await new JobQueue(env.DB, scope).claimId(planned.jobId, now, 90000, authority.guard))!;
+  expect(lease).not.toBeNull();
+  return { search, runId: progress.runId, lease, receipt, grant, command };
+}
+it("refuses a planned Owner job in a controller without its bounded-work authority", async () => {
+  const { search, runId, lease } = await readyOwnerWork();
+  const model = vi.fn(async () => { throw Error("unadmitted_model"); });
+  const host = new EpisodeController(env.DB, { ...scope, period: "2026-10-27" }, search, model, DEFAULT_BROKER_CONFIG, { purpose: "owner_read" });
+  await expect(host.prepare(lease, "owner", runId)).rejects.toThrow("episode_denied");
+  expect(model).not.toHaveBeenCalled();
+});
+it("publishes one bounded shadow proposal and keeps it readable after execution expires without another model call", async () => {
+  const work = await readyOwnerWork(); const bodies: string[] = [];
+  const model = async (request: { body: string }) => {
+    bodies.push(request.body); const task = JSON.parse(JSON.parse(request.body).messages.at(-1).content), source = task.sources[0];
+    return { status: 200, actualUnits: 2, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ decision: "proposed", text: "Synthetic bounded proposal.",
+      citations: [{ id: source.id, revision: source.revision, version: source.version, hash: source.hash, quote: source.text, media: null }] }) } }] }) };
+  };
+  const host = runtimeHost(settings, "owner_read", { model });
+  const episode = await host.prepare(work.lease, "owner", work.runId);
+  expect(episode.deadline).toBeLessThanOrEqual(work.receipt.deadlineAt);
+  expect(JSON.stringify(episode.binding)).not.toContain(work.grant.token);
+  const driver: EpisodeDriver = (profile, runtimeId) => ({
+    dispatch: async () => ({ submissionId: "synthetic-owner-submission", uid: "synthetic-owner-uid", acceptedAt: new Date(now).toISOString() }),
+    read: async receipt => ({ ...receipt, text: await host.model(episode.id, { profile, runtimeId, submissionId: receipt.submissionId },
+      { messages: [{ role: "user", content: host.message(episode) }] }), data: {} }),
+  });
+  expect(await host.dispatch(episode.id, driver)).toMatchObject({ state: "accepted" });
+  const result = await host.read(episode.id, driver); expect(result).toMatchObject({ state: "shadow_completed" });
+  expect(bodies).toHaveLength(1); expect(bodies[0]).not.toContain(work.grant.token);
+  vi.setSystemTime(work.receipt.deadlineAt + 1);
+  const current = await new OwnerAssistant(createExecutionContext(), settings).query(scope, { kind: "decision", id: result.decisionId });
+  expect(current).toMatchObject({ freshness: "current" });
+  expect(bodies).toHaveLength(1);
+});
+it("does not mix two Owner roots merely because their questions and sources match", async () => {
+  const work = await readyOwnerWork(), rpc = new OwnerAssistant(createExecutionContext(), settings);
+  const command = { ...work.command, operationId: "different-owner-root" };
+  const planned = await rpc.ownerOnce(scope, command) as { jobId: string };
+  await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%' AND json_extract(result_json,'$.jobId')=?").bind(scope.installationId, planned.jobId).first<string>("result_json");
+  const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!, authority = await onceAuthority(settings, scope, grant, now);
+  const lease = (await new JobQueue(env.DB, scope).claimId(planned.jobId, now, 90000, authority.guard))!;
+  const host = runtimeHost(settings, "owner_read", { model: async () => { throw Error("wrong_root_must_not_call_model"); } });
+  await expect(host.prepare(lease, "owner", work.runId)).rejects.toThrow("episode_denied");
+});
+it("rejects model admission when its Root authority disappears after the guard was prepared", async () => {
+  const work = await readyOwnerWork(), original = settings.DB!;
+  let prepared = false, revoked = false;
+  settings.DB = { prepare(sql: string) { if (sql.startsWith("INSERT INTO assistant_model_receipts")) prepared = true; return original.prepare(sql); },
+    async batch(statements: D1PreparedStatement[]) {
+      if (prepared && !revoked) { revoked = true; await original.prepare("DELETE FROM assistant_owner_commands WHERE installation_id=? AND operation_id=?").bind(scope.installationId, `owner-once-admit-v1:${work.receipt.id}`).run(); }
+      return original.batch(statements);
+    } } as D1Database;
+  const model = vi.fn(async () => { throw Error("revoked_model_must_not_run"); }), host = runtimeHost(settings, "owner_read", { model });
+  const episode = await host.prepare(work.lease, "owner", work.runId);
+  const receipt = { submissionId: "synthetic-revoked-submission", uid: "synthetic-revoked-uid", acceptedAt: new Date(now).toISOString() };
+  const driver: EpisodeDriver = () => ({ dispatch: async () => receipt, read: async () => { throw Error("not_used"); } });
+  expect(await host.dispatch(episode.id, driver)).toMatchObject({ state: "accepted" });
+  await expect(host.model(episode.id, { profile: "owner", runtimeId: episode.runtime_id, submissionId: receipt.submissionId },
+    { messages: [{ role: "user", content: host.message(episode) }] })).rejects.toThrow();
+  expect(revoked).toBe(true); expect(model).not.toHaveBeenCalled();
+  expect((await new InferenceBudget(env.DB, { ...scope, period: "2026-10-27" }).status()).committed).toBe(DEFAULT_BROKER_CONFIG.chatCeiling);
+});
+it("does not replay an uncertain native envelope after the Owner source is withdrawn", async () => {
+  const work = await readyOwnerWork(), host = runtimeHost(settings, "owner_read", { model: async () => { throw Error("not_used"); } });
+  const episode = await host.prepare(work.lease, "owner", work.runId), dispatch = vi.fn(async () => { throw Error("synthetic_dispatch_ACK_lost"); });
+  const driver: EpisodeDriver = () => ({ dispatch, read: async () => { throw Error("not_used"); } });
+  expect(await host.dispatch(episode.id, driver)).toMatchObject({ state: "uncertain" });
+  await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).withdraw(work.command.sourceId, 1);
+  expect(await host.reconcile(episode.id, driver)).toMatchObject({ state: "blocked" });
+  expect(dispatch).toHaveBeenCalledTimes(1);
 });

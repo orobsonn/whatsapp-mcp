@@ -2,10 +2,13 @@ import { z } from "zod";
 import type { AssistantEnv } from "../env";
 import { hostConfiguredSearch } from "../configured-search";
 import { DEFAULT_BROKER_CONFIG, createOpenAIAdapter } from "../model-transport";
-import { EpisodeController, type Purpose, type RuntimeIdentity } from "../agent/controller";
+import { EpisodeController, type Purpose, type RuntimeIdentity, type OwnerOnceWork } from "../agent/controller";
 import { assertRestoredGeneration } from "../retention-runtime";
 import type { ModelAdapter } from "../model-broker";
 import {outgoingPort} from '../outgoing';
+import { onceScope, onceKey, readOncePlan, readOnceGrant, onceAuthority } from "../owner-once-guard";
+import { jobRequest } from "../agent/contracts";
+import { bridgeHash } from "../ingress";
 /** No router or generic binding. Existing account limits must already be
  * configured; this factory neither configures a budget nor activates capture. */
 export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter } = {}) {
@@ -20,8 +23,31 @@ export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { cloc
     override async reconcile(...args: Parameters<EpisodeController["reconcile"]>) { await assertRestoredGeneration(env); return super.reconcile(...args); }
   }
   const adapter = options.model ?? createOpenAIAdapter(env.OPENAI_API_KEY);
+  const ownerOnceWork: OwnerOnceWork = async (jobId, rootId, runId) => {
+    try {
+      const affinity = onceScope.parse(scope), receipt = await readOncePlan(env, affinity, rootId);
+      if (!receipt || receipt.jobId !== jobId || purpose !== "owner_read" || runId !== await bridgeHash([[scope.installationId, scope.generation], JSON.stringify({ kind: "owner" }), onceKey(rootId)])) return null;
+      const grant = await readOnceGrant(env, receipt);
+      if (!grant) return null;
+      const row = await env.DB!.prepare(`SELECT j.dedupe_key,l.request_hash,l.request_json FROM assistant_jobs j JOIN assistant_job_ledger l
+        ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
+        WHERE j.installation_id=? AND j.generation=? AND j.id=?`).bind(scope.installationId, scope.generation, jobId)
+        .first<{ dedupe_key: string; request_hash: string; request_json: string }>();
+      if (!row || row.dedupe_key !== onceKey(rootId) || await bridgeHash(JSON.parse(row.request_json)) !== row.request_hash) return null;
+      const request = jobRequest.parse(JSON.parse(row.request_json));
+      if (request.kind !== "reasoning" || request.actor.kind !== "owner" || request.sourceId !== receipt.sourceId || request.sourceRevision !== receipt.expectedRevision
+        || request.subject.kind !== "owner_request" || request.subject.requestKey !== onceKey(rootId) || request.subject.sourceId !== receipt.sourceId
+        || request.subject.sourceRevision !== receipt.expectedRevision || await bridgeHash(request.input) !== receipt.queryHash) return null;
+      const run = await env.DB!.prepare("SELECT actor_json,request_hash,request_json FROM assistant_retrieval_runs WHERE installation_id=? AND generation=? AND id=?")
+        .bind(scope.installationId, scope.generation, runId).first<{ actor_json: string; request_hash: string; request_json: string }>();
+      if (!run || run.actor_json !== JSON.stringify({ kind: "owner" }) || await bridgeHash(JSON.parse(run.request_json)) !== run.request_hash
+        || JSON.parse(run.request_json).ownerOnceId !== rootId) return null;
+      const authority = await onceAuthority(env, affinity, grant, clock());
+      return clock() < receipt.deadlineAt ? { guard: authority.guard, deadlineAt: receipt.deadlineAt } : null;
+    } catch { return null; }
+  };
   return new PausedRestoreEpisode(env.DB, { ...scope, period: new Date(clock()).toISOString().slice(0, 10) }, search,
-    async request => { await assertRestoredGeneration(env); return adapter(request); }, DEFAULT_BROKER_CONFIG, { purpose, clock,outgoing:outgoingPort(env) });
+    async request => { await assertRestoredGeneration(env); return adapter(request); }, DEFAULT_BROKER_CONFIG, { purpose, clock,outgoing:outgoingPort(env), ownerOnceWork });
 }
 export async function resolveRuntimeEpisode(raw: Record<string, unknown>, identity: RuntimeIdentity) {
   // Cloudflare supplies env and the named DO supplies identity, not the model.

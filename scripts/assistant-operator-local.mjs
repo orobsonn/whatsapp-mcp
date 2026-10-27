@@ -5,8 +5,8 @@ import {request as httpRequest} from "node:http";
 /** Node fetch adds Sec-Fetch-Mode:cors, which the operator correctly denies.
  * This fixed loopback transport sends neither browser headers nor arbitrary URLs.
  * A timeout after dispatch stays uncertain: one request, never an automatic retry. */
-export async function postOperatorCommand(port,token,command,{signal,timeoutMs=40000,maxResponseBytes=2097152}={}){
- if(!Number.isSafeInteger(port)||port<1024||port>65535||typeof token!=="string"||!/^[a-f0-9]{64}$/.test(token)||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>40000||!Number.isSafeInteger(maxResponseBytes)||maxResponseBytes<1||maxResponseBytes>2097152)throw Error("operator_transport_parameters");
+export async function postOperatorCommand(port,token,command,{signal,timeoutMs=40000,maxResponseBytes=2097152,allowLongStep=false}={}){
+ if(typeof allowLongStep!=="boolean"||!Number.isSafeInteger(port)||port<1024||port>65535||typeof token!=="string"||!/^[a-f0-9]{64}$/.test(token)||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>(allowLongStep?300000:40000)||!Number.isSafeInteger(maxResponseBytes)||maxResponseBytes<1||maxResponseBytes>2097152)throw Error("operator_transport_parameters");
  if(signal?.aborted)throw Error("operator_aborted");
  const encoded=JSON.stringify(command);if(typeof encoded!=="string")throw Error("operator_command_json");
  const body=Buffer.from(encoded);if(!body.length||body.length>16777216)throw Error("operator_command_limit");

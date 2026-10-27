@@ -37,6 +37,12 @@ Implementar avanço no mesmo módulo e operador local autenticado, reutilizando 
 
 RED/GREEN: seleção exata não toca backlog; requisição repetida/concorrente faz um efeito; retirada entre awaits impede ingest/modelo/publicação; orçamento conserva reserved/uncertain; perda deACK e reinício recuperam a mesma operação sem retry; Flue oficial e publicação atual alcançam o diário. Testes nativos usam o bundle/DOs reais com transportes sintéticos identificados; não substituem chamada Google/Telegram/modelo real na nuvem.
 
+Implementação da fatia2: o coordenador avança um passo por chamada e recupera os recibos existentes após reinício. O índice compartilhado precisa conter somente originais do manifesto; outra fonte indexada bloqueia este ensaio. Esse limite evita ampliar o corpus processado pelo Cognee e não representa suporte geral a projetos simultâneos. A ingestão confere também epoch e revisão esperados antes de efeitos. Um observador concorrente pode marcar o recibo D1 completo/incerto enquanto o Core termina; só a tentativa durável exata já iniciada pode continuar, sem admitir outra tentativa.
+
+Recibos estritamente completos permanecem consultáveis após expiração do grant, com acesso atual à fonte e à origem. Expirar impede efeitos novos; não reabre tickets nem apaga custos. A conclusão do operador é histórica: a leitura/revisão atual ainda passa pelo diário. Retenção de um suporte coleta jobs, buscas, slots de ingestão e caches de modelo do corpus dependente, preservando o ledger financeiro. O source_id do recibo de modelo é uma âncora, não prova de conteúdo exclusivo daquela fonte.
+
+A composição dos guards de cobertura e Owner excedeu 100 parâmetros em teste D1. A correção mantém todos os predicados no mesmo statement e deduplica bindings primitivos iguais usando parâmetros ordenados ?N. O compilador recebe somente SQL interno completo, respeita aspas/comentários e recusa parâmetros ambíguos, tipos não suportados, contagem divergente ou mais de100valores distintos. Valores privados continuam vinculados; não são interpolados. A contraprova exercita invoke, recuperação do mesmo recibo e retirada, com uma única chamada ao transporte sintético. O operador distingue HTTP200 de resultado blocked/uncertain/unavailable e encerra com falha nesses estados.
+
 ## Operação real após CI
 
 1. Reconciliar ledger atual das bases próprias conhecidas, preservandoUS$0,04incertos e teto globalUS$10. Configurar conta da geração atual de forma insert-only, com teto conservador pequeno para o ensaio; não trocar período/geração como retry.
