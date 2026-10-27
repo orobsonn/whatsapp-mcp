@@ -179,8 +179,8 @@ function parseCallback(input:unknown){
 /** Product wiring only. Neither raw tokens nor this capability enter tools. */
 export async function createTelegramReview(env:AssistantEnv,scope:OwnerAffinity,hostEffectGuard?:()=>AccessGuard){
  if(!env.DB||!env.TELEGRAM_WEBHOOK_SECRET||!env.TELEGRAM_BOT_INSTANCE)throw new Error("telegram_unconfigured");
- const {origin,semantic}=hostConfiguredSearch(env,"owner_read");
- const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic,outgoing:outgoingPort(env)});
+ const {origin,semantic,ownerOncePlan}=hostConfiguredSearch(env,"owner_read");
+ const journal=new DecisionJournal(env.DB,scope,{kind:"owner"},{origin,semantic,ownerOncePlan,outgoing:outgoingPort(env)});
  // Rotating either credential invalidates old buttons/prepared notifications.
  const key=await bridgeHash(["telegram-review-credentials-v1",env.TELEGRAM_WEBHOOK_SECRET,env.TELEGRAM_BOT_TOKEN??"unconfigured"]);
  const effectCheck=async()=>{await assertRestoredGeneration(env);const effect=telegramEffectGuard(scope,hostEffectGuard);if(!await env.DB!.prepare(`SELECT 1 WHERE ${effect.sql}`).bind(...effect.values).first())throw new Error("telegram_runtime_blocked");};

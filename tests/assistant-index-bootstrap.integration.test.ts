@@ -6,6 +6,7 @@ import {SourceController} from '../assistant/sources';
 import {SourceAccess} from '../assistant/access';
 import {OriginGuard} from '../assistant/origin-guard';
 import {CogneeContainer,CanonicalEngineGuard} from '../assistant/container';
+import * as containerHost from '../assistant/container';
 import {CogneeEngine,type EngineSearch} from '../assistant/engine';
 import {InferenceBudget} from '../assistant/budget';
 import {receiveCapture,bridgeHash} from '../assistant/ingress';
@@ -18,16 +19,22 @@ import type {AssistantEnv} from '../assistant/env';
 import type {OriginScope,ReaderQuery} from '../assistant/origin-guard';
 import type {ModelAdapter} from '../assistant/model-broker';
 import type {EngineIngest} from '../assistant/engine';
+import {OwnerOnce} from '../assistant/owner-once';
+import {OwnerControl} from '../assistant/control';
+import {JobQueue} from '../assistant/queue';
+import {runtimeHost} from '../assistant/agent-runtime/runtime';
+import {readOnceGrant,onceReceipt} from '../assistant/owner-once-guard';
 // @ts-expect-error Vite migration fixtures.
 const migrations=import.meta.glob('../assistant/migrations/*.sql',{query:'?raw',import:'default',eager:true}) as Record<string,string>;
 let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number;
 let data:Map<string,unknown>,physical:Map<string,SourceStamp>,running:boolean,tail:Promise<unknown>;
 let engine:CogneeContainer,port:ReturnType<typeof physicalPort>,model:ModelAdapter,driver:EpisodeDriver;
+let onReceipt:(()=>Promise<void>)|undefined;
 const keys=()=>[scope.installationId,scope.generation],sql=(query:string,...args:(string|number|null)[])=>env.DB.prepare(query).bind(...args);
 const clone=<T>(value:T):T=>structuredClone(value);
 const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical((value as Record<string,unknown>)[k])])):value;
 function memoryStorage(){
-  const tx=(map:Map<string,unknown>)=>({get:async<T>(key:string)=>clone(map.get(key) as T|undefined),put:async(key:string,value:unknown)=>{map.set(key,clone(value));},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map([...map].filter(([k])=>k.startsWith(prefix)).slice(0,limit).map(([k,v])=>[k,clone(v as T)]))});
+  const tx=(map:Map<string,unknown>)=>({get:async<T>(key:string)=>clone(map.get(key) as T|undefined),put:async(key:string,value:unknown)=>{map.set(key,clone(value));if(key.startsWith('receipt:'))await onReceipt?.();},delete:async(key:string)=>{map.delete(key);},list:async<T>({prefix,limit}:{prefix:string;limit:number})=>new Map([...map].filter(([k])=>k.startsWith(prefix)).slice(0,limit).map(([k,v])=>[k,clone(v as T)]))});
   return {...tx(data),transaction:<T>(action:(store:ReturnType<typeof tx>)=>Promise<T>)=>{const result=tail.then(async()=>{const copy=new Map(data);const result=await action(tx(copy));data.clear();for(const [k,v]of copy)data.set(k,v);return result;});tail=result.then(()=>{},()=>{});return result;}};
 }
 function physicalPort(){let saved:Map<string,SourceStamp>|undefined,last:CheckpointManifest|undefined;
@@ -54,7 +61,7 @@ function physicalPort(){let saved:Map<string,SourceStamp>|undefined,last:Checkpo
 }
 beforeEach(async()=>{
   for(const [_,query]of Object.entries(migrations).sort(([a],[b])=>a.localeCompare(b))){const parts=query.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(p=>p.trim());if(parts.length)await env.DB.batch(parts.map(p=>env.DB.prepare(p)));}
-  scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'synthetic-first-e',sourceGeneration:'synthetic-first-g'};now=Date.parse('2026-10-26T12:00:00Z');modelCalls=0;dispatches=0;data=new Map();physical=new Map();running=false;tail=Promise.resolve();
+  scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'synthetic-first-e',sourceGeneration:'synthetic-first-g'};now=Date.parse('2026-10-26T12:00:00Z');modelCalls=0;dispatches=0;data=new Map();physical=new Map();running=false;tail=Promise.resolve();onReceipt=undefined;
   vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(now);
   const capturedAt=now,secret='synthetic-first-index-capture-secret',reader={async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw Error('denied');return{observation:'capture_snapshot',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:'message',sourceId:'first',chatId:'chat',sourceVersion:1,watermark:1,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:'Synthetic first captured request.',authorId:'a'.repeat(64),authorName:'Synthetic author',fromMe:false,occurredAt:capturedAt,messageId:'first',messageVersion:1}};}};
   settings={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:reader,OPENAI_API_KEY:'synthetic-only-key',FLUE_EPISODES_ENABLED:'shadow',ROUTINES_ENABLED:'shadow'};
@@ -66,6 +73,25 @@ beforeEach(async()=>{
   driver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'submission-first',uid:'uid-first',acceptedAt:new Date(now).toISOString()};},read:async receipt=>{const {search}=hostConfiguredSearch(settings,'automation',()=>now),host=new EpisodeController(env.DB,{...scope,period:'2026-10-26'},search,model,DEFAULT_BROKER_CONFIG,{purpose:'automation',clock:()=>now});const row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
+it.each([true,false])('rearms only an already running container after a Durable Object constructor restart (%s)',async active=>{
+  const timeout=vi.fn(async()=>{}),pending:Promise<unknown>[]=[],container={running:active,setInactivityTimeout:timeout};
+  const ctx={container,blockConcurrencyWhile:vi.fn((fn:()=>Promise<unknown>)=>{const result=fn();pending.push(result);return result;})};
+  const rearm=(containerHost as unknown as {retainRunningContainer(ctx:unknown):void}).retainRunningContainer;
+  rearm(ctx);await Promise.all(pending);
+  expect(timeout).toHaveBeenCalledTimes(active?1:0);if(active)expect(timeout).toHaveBeenCalledWith(60000);
+  expect(ctx.blockConcurrencyWhile).toHaveBeenCalledTimes(active?1:0);expect(data.size).toBe(0);expect(port.start).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+});
+it('observes initial metadata and the current image binding without waking or changing the engine',async()=>{
+  const context=(engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx;
+  delete context.container.images.cognee;
+  const before=clone([...data]);
+  expect(await engine.initialObservation()).toMatchObject({state:'observed',imageConfigured:false,initial:{state:'absent'},index:{state:'absent'},activePresent:false});
+  context.container.images.cognee='synthetic-pinned-image';
+  expect(await engine.initialObservation()).toMatchObject({state:'observed',imageConfigured:true});
+  expect([...data]).toEqual(before);
+  for(const effect of [port.start,port.deny,port.destroy,port.intercept,port.request])expect(effect).not.toHaveBeenCalled();
+  expect(modelCalls).toBe(0);
+});
 async function capture(){const response=await receiveCapture(new Request('https://synthetic.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+settings.BRIDGE_SECRET},body:JSON.stringify({protocol:1,...scope,sequence:1,previousSequence:0,chatId:'chat',sourceId:'first',sourceKind:'message',operation:'upsert',recordedAt:now})}),settings);expect(response.status).toBe(200);}
 const scheduler=()=>new AssistantScheduler(settings,{clock:()=>now,driver,model});
 async function admission(){settings.ROUTINES_PAUSED='true';await capture();await scheduler().tick();settings.ROUTINES_PAUSED='false';now+=60001;vi.setSystemTime(now);
@@ -128,4 +154,129 @@ it('recovers a lost RPC ACK through the original epoch receipt, then checkpoints
   const commit=engine.commitInitialIngest.bind(engine);vi.spyOn(engine,'commitInitialIngest').mockImplementationOnce(async(...args)=>{await commit(...args);throw Error('RPC_ACK_lost_after_complete');});await capture();await scheduler().tick();const before=await sql('SELECT index_epoch,state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first<{index_epoch:string;state:string}>();expect(before?.state).toBe('attempting');
   now+=60001;vi.setSystemTime(now);await scheduler().tick();now+=60001;vi.setSystemTime(now);await scheduler().tick();
   expect(await sql('SELECT index_epoch,state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({index_epoch:before!.index_epoch,state:'complete'});expect(port.request.mock.calls.filter(([p])=>p==='/ingest')).toHaveLength(1);expect(port.start).toHaveBeenCalledTimes(1);expect(dispatches).toBe(1);expect(modelCalls).toBe(1);
+});
+it.each(['complete','uncertain'] as const)('binds the paused Owner bootstrap ticket and tolerates a concurrent %s observer without another physical attempt',async observedState=>{
+  settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
+  // Isolated synthetic account; no real resource or reservation is changed.
+  await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
+  await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'once',name:'Synthetic Owner bootstrap',expectedVersion:0,operationId:'once-project'});
+  const source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'own-first',text:'Synthetic bounded Owner original.',audience:'owner',projectId:'once',occurredAt:now});
+  const once=new OwnerOnce(settings,scope,()=>now),plan=await once.execute({kind:'owner_once.plan',operationId:'once-first',sourceId:source.id,expectedRevision:1,projectId:'once',query:'Explain this synthetic original.',deadlineAt:now+600000,maxCostMicroUsd:600000});
+  expect(plan.state).toBe('planned');await once.execute({kind:'owner_once.advance',operationId:'once-first'});
+  const raw=await sql("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id LIKE 'owner-once-v1:%'",...keys()).first<string>('result_json');
+  const receipt=onceReceipt.parse(JSON.parse(raw!)),grant=(await readOnceGrant(settings,receipt))!;
+  const input:EngineIngest={actor:{kind:'owner'},source:(await new SourceAccess(env.DB,scope).read({kind:'owner'},source.id))!,ownerOnce:grant};
+  const admission={kind:'owner_once' as const,itemId:grant.id,owner:grant.token};
+  const reserved=await engine.reserveInitialIngest(input,admission);expect(reserved.state).toBe('reserved');if(reserved.state!=='reserved')throw Error('synthetic_own_not_reserved');
+  expect(reserved.ticket).toMatchObject({admissionKind:'owner_once'});
+  expect(await engine.commitInitialIngest(input,reserved.ticket,{itemId:admission.itemId,owner:admission.owner})).toMatchObject({state:'blocked',reason:'initial_admission_changed'});
+  expect(port.start).not.toHaveBeenCalled();
+  const f=input.source.fence.source;
+  await sql("INSERT INTO assistant_routine_ingestions VALUES(?,?,?,?,?,?,?,?,'attempting')",...keys(),scope.sourceEpoch,scope.sourceGeneration,receipt.id,source.id,
+    JSON.stringify({id:f.id,revision:f.revision,version:f.version,hash:f.hash}),reserved.ticket.indexEpoch).run();
+  onReceipt=async()=>{expect((await engine.lifecycleState()).busy).toBe(true);await sql('UPDATE assistant_routine_ingestions SET state=? WHERE installation_id=? AND generation=? AND item_id=? AND source_id=?',observedState,...keys(),receipt.id,source.id).run();};
+  expect(await engine.commitInitialIngest(input,reserved.ticket,admission)).toMatchObject({state:'complete'});
+  onReceipt=undefined;
+  expect((await engine.lifecycleState()).busy).toBe(false);
+  expect(await engine.commitInitialIngest(input,reserved.ticket,admission)).toMatchObject({state:'complete'});
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+  expect(settings.ROUTINES_PAUSED).toBe('true');
+  const completed=clone(data.get('receipt:'+reserved.ticket.operationId));
+  now+=600001;vi.setSystemTime(now);
+  expect(await engine.ingestReceipt(input,reserved.ticket.indexEpoch)).toMatchObject({state:'complete',operationId:reserved.ticket.operationId});
+  expect(await engine.ingestReceipt({...input,actor:{kind:'interlocutor',provider:'synthetic',address:'guest',conversationId:'foreign-chat',conversationKind:'private',action:'reply_text'}},reserved.ticket.indexEpoch)).toMatchObject({state:'uncertain'});
+  expect(await once.execute({kind:'owner_once.advance',operationId:'once-first'})).toMatchObject({state:'blocked'});
+  for(const malformed of [{}, {...completed as object,state:'attempting'}, {...completed as object,operationId:'f'.repeat(64)}]){
+    data.set('receipt:'+reserved.ticket.operationId,malformed);expect(await engine.lookup(reserved.ticket.operationId)).toMatchObject({state:'uncertain'});
+  }
+  data.set('receipt:'+reserved.ticket.operationId,completed);
+  expect(await engine.lookup(reserved.ticket.operationId)).toMatchObject({state:'complete',operationId:reserved.ticket.operationId});
+  await new SourceController(env.DB,scope,{kind:'owner'},()=>now).withdraw(source.id,1);
+  expect(await engine.lookup(reserved.ticket.operationId)).toMatchObject({state:'uncertain'});
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+});
+it.each(['complete','uncertain_search','missing_image','checkpoint_ack'] as const)('advances only the selected Owner request through existing ledgers (%s)',async outcome=>{
+  settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
+  await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
+  await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'selected',name:'Synthetic selected Owner work',expectedVersion:0,operationId:'selected-project'});
+  const source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'selected-blue',text:'Synthetic blue test marker. No external action is authorized.',audience:'owner',projectId:'selected',occurredAt:now});
+  const queue=new JobQueue(env.DB,scope),neighbor=await queue.enqueue({kind:'maintenance',dedupeKey:'ordinary-neighbor',sourceId:source.id,sourceRevision:1,request:'This neighboring job must remain untouched.'},now);
+  const ownDriver:EpisodeDriver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'selected-owner-submission',uid:'selected-owner-uid',acceptedAt:new Date(now).toISOString()};},
+    read:async receipt=>{const host=runtimeHost(settings,'owner_read',{model,clock:()=>now}),row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();
+      const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
+  const options={model,driver:ownDriver},command={kind:'owner_once.plan',operationId:'selected-owner',sourceId:source.id,expectedRevision:1,projectId:'selected',query:'Explain the blue test marker.',deadlineAt:now+600000,maxCostMicroUsd:600000};
+  let once=new OwnerOnce(settings,scope,()=>now,options);await once.execute(command);
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'admitted'});
+  if(outcome==='missing_image')delete (engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx.container.images.cognee;
+  if(outcome==='checkpoint_ack'){const checkpoint=engine.checkpoint.bind(engine);vi.spyOn(engine,'checkpoint').mockImplementationOnce(async(...args)=>{await checkpoint(...args);throw Error('synthetic_checkpoint_ACK_lost_after_commit');});}
+  const first=await once.execute({kind:'owner_once.advance',operationId:command.operationId});
+  if(outcome==='missing_image'){
+    expect(first).toMatchObject({state:'blocked',phase:'index',reason:'engine_image_unconfigured'});
+    expect(data.has('initial-ingest-v1')).toBe(false);expect(data.has('index')).toBe(false);expect(port.start).not.toHaveBeenCalled();expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+    expect(await sql('SELECT COUNT(*) n FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);return;
+  }
+  if(outcome==='checkpoint_ack')expect(first).toMatchObject({state:'uncertain',phase:'checkpoint',reason:'checkpoint_ack_unconfirmed'});
+  else expect(first).toMatchObject({state:'pending',phase:'indexed'});
+  expect(data.get('checkpoint')).toMatchObject({phase:'confirmed'});
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+  if(outcome==='uncertain_search'){
+    const request=port.request.getMockImplementation()!;port.request.mockImplementation(async(path,body)=>{if(path==='/search')throw Error('synthetic_search_ACK_lost');return request(path,body);});
+  }
+  let result:Record<string,unknown>=first;
+  if(outcome==='complete'){
+    running=false;physical.clear(); // Genuine filesystem loss between operator RPCs.
+    expect(await new OwnerOnce(settings,scope,()=>now,options).execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'pending',phase:'restored'});
+  }
+  if(outcome==='checkpoint_ack')result={state:'pending'}; // Explicit same-operation receipt reconciliation, never re-ingest.
+  for(let i=0;i<16&&!['complete','uncertain','blocked'].includes(String(result.state));i++){
+    once=new OwnerOnce(settings,scope,()=>now,options); // Coordinator restart, same durable operation.
+    result=await once.execute({kind:'owner_once.advance',operationId:command.operationId});
+  }
+  if(outcome==='uncertain_search'){
+    expect(result).toMatchObject({state:'blocked',phase:'index',reason:'index_maintenance_required'});expect(dispatches).toBe(0);expect(modelCalls).toBe(0);
+    for(let i=0;i<2;i++)expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'blocked',phase:'index',reason:'index_maintenance_required'});
+    expect(port.request.mock.calls.filter(([path])=>path==='/search')).toHaveLength(1);return;
+  }
+  expect(result).toMatchObject({state:'complete'});expect(dispatches).toBe(1);expect(modelCalls).toBe(1);
+  expect((await queue.get(neighbor.id))?.attempts).toBe(0);expect((await queue.get(neighbor.id))?.state).toBe('pending');
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'complete'});
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);expect(modelCalls).toBe(1);
+  expect(settings.ROUTINES_PAUSED).toBe('true');
+});
+it('recovers a proven pre-dispatch Owner boot failure using a separate grant, preserves old uncertainty and publishes exactly one new decision',async()=>{
+  settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
+  await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
+  await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'recovery',name:'Synthetic bootstrap recovery',expectedVersion:0,operationId:'recovery-project'});
+  const source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'recovery-original',text:'Synthetic recovery blue marker. No external action.',audience:'owner',projectId:'recovery',occurredAt:now});
+  const ownDriver:EpisodeDriver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'recovery-submission',uid:'recovery-uid',acceptedAt:new Date(now).toISOString()};},
+    read:async receipt=>{const host=runtimeHost(settings,'owner_read',{model,clock:()=>now}),row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();
+      const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
+  const options={model,driver:ownDriver},command={kind:'owner_once.plan',operationId:'old-failed-bootstrap',sourceId:source.id,expectedRevision:1,projectId:'recovery',query:'Explain the synthetic blue marker.',deadlineAt:now+600000,maxCostMicroUsd:600000};
+  let once=new OwnerOnce(settings,scope,()=>now,options);const old=await once.execute(command) as {id:string;jobId:string};await once.execute({kind:'owner_once.advance',operationId:command.operationId});
+  const start=port.start.getMockImplementation()!;port.start.mockImplementationOnce(async()=>{throw Error('synthetic_pre_dispatch_boot_failure');});
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'uncertain',reason:'ingestion_unconfirmed'});
+  const original=clone(data.get('initial-ingest-v1')) as {state:string;ticket:{indexEpoch:string;operationId:string;inputHash:string}};
+  expect(original.state).toBe('uncertain');expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);expect(data.get('quarantine')).toBe(true);
+  now=command.deadlineAt+1;vi.setSystemTime(now);port.start.mockImplementation(start);
+  const recovery={kind:'owner_once.recovery_plan',operationId:'separate-recovery-bootstrap',previousOperationId:command.operationId,deadlineAt:now+600000,maxCostMicroUsd:600000};
+  const plan=await once.execute(recovery) as {id:string;jobId:string};expect(plan.id).not.toBe(old.id);expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'admitted'});
+  const beforeCalls=port.start.mock.calls.length;
+  expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'pending',phase:'recovery_reserved'});
+  expect(port.start).toHaveBeenCalledTimes(beforeCalls);expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+  const reserved=clone(data.get('initial-ingest-v1')) as typeof original;expect(reserved.ticket).toMatchObject({indexEpoch:original.ticket.indexEpoch,operationId:original.ticket.operationId});expect(reserved.ticket.inputHash).not.toBe(original.ticket.inputHash);
+  let result:Record<string,unknown>={state:'pending'};
+  for(let i=0;i<20&&!['complete','uncertain','blocked'].includes(String(result.state));i++){
+    once=new OwnerOnce(settings,scope,()=>now,options);result=await once.execute({kind:'owner_once.advance',operationId:recovery.operationId});
+  }
+  expect(result).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+  expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
+  expect(await once.execute({kind:'owner_once.advance',operationId:recovery.operationId})).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);
+  const queue=new JobQueue(env.DB,scope);expect(await queue.get(old.jobId)).toMatchObject({state:'pending',attempts:0});expect(await queue.ledger(old.jobId)).toMatchObject({state:'prepared'});
+  expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'blocked'});
+  expect(await sql('SELECT state FROM assistant_routine_ingestions WHERE installation_id=? AND generation=? AND item_id=?',...keys(),old.id).first('state')).toBe('uncertain');
+  expect(await sql('SELECT COUNT(*) n FROM assistant_shadow_decisions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);
+  expect((data.get('initial-recovery-v1:'+old.id) as {previous:{initial:unknown}}).previous.initial).toEqual(original);
+  expect((await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).status()).committed).toBe(3);
+  const reservations=(await sql('SELECT state,actual_units FROM assistant_budget_reservations WHERE installation_id=? AND generation=?',...keys()).all()).results;expect(reservations).toEqual([{state:'settled',actual_units:3}]);
+  expect(settings.ROUTINES_PAUSED).toBe('true');
 });

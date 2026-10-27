@@ -3,6 +3,8 @@ import { InferenceBudget, type BudgetScope } from "./budget";
 import { SourceAccess, type AccessGuard, type SourceFence } from "./access";
 import { bridgeHash } from "./ingress";
 import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
+import { compactStatement } from "./d1-statement";
+import { reportModelAdmissionFailure, type ModelAdmissionFailure } from "./model-admission-diagnostics";
 export type ModelPath = "/v1/chat/completions" | "/v1/embeddings";
 export type BrokerConfig = { extractionConfig: string; priceVersion: string; chatModel: string; embeddingModel: string;
   maxOutputTokens: number; chatCeiling: number; embeddingCeiling: number };
@@ -116,9 +118,9 @@ export class CogneeModelBroker {
     const permit = await this.permit(token), guard = this.access.guard(owner, permit.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
     // Last local snapshot: a purged body cannot escape from an earlier JS copy
     // while its unrelated anchor source/permit remains active.
-    return this.db.prepare(`SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
-      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) AND (${execution.sql}) ${additional ? `AND (${additional.sql})` : ""}`)
-      .bind(...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...execution.values, ...(additional?.values ?? [])).first<{ response_json: string }>();
+    return compactStatement(this.db, `SELECT response_json FROM assistant_model_receipts WHERE ${ns} AND operation_key=? AND request_hash=? AND state='complete' AND response_json IS ? AND actual_units IS ?
+      AND EXISTS(SELECT 1 FROM assistant_model_permits WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) AND (${guard.sql}) AND (${execution.sql}) ${additional ? `AND (${additional.sql})` : ""}`,
+      [...this.keys(), key, hash, expected.response_json, expected.actual_units, ...this.keys(), permit.tokenHash, await this.configHash, this.clock(), ...guard.values, ...execution.values, ...(additional?.values ?? [])]).first<{ response_json: string }>();
   }
   private async requestKey(fence: SourceFence, request: { path: ModelPath; body: string }) {
     const configHash = await this.configHash, requestHash = await bridgeHash([configHash, request.path, request.body]);
@@ -157,21 +159,26 @@ export class CogneeModelBroker {
     await this.admission?.uncertain();
     return { state: "uncertain", operationKey: key };
   }
+  private admissionFailure(key: string, code: ModelAdmissionFailure, startedAt: number): Promise<Result> {
+    reportModelAdmissionFailure(code, startedAt);
+    return this.uncertainAdmission(key);
+  }
   private async recoveredAdmission(key: string, hash: string, token: string, request: { path: ModelPath; body: string }): Promise<Result> {
+    const startedAt = performance.now();
     try {
       const row = await this.receipt(key);
-      if (!row || row.state !== "complete" || row.actual_units === null || row.response_json === null) return this.uncertainAdmission(key);
+      if (!row || row.state !== "complete" || row.actual_units === null || row.response_json === null) return this.admissionFailure(key, "recovered_receipt_incomplete", startedAt);
       const settled = await this.db.prepare(`SELECT 1 FROM assistant_budget_reservations WHERE ${ns} AND operation_key=? AND request_hash=? AND state='settled' AND actual_units=?`)
         .bind(...this.keys(), key, hash, row.actual_units).first();
-      if (!settled) return this.uncertainAdmission(key);
+      if (!settled) return this.admissionFailure(key, "recovered_unsettled", startedAt);
       const host = await this.admission!.prepare({ key, hash, recovered: true });
-      if (!host) return this.uncertainAdmission(key);
-      const result = await this.db.batch([...host.statements, this.db.prepare(`SELECT 1 WHERE ${host.guard.sql}`).bind(...host.guard.values)]);
-      if (result.at(-1)!.results.length !== 1) return this.uncertainAdmission(key);
+      if (!host) return this.admissionFailure(key, "prepare_denied", startedAt);
+      const result = await this.db.batch([...host.statements, compactStatement(this.db, `SELECT 1 WHERE ${host.guard.sql}`, host.guard.values)]);
+      if (result.at(-1)!.results.length !== 1) return this.admissionFailure(key, "predicate_no_row", startedAt);
       const current = await this.currentReceipt(key, hash, token, row, host.guard);
-      if (!current) return this.uncertainAdmission(key);
+      if (!current) return this.admissionFailure(key, "recovered_current_denied", startedAt);
       return { state: "complete", operationKey: key, body: JSON.parse(response(request, current.response_json)) };
-    } catch { return this.uncertainAdmission(key); }
+    } catch { return this.admissionFailure(key, "recovered_error", startedAt); }
   }
   async invoke(token: string, path: string, payload: unknown, jobAlias?: string): Promise<Result> {
     const request = Object.freeze(normalize(path, payload, this.config));
@@ -187,20 +194,23 @@ export class CogneeModelBroker {
     // The reservation CAS owns the sole attempt. A prior reservation is never a retry permit.
     if (!reserved.created) return this.admission ? this.recoveredAdmission(key, requestHash, token, request) : this.recover(key, requestHash, token);
     const guard = this.access.guard(owner, permit.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
-    let admitted;
+    let admitted, stage: ModelAdmissionFailure = "prepare_error";
+    const startedAt = performance.now();
     try {
       const host = this.admission ? await this.admission.prepare({ key, hash: requestHash, recovered: false }) : null;
-      if (this.admission && !host) return this.uncertainAdmission(key);
-      const statement = this.db.prepare(`INSERT INTO assistant_model_receipts
+      if (this.admission && !host) return this.admissionFailure(key, "prepare_denied", startedAt);
+      stage = "compile_error";
+      const statement = compactStatement(this.db, `INSERT INTO assistant_model_receipts
         (installation_id,generation,operation_key,request_hash,source_id,source_revision,config_hash,state,created_at)
         SELECT ?,?,?,?,?,?,?,'attempting',? WHERE ${guard.sql} AND ${execution.sql} AND EXISTS(SELECT 1 FROM assistant_model_permits
-          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`)
-        .bind(...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
-          ...guard.values, ...execution.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? []));
+          WHERE ${ns} AND token_hash=? AND config_hash=? AND expires_at>?) ${host ? `AND (${host.guard.sql})` : ""} ON CONFLICT DO NOTHING RETURNING operation_key`,
+        [...this.keys(), key, requestHash, permit.fence.source.id, permit.fence.source.revision, configHash, this.clock(),
+          ...guard.values, ...execution.values, ...this.keys(), permit.tokenHash, configHash, this.clock(), ...(host?.guard.values ?? [])]);
+      stage = "batch_error";
       admitted = host ? (await this.db.batch([...host.statements, statement])).at(-1)! : await statement.all();
-    } catch { return this.admission ? this.uncertainAdmission(key) : { state: "uncertain", operationKey: key }; }
+    } catch { return this.admission ? this.admissionFailure(key, stage, startedAt) : { state: "uncertain", operationKey: key }; }
     if (admitted.results.length !== 1) {
-      if (this.admission) return this.uncertainAdmission(key);
+      if (this.admission) return this.admissionFailure(key, "predicate_no_row", startedAt);
       throw new Error("broker_denied");
     }
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, knownActual: number | undefined;

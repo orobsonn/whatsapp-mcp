@@ -1,9 +1,9 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { AssistantEnv } from "./env";
-import { SourceAccess, type SourceFence, type TrustedActor } from "./access";
+import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { CogneeEngine, type ContainerPort, type EngineGuard, type EngineIngest, type EnginePermit, type EngineSearch, type SearchTicket,type InitialIngestAdmission,type InitialIngestTicket,type InitialIngestCheckInput } from "./engine";
 import { RetrievalRuns, type CoverageProof } from "./retrieval-runs";
-import { CogneeModelBroker } from "./model-broker";
+import { CogneeModelBroker, type ModelAdmission } from "./model-broker";
 import { createOpenAIAdapter, DEFAULT_BROKER_CONFIG } from "./model-transport";
 import { OriginGuard, checkOriginsWithin, type OriginFence } from "./origin-guard";
 import { bridgeHash } from "./ingress";
@@ -14,6 +14,12 @@ import type { SourceStamp } from "./checkpoints";
 import { z } from "zod";
 import { assertRestoredGeneration } from "./retention-runtime";
 import {retentionExecutionGuard} from './retention-execution';
+import { onceAuthority, onceScope, oncePlanReader, combineOnceGuards, type OnceGrant } from "./owner-once-guard";
+import { onceExecutionMetadata } from "./owner-once-contract";
+import { initialRecoveryProof, type InitialRecoveryProof } from "./initial-ingest-contract";
+import { resolveOwnerRecoveryPlan } from "./owner-once-recovery";
+import { compactStatement } from "./d1-statement";
+import { reportModelAdmissionFailure, ownerAdmissionFailure, type ModelAdmissionFailure } from "./model-admission-diagnostics";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -24,7 +30,7 @@ export async function boundedJson(request: Request | Response, max = 65536): Pro
     return JSON.parse(text + decoder.decode());
   } finally { await reader.cancel().catch(() => {}); }
 }
-type Grant = { token: string; period: string; mode?: "replay_only"; coverage?: CoverageProof };
+type Grant = { token: string; period: string; mode?: "replay_only"; coverage?: CoverageProof; ownerOnce?: OnceGrant };
 type Authority = { authorize(epoch: string): Promise<Grant | null> };
 type Broker = { invoke(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }>; replay?(token: string, path: string, body: unknown): Promise<{ state: string; body?: unknown }> };
 type LifecycleCheck = () => Promise<void>;
@@ -34,12 +40,12 @@ async function checked<T>(check: LifecycleCheck | undefined, effect: () => Promi
   catch (error) { if (check) await check(); throw error; }
 }
 /** Fixed outbound route only. It never forwards caller headers or provider errors. */
-export async function handleBrokerRequest(request: Request, epoch: string, host: Authority, makeBroker: (period: string, coverage?: CoverageProof) => Broker): Promise<Response> {
+export async function handleBrokerRequest(request: Request, epoch: string, host: Authority, makeBroker: (period: string, coverage?: CoverageProof, ownerOnce?: OnceGrant) => Broker): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.protocol !== "http:" || url.host !== "broker.internal" || url.search || !["/v1/chat/completions", "/v1/embeddings"].includes(url.pathname)) return deny();
     const body = await boundedJson(request), grant = await host.authorize(epoch); if (!grant) return deny();
-    const broker = makeBroker(grant.period,grant.coverage);
+    const broker = makeBroker(grant.period,grant.coverage,grant.ownerOnce);
     const result = grant.mode === "replay_only" ? await broker.replay?.(grant.token, url.pathname, body) : await broker.invoke(grant.token, url.pathname, body);
     if (result?.state !== "complete" || !await host.authorize(epoch)) return deny();
     return Response.json(result.body, { headers: { "Cache-Control": "no-store" } });
@@ -114,13 +120,89 @@ function coverageHost(env:AssistantEnv,proof:CoverageProof) {
   const scope=configured(env);
   const origin=env.CAPTURE_READER && env.BRIDGE_SECRET && env.BRIDGE_SOURCE_EPOCH && env.BRIDGE_SOURCE_GENERATION ? new OriginGuard(scope.db,()=>({installationId:scope.installationId,generation:scope.generation,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!}),env.CAPTURE_READER,env.BRIDGE_SECRET) : undefined;
   // Proof is an internal capability persisted by RetrievalRuns, never MCP input.
-  return new RetrievalRuns(scope.db,{installationId:scope.installationId,generation:scope.generation,...(env.BRIDGE_SOURCE_EPOCH ? {sourceEpoch:env.BRIDGE_SOURCE_EPOCH,sourceGeneration:env.BRIDGE_SOURCE_GENERATION}: {})},{purpose:proof.purpose,origin,semantic:{mode:proof.configuration.mode,engine:null as never}});
+  return new RetrievalRuns(scope.db,{installationId:scope.installationId,generation:scope.generation,...(env.BRIDGE_SOURCE_EPOCH ? {sourceEpoch:env.BRIDGE_SOURCE_EPOCH,sourceGeneration:env.BRIDGE_SOURCE_GENERATION}: {})},{purpose:proof.purpose,origin,semantic:{mode:proof.configuration.mode,engine:null as never},ownerOncePlan:oncePlanReader(env)});
+}
+/** The same late admission is used by the native broker and its D1 tests. No
+ * credential, token or SQL expression comes from a model request body. */
+export function engineModelAdmission(env: AssistantEnv, period: string, proof?: CoverageProof, grant?: OnceGrant): ModelAdmission | undefined {
+  if (!proof && !grant) return undefined;
+  return { prepare: async () => {
+    const startedAt = performance.now();
+    let stage: ModelAdmissionFailure = "host_generation_before";
+    try {
+      await assertRestoredGeneration(env);
+      const guards = [];
+      if (proof) {
+        stage = "host_coverage_check";
+        const host = coverageHost(env, proof);
+        if (!await host.checkProof(proof)) { reportModelAdmissionFailure("host_coverage_denied", startedAt); return null; }
+        stage = "host_coverage_guard";
+        guards.push(await host.proofGuard(proof));
+      }
+      if (grant) {
+        stage = "host_owner_authority";
+        const scope = onceScope.parse({ installationId: env.INSTALLATION_ID, generation: env.OPERATIONAL_GENERATION,
+          sourceEpoch: env.BRIDGE_SOURCE_EPOCH, sourceGeneration: env.BRIDGE_SOURCE_GENERATION });
+        const authority = await onceAuthority(env, scope, grant, Date.now());
+        if (authority.receipt.period !== period || Date.now() >= authority.receipt.deadlineAt) { reportModelAdmissionFailure("host_owner_period_or_deadline", startedAt); return null; }
+        guards.push(authority.guard);
+      }
+      stage = "host_generation_after";
+      await assertRestoredGeneration(env);
+      const guard = combineOnceGuards(...guards);
+      return { guard, statements: [] };
+    } catch (error) { reportModelAdmissionFailure(stage === "host_owner_authority" ? ownerAdmissionFailure(error) : stage, startedAt); return null; }
+  }, uncertain: async () => {} };
 }
 export class CanonicalEngineGuard implements EngineGuard {
   private access: SourceAccess;
   constructor(private env: AssistantEnv) { const scope = configured(env); this.access = new SourceAccess(scope.db, { installationId: scope.installationId, generation: scope.generation }); }
-  async checkInitialAdmission(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string){
-    try{if(!/^[a-f0-9]{64}$/.test(admission.itemId)||typeof admission.owner!=='string'||admission.owner.length>256||this.env.ROUTINES_ENABLED!=='shadow'||this.env.ROUTINES_PAUSED==='true')return false;
+  async checkInitialRecovery(admission: InitialIngestAdmission, input: InitialIngestCheckInput, raw: InitialRecoveryProof) {
+    try {
+      await assertRestoredGeneration(this.env);
+      const proof = initialRecoveryProof.parse(raw), scope = onceScope.parse({ installationId: this.env.INSTALLATION_ID,
+        generation: this.env.OPERATIONAL_GENERATION, sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION });
+      if (admission.kind !== "owner_once" || input.actor.kind !== "owner") return false;
+      const authority = await onceAuthority(this.env, scope, { id: admission.itemId, token: admission.owner }, Date.now());
+      if (!authority.receipt.recovery || await bridgeHash(authority.receipt.recovery) !== await bridgeHash(proof)) return false;
+      const predecessor = await resolveOwnerRecoveryPlan(this.env, scope, proof.previousId, Date.now(), admission.itemId);
+      if (predecessor.previousPlanHash !== proof.previousPlanHash || predecessor.previousJobHash !== proof.previousJobHash
+        || predecessor.previous.period !== authority.receipt.period || predecessor.previous.capMicroUsd !== authority.receipt.capMicroUsd
+        || predecessor.previous.maxCostMicroUsd !== authority.receipt.maxCostMicroUsd
+        || predecessor.previous.sourceId !== input.source.fence.source.id
+        || predecessor.previous.expectedRevision !== input.source.fence.source.revision
+        || JSON.stringify(predecessor.previous.corpus) !== JSON.stringify(authority.receipt.corpus)) return false;
+      const guard = combineOnceGuards(authority.guard, predecessor.guard, this.access.guard(input.actor, input.source.fence, Date.now()));
+      const valid = !!await compactStatement(this.env.DB!, `SELECT 1 WHERE ${guard.sql}`, guard.values).first();
+      await assertRestoredGeneration(this.env); return valid && Date.now() < authority.receipt.deadlineAt;
+    } catch { return false; }
+  }
+  async checkInitialAdmission(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string,continuing=false){
+    try{
+      const base = { itemId: z.string().regex(/^[a-f0-9]{64}$/), owner: z.string().min(1).max(256) };
+      admission = z.union([z.object(base).strict(), z.object({ ...base, kind: z.literal("owner_once"), owner: z.string().uuid() }).strict()]).parse(admission);
+      if (admission.kind === "owner_once") {
+        await assertRestoredGeneration(this.env);
+        const scope = onceScope.parse({ installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION,
+          sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION });
+        const authority = await onceAuthority(this.env, scope, { id: admission.itemId, token: admission.owner }, Date.now());
+        const ref = input.source.fence.source;
+        if (input.actor.kind !== "owner" || ref.origin !== "owner_note" || ref.audience !== "owner" || ref.projectId !== authority.receipt.projectId
+          || !authority.receipt.corpus.refs.some(pin => pin.id === ref.id && pin.revision === ref.revision && pin.version === ref.version)
+          || (indexEpoch !== undefined && !z.string().uuid().safeParse(indexEpoch).success) || Date.now() >= authority.receipt.deadlineAt) return false;
+        const access = this.access.guard(input.actor, input.source.fence, Date.now());
+        const slot = indexEpoch === undefined ? { sql: "1", values: [] } : { sql: `EXISTS(SELECT 1 FROM assistant_routine_ingestions i
+          WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.item_id=? AND i.source_id=? AND i.index_epoch=?
+          AND json_extract(i.source_ref_json,'$.id')=? AND json_extract(i.source_ref_json,'$.revision')=?
+          AND json_extract(i.source_ref_json,'$.version')=? AND json_extract(i.source_ref_json,'$.hash')=?
+          AND (i.state='attempting' OR (?=1 AND i.state IN ('uncertain','complete'))))`,
+          values: [scope.installationId, scope.generation, scope.sourceEpoch, scope.sourceGeneration, admission.itemId, ref.id, indexEpoch,
+            ref.id, ref.revision, ref.version, ref.hash, continuing ? 1 : 0] };
+        const valid = !!await this.env.DB!.prepare(`SELECT 1 WHERE (${authority.guard.sql}) AND (${access.sql}) AND (${slot.sql})`)
+          .bind(...authority.guard.values, ...access.values, ...slot.values).first();
+        return valid && Date.now() < authority.receipt.deadlineAt;
+      }
+      if(this.env.ROUTINES_ENABLED!=='shadow'||this.env.ROUTINES_PAUSED==='true')return false;
       await assertRestoredGeneration(this.env);const scope=configured(this.env),now=Date.now(),ref=input.source.fence.source,guard=this.access.guard(input.actor,input.source.fence,now),execution=retentionExecutionGuard(scope);
       return !!await scope.db.prepare(`SELECT 1 FROM assistant_routine_state c JOIN assistant_routine_items r USING(installation_id,generation,source_epoch,source_generation)
         WHERE c.installation_id=? AND c.generation=? AND c.source_epoch=? AND c.source_generation=? AND c.owner_token=? AND c.state='running' AND c.paused=0 AND c.lease_until>? AND c.active_item_id=r.id AND r.id=? AND r.actor_json=?
@@ -133,6 +215,21 @@ export class CanonicalEngineGuard implements EngineGuard {
     try {
       if(!isCurrent())return false; await assertRestoredGeneration(this.env); if(!isCurrent())return false;
       const scope = configured(this.env);
+      let ownerGuard: AccessGuard | undefined, ownerDeadline = 0;
+      const owned = permits.filter(permit => permit.ownerOnce !== undefined);
+      if (owned.length) {
+        if (actor.kind !== "owner" || owned.length !== permits.length || owned.some(permit => permit.origin
+          || JSON.stringify(permit.ownerOnce) !== JSON.stringify(owned[0].ownerOnce))) return false;
+        const affinity = onceScope.parse({ installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION,
+          sourceEpoch: this.env.BRIDGE_SOURCE_EPOCH, sourceGeneration: this.env.BRIDGE_SOURCE_GENERATION });
+        const authority = await onceAuthority(this.env, affinity, owned[0].ownerOnce!, Date.now());
+        if (owned.some(permit => permit.source.source.origin !== "owner_note" || permit.source.source.audience !== "owner"
+          || permit.source.source.projectId !== authority.receipt.projectId || !authority.receipt.corpus.refs.some(pin => pin.id === permit.source.source.id
+            && pin.revision === permit.source.source.revision && pin.version === permit.source.source.version))) return false;
+        ownerGuard = authority.guard; ownerDeadline = authority.receipt.deadlineAt;
+      }
+      const ownerCurrent = async () => !ownerGuard || Date.now() < ownerDeadline && !!await scope.db.prepare(`SELECT 1 WHERE ${ownerGuard.sql}`)
+        .bind(...ownerGuard.values).first() && Date.now() < ownerDeadline;
       const local = async () => {
         // Original ACL statements retain independent bind-parameter budgets.
         for (let offset=0;offset<permits.length;offset+=6) {
@@ -140,7 +237,7 @@ export class CanonicalEngineGuard implements EngineGuard {
           const rows=await scope.db.batch(permits.slice(offset,offset+6).map(permit=>{const guard=this.access.guard(actor,permit.source,Date.now());return scope.db.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values);}));
           if(!isCurrent()||rows.length!==Math.min(6,permits.length-offset)||rows.some(row=>row.results.length!==1))return false;
         }
-        return true;
+        return ownerCurrent();
       };
       for (const permit of permits) {
         if(!isCurrent())return false;
@@ -153,7 +250,7 @@ export class CanonicalEngineGuard implements EngineGuard {
       }
       if(!await local())return false;
       const origins=permits.filter(permit=>permit.origin).map(permit=>permit.origin!);
-      if(!origins.length){await assertRestoredGeneration(this.env);return isCurrent();}
+      if(!origins.length){await assertRestoredGeneration(this.env);return isCurrent() && await ownerCurrent();}
       const origin=new OriginGuard(scope.db,()=>({installationId:scope.installationId,generation:scope.generation,sourceEpoch:this.env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:this.env.BRIDGE_SOURCE_GENERATION!}),this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!);
       if(!await checkOriginsWithin(origins,fence=>isCurrent()?origin.check(fence,isCurrent):Promise.resolve(false))||!isCurrent())return false;
       // Recheck local ACLs after the remote observations, before returning.
@@ -212,7 +309,14 @@ export function makeCheckpointStore(storage: DurableObjectStorage, scope: { inst
     }),
   };
 }
+/** The timeout belongs to a DO incarnation, not to the surviving process.
+ * Rearming a running instance never starts a stopped container or grants work. */
+export function retainRunningContainer(ctx: Pick<DurableObjectState, "container" | "blockConcurrencyWhile">) {
+  const container = ctx.container;
+  if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(60000));
+}
 export class CogneeContainer extends DurableObject<AssistantEnv> {
+  constructor(ctx: DurableObjectState, env: AssistantEnv) { super(ctx, env); retainRunningContainer(ctx); }
   private engine?: CogneeEngine;
   private port?: DirectContainerPort;
   /** Global index health, independent of the current guest/project pack. Six
@@ -376,7 +480,7 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
       const exports = this.ctx.exports as unknown as { CogneeBroker(options: { props: { epoch: string; owner: string } }): Fetcher };
       const port = new DirectContainerPort(this.ctx.container, epoch => exports.CogneeBroker({ props: { epoch, owner: this.ctx.id.toString() } }), scope);
       this.port = port;
-      this.engine = new CogneeEngine(scope, { transaction: operation => this.ctx.storage.transaction(transaction => operation({get:key=>transaction.get(key),put:(key,value)=>transaction.put(key,value),list:options=>transaction.list(options)})), get: key => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value),
+      this.engine = new CogneeEngine(scope, { transaction: operation => this.ctx.storage.transaction(transaction => operation({get:key=>transaction.get(key),put:(key,value)=>transaction.put(key,value),list:options=>transaction.list(options),delete:async key=>{await transaction.delete(key);}})), get: key => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value),
         putFenced: (key, value, indexEpoch, owner) => this.ctx.storage.transaction(async transaction => {
           const run = await transaction.get<RebuildState>("rebuild"), index = await transaction.get<{ epoch: string }>("index");
           if (run?.indexEpoch !== indexEpoch || run.owner !== owner || index?.epoch !== indexEpoch || !["preparing", "materializing"].includes(run.phase)) throw new Error("rebuild_fenced");
@@ -388,14 +492,35 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
   fetch() { return Promise.resolve(deny()); }
   async ingest(input: EngineIngest) { const host=this.host(); await assertRestoredGeneration(this.env); return host.ingest(input); }
   async reserveInitialIngest(input:EngineIngest,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().reserveInitialIngest(input,admission);}
+  async prepareInitialRecovery(previousId: string) {
+    await assertRestoredGeneration(this.env, false);
+    if (typeof this.ctx.container?.images?.cognee !== "string" || !this.ctx.container.images.cognee)
+      return { state: "blocked" as const, reason: "engine_image_unconfigured" };
+    const result = await this.host().prepareInitialRecovery(previousId);
+    await assertRestoredGeneration(this.env, false); return result;
+  }
+  async reserveRecoveredInitialIngest(input: EngineIngest, admission: InitialIngestAdmission, proof: InitialRecoveryProof) {
+    await assertRestoredGeneration(this.env);
+    if (typeof this.ctx.container?.images?.cognee !== "string" || !this.ctx.container.images.cognee)
+      return { state: "blocked" as const, reason: "engine_image_unconfigured" };
+    const result = await this.host().reserveRecoveredInitialIngest(input, admission, proof);
+    await assertRestoredGeneration(this.env); return result;
+  }
   async commitInitialIngest(input:EngineIngest,ticket:InitialIngestTicket,admission:InitialIngestAdmission){await assertRestoredGeneration(this.env);return this.host().commitInitialIngest(input,ticket,admission);}
   async initialIngestReceipt(input:EngineIngest,itemId:string,indexEpoch:string){await assertRestoredGeneration(this.env);const result=await this.host().initialIngestReceipt(input,itemId,indexEpoch);return result.state==='complete'?{state:'complete' as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:'uncertain' as const};}
   async ingestReceipt(input: EngineIngest, indexEpoch: string) { await assertRestoredGeneration(this.env); const result=await this.host().ingestReceipt(input,indexEpoch);return result.state==="complete"?{state:"complete" as const,operationId:result.operationId,indexRevision:result.indexRevision}:{state:"uncertain" as const}; }
   /** Host-only metadata: no source bodies, broker tokens or snapshot handles. */
+  async initialObservation() {
+    await assertRestoredGeneration(this.env,false);
+    const snapshot=await this.host().observeInitial();
+    await assertRestoredGeneration(this.env,false);
+    return onceExecutionMetadata.parse({...snapshot,imageConfigured:typeof this.ctx.container?.images?.cognee==="string"&&this.ctx.container.images.cognee.length>0});
+  }
   async lifecycleState() {
     this.host(); const index = await this.ctx.storage.get<IndexMetadata>("index"), checkpoint = await this.checkpointStore().read();
     const record = checkpoint?.phase === "restoring" ? checkpoint.candidate ?? checkpoint.confirmed : checkpoint?.confirmed;
-    return { running: this.port!.running, index: index ? { epoch:index.epoch,revision:index.revision,lost:!!index.lost,state:index.indexState??"needs_checkpoint",sources:index.sources??[] } : null,
+    return { running: this.port!.running, busy: this.host().isBusy(), imageConfigured:typeof this.ctx.container?.images?.cognee==="string"&&this.ctx.container.images.cognee.length>0,
+      index: index ? { epoch:index.epoch,revision:index.revision,lost:!!index.lost,state:index.indexState??"needs_checkpoint",sources:index.sources??[] } : null,
       maintenance:!!await this.ctx.storage.get<boolean>("maintenance"),quarantine:!!await this.ctx.storage.get<boolean>("quarantine"),
       checkpoint: record ? {id:record.id,epoch:record.manifest.indexEpoch,revision:record.manifest.indexRevision,phase:checkpoint!.phase} : null };
   }
@@ -456,8 +581,8 @@ export class CogneeBroker extends WorkerEntrypoint<AssistantEnv, { epoch: string
       const { epoch, owner } = this.ctx.props;
       if (!epoch || !owner || !this.env.COGNEE) return deny();
       const scope = configured(this.env), host = this.env.COGNEE.get(this.env.COGNEE.idFromString(owner));
-      return await handleBrokerRequest(request, epoch, host, (period,proof) => new CogneeModelBroker(scope.db,
-        { installationId: scope.installationId, generation: scope.generation, period }, DEFAULT_BROKER_CONFIG, async input=>{await assertRestoredGeneration(this.env);return createOpenAIAdapter(this.env.OPENAI_API_KEY!)(input);}, Date.now, proof ? {prepare:async()=>{await assertRestoredGeneration(this.env);const host=coverageHost(this.env,proof);if(!await host.checkProof(proof))return null;await assertRestoredGeneration(this.env);return {guard:await host.proofGuard(proof),statements:[]};},uncertain:async()=>{}} : undefined));
+      return await handleBrokerRequest(request, epoch, host, (period,proof,grant) => new CogneeModelBroker(scope.db,
+        { installationId: scope.installationId, generation: scope.generation, period }, DEFAULT_BROKER_CONFIG, async input=>{await assertRestoredGeneration(this.env);return createOpenAIAdapter(this.env.OPENAI_API_KEY!)(input);}, Date.now, engineModelAdmission(this.env,period,proof,grant)));
     } catch { return deny(); }
   }
 }

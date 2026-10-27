@@ -18,6 +18,8 @@ export type Ledger = {
 export type NewJob = {
   kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue"; subject?: DecisionSubject;
 };
+/** Trusted coordinator's atomic admission, never decoded from NewJob or text. */
+export type JobAdmission = { id: string; guard: AccessGuard; statements: D1PreparedStatement[] };
 export type RuntimeGuardPlan = { guard: AccessGuard; statements: D1PreparedStatement[] };
 export type RuntimeJobGuard = (lease: Readonly<JobLease>, now: number) => Promise<AccessGuard | RuntimeGuardPlan | null>;
 const liveLease = `state='processing' AND lease_generation=? AND lease_until>?`;
@@ -52,7 +54,7 @@ export class JobQueue {
   operationKey(id: string, hash: string) {
     return JSON.stringify(["assistant-shadow", this.scope.installationId, this.scope.generation, id, hash]);
   }
-  async enqueue(input: NewJob, now: number): Promise<Job> {
+  async enqueue(input: NewJob, now: number, admission?: JobAdmission): Promise<Job> {
     input = Object.freeze({ ...input, ...(input.subject ? { subject: decisionSubject.parse(input.subject) } : {}) });
     if (input.runtime === "flue" && !input.subject) throw new Error("decision_subject_required");
     if (input.subject && (input.runtime !== "flue" || (input.kind === "follow_up") !== (input.subject.kind === "fup_occurrence"))) throw new Error("decision_subject_invalid");
@@ -74,19 +76,24 @@ export class JobQueue {
     const hash = await digest(request);
     const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;
     if(due&&outgoing&&fup){const gate=outgoingGuard(this.scope,{id:fup.followUpId,version:fup.followUpVersion},outgoing,now,input.sourceId);due.sql+=` AND (${gate.sql})`;due.values.push(...gate.values);}
+    const gates = [...(due ? [due] : []), ...(admission ? [admission.guard] : [])];
+    const gate = gates.map(part => `(${part.sql})`).join(" AND "), gateValues = gates.flatMap(part => part.values);
     await this.db.batch([
+      ...(admission?.statements ?? []),
       this.statement(`INSERT INTO assistant_jobs(installation_id,generation,id,kind,dedupe_key,source_id,source_revision,next_attempt_at,max_attempts,occurrence_id)
-        SELECT ?,?,?,?,?,?,?,?,?,? ${due?`WHERE ${due.sql} AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND occurrence_id=?)`:""} ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
-      crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null,...(due?[...due.values,this.scope.installationId,this.scope.generation,input.subject?.kind==="fup_occurrence"?input.subject.occurrenceId:null]:[])),
+        SELECT ?,?,?,?,?,?,?,?,?,? ${gate ? `WHERE ${gate}` : ""} ${due ? `AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND occurrence_id=?)` : ""} ON CONFLICT(installation_id,generation,dedupe_key) DO NOTHING`,
+      admission?.id ?? crypto.randomUUID(), input.kind, input.dedupeKey, input.sourceId, input.sourceRevision, now, input.maxAttempts ?? 3, input.subject?.kind === "fup_occurrence" ? input.subject.occurrenceId : null,
+      ...gateValues,...(due?[this.scope.installationId,this.scope.generation,input.subject?.kind==="fup_occurrence"?input.subject.occurrenceId:null]:[])),
       this.raw(`INSERT INTO assistant_job_ledger(installation_id,generation,job_id,request_hash,request_json)
         SELECT installation_id,generation,id,?,? FROM assistant_jobs
-        WHERE installation_id=? AND generation=? AND dedupe_key=? ON CONFLICT DO NOTHING`, hash, request,
-      this.scope.installationId, this.scope.generation, input.dedupeKey),
+        WHERE installation_id=? AND generation=? AND dedupe_key=? ${admission ? `AND (${admission.guard.sql})` : ""} ON CONFLICT DO NOTHING`, hash, request,
+      this.scope.installationId, this.scope.generation, input.dedupeKey,...(admission?.guard.values ?? [])),
     ]);
     const row = await this.statement(`SELECT j.*,l.request_hash FROM assistant_jobs j JOIN assistant_job_ledger l
       ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
       WHERE j.installation_id=? AND j.generation=? AND j.dedupe_key=?`, input.dedupeKey).first<Job & { request_hash: string }>();
-    if (!row || row.request_hash !== hash) throw new Error("dedupe_request_conflict");
+    if (!row) throw new Error(admission ? "job_admission_changed" : "dedupe_request_conflict");
+    if (row.request_hash !== hash) throw new Error("dedupe_request_conflict");
     if (input.runtime === "flue") await seedDecisionJob(this.db, this.scope, row.id, now);
     return row;
   }
@@ -104,17 +111,23 @@ export class JobQueue {
     return this.raw(`UPDATE assistant_jobs SET state='processing',attempts=attempts+1,
       lease_generation=lease_generation+1,lease_until=? WHERE installation_id=? AND generation=? AND id=(
         SELECT id FROM assistant_jobs WHERE installation_id=? AND generation=? AND attempts<max_attempts
+        AND dedupe_key NOT GLOB 'owner-once-v1:*'
         AND ((state='pending' AND next_attempt_at<=?) OR (state='processing' AND lease_until<=?))
         ORDER BY next_attempt_at,id LIMIT 1) RETURNING *`, now + leaseMs,
     this.scope.installationId, this.scope.generation, this.scope.installationId, this.scope.generation, now, now).first<JobLease>();
   }
   /** Nominal presearch admission. Never claims a neighboring pending job. */
-  async claimId(id: string, now: number, leaseMs = 90000): Promise<JobLease | null> {
+  async claimId(id: string, now: number, leaseMs = 90000, admission?: AccessGuard): Promise<JobLease | null> {
     integer(now);integer(leaseMs,1);integer(now+leaseMs);
     if(typeof id!=="string"||!id||id.length>256)throw new Error("invalid_job_id");
+    const selected = await this.statement("SELECT dedupe_key FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?", id).first<{dedupe_key: string}>();
+    // Explicit Owner plans never enter the global scheduler or gain a lease
+    // from a bare job ID. Their trusted coordinator supplies a fresh SQL fence.
+    if (selected?.dedupe_key.startsWith("owner-once-v1:") && !admission) return null;
     return this.raw(`UPDATE assistant_jobs SET state='processing',attempts=attempts+1,lease_generation=lease_generation+1,lease_until=?
       WHERE installation_id=? AND generation=? AND id=? AND state='pending' AND next_attempt_at<=? AND attempts<max_attempts
-      AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='prepared') RETURNING *`,now+leaseMs,this.scope.installationId,this.scope.generation,id,now).first<JobLease>();
+      AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='prepared')
+      ${admission ? `AND (${admission.sql})` : ""} RETURNING *`,now+leaseMs,this.scope.installationId,this.scope.generation,id,now,...(admission?.values ?? [])).first<JobLease>();
   }
   get(id: string) {
     return this.statement("SELECT * FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?", id).first<Job>();

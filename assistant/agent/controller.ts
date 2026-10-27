@@ -23,6 +23,7 @@ export type EpisodeDriver = (profile: "owner" | "interlocutor", runtimeId: strin
   dispatch(input: AgentHandleDispatchRequest): Promise<DispatchReceipt>;
   read(receipt: DispatchReceipt, options: { signal: AbortSignal }): Promise<AgentReply>;
 };
+export type OwnerOnceWork = (jobId: string, rootId: string, runId: string, now: number) => Promise<{ guard: AccessGuard; deadlineAt: number } | null>;
 export type ValidatedProposal = z.infer<typeof proposal> & { schema: 1; kind: "shadow_proposal"; execution: "unconfirmed"; semanticValidation: "structure_and_attribution_only";
   mode?:'shadow';externalAttempted?:false;outgoing?:OutgoingProof;
   coverage: { inventoryComplete: boolean; engine: string; gaps: string[] };
@@ -50,10 +51,12 @@ export class EpisodeController {
   private readonly purpose: Purpose;
   private readonly journal: DecisionJournal;
   private readonly outgoing?:OutgoingPort;
+  private readonly ownerOnceWork?: OwnerOnceWork;
   constructor(private readonly db: D1Database, scope: EpisodeScope, private readonly search: EpisodeSearch,
-    private readonly adapter: ModelAdapter, config: BrokerConfig, options: { clock?: () => number; purpose?: Purpose;outgoing?:OutgoingPort } = {}) {
+    private readonly adapter: ModelAdapter, config: BrokerConfig, options: { clock?: () => number; purpose?: Purpose;outgoing?:OutgoingPort; ownerOnceWork?: OwnerOnceWork } = {}) {
     this.scope = Object.freeze({ ...scope }); this.config = Object.freeze({ ...config }); this.clock = options.clock ?? Date.now;
     this.purpose = options.purpose ?? "automation";
+    this.ownerOnceWork = options.ownerOnceWork;
     this.outgoing=options.outgoing;this.journal = new DecisionJournal(db, scope, { kind: "owner" }, { clock: this.clock, search,outgoing:this.outgoing });
     const sourceScope = { installationId: scope.installationId, generation: scope.generation,
       ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) };
@@ -69,13 +72,26 @@ export class EpisodeController {
     const row = await this.episodes.get(id);
     try { return row ? boundEpisode(row) : null; } catch { return null; }
   }
+  private async boundedWork(lease: JobLease, runId: string, now: number) {
+    const row = await this.db.prepare("SELECT dedupe_key FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?")
+      .bind(this.scope.installationId, this.scope.generation, lease.id).first<{ dedupe_key: string }>();
+    if (!row) return null;
+    if (!row.dedupe_key.startsWith("owner-once-v1:")) return { bounded: false as const, deadlineAt: Number.MAX_SAFE_INTEGER, guard: { sql: "1", values: [] } as AccessGuard };
+    const rootId = row.dedupe_key.slice("owner-once-v1:".length);
+    if (!/^[a-f0-9]{64}$/.test(rootId) || lease.kind !== "reasoning" || this.purpose !== "owner_read" || !this.ownerOnceWork) return null;
+    const work = await this.ownerOnceWork(lease.id, rootId, runId, now);
+    return work && this.clock() < work.deadlineAt ? { ...work, bounded: true as const } : null;
+  }
   private async guard(episode: BoundEpisode, lease: JobLease, now: number): Promise<RuntimeGuardPlan | null> {
     const binding = episode.binding;
     if (binding.purpose !== this.purpose || JSON.stringify(binding.config) !== JSON.stringify(this.config) || binding.lease.id !== lease.id || binding.lease.lease_generation !== lease.lease_generation) return null;
     if(binding.outgoing&&(!this.outgoing||!await this.outgoing.check(binding.outgoing)))return null;
+    const bounded = await this.boundedWork(lease, binding.runId, this.clock());
+    if (!bounded || bounded.bounded && (episode.profile !== "owner" || binding.actor.kind !== "owner" || binding.subject.kind !== "owner_request")) return null;
     const nonce = crypto.randomUUID(), search = await this.search.guard(binding.actor, binding.search, this.clock());
     // Search/origin proofs may await remote work; temporal gates sample afterwards.
     now=this.clock();
+    if (now >= bounded.deadlineAt) return null;
     const current: AccessGuard = { sql: `EXISTS(SELECT 1 FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id JOIN assistant_job_ledger l ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id JOIN(SELECT json(?) AS p) a
       WHERE e.installation_id=json_extract(p,'$.i') AND e.generation=json_extract(p,'$.g') AND e.id=json_extract(p,'$.id')
       AND e.binding_hash=json_extract(p,'$.hash') AND e.profile=json_extract(p,'$.profile') AND e.runtime_id=json_extract(p,'$.runtime')
@@ -87,6 +103,15 @@ export class EpisodeController {
     const proof: AccessGuard = { sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND search_nonce=?)",
       values: [this.scope.installationId, this.scope.generation, episode.id, nonce] };
     const guards = [current, proof], statements = [attest];
+    if (bounded.bounded) {
+      // Owner requests cannot be follow-ups. Reuse the existing work attestation
+      // column, with a fresh nonce consumed only in this same guarded batch.
+      statements.push(this.db.prepare(`UPDATE assistant_episodes SET work_nonce=? WHERE installation_id=? AND generation=? AND id=?
+        AND binding_hash=? AND profile=? AND runtime_id=? AND (${current.sql}) AND (${bounded.guard.sql}) RETURNING id`)
+        .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...current.values, ...bounded.guard.values));
+      guards.push({ sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND work_nonce=?)",
+        values: [this.scope.installationId, this.scope.generation, episode.id, nonce] });
+    }
     if (lease.kind === "follow_up") {
       if (binding.work.kind !== "follow_up") return null;
       const target = binding.work.target;
@@ -124,6 +149,8 @@ export class EpisodeController {
     if (request.kind !== lease.kind || request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision) throw new Error("episode_denied");
     if (request.runtime !== "flue" || !["owner", "interlocutor"].includes(actor.kind) || profile !== actor.kind ||
       (this.purpose === "owner_read" && (actor.kind !== "owner" || lease.kind === "follow_up"))) throw new Error("episode_denied");
+    const bounded = await this.boundedWork(lease, runId, this.clock());
+    if (!bounded) throw new Error("episode_denied");
     const access = new SourceAccess(this.db, { installationId: this.scope.installationId, generation: this.scope.generation });
     const anchor = await access.read(actor, lease.source_id, lease.source_revision, now);
     if (!anchor || (this.purpose === "owner_read" && anchor.fence.source.origin !== "owner_note")) throw new Error("episode_denied");
@@ -160,7 +187,7 @@ export class EpisodeController {
     const binding = parseBinding({ lease, actor, subject: request.subject, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },...(request.outgoing?{outgoing:request.outgoing}:{}),
       work: work ? { kind: "follow_up", fence: work, target } : { kind: "not_follow_up" } });
     const episode = await this.episodes.prepare({ lease, requestHash: ledger.request_hash, profile, checkpoint: await bridgeHash([found.fence, context.sources.map(row => row.fence)]),
-      binding, deadline: Math.min(this.clock() + 60000, lease.lease_until - 1), maxCalls: 3 });
+      binding, deadline: Math.min(this.clock() + 60000, lease.lease_until - 1, bounded.deadlineAt), maxCalls: 3 });
     return boundEpisode(await this.episodes.envelope(episode.id, { message: this.message(boundEpisode(episode)), initialData: { bindingId: episode.id }, idempotencyKey: "episode:" + episode.id }));
   }
   message(episode: BoundEpisode) {
@@ -306,7 +333,9 @@ export class EpisodeController {
     const episode = await this.get(id);
     if (!episode) return { state: "blocked" };
     if (episode.receipt) return { state: "accepted", receipt: episode.receipt.receipt };
-    if (!await this.episodes.replayDispatch(id)) return { state: "uncertain" };
+    const bounded = await this.boundedWork(episode.binding.lease, episode.binding.runId, this.clock());
+    if (!bounded) return { state: "blocked" };
+    if (!await this.episodes.replayDispatch(id, bounded.bounded ? bounded.guard : undefined)) return { state: "uncertain" };
     return this.deliver(episode, driver);
   }
   async read(id: string, driver: EpisodeDriver): Promise<{ state: string; proposal?: ValidatedProposal; decisionId?: string }> {

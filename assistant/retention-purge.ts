@@ -70,11 +70,23 @@ export class RetentionPurge {
       collect("mission_version", `SELECT json_array(id,revision) AS id FROM assistant_mission_versions t WHERE ${namespace("t")} AND json_extract(body_json,'$.sourceId')=?4`),
       collect("fup", `SELECT id FROM assistant_follow_ups t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.mission_id IN (${refs("mission")}))`),
       collect("job", `SELECT id FROM assistant_jobs t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.occurrence_id IN (SELECT id FROM assistant_fup_occurrences f WHERE ${namespace("f")} AND f.follow_up_id IN (${refs("fup")})))
+       UNION SELECT json_extract(t.result_json,'$.jobId') FROM assistant_owner_commands t WHERE ${namespace("t")}
+        AND t.operation_id GLOB 'owner-once-v1:*' AND json_extract(t.result_json,'$.kind')='owner_once.plan'
+        AND EXISTS(SELECT 1 FROM json_each(t.result_json,'$.corpus.refs') j WHERE json_extract(j.value,'$.id')=?4)
        UNION SELECT job_id FROM assistant_episodes t WHERE ${namespace("t")} AND (EXISTS(SELECT 1 FROM json_each(t.binding_json,'$.context.sources') j WHERE json_extract(j.value,'$.id')=?4) OR json_extract(t.binding_json,'$.lease.source_id')=?4)
        UNION SELECT job_id FROM assistant_shadow_decisions t WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM json_each(t.dependencies_json) j WHERE json_extract(j.value,'$.id')=?4)`),
-      collect("model", `SELECT operation_key AS id FROM assistant_model_receipts t WHERE ${namespace("t")} AND t.source_id=?4 UNION SELECT operation_key FROM assistant_episode_calls c JOIN assistant_episodes e ON e.installation_id=c.installation_id AND e.generation=c.generation AND e.id=c.episode_id WHERE ${namespace("e")} AND e.job_id IN (${refs("job")})`),
+      collect("model", `SELECT operation_key AS id FROM assistant_model_receipts t WHERE ${namespace("t")} AND t.source_id=?4
+       UNION SELECT operation_key FROM assistant_episode_calls c JOIN assistant_episodes e ON e.installation_id=c.installation_id AND e.generation=c.generation AND e.id=c.episode_id WHERE ${namespace("e")} AND e.job_id IN (${refs("job")})
+       UNION SELECT m.operation_key FROM assistant_model_receipts m JOIN assistant_owner_commands c ON c.installation_id=m.installation_id AND c.generation=m.generation
+        WHERE ${namespace("m")} AND c.operation_id='owner-once-v1:'||json_extract(c.result_json,'$.id') AND json_extract(c.result_json,'$.kind')='owner_once.plan'
+        AND EXISTS(SELECT 1 FROM json_each(c.result_json,'$.corpus.refs') b WHERE json_extract(b.value,'$.id')=?4)
+        AND EXISTS(SELECT 1 FROM json_each(c.result_json,'$.corpus.refs') a WHERE json_extract(a.value,'$.id')=m.source_id)`),
       collect("job", `SELECT e.job_id AS id FROM assistant_episode_calls c JOIN assistant_episodes e ON e.installation_id=c.installation_id AND e.generation=c.generation AND e.id=c.episode_id WHERE ${namespace("e")} AND c.operation_key IN (${refs("model")})`),
       collect("run", `SELECT run_id AS id FROM assistant_retrieval_items t WHERE ${namespace("t")} AND t.source_id=?4 UNION SELECT json_extract(binding_json,'$.runId') FROM assistant_episodes t WHERE ${namespace("t")} AND t.job_id IN (${refs("job")})
+       UNION SELECT t.id FROM assistant_retrieval_runs t JOIN assistant_owner_commands c ON c.installation_id=t.installation_id AND c.generation=t.generation
+        AND c.operation_id='owner-once-v1:'||json_extract(t.request_json,'$.ownerOnceId') WHERE ${namespace("t")}
+        AND json_extract(c.result_json,'$.kind')='owner_once.plan' AND json_extract(c.result_json,'$.id')=json_extract(t.request_json,'$.ownerOnceId')
+        AND EXISTS(SELECT 1 FROM json_each(c.result_json,'$.corpus.refs') j WHERE json_extract(j.value,'$.id')=?4)
        UNION SELECT id FROM assistant_retrieval_runs t WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM json_each(t.pack_json) j WHERE json_extract(j.value,'$.id')=?4)`),
       collect("decision", `SELECT id FROM assistant_shadow_decisions t WHERE ${namespace("t")} AND t.job_id IN (${refs("job")})`),
       collect("command", `SELECT operation_id AS id FROM assistant_owner_commands t WHERE ${namespace("t")} AND (
@@ -84,7 +96,10 @@ export class RetentionPurge {
        UNION SELECT t.command_operation_id FROM assistant_fup_provenance t JOIN assistant_owner_commands c ON c.installation_id=t.installation_id AND c.generation=t.generation AND c.operation_id=t.command_operation_id
          WHERE ${namespace("t")} AND t.fup_id IN (${refs("fup")}) AND json_extract(c.result_json,'$.kind') LIKE 'fup.%' AND json_extract(c.result_json,'$.id')=t.fup_id`),
       collect("object", `SELECT original_object_key AS id FROM assistant_source_versions t WHERE ${namespace("t")} AND t.source_id=?4`),
-      ...(routines ? [collect("routine", `SELECT id FROM assistant_routine_items t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.job_id IN (${refs("job")}) OR t.run_id IN (${refs("run")}) OR EXISTS(SELECT 1 FROM json_each(t.index_sources_json) j WHERE json_extract(j.value,'$.id')=?4))`)] : []),
+      ...(routines ? [collect("routine", `SELECT id FROM assistant_routine_items t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.job_id IN (${refs("job")}) OR t.run_id IN (${refs("run")}) OR EXISTS(SELECT 1 FROM json_each(t.index_sources_json) j WHERE json_extract(j.value,'$.id')=?4))
+       UNION SELECT json_extract(c.result_json,'$.id') FROM assistant_owner_commands c WHERE ${namespace("c")}
+        AND c.operation_id='owner-once-v1:'||json_extract(c.result_json,'$.id') AND json_extract(c.result_json,'$.kind')='owner_once.plan'
+        AND EXISTS(SELECT 1 FROM json_each(c.result_json,'$.corpus.refs') b WHERE json_extract(b.value,'$.id')=?4)`)] : []),
       ...(routines ? [collect("run", `SELECT run_id AS id FROM assistant_routine_items t WHERE ${namespace("t")} AND t.id IN (${refs("routine")})`), collect("job", `SELECT job_id AS id FROM assistant_routine_items t WHERE ${namespace("t")} AND t.id IN (${refs("routine")})`)] : []),
     ];
     const observed = await this.db.batch(collection());

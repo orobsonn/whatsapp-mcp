@@ -4,6 +4,7 @@ import { engineName } from "./container";
 import { OriginGuard } from "./origin-guard";
 import { RetrievalRuns } from "./retrieval-runs";
 import type { SemanticEnginePort } from "./engine";
+import { oncePlanReader } from "./owner-once-guard";
 
 /** Host configuration fixes the same scope, origin and ranking contract for
  * preparation, runtime callbacks and owner reads. It grants no lifecycle effect. */
@@ -18,5 +19,6 @@ export function hostConfiguredSearch(env: AssistantEnv, purpose: Purpose, clock 
     ? new OriginGuard(env.DB, () => ({ ...scope, sourceEpoch: scope.sourceEpoch!, sourceGeneration: scope.sourceGeneration! }), env.CAPTURE_READER, env.BRIDGE_SECRET) : undefined;
   const semantic: { mode: "required" | "lexical_fallback"; engine: SemanticEnginePort } | undefined = env.COGNEE ? { mode: configuredMode ?? "required",
     engine: env.COGNEE.get(env.COGNEE.idFromName(engineName(scope.installationId, scope.generation))) } : undefined;
-  return { scope, origin, semantic, search: new RetrievalRuns(env.DB, scope, { purpose, origin, clock, semantic }) };
+  const ownerOncePlan = oncePlanReader(env);
+  return { scope, origin, semantic, ownerOncePlan, search: new RetrievalRuns(env.DB, scope, { purpose, origin, clock, semantic, ownerOncePlan }) };
 }

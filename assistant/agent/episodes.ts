@@ -1,6 +1,7 @@
 import { bridgeHash } from "../ingress";
 import type { JobLease } from "../queue";
 import type { SourceScope } from "../sources";
+import type { AccessGuard } from "../access";
 const ns = "installation_id=? AND generation=?";
 const active = "state IN ('prepared','dispatching','accepted','running') AND deadline>?";
 type Seed = { lease: JobLease; requestHash: string; profile: string; checkpoint: string; binding: unknown; deadline: number; maxCalls: number; episodeGeneration?: number };
@@ -46,8 +47,9 @@ export class Episodes {
   async dispatch(id: string) {
     return !!await this.db.prepare(`UPDATE assistant_episodes SET state='dispatching',transport_attempts=transport_attempts+1 WHERE ${ns} AND id=? AND state='prepared' AND transport_attempts=0 AND dispatch_json IS NOT NULL AND receipt_json IS NULL AND deadline>? RETURNING id`).bind(...this.keys(), id, this.clock()).first();
   }
-  async replayDispatch(id: string) {
-    return !!await this.db.prepare(`UPDATE assistant_episodes SET transport_attempts=transport_attempts+1 WHERE ${ns} AND id=? AND state IN ('dispatching','uncertain') AND transport_attempts<2 AND dispatch_json IS NOT NULL AND receipt_json IS NULL AND deadline+300000>? RETURNING id`).bind(...this.keys(), id, this.clock()).first();
+  async replayDispatch(id: string, additional?: AccessGuard) {
+    return !!await this.db.prepare(`UPDATE assistant_episodes SET transport_attempts=transport_attempts+1 WHERE ${ns} AND id=? AND state IN ('dispatching','uncertain') AND transport_attempts<2 AND dispatch_json IS NOT NULL AND receipt_json IS NULL AND deadline+300000>?
+      ${additional ? `AND (${additional.sql})` : ""} RETURNING id`).bind(...this.keys(), id, this.clock(), ...(additional?.values ?? [])).first();
   }
   async submission(id: string, submissionId: string) {
     if (typeof submissionId !== "string" || !submissionId || submissionId.length > 256) return false;
