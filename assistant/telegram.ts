@@ -30,7 +30,8 @@ export class TelegramBotApi implements TelegramApi {
   const operation=async()=>{
    await this.effectCheck?.();
    if(expired||controller.signal.aborted)throw 0;
-   const response=await this.fetcher(`https://api.telegram.org/bot${this.token}/${method}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),redirect:"manual",signal:controller.signal});
+   const fetcher=this.fetcher;
+   const response=await fetcher(`https://api.telegram.org/bot${this.token}/${method}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),redirect:"manual",signal:controller.signal});
    if(expired||!response.ok)throw 0;reader=response.body?.getReader();if(!reader)throw 0;
    const chunks:Uint8Array[]=[];let size=0;
    try{for(;;){const {done,value}=await reader.read();if(expired)throw 0;if(done)break;size+=value.byteLength;if(size>65536){void reader.cancel().catch(()=>{});throw 0;}chunks.push(value);}}finally{reader.releaseLock();}
