@@ -91,11 +91,15 @@ originais não mudam. Backing ausente/divergente permanece lacuna, sem reinferê
 Pausa impede a chamada ao extrator. O resumo diário do Owner deve contar fontes
 textuais elegíveis da geração atual, terminais com backing/contexto local atual,
 pendências, catálogo ausente e unknown; sua leitura metadata não atesta freshness
-remota nem validação semântica. A implementação desse resumo está em composição
-separada, sem tratar o resumo anterior como prova do catálogo global. Uma fonte positiva não remove a lacuna de
+remota nem validação semântica. O resumo usa a mesma elegibilidade do catálogo global, página até64 com
+denominador total e cobertura parcial explícita. Zero claims valida slot/proof e
+settlement sem lote fictício; ausência/corrupção de proof ou status redacted não
+viram terminais saudáveis. Não usa uma observação remota simulada. Uma fonte positiva não remove a lacuna de
 outras fontes. Namespace sem fontes informa `not_observed`, sem percentual de
 completude. O resumo diário continua sendo uma fotografia de metadados, não
-prova semântica de toda a memória.
+prova semântica de toda a memória. Reviews já cacheadas no mesmo período são
+snapshots históricos imutáveis; não são apagadas/recalculadas no rollout. Uma
+consulta Source do Owner valida candidatos atuais independentemente desse cache.
 
 Os três sidecars de 0027 participam de feature health e export completo do dono.
 Purga de support retira as projeções e payloads Owner derivados, preservando o

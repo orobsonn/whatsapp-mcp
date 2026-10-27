@@ -3,7 +3,6 @@ import {z} from 'zod';
 import {SourceAccess,type TrustedActor,type AccessGuard,type SourceRead} from './access';
 import {activeOrigin,type OriginScope,type OriginGuard,type OriginFence} from './origin-guard';
 import {CogneeModelBroker,brokerConfigurationHash,type ModelAdapter,type ModelAdmission} from './model-broker';
-import {DEFAULT_BROKER_CONFIG} from './model-transport';
 import {bridgeHash} from './ingress';
 import {retentionExecutionGuard} from './retention-execution';
 import {Relations,type CandidateClaim} from './relations';
@@ -11,23 +10,11 @@ import {OWNER_CANONICAL_CONFIG,ownerCatalogSchema,buildOwnerContext,ownerSnapsho
 import type {OwnerCatalogEntry,OwnerSupportProof} from './owner-context-contract';
 import {OWNER_RELATION_PREFIX} from './relation-visibility';
 export const CANONICAL_EXTRACTION_CONFIG=OWNER_CANONICAL_CONFIG;
-const ns='installation_id=? AND generation=?',limit=16,path='/v1/chat/completions';
+const ns='installation_id=? AND generation=?',path='/v1/chat/completions';
 type CatalogEntry=OwnerCatalogEntry;
-type CatalogField='installation_id'|'generation'|'id'|'revision'|'origin'|'project_id';
-/** Host-owned expressions only. Both admission and metadata diagnostics use
- * exactly this bounded set; project_revisions has one row per canonical ID. */
-function catalogRows(ref:(field:CatalogField)=>string){return `SELECT kind,id,revision,projectId FROM (
- SELECT 'mission' kind,m.id,m.revision,m.project_id projectId FROM assistant_missions m
-  WHERE m.installation_id=${ref('installation_id')} AND m.generation=${ref('generation')} AND m.source_id=${ref('id')} AND m.source_revision=${ref('revision')} AND m.state IN ('draft','active')
-  AND (m.project_id IS NULL OR EXISTS(SELECT 1 FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id))
- UNION ALL
- SELECT 'project' kind,p.id,r.revision,NULL projectId FROM assistant_projects p JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id
-  WHERE p.installation_id=${ref('installation_id')} AND p.generation=${ref('generation')} AND ((${ref('origin')}='owner_note' AND p.id=${ref('project_id')}) OR EXISTS(SELECT 1 FROM assistant_missions m WHERE m.installation_id=p.installation_id AND m.generation=p.generation AND m.project_id=p.id AND m.source_id=${ref('id')} AND m.source_revision=${ref('revision')} AND m.state IN ('draft','active')))
- ) ORDER BY kind,id LIMIT 17`;}
 type Slot={state:string;source_version:number;source_hash:string;slot_key:string;pin_hash:string;config_hash:string;actor_json:string;fence_json:string;origin_json:string|null;catalog_json:string;payload_json:string;period:string;operation_key:string|null;request_hash:string|null;claims_count:number|null;gap:string|null};
 type Options={clock?:()=>number;adapter:ModelAdapter;enabled:()=>boolean;guard:()=>AccessGuard;origin?:OriginGuard;runtime?:()=>Promise<void>};
 type Outcome={state:'published'|'blocked'|'uncertain'|'empty_catalog';claims?:number;gap?:string};
-const entity=z.object({kind:z.enum(['project','mission']),id:z.string().min(1).max(256)}).strict();
 const catalogInput=ownerCatalogSchema;
 const inputSource=z.object({id:z.string().min(1).max(256),revision:z.number().int().positive().safe(),authorId:z.string().max(512).nullable(),authorLabel:z.string().max(512).nullable(),text:z.string().max(32768)}).strict();
 const userInput=z.object({extraction:z.literal('canonical-owner-context-v2'),visibility:z.literal('owner'),source:inputSource,catalog:catalogInput}).strict();
@@ -45,7 +32,6 @@ function sameTerminalInput(oldCatalogJson:string,newCatalogJson:string,oldPayloa
   return JSON.stringify(shape(oldCatalog))===JSON.stringify(shape(newCatalog))&&JSON.stringify(comparable(oldPayload,oldUser))===JSON.stringify(comparable(newPayload,newUser));
  }catch{return false;}
 }
-const output=z.object({claims:z.array(z.object({kind:z.enum(['assertion','suggestion','decision','observation']),subject:entity,object:entity.optional(),predicate:z.string().min(1).max(128),quote:z.string().min(1).max(4096)}).strict()).max(8)}).strict();
 const size=(text:string)=>new TextEncoder().encode(text).length;
 const and=(...guards:AccessGuard[]):AccessGuard=>({sql:sqlAnd(guards.map(g=>g.sql)),values:guards.flatMap(g=>g.values)});
 /** @internal Host SQL only. This packs values, never authorization results:
@@ -147,19 +133,5 @@ export class CanonicalCandidateExtractor {
   }
  }
 }
-/** Metadata counts do not attest semantic completeness. Empty input is explicitly
- * not observed, and one terminal source never clears other pending sources. */
-export async function canonicalExtractionSummary(db:D1Database,scope:OriginScope){
- const configHash=await brokerConfigurationHash(CANONICAL_EXTRACTION_CONFIG);
- const result=await db.prepare(`SELECT COUNT(*) sources,COALESCE(SUM(terminal),0) published,COALESCE(SUM(missing_catalog),0) missingCatalog,COALESCE(SUM(uncertain),0) uncertain FROM (
-  SELECT EXISTS(SELECT 1 FROM assistant_canonical_extractions x WHERE x.installation_id=s.installation_id AND x.generation=s.generation AND x.source_id=s.id AND x.source_revision=s.revision AND x.source_version=s.current_version AND x.source_hash=v.content_hash AND x.config_hash=? AND x.state='published'
-    AND EXISTS(SELECT 1 FROM assistant_model_receipts m JOIN assistant_budget_reservations r ON r.installation_id=m.installation_id AND r.generation=m.generation AND r.operation_key=m.operation_key AND r.request_hash=m.request_hash AND r.state='settled' AND r.actual_units IS m.actual_units WHERE m.installation_id=x.installation_id AND m.generation=x.generation AND m.operation_key=x.operation_key AND m.request_hash=x.request_hash AND m.source_id=x.source_id AND m.source_revision=x.source_revision AND m.state='complete' AND m.response_json IS NOT NULL AND m.actual_units IS NOT NULL)
-    AND ((x.claims_count=0 AND NOT EXISTS(SELECT 1 FROM assistant_relation_batches b WHERE b.installation_id=x.installation_id AND b.generation=x.generation AND b.operation_key=x.slot_key)) OR (x.claims_count>0 AND EXISTS(SELECT 1 FROM assistant_relation_batches b WHERE b.installation_id=x.installation_id AND b.generation=x.generation AND b.operation_key=x.slot_key AND b.source_id=x.source_id AND b.source_revision=x.source_revision AND b.source_version=x.source_version AND b.source_hash=x.source_hash AND json_array_length(b.claims_json)=x.claims_count)))) terminal,
-   NOT EXISTS(${catalogRows(field=>`s.${field}`)}) missing_catalog,
-   EXISTS(SELECT 1 FROM assistant_canonical_extractions x WHERE x.installation_id=s.installation_id AND x.generation=s.generation AND x.source_id=s.id AND x.source_revision=s.revision AND x.state IN ('attempting','uncertain')) uncertain
-  FROM assistant_sources s JOIN assistant_source_versions v ON v.installation_id=s.installation_id AND v.generation=s.generation AND v.source_id=s.id AND v.version=s.current_version
-  WHERE s.installation_id=? AND s.generation=? AND s.status='active' AND s.origin IN ('owner_note','whatsapp') AND v.original_text IS NOT NULL
- )`).bind(configHash,scope.installationId,scope.generation).first<{sources:number;published:number;missingCatalog:number;uncertain:number}>();
- if(!result)throw Error('canonical_extraction_summary_unavailable');
- return {...result,pending:result.sources-result.published,observation:result.sources?'current_generation_metadata':'not_observed'};
-}
+/** Compatibility export uses the same current private metadata helper as daily. */
+export {ownerContextSummary as canonicalExtractionSummary} from './owner-context-summary';

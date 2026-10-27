@@ -1,7 +1,7 @@
 {
   "issue": 57,
   "base": "7157b54",
-  "status": "owner_runtime_integrated_summary_and_final_regressions_pending",
+  "status": "owner_context_composed_final_review_ci_and_cloud_pending",
   "phases": [
     {
       "phase": "storage_and_permanent_visibility_marker",
@@ -63,6 +63,15 @@
       "green": "5/5 targeted cases passed in14.03s: changed sourceEpoch/sourceGeneration and missing4-field affinity deny only private projections; legacy source relations remain readable; currentSource version/hash changes deny; reordered typed SourceFence fields remain valid. A newly current upstream/local origin watermark cannot replace the published original pin; WA positive and max16/16 cases remain valid.",
       "implementation": "Derives current activeOrigin from host options.scope or caller scope, never from stored proof. Compares exact four scope values and typed original SourceFence/current version/hash; reuses OriginGuard’s unchanged order-independent sameFence comparator for current versus original OriginFence. No rekey, new model receipt or paid retry.",
       "remaining": "Summary composition, independent final review, integration CI and real isolated shadow proof."
+    },
+    {
+      "phase": "private_summary_runtime_composition",
+      "summaryCommit": "da6227482f589017f95dc8f34b60cd748ed3befe (cherry-pick eef24df)",
+      "independentSummaryReview": "Read-only review by extractor author approved local proof/backing/zero-claims/status-redaction, bounded partial metadata and explicit unchecked remote freshness. Routine author separately ran11 targeted cases and5 existing daily/summary cases; details in57-owner-context-summary-local.json.",
+      "integration": "Routines and canonicalExtractionSummary compatibility export share ownerContextSummary. Removed the obsolete same-source catalog SQL/count implementation; no alternate metadata path remains.",
+      "green": "Serial Context13 + Summary11 + Routines50:73/74 passed in62.60s. One legacy fixture still identified v1 model prompts and exposed private phase to guest. Updated only its tag to canonical-owner-context-v2/visibility owner and expected existing guest work phase; same2receipts/1batch/1dispatch/repeated-tick invariants then passed1/1 in23.02s. All74 relevant cases are therefore verified, without repeating the73 already passing cases.",
+      "operationalLimit": "Cached daily reviews remain immutable historical snapshots by scope/period. They are not recomputed or deleted at rollout; old DTOs retain metadata_unchecked/snapshotAt. Current Owner source queries validate current private candidates independently.",
+      "remaining": "Final independent integrated-code review, full composition CI including native #128, paused27 rollout and real isolated shadow validation; explicit known-pre-admission G1 backlog recovery is owned by Root."
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,
