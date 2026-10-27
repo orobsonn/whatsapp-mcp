@@ -1,5 +1,11 @@
 # #48 — tópicos privados, notificações e revisão sombra
 
+## Homologação própria em27/10/2026
+
+Vínculo autenticado/revisão3 e quatro tópicos persistidos foram relidos pelo cliente MCP. A [jornada Owner real](140-owner-once-cloud-20261027.md) publicou uma proposta atual com citação literal, sem inserir decisão porSQL. O cliente preparou quatro notificações com operações fixas e expiração de uma hora, uma por tópico; cada dispatch retornou `sent`. O status posterior confirmou quatro notificações enviadas com `review_state=pending`, sem truncamento e com um preflight por envio. Não houve recriação de tópico ou reenvio.
+
+Ainda faltam os cliques reais dos botões, a recusa de clique já consumido e a conciliação dos respectivos recibos antes do aceite final. O Chrome aberto no bot foi localizado, mas recusou JavaScript por Eventos da Apple; o macOS também recusou controle assistivo. Essa indisponibilidade não foi substituída por callback fabricado. O dono foi informado do controle necessário para prosseguir pelo navegador. Os registros abaixo descrevem as provas anteriores e não constituem homologação dos cliques.
+
 Construção na VPS em 26/10/2026, sobre a integração preservada `aaff4f3`. Esta entrega é código e teste sintético; não comprova vínculo, tópicos, entrega de Telegram nem homologação de cliente real.
 
 ## Contrato implementado

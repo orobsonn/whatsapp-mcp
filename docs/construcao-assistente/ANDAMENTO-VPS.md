@@ -1,5 +1,9 @@
 # Construção na VPS — atualização27/10/2026
 
+## Atualização — proposta real e quatro notificações,20:05UTC
+
+O commit49cb077 passou na CI40568801365(1508/66/13) e foi implantado como1eaadf4c, com cinco módulos,37bindings e runtime/imagem/cron/pausa/exposição preservados. Restore confirmou as duas notas e o mesmo financeiro. O primeiro caso pós-fix foi recusado por citação não literal, sem publicar; um único caso positivo previamente definido completou Flue nativo e publicou uma decisão atual pelo diário normal. Os quatro tópicos privados receberam notificações reais pelo MCP, todas `sent` e revisão ainda `pending`. Callbacks reais e clique repetido, revisão final e releases mantêm #140/#48 abertas. Calendar próprio respondeu somente leitura; allowlist GitHub ainda pendente. Censo global61.701microUSD inclui40.000incertos antigos e3.000reservados conservados; infraestrutura separada. [Evidência atual e limites](evidencias/140-owner-once-cloud-20261027.md). Os checkpoints seguintes são históricos.
+
 ## Execução Owner própria em homologação — #140/#48
 
 Atualização posterior: c468372 passou na CI40564265599(1502/66/13) e está na versão própria91dd095a, com37bindings/imagem/cron/pausa preservados. Restore real do checkpoint de duas notas conservou integralmente o financeiro; operador temporário/token foram removidos. Um caso separado capturou recusa `predicate_no_row`; há163recibos/2.578microUSD liquidados e duas reservas de1.500preservadas, sem episódio/proposta/Telegram. A causa foi reproduzida localmente com IDs determinísticos: duas notas inseridas na ordem inversa mudavam a ordem do catálogo no SQL composto. Fix local ordena o agregado JSON, mantendo todos os guards; sete regressões/188dirigidos/tipos passaram, revisão/CI exata/deploy/cloud ainda pendentes. Manifestos/prazos antigos não são reescritos. [RCA e evidência atual](evidencias/140-owner-once-cloud-20261027.md).

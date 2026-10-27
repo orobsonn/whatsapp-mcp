@@ -1,4 +1,18 @@
-# #140 — execução Owner própria: checkpoint comprovado, publicação pendente
+# #140 — execução Owner própria: publicação real e revisão Telegram em homologação
+
+## Resultado atual — publicação real, 27/10 às19:57UTC
+
+O commit `49cb0776309352608b2296b1f599e070d2fd08f7` passou na [CI40568801365](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40568801365):1.508gerais,66nativos,13OAuth, checksNode, tipos, dois builds e audit sem vulnerabilidades. A versão própria `1eaadf4c-ac76-4e53-8c33-29bdaf5adf62` foi promovida após comparação dos cinco módulos,37bindings e runtime completo, preservando imagem, cron, pausa e exposição.
+
+A restauração real confirmou o checkpoint das duas notas técnicas, conservando epoch/revision/fontes e o financeiro integral. O operador temporário e seu token foram removidos. A regressão seguinte atravessou a busca semântica e executou Flue nativo, mas o modelo juntou trechos não contíguos com reticências em uma citação. O verificador recusou a proposta antes da publicação. O recibo pago ficou completo/liquidado, e o episódio/tentativa incertos foram conservados. Não se editou a resposta, removeu citação ou relaxou a validação para obter sucesso.
+
+Após revisão adversarial, um único caso positivo foi definido antes da execução: pedir a frase literal das mesmas notas que distingue homologação técnica de avaliação humana de utilidade. Esse caso atravessou plano/admissão, restauração, busca, semântica obrigatória e Flue nativo, chegando ao diário normal com `phase=proposed`, `freshness=current`, origem/revisão/versão/hash conferidos e citação literal. O operador terminou normalmente e removeu seu processo/configuração local. Não houve proposta, recibo ou avaliação humana inseridos por SQL.
+
+O MCP autenticado preparou e enviou uma notificação dessa decisão em cada um dos quatro tópicos privados existentes. Os quatro retornaram `sent`, com uma única tentativa de envio por notificação; o status relido confirmou quatro revisões ainda `pending`. `sent` é o recibo observado, sem alegação de leitura humana. Callbacks reais, clique repetido, revisão final e publicação das releases continuam pendentes; #140 e #48 permanecem abertas.
+
+O censo20:05:35UTC confirmou61.701microUSD (US$0,061701) comprometidos nos ledgers conhecidos:40.000incertos históricos,3.000em duas reservas anteriores e3.391liquidados na instalação própria em167recibos. Não se apagou reserva, alterou período ou ampliou o teto para repetir tentativa. Infraestrutura e fatura permanecem separadas. Calendar próprio respondeu somente leitura; GitHub próprio ainda requer allowlist. Pausa/sombra e ausência de WhatsApp automático/Calendar write foram preservadas.
+
+O resultado prova uma jornada técnica do corpus controlado de duas notas/964bytes, incluindo uma falha real de qualidade recusada. Não prova todo o acervo, recuperação geral entre projetos, benefício humano ou observação contínua. As seções seguintes conservam a cronologia e o estado conhecido em cada etapa.
 
 ## Causa reproduzida — ordenação do catálogo na composição SQL
 

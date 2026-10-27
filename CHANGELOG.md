@@ -17,7 +17,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Assinatura do catálogo Owner ordena as entradas no próprio agregado JSON, preservando sua igualdade quando os guards de cobertura e execução são compostos. Duas fontes inseridas na ordem inversa dos IDs não são mais recusadas por uma mudança de ordem da consulta.
 
 ### Notes
-- A homologação cloud da #140 e os callbacks reais da #48 ainda são necessários antes da release deste marco. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.
+- Homologação cloud própria publicou uma proposta atual pelo diário normal e enviou quatro notificações privadas. Uma resposta anterior com citação não literal foi recusada, conservando recibos e custos. Callbacks reais da #48, revisão final e release continuam pendentes. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.
 
 ## [0.48.1] - 2026-10-27
 
