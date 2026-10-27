@@ -18,7 +18,7 @@
   "validation": {
     "red": "After correcting a missing fixture owner principal, the real D1 recipient-to-FUP test failed at control_input because outgoing was not supported; its unauthorized-input control passed.",
     "directedD1": "Snapshot24/24 passed in20.99s, including causal recipient/HMAC race RED then atomic-guard GREEN. Final policy/capture follow-up33/33 passed in22.42s (30.12s total).",
-    "nativeFlue": "One integrated native case prepared in the existing assistant-episodes.test.ts; intentionally not run on the VPS, pending integrated CI",
+    "nativeFlue": "One targeted integrated native Flue case passed after correcting the Node/Worker fixture boundary: 1 passed, 39 skipped, 16.75s total. Official Flue bundle, real Own D1 and isolated Source workerd/D1; provider status and Source-to-Own metadata port are controlled. Full integrated CI remains a delivery gate.",
     "transitiveImports": "npm run test:assistant-outgoing passed: only assistant/outgoing.ts, src/send-envelope.ts and src/core.ts are local runtime imports; no action/sender/provider runtime imported",
     "typescript": "npm run check and git diff --check passed",
     "provider": "Synthetic adapters only; no real provider/model/Cloudflare calls",
@@ -27,7 +27,9 @@
     "policyCaptureGreen": "Default unassociated owner command note plus a target already projected capture-disabled/withdrawn produces a shadow proposal with policy absent0 and target.fence null, without policy/frame/capture/history writes. Existing policy, new policy during await, policy revision/exclusion, explicit pause during model, and old pins without policy all deny without repinning; known model cost remains settled.",
     "temporalRed": "Independent review found a clock sampled before the final awaited search guard. After fixing a not-yet-issued mandate fixture, a real D1 journal read exposed proposal/current after mandate expiry during that await. Model admission and publication were already suppressed by subsequent guards; the read was the causal failure.",
     "temporalGreen": "Final36/36 directed D1 tests passed in15.15s (22.38s total), including expiry during the final awaited search guard before model/publication/read. Controller and journal now sample temporal predicates after that await; original job/proof and known cost remain unchanged.",
-    "independentReview": "ReviewRelease read-only adversarial implementation review approved18e9f92,ea81b38,7961749 and final temporal delta; no independent test/network execution claimed. Integration CI and native/real boundaries remain pending."
+    "independentReview": "ReviewRelease read-only adversarial implementation review approved18e9f92,ea81b38,7961749 and final temporal delta; no independent test/network execution claimed. Integration CI and native/real boundaries remain pending.",
+    "nativeHarnessCiRed": "CI40427338404 failed while collecting assistant-episodes.test.ts (0 tests) because raw Node imports reached cloudflare:workers, unsupported by the Node ESM loader. General tests passed; this was a fixture-runtime failure, not evidence of a provider attempt. The failed run is preserved at https://github.com/orobsonn/whatsapp-mcp/actions/runs/40427338404.",
+    "nativeFixtureBoundary": "Recipient resolution/envelope helpers execute inside a compiled workerd fixture with the actual Archive D1 and production helpers. The facade/status and native callback proof port remain explicit test ports, not a real CaptureReader binding, provider call or cloud/client acceptance. All external outbound remains forbidden; messages/actions remain empty."
   },
   "remaining": [
     "Integrated CI, including the new native Flue case",

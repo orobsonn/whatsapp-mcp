@@ -4,6 +4,7 @@ import { resolve, join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import {buildSync} from "esbuild";
 import { Episodes } from "../assistant/agent/episodes";
 import { JobQueue, type JobLease } from "../assistant/queue";
 import { sourceTextHash, SourceController } from "../assistant/sources";
@@ -18,8 +19,6 @@ import { RetrievalRuns } from "../assistant/retrieval-runs";
 import { DecisionJournal } from "../assistant/decisions";
 import { OwnerControl } from "../assistant/control";
 import { FollowUps } from "../assistant/followups";
-import {resolveRecipient} from '../src/recipients';
-import {readRecipientEnvelope} from '../src/assistant-recipient-reader';
 import {outgoingPort} from '../assistant/outgoing';
 import {readD1Migrations} from '@cloudflare/vitest-plugin';
 
@@ -353,7 +352,7 @@ test("overflow waits intact; a distinct owner request rebuilds a useful episode 
 });
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "assistant-episodes-")));
-let artifact: any, externalCalls = 0;
+let artifact: any, archiveFixtureScript: string, externalCalls = 0;
 function findConfig(directory: string): any {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
@@ -407,6 +406,20 @@ export default {async fetch(request,env){
 export default defineConfig({root:${JSON.stringify(scratch)},envDir:false,plugins:[flue({target:'cloudflare',app:${JSON.stringify(join(scratch,"app.ts"))},cloudflare:${JSON.stringify(join(root,"assistant/cloudflare.ts"))},agents:${JSON.stringify(join(root,"assistant/agent-runtime/profiles.ts"))},providers:[],tracing:false}),cloudflare({configPath:${JSON.stringify(join(scratch,"wrangler.jsonc"))},config:flueWorkerConfig(),persistState:false})],build:{outDir:${JSON.stringify(join(scratch,"dist"))},emptyOutDir:true}});`);
   execFileSync(process.execPath, [join(root, "node_modules/vite/bin/vite.js"), "build", "--config", config], { cwd: root, stdio: "pipe" });
   artifact = findConfig(join(scratch, "dist"));
+  // Source helpers import the Workers OAuth runtime. Execute them in workerd,
+  // never through Node's ESM loader. This fixture facade/status are controlled
+  // ports, not a live CaptureReader service-binding or provider proof.
+  archiveFixtureScript=buildSync({stdin:{contents:`
+import {resolveRecipient} from ${JSON.stringify(join(root,'src/recipients.ts'))};
+import {readRecipientEnvelope} from ${JSON.stringify(join(root,'src/assistant-recipient-reader.ts'))};
+const phone='12025550100',status={status:async()=>({connected:true,phone})};
+export default {async fetch(request,env){
+ const e={DB:env.ARCHIVE,OWNER_SUB:'fixture-owner',INSTALLATION_EPOCH:'recipient-e',CONNECTION_GENERATION:'recipient-g',CONNECTED_PHONE:phone,MAINTENANCE:'false',RUNTIME_CONFIG:'static',DEVELOPMENT:'true',PUBLIC_ORIGIN:'https://fixture.invalid',ASSISTANT_READER_SECRET:'synthetic-native-recipient-reader-secret',ZAPI_INSTANCE_ID:'fixture',ZAPI_TOKEN:'fixture',ZAPI_CLIENT_TOKEN:'fixture'};
+ const input=await request.json(),path=new URL(request.url).pathname;
+ if(path==='/resolve')return Response.json(await resolveRecipient(e,input,status));
+ if(path==='/envelope')return Response.json(await readRecipientEnvelope(e,input,status));
+ return new Response('denied',{status:403});
+}};`,resolveDir:root,sourcefile:'synthetic-source-recipient-fixture.ts',loader:'ts'},bundle:true,write:false,format:'esm',platform:'browser',target:'es2022',external:['cloudflare:*','node:*'],logLevel:'silent'}).outputFiles[0].text;
 });
 afterAll(() => { rmSync(scratch, { recursive: true, force: true }); expect(externalCalls).toBe(0); });
 function nativeWorker(state: string) {
@@ -550,11 +563,11 @@ test("owner FUP due admission crosses real Flue and the mandatory journal exactl
 });
 test('an explicit new recipient with no history crosses real Flue once with its immutable shadow envelope and no send capability',async()=>{
  await worker.dispose();await bootstrap(nativeWorker('outgoing-128'));await db.prepare('CREATE TABLE synthetic_model_calls(body TEXT NOT NULL)').run();await new JobQueue(db,scope).fail(lease,'previous',now);
- const archiveWorker=new Miniflare(convertV4MiniflareOptions({modules:true,script:"export default{fetch(){return new Response('fixture')}}",d1Databases:['ARCHIVE'],outboundService:()=>{throw Error('external_network_forbidden')}}));
+ const archiveWorker=new Miniflare(convertV4MiniflareOptions({modules:true,script:archiveFixtureScript,compatibilityDate:'2026-10-26',compatibilityFlags:['nodejs_compat'],d1Databases:['ARCHIVE'],outboundService:()=>{externalCalls++;throw Error('external_network_forbidden')}}));
  try{const archive=await archiveWorker.getD1Database('ARCHIVE');for(const migration of await readD1Migrations(resolve(root,'migrations')))await archive.batch(migration.queries.map(q=>archive.prepare(q)));
-  const nominal={...scope,sourceEpoch:'recipient-e',sourceGeneration:'recipient-g'},secret='synthetic-native-recipient-reader-secret',phone='12025550100',status={status:async()=>({connected:true,phone})};
-  const e:any={DB:archive,OWNER_SUB:'fixture-owner',INSTALLATION_EPOCH:nominal.sourceEpoch,CONNECTION_GENERATION:nominal.sourceGeneration,CONNECTED_PHONE:phone,MAINTENANCE:'false',RUNTIME_CONFIG:'static',DEVELOPMENT:'true',PUBLIC_ORIGIN:'https://fixture.invalid',ASSISTANT_READER_SECRET:secret,ZAPI_INSTANCE_ID:'fixture',ZAPI_TOKEN:'fixture',ZAPI_CLIENT_TOKEN:'fixture'};
-  const recipient=await resolveRecipient(e,{phone:'+12025550123'},status),port=outgoingPort({DB:db,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:nominal.sourceEpoch,BRIDGE_SOURCE_GENERATION:nominal.sourceGeneration,BRIDGE_SECRET:secret,FLUE_EPISODES_ENABLED:'shadow',CAPTURE_READER:{readSnapshot:async()=>{throw Error('no_history')},readRecipientEnvelope:input=>readRecipientEnvelope(e,input,status)}}),control=new OwnerControl(db,nominal,{kind:'owner'},()=>now,port);
+  const nominal={...scope,sourceEpoch:'recipient-e',sourceGeneration:'recipient-g'},secret='synthetic-native-recipient-reader-secret';
+  const sourceCall=async(path:string,input:unknown)=>{const response=await archiveWorker.dispatchFetch('https://source-fixture.test'+path,{method:'POST',body:JSON.stringify(input)});if(!response.ok)throw Error('source_fixture_failed');return response.json() as Promise<any>;};
+  const recipient=await sourceCall('/resolve',{phone:'+12025550123'}),port=outgoingPort({DB:db,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:nominal.sourceEpoch,BRIDGE_SOURCE_GENERATION:nominal.sourceGeneration,BRIDGE_SECRET:secret,FLUE_EPISODES_ENABLED:'shadow',CAPTURE_READER:{readSnapshot:async()=>{throw Error('no_history')},readRecipientEnvelope:input=>sourceCall('/envelope',input)}}),control=new OwnerControl(db,nominal,{kind:'owner'},()=>now,port);
   await control.execute({kind:'policy.put',operationId:'outgoing-policy',id:recipient.chatId,expectedRevision:0,conversationKind:'private'});await control.execute({kind:'fup.put',operationId:'outgoing-fup',id:'outgoing-fup',expectedVersion:0,conversationId:recipient.chatId,policyRevision:1,source:{id:'source',revision:1},purpose:'Synthetic question',dueAt:100,timezone:'UTC',precision:'exact',state:'scheduled',outgoing:{authorization:{kind:'owner_exact'},envelope:{kind:'text',chatId:recipient.chatId,text:'Exact first-contact shadow text.'}}});
   const proof=JSON.parse((await db.prepare('SELECT body_json FROM assistant_fup_provenance WHERE fup_id=?').bind('outgoing-fup').first<string>('body_json'))!).outgoing;await db.prepare('CREATE TABLE synthetic_outgoing_proof(id INTEGER PRIMARY KEY,proof_json TEXT)').run();await db.prepare('INSERT INTO synthetic_outgoing_proof VALUES(1,?)').bind(JSON.stringify(proof)).run();
   const due=new FollowUps(db,scope,{clock:()=>now}),item=(await due.admitDue()).items[0];expect(item.state).toBe('admitted');const queue=new JobQueue(db,scope),claimed=(await queue.claim(now,90000))!,ledger=(await queue.ledger(claimed.id))!,request=JSON.parse(ledger.request_json),search=new RetrievalRuns(db,scope,{clock:()=>now});let progress=await search.start({kind:'owner'},'outgoing-search',{query:request.input});for(let i=0;progress.state==='pending'&&i<10;i++)progress=await search.step({kind:'owner'},{runId:progress.runId,stepId:'outgoing-'+i,expectedCheckpoint:progress.checkpoint});
