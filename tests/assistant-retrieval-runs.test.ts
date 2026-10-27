@@ -189,9 +189,9 @@ it("rolls back the entire final step batch and recovers that prepared snapshot",
   expect(await sql("SELECT COUNT(*) AS n FROM assistant_retrieval_items WHERE installation_id=? AND generation=?").first()).toEqual({ n: 0 });
   now += 11; expect((await search.step(owner, { runId: progress.runId, stepId: "rollback", expectedCheckpoint: 0 })).state).toBe("ready");
 });
-it("uses one bounded SearchGuard bind and binds the exact result pack and configuration", async () => {
+it("keeps SearchGuard within D1 binds and pins the exact result pack and configuration", async () => {
   await seed(65); const result = await finish(owner, await search.start(owner, "guard", { query: "Órbita" }));
-  const guard = search.guard(owner, result.fence!, now); expect(guard.values).toHaveLength(1);
+  const guard = search.guard(owner, result.fence!, now); expect(guard.values.length).toBeLessThanOrEqual(100);
   expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).not.toBeNull();
   for (const delta of [{ requestHash: "a".repeat(64) }, { allowedPackHash: "b".repeat(64) }, { selected: [] }, { selected: [{ ...result.fence!.selected[0], auxiliary: "forbidden" }] }]) expect(await search.check(owner, { ...result.fence!, ...delta })).toBe(false);
   const moved = new RetrievalRuns(env.DB, { ...scope, sourceEpoch: "other", sourceGeneration: "g2" }); expect(await moved.check(owner, result.fence!)).toBe(false);
@@ -292,7 +292,7 @@ it("invalidates a manual pack for pending inbox metadata before its origin conve
     sql("INSERT INTO assistant_capture_streams(installation_id,generation,source_epoch,source_generation,read_sequence) VALUES(?,?,'e','g',1)"),
     sql("INSERT INTO assistant_capture_inbox(installation_id,generation,source_epoch,source_generation,sequence,previous_sequence,chat_id,source_id,source_kind,operation,recorded_at,metadata_hash,received_at) VALUES(?,?,'e','g',1,0,'chat','message','message','upsert',1,?,1)","a".repeat(64)),
   ]);
-  const guard=search.guard(owner,result.fence!,now); expect(guard.values).toHaveLength(1); expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).toBeNull();
+  const guard=search.guard(owner,result.fence!,now); expect(guard.values.length).toBeLessThanOrEqual(100); expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).toBeNull();
   expect(await search.check(owner,result.fence!)).toBe(false);
   expect((await finish(owner,await search.start(owner,"pending-origin",{query:"Órbita"}))).sources).toEqual([]);
 });
@@ -300,6 +300,6 @@ it("keeps a complex guest page of 64 entries below the D1 bind boundary", async 
   await seed(64); let maximum=0;
   const db={prepare(query:string){const statement=env.DB.prepare(query); return new Proxy(statement,{get(target,key){if(key==="bind")return (...values:unknown[])=>{maximum=Math.max(maximum,values.length);return target.bind(...values);};const value=Reflect.get(target,key);return typeof value==="function"?value.bind(target):value;}});},batch:env.DB.batch.bind(env.DB)} as D1Database;
   search=new RetrievalRuns(db,scope,{clock:()=>now}); const result=await finish(guest,await search.start(guest,"bindings",{query:"Órbita"}));
-  expect(result.state).toBe("ready"); expect(maximum).toBeLessThanOrEqual(100); expect(search.guard(guest,result.fence!,now).values).toHaveLength(1);
+  expect(result.state).toBe("ready"); expect(maximum).toBeLessThanOrEqual(100); const guard=search.guard(guest,result.fence!,now); expect(guard.values.length).toBeLessThanOrEqual(100); expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).not.toBeNull();
   expect(await sql("SELECT COUNT(*) n FROM assistant_retrieval_items WHERE installation_id=? AND generation=?").first()).toEqual({n:64});
 });

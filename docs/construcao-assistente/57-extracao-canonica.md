@@ -19,12 +19,15 @@ enviado e32KiB de provas metadata; overflow do conjunto inteiro é explícito.
 O prefixo reservado canonical-owner-v2: é negação permanente ao interlocutor,
 nunca prova de autorização Owner. Provas sidecar0027 ficam vinculadas ao slot0026
 único por fonte/revisão; nenhum reset/rekey/lane financeira novo é criado.
-Missing/corrupt proof falha fechado. Relações novas são exclusivamente Owner;
+Missing/corrupt proof falha fechado. Toda leitura privada exige a afinidade
+atual completa (instalação, geração, sourceEpoch e sourceGeneration), compatível
+com o pin original, além dos SourceFence/OriginFence originais atuais. Ausência
+ou rotação dessa afinidade nega só a projeção privada; não promove/recria o slot. Relações novas são exclusivamente Owner;
 legado source audience conserva suas regras. Leitura, score e fingerprint guest
 não revelam claims, nomes, existência ou capacidade dos lotes privados.
 
 O query source existente do OwnerMCP expõe canonicalCandidates com claims,
-referências de supports e estado unreviewed/semantic_unverified. Quotes pertencem
+referências de supports e estado unreviewed e semanticValidation=unverified. Quotes pertencem
 ao original atual; descritor de outra nota não é fala atribuída ao autor da
 mensagem. Zero claims usa o backing do slot/recibo, sem lote fictício. O modelo
 não concede ACL, não resolve identidade por nome e não cria Source.project_id,

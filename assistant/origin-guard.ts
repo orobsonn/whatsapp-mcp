@@ -37,7 +37,7 @@ type OriginRow = { source_kind: OriginRef["sourceKind"]; source_id: string; chat
   revision: number; current_version: number; policy_kind: string | null; kind: "private" | "group"; chat_watermark: number; access_state: string; policy_revision: number; policy_mode: string };
 // Persistence/schema parsing may reorder properties. Compare the exact flat
 // field set and values; additional or changed fields still deny the reference.
-function sameFence(current: OriginFence | null, expected: OriginFence): boolean {
+export function sameFence(current: OriginFence | null, expected: OriginFence): boolean {
   if (!current || Object.keys(current).length !== Object.keys(expected).length) return false;
   return (Object.keys(current) as (keyof OriginFence)[]).every(key => Object.hasOwn(expected, key) && current[key] === expected[key]);
 }

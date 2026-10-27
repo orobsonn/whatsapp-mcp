@@ -49,6 +49,20 @@
       "green": "60/60 real D1 cases passed in27.83s (21.48s tests). Added published semantic project-name/mission-objective rejection and uncertain legacy slot preservation with no new key, receipt or adapter attempt.",
       "configuration": "Exported pure schedulerConfiguration(scope,envPick), delegated by the original private method without changing its hash input or actor binding. It does not authorize item recovery.",
       "remaining": "Summary composition, independent final code review, integration regression/CI and cloud proof remain gates."
+    },
+    {
+      "phase": "retrieval_and_bootstrap_composition_regression",
+      "initial": "Five relevant files ran serially:106/109 passed in101.78s. All relations, retrieval, semantic-runs and index-bootstrap cases passed. The only3 failures asserted exactly one SearchGuard value; guards now legitimately retain46/60/59 direct binds to avoid an unnecessary AST wrapper.",
+      "followup": "The3 targeted cases passed in a separate4-target run, with <=100 binds, real D1 SELECT guard compilation and all original pack/config/namespace/inbox negatives retained. No production predicate changed for these fixture updates.",
+      "maxPositive": "16 supports/16 entities now proves positive publication plus Owner read, a separate zero-claims terminal/read and17 overflow without another admission. One targeted case passed in8.02s; repeated with affinity/WA5-target gate14.03s. SQL<=100KB and<=100 binds are instrumented through positive publication.",
+      "remaining": "Owner summary composition, final independent code review, integration CI and real shadow proof remain gates."
+    },
+    {
+      "phase": "mandatory_current_affinity_and_original_fences_on_private_reads",
+      "red": "Real D1 causal OwnerQueries under rotated sourceEpoch returned available private candidates; expected unavailable. One target failed in8.48s.",
+      "green": "5/5 targeted cases passed in14.03s: changed sourceEpoch/sourceGeneration and missing4-field affinity deny only private projections; legacy source relations remain readable; currentSource version/hash changes deny; reordered typed SourceFence fields remain valid. A newly current upstream/local origin watermark cannot replace the published original pin; WA positive and max16/16 cases remain valid.",
+      "implementation": "Derives current activeOrigin from host options.scope or caller scope, never from stored proof. Compares exact four scope values and typed original SourceFence/current version/hash; reuses OriginGuard’s unchanged order-independent sameFence comparator for current versus original OriginFence. No rekey, new model receipt or paid retry.",
+      "remaining": "Summary composition, independent final review, integration CI and real isolated shadow proof."
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,
