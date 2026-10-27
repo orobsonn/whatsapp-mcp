@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "issue": 54,
+  "issueUrl": "https://github.com/orobsonn/whatsapp-mcp/issues/54",
+  "documentationBase": "6b4bd49822a2da27f67ccc77409969bf8d80ea40",
+  "ci": {
+    "runId": 40428641551,
+    "headSha": "6b4bd49822a2da27f67ccc77409969bf8d80ea40",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/orobsonn/whatsapp-mcp/actions/runs/40428641551",
+    "verification": "GitHub read-only run metadata"
+  },
+  "scope": "evaluation_instrumentation_not_longitudinal_pilot_result",
+  "pendingRemoteProbe": true,
+  "remoteProbe": {
+    "state": "pending",
+    "queries": [
+      "assistant.health",
+      "evaluation.metrics",
+      "evaluation.sample"
+    ],
+    "observedRows": null,
+    "results": null,
+    "proofSha256": null,
+    "providerCallsExpected": 0,
+    "modelCallsExpected": 0
+  },
+  "criteria": {
+    "ac-15.281": {
+      "status": "local_integrated_contract_proven_remote_sample_pending",
+      "evidence": [
+        "local_evaluation"
+      ],
+      "scope": "Real DecisionJournal pagination/states in D1 fixtures; no cloud sample invented"
+    },
+    "ac-15.282": {
+      "status": "local_authenticated_owner_report_fixture_proven",
+      "evidence": [
+        "local_evaluation"
+      ],
+      "realHumanAssessmentObserved": false,
+      "fromMeOrSimulatedActionBecomesHumanFact": false,
+      "labels": "owner_assessment_at_exposure",
+      "currentCorrectness": "unknown"
+    },
+    "ac-15.283": {
+      "status": "local_cost_latency_review_instrumentation_proven_remote_metrics_pending",
+      "evidence": [
+        "local_evaluation"
+      ],
+      "costUnit": "microUSD",
+      "costScope": "authenticated_installation_all_generations_all_periods",
+      "uncertainCeilingsPreserved": true,
+      "providerInvoice": false,
+      "reviewDuration": "elapsed_wall_not_active_review",
+      "cloudMeasurements": null
+    },
+    "ac-15.284": {
+      "status": "local_empty_denominator_null_unknown_proven_remote_pending",
+      "evidence": [
+        "local_evaluation"
+      ],
+      "zeroEventsCoveragePercent": null
+    }
+  },
+  "validation": {
+    "historicalTargetedTests": {
+      "passed": 23,
+      "durationSeconds": 22.76,
+      "boundary": "D1 and authenticated MCP receiver",
+      "rerunForThisDocument": false
+    },
+    "newSuites": 0,
+    "scheduler53Integrated": true,
+    "assessmentData": "synthetic_explicit_owner_report_fixtures",
+    "actualPilotQuality": "unknown"
+  },
+  "repositoryProofs": {
+    "local_evaluation": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/54-avaliacao-saude.md",
+      "sha256": "32d2fb809967b801ed64904fa0fa77d66c0907b75c628d29b8e608950373f407"
+    },
+    "scheduler_cloud_boundary": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/53-56-natural-cron-vps.md",
+      "sha256": "9c5aefb8cc67bf3c43754a3988f046f4c6a89ce0471e44c0aaca8da59ff16128"
+    },
+    "health_admission": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/55-health-telegram-admission.md",
+      "sha256": "236cdb1b61f020eef7d1d74fe1faa39be6a729e82de29906893f09e9cd55068d"
+    }
+  },
+  "additionalInferenceCostUsd": 0,
+  "infrastructureCost": "not_estimated",
+  "releaseStatus": "not_versioned_by_this_document",
+  "pilotReadyClaim": false
+}
