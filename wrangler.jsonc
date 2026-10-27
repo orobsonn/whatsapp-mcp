@@ -10,6 +10,14 @@
   "preview_urls": false,
   "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [{ "name": "OAUTH_COORDINATOR", "class_name": "OAuthCoordinator" }],
+  },
+  "migrations": [{ "tag": "oauth-authority-v1", "new_sqlite_classes": ["OAuthCoordinator"] }],
+  "services": [
+    { "binding": "ASSISTANT_INGRESS", "service": "personal-assistant-shadow" },
+    { "binding": "ASSISTANT_OWNER", "service": "personal-assistant-shadow", "entrypoint": "OwnerAssistant" },
+  ],
   "d1_databases": [
     {
       "binding": "DB",
