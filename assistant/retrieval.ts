@@ -82,7 +82,7 @@ export class Retrieval {
       AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${visible.sql}) ORDER BY operation_key LIMIT 17`)
       .bind(this.scope.installationId, this.scope.generation, source.id, source.fence.source.revision, source.fence.source.version, source.fence.source.hash,...visible.values).all<{ claims_json: string }>();
     if (rows.results.length > 16 || rows.results.reduce((sum, row) => sum + row.claims_json.length, 0) > 65536) { gap("relation_limit"); return { score: 0, linked: false }; }
-    if(source.fence.actor==='owner'){const current=await readOwnerCanonical(this.db,this.scope,source,{clock:this.clock,origin:this.origin});if(current.state==='available'&&current.claims.length)rows.results.push({claims_json:JSON.stringify(current.claims)});}
+    if(source.fence.actor==='owner'&&'sourceEpoch' in this.scope&&'sourceGeneration' in this.scope){const current=await readOwnerCanonical(this.db,this.scope,source,{clock:this.clock,origin:this.origin});if(current.state==='available'&&current.claims.length)rows.results.push({claims_json:JSON.stringify(current.claims)});}
     let score = 0, linked = false;
     for (const row of rows.results) {
       const claims: unknown = JSON.parse(row.claims_json);

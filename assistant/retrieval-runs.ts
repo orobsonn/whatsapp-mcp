@@ -44,6 +44,9 @@ function balancedAnd(parts:string[]):string {
   const middle=Math.floor(parts.length/2);return `(${balancedAnd(parts.slice(0,middle))} AND ${balancedAnd(parts.slice(middle))})`;
 }
 function compressed(sql: string, values: AccessGuard["values"]): AccessGuard {
+  // Keep already-bounded predicates direct: wrapping namespace binds inside
+  // correlated JSON extraction increases D1 expression depth unnecessarily.
+  if(values.length<=90)return {sql,values};
   let index = 0;
   return { sql: `EXISTS(SELECT 1 FROM (SELECT ? value) search_guard_args WHERE ${sql.replace(/\?/g, () => `json_extract(search_guard_args.value,'$[${index++}]')`)})`, values: [JSON.stringify(values)] };
 }
@@ -232,7 +235,8 @@ export class RetrievalRuns {
       const allowed=rows.results.map(row=>{const ref=JSON.parse(row.fingerprint);return {id:ref[0],version:ref[2],hash:ref[3]};});
       if(await bridgeHash([actor,JSON.parse(run.request_json).input.query,allowed,10])!==proof.inputHash)throw 0;
       const locals=[...new Set(rows.results.map(row=>row.conversation_json).filter((value):value is string=>!!value))].map(value=>this.contextGuard(JSON.parse(value)));
-      return compressed(balancedAnd([coverage.sql,`EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND proof_json=?)`,...locals.map(local=>local.sql)]),[...coverage.values,...this.keys(),run.id,JSON.stringify(proof),...locals.flatMap(local=>local.values)]);
+      const local=compressed(balancedAnd(locals.map(value=>value.sql)),locals.flatMap(value=>value.values));
+      return compressed(balancedAnd([coverage.sql,`EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND proof_json=?)`,local.sql]),[...coverage.values,...this.keys(),run.id,JSON.stringify(proof),...local.values]);
     } catch {return {sql:"0",values:[]};}
   }
   async checkProof(proof:CoverageProof) {

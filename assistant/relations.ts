@@ -68,7 +68,7 @@ export class Relations {
   if(!await access.revalidate(actor,source.fence))return [];
   // These are candidates plus a fence, not permission to invoke or publish.
   const result=rows.results.map(row=>({authorId:row.author_id,authorLabel:row.author_label,claims:JSON.parse(row.claims_json),fence:source.fence}));
-  if(actor.kind==='owner'){const current=await readOwnerCanonical(this.db,this.scope,source,this.options);if(current.state==='available'&&current.claims.length){if(result.length>=16)throw Error('relation_scope_too_large');result.push({authorId:source.authorId,authorLabel:source.authorLabel,claims:current.claims,fence:source.fence});}}
+  if(actor.kind==='owner'){const current=await readOwnerCanonical(this.db,this.scope,source,this.options);if(current.state==='available'){if(current.claims.length){if(result.length>=16)throw Error('relation_scope_too_large');result.push({authorId:source.authorId,authorLabel:source.authorLabel,claims:current.claims,fence:source.fence});}}else{if(source.fence.source.origin==='whatsapp'){const ref=await this.options.origin?.fence(source.id);if(!ref||!await this.options.origin!.check(ref))return [];}if(!await access.revalidate(actor,source.fence))return [];}}
   return result;
  }
 }

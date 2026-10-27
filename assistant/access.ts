@@ -33,9 +33,11 @@ const versionJoin = `JOIN assistant_source_versions v ON v.installation_id=s.ins
 // read() selects the current body and its authorization in one SQLite snapshot.
 export class SourceAccess {
   private readonly scope: SourceScope;
+  private readonly metadataOrigin?:{sourceEpoch:string;sourceGeneration:string};
   constructor(private readonly db: D1Database, scope: SourceScope, private readonly clock = Date.now) {
     if (!scope.installationId || !scope.generation) throw new Error("invalid_source_scope");
     this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation });
+    const origin=scope as SourceScope & {sourceEpoch?:unknown;sourceGeneration?:unknown};if(typeof origin.sourceEpoch==='string'&&origin.sourceEpoch.length&&typeof origin.sourceGeneration==='string'&&origin.sourceGeneration.length)this.metadataOrigin=Object.freeze({sourceEpoch:origin.sourceEpoch,sourceGeneration:origin.sourceGeneration});
   }
   private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number): AccessGuard | null {
     if (actor.kind === "extractor") return null;
@@ -124,12 +126,13 @@ export class SourceAccess {
    * a UNIQUE canonical_id. Seventeen relation refs detect the scorer's overflow
    * (maximum sixteen batches), without copying an unbounded extraction list. */
   inventory(actor: TrustedActor, projectId: string | undefined, now: number, control: { sourceEpoch?: string; sourceGeneration?: string; includePaused?: boolean } = {}): AccessGuard {
-    const query = this.current(actor, null, undefined, now),relations=relationAudience(actor,'b',this.ownerRows(now));
+    control=control.sourceEpoch&&control.sourceGeneration?control:{...control,...this.metadataOrigin};
+    const privateScope=!!control.sourceEpoch&&!!control.sourceGeneration;const query = this.current(actor, null, undefined, now),relations=relationAudience(privateScope?actor:{kind:'extractor'},'b',this.ownerRows(now));
     if (!query) return { sql: "SELECT NULL AS id,NULL AS fingerprint WHERE 0", values: [] };
     const authority = actor.kind === "owner" ? "'owner'" : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
-    const keys = [this.scope.installationId, this.scope.generation],ownerMeta=actor.kind==='owner'?ownerContextStamp(this.scope,this.ownerRows(now),control):null;
-    return { sql: `WITH visible AS (${query.sql}), facts AS (
-      SELECT visible.*,${ownerMeta?`${ownerMeta.sql} owner_catalog_state,(SELECT json_group_array(json_array(m.id,m.revision,m.state,m.project_id,m.objective,p.name,r.revision)) FROM assistant_missions m LEFT JOIN assistant_projects p ON p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id LEFT JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE m.installation_id=? AND m.generation=? AND m.source_id=visible.id AND m.source_revision=visible.revision) owner_mission_state,`:""}
+    const keys = [this.scope.installationId, this.scope.generation],ownerMeta=actor.kind==='owner'&&privateScope?ownerContextStamp(this.scope,this.ownerRows(now),control):null;
+    return { sql: `WITH visible AS (${query.sql}),${ownerMeta?`owner_context_stamp AS MATERIALIZED(${ownerMeta.sql}),`:""} facts AS (
+      SELECT visible.*,${ownerMeta?`(SELECT value FROM owner_context_stamp) owner_catalog_state,(SELECT json_group_array(json_array(m.id,m.revision,m.state,m.project_id,m.objective,p.name,r.revision)) FROM assistant_missions m LEFT JOIN assistant_projects p ON p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id LEFT JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE m.installation_id=? AND m.generation=? AND m.source_id=visible.id AND m.source_revision=visible.revision) owner_mission_state,`:""}
        (SELECT json_group_array(json_array(source_epoch,source_generation,chat_id,revision,paused,applied_sequence,policy_revision,mode,coverage_from,received,gaps,watermark,access_state,current_kind,current_policy_kind,current_policy_revision,current_mode,unapplied)) FROM (
         SELECT o.source_epoch,o.source_generation,o.chat_id,c.revision,c.paused,c.applied_sequence,c.policy_revision,c.mode,c.coverage_from,o.watermark,o.access_state,o.kind AS current_kind,p.kind AS current_policy_kind,COALESCE(p.revision,0) AS current_policy_revision,
          COALESCE(p.effective_mode,CASE WHEN o.kind='private' THEN 'attend' ELSE 'ignore' END) AS current_mode,

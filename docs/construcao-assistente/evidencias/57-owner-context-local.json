@@ -17,6 +17,17 @@
       "green": "6/6 directed D1 cases passed,2.37s tests/10.68s total. Another owner note teaches project descriptors; one settled receipt publishes private candidates exposed by existing Owner querySource. Guest read/scoring/fingerprint unchanged. Exact16 entities/16 supports succeed;17 rejects without another reservation/adapter; zero claims is observable without a fictitious batch.",
       "types": "tsc --noEmit and git diff --check passed",
       "scope": "Runtime scheduler/status/summary and remaining adversarial/regression cases are still pending; no cloud proof claimed."
+    },
+    {
+      "phase": "owner_fingerprint_and_reader_freshness",
+      "reviewFindings": [
+        "Stamp selected17 readable notes before automation eligibility, potentially excluding actual support.",
+        "Relations Owner fallback revalidated anchor before its final private await."
+      ],
+      "red": "Fallback exposed a legacy quote after anchor withdrawal; eligible-support/rank case initially also exposed D1 guard depth from unconditional JSON parameter wrapping.",
+      "green": "2 targeted causal D1 cases passed together with scheduler case:17 earlier paused notes cannot hide eligible support B; correction of B invalidates Owner fingerprint/search fence while guest fingerprint stays equal. Anchor withdrawal during private await returns no legacy quote.",
+      "implementation": "Catalog/stamp share ownerNoteEligibleSQL before bounded selection. Source affinity stays separate from the normalized two-field SourceFence. Search guard leaves<=90 binds direct and packs only large local groups, preserving every predicate.",
+      "types": "tsc --noEmit and git diff --check passed"
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,
