@@ -1,5 +1,11 @@
 # Construção na VPS — atualização27/10/2026
 
+## Calendar real somente leitura e limpeza Telegram — marco #51
+
+O dono confirmou o acesso readonly e concluiu o consentimento Google próprio. O bootstrap validou callback/PKCE e salvou credencial0600; autorização canônica privada e oito secrets foram configurados no Worker para somenteprimary. Consulta real observou conflito; proposta real retornou horário/fuso/destinatário explícitos e `reservation=not_created`, sem criar evento. Readback confirmou módulos,29 bindings anteriores, cron e pausa preservados; a falha do snapshot imediato e a recuperação por baseline anterior estão registradas. O marco #51 prepara0.48.0, condicionado a revisão/CI/tag próprias. [Matriz de aceite e limites](evidencias/51-calendar-google-real-20261027.md).
+
+O app Google continuaExternal/Testing, com validade de7dias desse grant/refresh; continuidade longa exige nova autorização ou publicação apropriada. A pedido do dono, quatro tópicos duplicados da revisão revogada e o tópico dos desafios foram removidos com cinco ACKs, preservando os quatro atuais/revisão3. #48 e o piloto integral continuam pendentes; sem WhatsApp automático, escrita Calendar ou inferência paga nova. Os checkpoints anteriores preservam o estado conhecido em cada etapa.
+
 ## Revogação e recuperação Telegram reais — marco #47
 
 A v0.46.0 foi publicada na tag/commit `d4950b8`, com CI40496031005 aprovada1350/65 e asset público de evidências; #46 encerrada. O MCP revogou o vínculo Telegram1→2, confirmourevoked e recusou a consulta de revisão. Novo A/B pelo Chrome autenticado recuperouactive3 no mesmo dono/chat, confirmado por agregado privado, com corte avançado e nenhum inbox antigo pendente. Os quatro tópicos da revisão3 estão prontos; os quatro antigos permanecem no histórico por seus fences distintos. O marco #47 prepara0.47.0, condicionado a revisão/CI/tag próprias. [Matriz de aceite e limites](evidencias/47-revogacao-revinculo-real-20261027.md).

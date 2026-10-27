@@ -4,6 +4,17 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-27
+
+### Added
+- Conclui a consulta/proposta Calendar da #51 com consentimento próprio somente leitura, autorização canônica privada, allowlist da agenda principal e chamadas reais no cliente MCP.
+
+### Validation
+- Consulta real observou conflito; proposta real conservou destinatário do input, UTC/local/fuso e `reservation=not_created`. Credencial0600 e oito secrets próprios, sem alteração dos29 bindings anteriores, módulos, cron ou pausa. Snapshot imediato falhou e a recuperação usou a baseline anterior verificada, sem repetir mutação. [Matriz de aceite e limites](docs/construcao-assistente/evidencias/51-calendar-google-real-20261027.md). CI do commit desta versão é gate antes da tag/release.
+
+### Notes
+- Google permaneceExternal/Testing, com validade curta do refresh token e necessidade de renovação para piloto mais longo. #48 e piloto integral continuam pendentes. Cinco tópicos antigos/de pareamento removidos a pedido do dono, com ACKs; os quatro atuais foram preservados. Sem novo runtime, inferência paga, WhatsApp automático ou escrita Calendar; rotinas seguem em sombra e pausadas.
+
 ## [0.47.0] - 2026-10-27
 
 ### Added
