@@ -4,6 +4,17 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-27
+
+### Added
+- Conclui o vínculo privado Telegram da #47 com revogação real pelo MCP autenticado, recusa enquanto revogado e novo pareamento por dois desafios no Chrome solicitado pelo dono.
+
+### Validation
+- Estado observadoactive1→revoked2→active3; agregados privados confirmam mesmo dono/chat, corte de ativação avançado e nenhum inbox antigo pendente. Os quatro tópicos da nova revisão ficaramready, sem reset/reuso dos anteriores. Matriz dos cinco critérios e limites em [evidência #47](docs/construcao-assistente/evidencias/47-revogacao-revinculo-real-20261027.md). CI do commit desta versão é gate antes da tag/release.
+
+### Notes
+- Os quatro tópicos antigos ficam no histórico por pertencerem à revisão revogada. Callbacks reais (#48), consentimento/configuração Calendar (#51) e piloto integral continuam pendentes. Sem novo runtime, inferência paga, WhatsApp automático ou escrita Calendar; rotinas seguem em sombra e pausadas.
+
 ## [0.46.0] - 2026-10-27
 
 ### Added

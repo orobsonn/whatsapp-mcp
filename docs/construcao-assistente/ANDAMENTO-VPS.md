@@ -1,5 +1,11 @@
 # Construção na VPS — atualização27/10/2026
 
+## Revogação e recuperação Telegram reais — marco #47
+
+A v0.46.0 foi publicada na tag/commit `d4950b8`, com CI40496031005 aprovada1350/65 e asset público de evidências; #46 encerrada. O MCP revogou o vínculo Telegram1→2, confirmourevoked e recusou a consulta de revisão. Novo A/B pelo Chrome autenticado recuperouactive3 no mesmo dono/chat, confirmado por agregado privado, com corte avançado e nenhum inbox antigo pendente. Os quatro tópicos da revisão3 estão prontos; os quatro antigos permanecem no histórico por seus fences distintos. O marco #47 prepara0.47.0, condicionado a revisão/CI/tag próprias. [Matriz de aceite e limites](evidencias/47-revogacao-revinculo-real-20261027.md).
+
+Callbacks reais da #48 continuam pendentes. Projeto/cliente Google próprios, Calendar API e escopo somente leitura foram preparados, com credencial privada; o consentimento final está aguardando confirmação do dono e não há refresh token configurado no Worker. Avatar solicitado gerado em arquivo local, fora do Git. Rotinas sombra/pausadas, sem inferência paga nova, WhatsApp automático ou escrita Calendar. Os checkpoints anteriores abaixo conservam o estado conhecido em cada etapa.
+
 ## Retomada no Mac — catálogo, vínculo e quatro tópicos reais; callbacks e Calendar pendentes
 
 O discovery da conexão Zap existente foi atualizado sem novo OAuth: as sete ferramentas faltantes apareceram, e comandos Owner reais foram exercitados com fixtures sintéticas. O bot próprio recebeu secrets e webhook com readback, mantendo os módulos,26 bindings anteriores, cron e pausa; a exposição restrita do Worker passou16 testes nativos do bundle instalado e nove públicos. O pareamento A/B feito pelo Chrome autenticado, sob pedido explícito do dono, ficouactive/revision1. Dois preflights sem criação expuseram vínculo incorreto do fetch nativo; a regressão reproduziu, a correção passou e o PR139 foi integrado com CI1350/65. Rollout code-only com ACK/readback preservou os demais metadados/bindings/cron; a terceira ensure criou os quatro tópicos reaisready sem reset. O marco #46 prepara0.46.0 com CI/tag próprias; callbacks e OAuth Calendar continuam pendentes. [Registro por fronteira](evidencias/46-47-48-homologacao-local-20261027.md). Os checkpoints abaixo preservam a história anterior.
