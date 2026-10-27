@@ -8,11 +8,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Execução pontual Owner em sombra com operação, projeto, corpus, prazo e orçamento vinculados, reutilizando os ledgers de ingestão, busca, episódio e diário. Operador local autenticado avança somente a operação selecionada, mantendo o processamento global pausado.
 - Inspeção nominal somente de leitura para metadados da operação existente, com snapshot durável atômico, geração atual e distinção entre ticket ausente e corrompido. Não reabre tentativas incertas ou grants expirados.
 - Recuperação separada e limitada do primeiro bootstrap Owner quando o Core comprova falha anterior ao dispatch. Preserva a tentativa expirada, custos e arquivo anterior; admite uma única linhagem com autoridade nova, mesmo wire/epoch e manutenção atômica sem modelo.
+- Diagnóstico de falhas na admissão de modelo registra somente etapas estáticas e tempo decorrido, sem conteúdo, identificadores, SQL ou erros brutos.
 
 ### Fixed
 - Composição das autorizações de modelo usa parâmetros D1 ordenados para preservar todos os predicados sem exceder o limite de bindings repetidos. Recuperação de recibos completos mantém acesso atual às fontes; retenção remove caches dependentes sem apagar custos.
 - Bootstrap pontual recusa ausência do alias de imagem antes de reservar ticket, criar índice ou iniciar processo. Uma tentativa anterior incerta continua preservada.
 - Container já ativo conserva o timeout de inatividade após reinício do Durable Object. O avanço Owner confirma checkpoint antes de retornar `indexed`, preservando recibos completos caso a resposta do checkpoint se perca.
+- Assinatura do catálogo Owner ordena as entradas no próprio agregado JSON, preservando sua igualdade quando os guards de cobertura e execução são compostos. Duas fontes inseridas na ordem inversa dos IDs não são mais recusadas por uma mudança de ordem da consulta.
 
 ### Notes
 - A homologação cloud da #140 e os callbacks reais da #48 ainda são necessários antes da release deste marco. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.

@@ -21,6 +21,7 @@ import { runtimeHost } from "../assistant/agent-runtime/runtime";
 import type { EpisodeDriver } from "../assistant/agent/controller";
 import type { EngineSearch, SearchTicket } from "../assistant/engine";
 import { compactStatement } from "../assistant/d1-statement";
+import { ownerContextStamp } from "../assistant/relation-visibility";
 
 // @ts-expect-error Vite raw migration fixtures, including future additive files.
 const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -459,8 +460,30 @@ it.each(["   ", Array.from({ length: 33 }, (_, i) => `distinct${i}`).join(" ")])
   expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM assistant_jobs WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
   expect(bootstrap).not.toHaveBeenCalled();
 });
-it("carries the original grant only into internal semantic permits, keeping it out of retrieval records", async () => {
-  const { rpc, command } = await fixture(); await rpc.ownerOnce(scope, command);
+it.each([
+  ...[false,true].flatMap(embedding=>[
+    {sources:1,embedding,reverse:false,drift:false},
+    {sources:2,embedding,reverse:false,drift:false},
+    {sources:2,embedding,reverse:true,drift:false},
+  ]),
+  {sources:2,embedding:true,reverse:true,drift:true},
+])
+  ("carries the original grant only into internal semantic permits with $sources sources embedding=$embedding reverse=$reverse drift=$drift", async ({ sources, embedding, reverse, drift }) => {
+  const firstId = reverse ? "ffffffff-ffff-4fff-8fff-ffffffffffff" : "00000000-0000-4000-8000-000000000001";
+  const nextId = reverse ? "00000000-0000-4000-8000-000000000001" : "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const uuid = vi.spyOn(crypto,"randomUUID").mockReturnValueOnce("22222222-2222-4222-8222-222222222222").mockReturnValueOnce(firstId);
+  const { rpc, command, source } = await fixture(); uuid.mockRestore(); expect(source.id).toBe(firstId);
+  let secondSource: {id:string;revision:number} | undefined;
+  if (sources === 2) {
+    const secondUuid = vi.spyOn(crypto,"randomUUID").mockReturnValueOnce(nextId);
+    secondSource = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "second-semantic-source", text: "Second private technical note for the blue marker", audience: "owner", projectId: "once-project", occurredAt: now });
+    secondUuid.mockRestore(); expect(secondSource.id).toBe(nextId);
+  }
+  const stamp=ownerContextStamp(scope,new SourceAccess(env.DB,scope).ownerRows(now),scope);
+  const catalog=JSON.parse((await env.DB.prepare(stamp.sql).bind(...stamp.values).first<string>("value"))!);
+  expect(catalog.every(Array.isArray)).toBe(true);
+  expect(catalog.map((row:unknown[])=>row[0])).toEqual([firstId,...(secondSource?[secondSource.id]:[])].sort());
+  await rpc.ownerOnce(scope, command);
   await rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: command.operationId });
   const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
   const receipt = onceReceipt.parse(JSON.parse(raw!)), grant = (await readOnceGrant(settings, receipt))!, authority = await onceAuthority(settings, scope, grant, Date.now());
@@ -481,11 +504,23 @@ it("carries the original grant only into internal semantic permits, keeping it o
   expect(combined).not.toBeNull();
   expect(await compactStatement(env.DB,`SELECT 1 WHERE ${combined!.guard.sql}`,combined!.guard.values).first()).not.toBeNull();
   const current=(await new SourceAccess(env.DB,scope).read({kind:"owner"},receipt.sourceId))!;
-  const adapter=vi.fn(async()=>({status:200,actualUnits:1,body:'{"choices":[{"message":{"content":"Synthetic combined reply"}}]}'}));
-  const broker=new CogneeModelBroker(env.DB,{...scope,period:"2026-10-27"},DEFAULT_BROKER_CONFIG,adapter,Date.now,engineModelAdmission(settings,"2026-10-27",proof,grant));
+  const adapter=vi.fn(async()=>({status:200,actualUnits:1,body:embedding ? JSON.stringify({data:[{index:0,embedding:Array(1536).fill(0.01)}]}) : '{"choices":[{"message":{"content":"Synthetic combined reply"}}]}'}));
+  const admission=engineModelAdmission(settings,"2026-10-27",proof,grant)!;
+  const checkedAdmission=drift ? {...admission,prepare:async (request:{key:string;hash:string;recovered:boolean})=>{
+    const prepared=await admission.prepare(request);
+    await new SourceController(env.DB,scope,{kind:"owner"}).correct(secondSource!.id,1,{text:"Changed technical support after admission preparation",occurredAt:now});
+    return prepared;
+  }} : admission;
+  const broker=new CogneeModelBroker(env.DB,{...scope,period:"2026-10-27"},DEFAULT_BROKER_CONFIG,adapter,Date.now,checkedAdmission);
   const permit=await broker.issuePermit(current.id,1,now+600000);
-  const invoke=()=>handleBrokerRequest(new Request("http://broker.internal/v1/chat/completions",{method:"POST",body:JSON.stringify({model:DEFAULT_BROKER_CONFIG.chatModel,messages:[{role:"user",content:"Synthetic combined proof"}]})}),"synthetic-epoch",{authorize:async()=>({token:permit,period:"2026-10-27",coverage:proof,ownerOnce:grant})},()=>broker);
-  expect((await invoke()).status).toBe(200);expect((await invoke()).status).toBe(200);expect(adapter).toHaveBeenCalledTimes(1);
+  const invoke=()=>handleBrokerRequest(new Request("http://broker.internal"+(embedding?"/v1/embeddings":"/v1/chat/completions"),{method:"POST",body:JSON.stringify(embedding?{model:DEFAULT_BROKER_CONFIG.embeddingModel,input:"Synthetic combined proof"}:{model:DEFAULT_BROKER_CONFIG.chatModel,messages:[{role:"user",content:"Synthetic combined proof"}]})}),"synthetic-epoch",{authorize:async()=>({token:permit,period:"2026-10-27",coverage:proof,ownerOnce:grant})},()=>broker);
+  const firstStatus=(await invoke()).status;
+  if(drift){
+    expect(firstStatus).toBe(403);expect(adapter).not.toHaveBeenCalled();
+    expect((await new InferenceBudget(env.DB,{...scope,period:"2026-10-27"}).status()).committed).toBe(DEFAULT_BROKER_CONFIG.embeddingCeiling);
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);return;
+  }
+  expect(firstStatus).toBe(200);expect((await invoke()).status).toBe(200);expect(adapter).toHaveBeenCalledTimes(1);
   await new SourceController(env.DB,scope,{kind:"owner"}).withdraw(current.id,1);
   expect((await invoke()).status).not.toBe(200);expect(adapter).toHaveBeenCalledTimes(1);
   expect(bootstrap).not.toHaveBeenCalled();

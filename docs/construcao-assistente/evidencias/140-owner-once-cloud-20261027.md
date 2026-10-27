@@ -1,5 +1,23 @@
 # #140 — execução Owner própria: checkpoint comprovado, publicação pendente
 
+## Causa reproduzida — ordenação do catálogo na composição SQL
+
+A [CI40564265599](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40564265599) aprovou `c468372f95b0c6ac783734a61d85b34131a3383f`:1.502gerais,66nativos,13OAuth, checksNode, tipos, builds e audit sem vulnerabilidades. A versão própria `91dd095a-d8cc-482d-8894-b8018d5d24c4` preservou os cinco módulos,37bindings, imagem, cron, pausa e exposição.
+
+Uma restauração explícita do checkpoint de duas notas confirmou os mesmos epoch/revision/fontes, processo ativo e ausência de busy/quarentena/manutenção/lost. A comparação integral de contas,163reservas liquidadas/recibos e uma reserva pendente conservou o mesmo SHA256, sem chamada paga nova. O operador temporário foi removido com ACK/404 e sua credencial foi apagada.
+
+Um caso separado sobre os limites da avaliação técnica parou na busca. O diagnóstico capturou `predicate_no_row`,1.314ms: o preparo passou, não houve erro de compilação/batch e a condição final não admitiu recibo. Permaneceram163recibos completos/2.578microUSD liquidados e, agora, duas reservas de1.500microUSD. Não se repetiu a busca, liberou reserva ou reclassificou Root antigo. O tail remoto foi removido e seu processo local encerrado. A configuração de réplicas D1 foi conferida como desabilitada.
+
+A contraprova local tornou os IDs das duas notas determinísticos. Uma fonte e duas fontes em ordem crescente passaram; duas inseridas na ordem inversa falharam tanto para chat quanto embeddings, com a mesma recusa anterior ao adapter. O SELECT correspondente ao INSERT retornou zero, embora ACL e guard Owner/cobertura isolados fossem verdadeiros. Isso excluiu conflito de recibo e reproduziu a falha sem rede/modelo real.
+
+O catálogo ordenava os IDs na CTE, mas não a entrada do agregado JSON após os joins. A composição alterava sua ordem e invalidava a comparação integral de fingerprints. A correção acrescenta `ORDER BY s.id` no próprio `json_group_array`, preservando campos, joins, limite17, filtros e guards. A [documentação SQLite](https://www.sqlite.org/lang_aggfunc.html) define essa ordenação; uma consulta somente leitura no D1 próprio retornou `[[1],[2]]`, confirmando sintaxe e shape, sem escrita ou presunção de versão.
+
+Os sete casos passaram após a correção, incluindo shape JSON/canonização, reuso de recibo completo sem novo adapter, retirada da âncora e alteração de suporte após prepare: esta última continua negada e conserva sua reserva. Passaram188casos dirigidos e tipos. Revisão final, CI exata, implantação e nova homologação cloud desse delta continuam gates separados. Manifestos anteriores que divergirem permanecem inválidos; nenhum fingerprint, recibo, busca ou prazo antigo será reescrito para recuperar autoridade.
+
+#140/#48 continuam abertas. Ainda não há decisão/proposta, episódio ou notificação Telegram desse ensaio. WhatsApp automático e Calendar write continuam indisponíveis. As seções seguintes preservam a cronologia.
+
+O censo19:23:34UTC confirmou60.888microUSD (US$0,060888) comprometidos nos ledgers conhecidos, incluindo40.000incertos históricos e3.000reservados nos dois casos. Infraestrutura/fatura permanecem separadas. A revisão final do delta não encontrou P1/P2; o gate seguinte é a CI do commit exato.
+
 ## Estado atual — checkpoint real e recusa semântica, 27/10 às18:47UTC
 
 O delta `0d9fd49f5a34c223df33e9442261f230735af170` passou na [CI40556227822](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40556227822):1.492gerais,65nativos,13OAuth, checksNode, tipos, dois builds e audit sem vulnerabilidades. Foi implantado na versão própria `c50528a8-e83d-4390-a205-a291c4543250`, com cinco módulos conferidos e37bindings/imagem/cron/pausa/exposição preservados.
