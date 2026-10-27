@@ -1,6 +1,8 @@
 import { confirmationPage } from "../src/pages";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { env, createExecutionContext } from "cloudflare:test";
+import worker from "../src/index";
+import type { Env } from "../src/env";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   requireOwner,
@@ -307,6 +309,11 @@ async function oauthSession() {
   }
   const token = await authorizeAgain();
   return { call, exchange, authorizeAgain, token, clientKey: `client:${client_id}`,
+    workerExchange: (params: Record<string, string>, overrides: Partial<Env>) => worker.fetch(
+      new Request("https://personal.example/oauth/token", {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ client_id, ...params }),
+      }), { ...current, RUNTIME_CONFIG: "database", ...overrides } as Env, createExecutionContext()),
     grantKey: `grant:${token.refresh_token.split(":").slice(0, 2).join(":")}`,
     configure: (overrides: Partial<AuthEnv>) => { current = { ...current, ...overrides }; },
   };
@@ -336,6 +343,71 @@ function oauthClock() {
 }
 
 describe("OAuth connection lifetime and temporary failures", () => {
+  it("does not revoke consent when runtime database resolution temporarily fails", async () => {
+    const session = await oauthSession();
+    const response = await session.workerExchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token }, {
+      DB: { prepare() { throw new Error("synthetic transient database outage: do-not-disclose"); } } as unknown as D1Database,
+    });
+    // Exercise the real entry point: runtime resolution happens before OAuth.
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(response.headers.has("www-authenticate")).toBe(false);
+    expect(await response.text()).not.toContain("do-not-disclose");
+    expect(await env.OAUTH_KV.get(session.grantKey)).not.toBeNull();
+    expect((await session.exchange({ grant_type: "refresh_token", refresh_token: session.token.refresh_token })).status).toBe(200);
+  });
+
+  it("keeps a human recovery page during a runtime database outage", async () => {
+    const response = await worker.fetch(new Request("https://personal.example/authorize"), {
+      ...settings(), RUNTIME_CONFIG: "database",
+      DB: { prepare() { throw new Error("private database error"); } } as unknown as D1Database,
+    } as Env, createExecutionContext());
+    expect(response.status).toBe(503);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(await response.text()).not.toContain("private database error");
+  });
+
+  it("reproduces refresh lineage loss when a previous token is retried", async () => {
+    const session = await oauthSession();
+    const refresh = (token: string) => session.exchange({ grant_type: "refresh_token", refresh_token: token });
+    const first = await refresh(session.token.refresh_token);
+    expect(first.status).toBe(200);
+    const branchA = await first.json() as typeof session.token;
+    // A second request/retry presents the same R0 after R1 was returned.
+    const second = await refresh(session.token.refresh_token);
+    expect(second.status).toBe(200);
+    const branchB = await second.json() as typeof session.token;
+    const lost = await refresh(branchA.refresh_token);
+    expect(lost.status).toBe(400);
+    expect(await lost.json()).toMatchObject({ error: "invalid_grant", error_description: "Invalid refresh token" });
+    expect((await refresh(branchB.refresh_token)).status).toBe(200);
+  });
+
+  it("reproduces a lost refresh branch when two requests read the same KV grant", async () => {
+    const session = await oauthSession();
+    const snapshot = await env.OAUTH_KV.get(session.grantKey);
+    let grantReads = 0;
+    const staleKv = new Proxy(env.OAUTH_KV, {
+      get(target, property) {
+        if (property === "get") return async (key: string, options: unknown) => {
+          if (key === session.grantKey && grantReads++ < 2) return JSON.parse(snapshot!);
+          return target.get(key, options as never);
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    session.configure({ OAUTH_KV: staleKv });
+    const refresh = (token: string) => session.exchange({ grant_type: "refresh_token", refresh_token: token });
+    const responses = await Promise.all([refresh(session.token.refresh_token), refresh(session.token.refresh_token)]);
+    expect(responses.map(response => response.status)).toEqual([200, 200]);
+    const branches = await Promise.all(responses.map(response => response.json() as Promise<typeof session.token>));
+    session.configure({ OAUTH_KV: env.OAUTH_KV });
+    const attempts = await Promise.all(branches.map(branch => refresh(branch.refresh_token)));
+    expect(attempts.map(response => response.status).sort()).toEqual([200, 400]);
+  });
+
   it("refreshes after a day of inactivity and near day 30 without moving the absolute deadline", async () => {
     const clock = oauthClock();
     const session = await oauthSession();

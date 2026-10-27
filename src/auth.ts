@@ -1,4 +1,5 @@
 import { readableConfirmation } from "./approval";
+import { oauthCoordinator, remoteOAuthKv, type AuthorityEnv } from "./oauth-storage";
 import OAuthProvider, {
   OAuthError,
   type AuthRequest,
@@ -8,7 +9,7 @@ import OAuthProvider, {
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { confirmationPage, humanErrorPage } from "./pages";
 
-export interface AuthEnv {
+export interface AuthEnv extends AuthorityEnv {
   DB: D1Database;
   OAUTH_KV: KVNamespace;
   PUBLIC_ORIGIN: string;
@@ -598,7 +599,7 @@ export function createOAuthProvider<E extends AuthEnv>(
           return denied();
         const path = new URL(request.url).pathname;
         if (
-          (path === "/oauth/register" || path === "/oauth/token") &&
+          (path === "/oauth/register" || path === "/oauth/token" || path === "/authorize") &&
           request.body
         ) {
           const reader = request.body.getReader();
@@ -621,6 +622,14 @@ export function createOAuthProvider<E extends AuthEnv>(
             at += chunk.length;
           }
           request = new Request(request, { body });
+        }
+        const authority = oauthCoordinator(env);
+        if (authority) {
+          // Buffer bounded input before entering the authority queue, so a slow
+          // public upload cannot hold the installation's authentication lock.
+          if (path === "/authorize" || path.startsWith("/oauth/"))
+            return await authority.fetch(request);
+          env = { ...env, OAUTH_KV: remoteOAuthKv(authority) };
         }
         const provider = new OAuthProvider<E>({
           apiRoute: "/mcp",
