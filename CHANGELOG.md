@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-27
+
+- Conclui #55 com provas controladas na Cloudflare de export autenticado paginado, retirada antes da limpeza e snapshot selado restaurado em geração nova, inativa e em sombra.
+- Confirma execução em hold após liberar writers, jobs antigos cancelados, purga de relações/permits/respostas e preservação dos custos agregados.
+- Confirma coleta R2 sem apagar objetos referenciados ou de outra geração, incluindo perda de confirmação D1 explicitamente injetada. Readbacks e resultados incertos permanecem distinguidos; cópias externas continuam pendentes.
+- Evidências com fontes sintéticas e classes produtivas até schema25. A migração27, ativação da geração restaurada, homologação do cliente e piloto integral continuam pendentes. Nenhum envio WhatsApp ou escrita Calendar pela assistente.
+
 ## [0.40.0] - 2026-10-27
 
 ### Added

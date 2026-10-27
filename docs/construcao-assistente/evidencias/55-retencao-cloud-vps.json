@@ -195,6 +195,14 @@
     "restore_operator_cleanup": {
       "privatePath": "restore-command/85867071-b249-4181-a044-25b57bd537ef.stopped.private.json",
       "sha256": "9f7b602eefaf3060859995ed069ac5956a11d15d7ff47e011f085d4fc6a555c0"
+    },
+    "final_cloud_readback": {
+      "privatePath": "final-cloud-observed.private.json",
+      "sha256": "839c6cfb4cb1c1cb62385a087ad345ea97294b58cd57027b6da67d59b601c580"
+    },
+    "final_scope_verified": {
+      "privatePath": "final-scope-verified.private.json",
+      "sha256": "6bd9b1952dea7c2309b1c7e1c3994ef6d390c60ed25f111b269eb086b19471f8"
     }
   }
 }
