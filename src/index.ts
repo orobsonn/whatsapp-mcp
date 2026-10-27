@@ -425,7 +425,7 @@ export default {
       const path = new URL(request.url).pathname;
       if (path === "/setup" || path.startsWith("/setup/"))
         return presentBrowserError(request, await setupFetch(request, rawEnv));
-      const env = await resolveRuntimeEnv(rawEnv);
+      const env = await resolveRuntimeEnv(rawEnv, { failOnUnavailable: true });
       if (
         new URL(request.url).pathname.startsWith("/webhook/") ||
         new URL(request.url).pathname === "/health"
@@ -433,6 +433,11 @@ export default {
         return await browser(request, env);
       return presentBrowserError(request, await oauth.fetch(request, env, ctx));
     } catch (error) {
+      if (error instanceof AppError && error.code === "temporarily_unavailable")
+        return presentBrowserError(request, Response.json({ error: "temporarily_unavailable" }, {
+          status: 503,
+          headers: { "Cache-Control": "no-store", "Retry-After": "5" },
+        }));
       return presentBrowserError(
         request,
         error instanceof AuthError
@@ -460,3 +465,4 @@ export default {
 
 export { CaptureReader } from "./assistant-source-reader";
 export { CaptureMediaReader } from "./assistant-media-reader";
+export { OAuthCoordinator } from "./oauth-coordinator";

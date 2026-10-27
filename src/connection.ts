@@ -163,7 +163,10 @@ export async function getConnectionStatus(env: Env): Promise<ConnectionStatus> {
   }
 }
 /** Production uses database mode. Missing/corrupt connection always removes provider secrets. */
-export async function resolveRuntimeEnv(env: Env): Promise<Env> {
+export async function resolveRuntimeEnv(
+  env: Env,
+  options: { failOnUnavailable?: boolean } = {},
+): Promise<Env> {
   if (env.RUNTIME_CONFIG === "static" && env.DEVELOPMENT === "true")
     return { ...env };
   const closed = {
@@ -195,6 +198,11 @@ export async function resolveRuntimeEnv(env: Env): Promise<Env> {
       CONNECTED_PHONE: p.phone,
     };
   } catch {
+    // HTTP must distinguish unavailable configuration from revoked consent.
+    // Returning maintenance here would make a refresh delete the OAuth grant.
+    // Background/RPC consumers retain their existing closed-state contract.
+    if (options.failOnUnavailable)
+      throw new AppError("temporarily_unavailable", 503);
     return closed;
   }
 }

@@ -4,6 +4,19 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-10-27
+
+### Fixed
+- Renovação OAuth agora usa uma autoridade SQLite por instalação, com commit atômico e recuperação da mesma resposta após concorrência, resposta perdida ou reinício. Tokens substituídos têm tolerância fixa de 60 segundos; a autorização conserva seu vencimento original.
+- Falha temporária de banco/configuração responde 503 sem revogar a autorização; páginas humanas mantêm a orientação de recuperação.
+
+### Security
+- Importação única e limitada dos registros OAuth existentes, sem retorno ao KV após a migração. Recibos criptografados e vinculados a dono/origem/epoch/requisição, com revalidação de cliente, grant e revogação.
+- Limites separados de cadastro público e emissão preservam espaço para renovar conexões existentes. Nenhuma ferramenta nova de envio ou acesso a dados foi criada.
+
+### Validation
+- Suíte geral: 1.355 testes; testes nativos adicionais de OAuth: 13, incluindo concorrência, reinício, falha de commit, revogação, expiração e saturação de cadastro. TypeScript e build/dry-run verificados antes da publicação.
+
 ## [0.48.0] - 2026-10-27
 
 ### Added

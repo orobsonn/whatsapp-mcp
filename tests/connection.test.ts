@@ -224,6 +224,18 @@ describe("first connection transaction", () => {
     ).run();
     expect((await resolveRuntimeEnv(settings())).MAINTENANCE).toBe("true");
   });
+  it("distinguishes temporary runtime failure from inactive configuration for HTTP without changing background consumers", async () => {
+    const strict = { failOnUnavailable: true };
+    expect((await resolveRuntimeEnv(settings(), strict)).MAINTENANCE).toBe("true");
+    await connectConnection(settings(), credentials, provider().fetcher);
+    expect((await resolveRuntimeEnv({ ...settings(), INSTALLATION_EPOCH: "revoked" }, strict)).MAINTENANCE).toBe("true");
+    const broken = { ...settings(), DB: { prepare() { throw Error("synthetic private DB error"); } } as unknown as D1Database };
+    await expect(resolveRuntimeEnv(broken, strict)).rejects.toMatchObject({ code: "temporarily_unavailable", status: 503 });
+    expect((await resolveRuntimeEnv(broken)).ZAPI_TOKEN).toBeUndefined();
+    await env.DB.prepare("UPDATE connection_state SET cipher='corrupted'").run();
+    await expect(resolveRuntimeEnv(settings(), strict)).rejects.toMatchObject({ code: "temporarily_unavailable", status: 503 });
+    expect((await resolveRuntimeEnv(settings())).ZAPI_TOKEN).toBeUndefined();
+  });
 });
 
 describe("safe provider diagnostics", () => {
