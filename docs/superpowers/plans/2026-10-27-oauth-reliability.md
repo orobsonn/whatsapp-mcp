@@ -14,10 +14,10 @@ Adversarial changes incorporated: serialize consent as well as refresh; no fallb
 
 ## Steps
 
-- [ ] Add native DO/provider tests for concurrent refresh, identical retry, changed scope/resource, lost response/restart, atomic commit failure, revocation and expiry.
-- [ ] Implement bounded SQLite KV staging, import and read-only resource adapter; implement serialized OAuth authority and encrypted receipts/history.
-- [ ] Route OAuth mutations and add binding/migration; preserve production bindings, secrets and runtime settings.
-- [ ] Review the diff independently; run TypeScript, full project tests and native tests, build and production-shaped synthetic smoke.
-- [ ] Commit/release the milestone; upload an immutable version, validate before promotion where the domain/auth contract permits, promote and verify real production health/discovery/rotation without sending messages.
+- [x] Add native DO/provider tests for concurrent refresh, identical retry, changed scope/resource, lost response/restart, atomic commit failure, revocation and expiry.
+- [x] Implement bounded SQLite KV staging, import and read-only resource adapter; implement serialized OAuth authority and encrypted receipts/history.
+- [x] Route OAuth mutations and add binding/migration; preserve production bindings, secrets and runtime settings.
+- [x] Review the diff independently; run TypeScript, full project tests and native tests, build and production-shaped synthetic smoke.
+- [x] Commit/release the milestone; upload an immutable version, validate before promotion where the domain/auth contract permits, promote and verify real production health/discovery/rotation without sending messages.
 
 Validation must distinguish synthetic OAuth proof, real service availability and real connector reauthentication. Do not promise lifetime disconnection immunity or reuse invalid credentials.
