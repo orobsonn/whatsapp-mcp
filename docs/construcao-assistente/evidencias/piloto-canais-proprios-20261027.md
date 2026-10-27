@@ -1,5 +1,7 @@
 # Canais próprios e auditoria do piloto sombra — 27/10/2026
 
+**Correção de aceite posterior à v0.50.0:** a [#144](https://github.com/orobsonn/whatsapp-mcp/issues/144) registra um P1 no requisito11. Vínculo, notificações e botões funcionam, mas texto direto do dono fica pending sem consumidor/resposta. As provas abaixo continuam válidas em seus escopos; não sustentam, sozinhas, um Telegram reativo nem o goal integral concluído. Despausar não supre o código ausente. A próxima entrega deve ser desenhada/revista/implementada e homologada com texto→resposta e controles autorizados reais.
+
 Homologação técnica com a atuação global pausada e captura ativa. O resultado não ativa WhatsApp automático, escrita Calendar, processamento de todo o acervo ou observação contínua. Avaliação longitudinal e benefício humano continuam trabalho do piloto. A publicação dos marcos #140/#48 exige CI do commit entregue, versão/tag/release e encerramento coerentes; esse gate é separado das provas funcionais abaixo.
 
 O marco #140 foi publicado na [v0.49.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.49.0), com CI do PR/main aprovada e readback Source em0.49.0 preservando30bindings/runtime/cron/exposição; só então a issue foi encerrada. A v0.50.0 formaliza o marco próprio da #48, sem nova inferência ou código funcional. Seus resultados de CI e implantação pertencem ao commit/asset dessa release, sem reutilizar a CI anterior como prova de um novo SHA. O estado final pode ser conferido na [release0.50.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.50.0) e na [issue48](https://github.com/orobsonn/whatsapp-mcp/issues/48).
@@ -30,7 +32,7 @@ A nota administrativa nova muda o catálogo. A decisão já revisada passou post
 |8 Cognee/recuperação | Ingestão/checkpoint/restore reais e rebuild replay_only sem nova inferência; duas notas, limites de corpus e tentativas incertas conservados. |
 |9 IA/custo/isolamento | Orçamento reservado antes dos efeitos, recibos/episódios persistentes e CI nativa; períodos/caps/fontes/prazos preservados, sem retry cego. |
 |10 encaminhamento | Proposta real sustentada por citação literal; falha de qualidade anterior recusada. Estrutura/atribuição não equivalem a utilidade ou verdade semântica universal. |
-|11 direção Owner | Comandos reais MCP e [pareamento/revogação](47-revogacao-revinculo-real-20261027.md); Telegram só registra revisão/simulação, sem autoridade de envio ou relato humano inferido. |
+|11 direção Owner | **Incompleto/P1/#144.** Comandos reais MCP e [pareamento/revogação](47-revogacao-revinculo-real-20261027.md) foram provados. Telegram registra revisão/simulação e entrada de texto, mas não há consumidor texto→consulta/controle→resposta. Não confundir essas fronteiras com administração integrada pelo Telegram. |
 |12 missões/FUPs | [Contratos versionados](31-trabalhos.md) e testes integrados separam missão/FUP/ocorrência/job; simulação não encerra compromisso real. |
 |13 conectores/mídia | GitHub público e Calendar primary reais acima; [mídia cloud controlada](52-media-cloud-vps.md). Contexto de mídia Own continua off, sem importação em massa ou alegação de leitura de todo o arquivo. |
 |14 revisão | Quatro tópicos/notificações/callbacks e botão consumido reais; timeout/concorrência/ACK perdido têm contraprovas integradas, sem induzir envio incerto real. |

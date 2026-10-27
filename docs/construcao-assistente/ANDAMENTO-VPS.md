@@ -1,5 +1,13 @@
 # Construção na VPS — atualização27/10/2026
 
+## Impedimento de aceite — interação do dono no Telegram, #144
+
+A auditoria final encontrou requisito11 incompleto: `TelegramLink.receive` persiste texto direto do dono em `assistant_telegram_updates` como pending, mas não existe consumidor que encaminhe essa mensagem para consulta/controle e resposta no chat. O webhook responde ao provedor, não ao dono. O scheduler não consome essa fila; despausar ou ligar resumos não implementa a interação. Revisão adversarial independente confirmou o P1. [Issue144](https://github.com/orobsonn/whatsapp-mcp/issues/144).
+
+As v0.49.0/v0.50.0 e o fechamento #140/#48 permanecem válidos para seus aceites delimitados (execução pontual, tópicos, notificações e callbacks); não demonstram o requisito11 integrado ou o goal completo. A v0.50.0 está no commitf979c56, Sourcee303/0.50.0 com30bindings e Own1358/38 preservados, CI do PR40588276121/main40589704902 aprovada. Havia zero issues abertas antes desta descoberta; a ausência de pendências catalogadas não equivale a prontidão.
+
+Goal permanece ativo. Falta implementar e homologar texto do dono em linguagem natural→consulta/controle autorizado→resposta real, usando componentes existentes e guard atual do vínculo na própria transação de admissão. Não reduzir a entrega a `/status`, comandos JSON ou mensagens técnicas fabricadas. Sem despausar backlog global, sem Root expirada renovada, WhatsApp automático, Calendar write ou avaliação humana inventada. Desenho/ataque adversarial completos antecedem código; a nova issue só fecha com sua release minor e evidências reais.
+
 ## Marcos próprios — execução Owner e revisão Telegram
 
 A [v0.49.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.49.0) foi publicada no commit791fba3 após CI do PR/main, revisão adversarial e confirmação do domínio em0.49.0. A #140 foi encerrada depois da release; o asset público vincula os testes aos readbacks preservando os recibos privados. A v0.50.0 consolida o marco minor da #48, com [quatro callbacks reais e botão consumido sem novo efeito](evidencias/48-telegram-review.md). O estado corrente de publicação/encerramento está nas [releases](https://github.com/orobsonn/whatsapp-mcp/releases) e [issues abertas](https://github.com/orobsonn/whatsapp-mcp/issues?q=is%3Aissue%20is%3Aopen).
