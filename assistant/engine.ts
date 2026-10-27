@@ -7,6 +7,10 @@ import type { CheckpointPlan, CheckpointState, SourceStamp } from "./checkpoints
 import type { RebuildState } from "./rebuild";
 import type { CoverageProof } from "./retrieval-runs";
 import type { OnceGrant } from "./owner-once-guard";
+import { initialTicketSchema, initialStateSchema, sameInitial, initialRecoveryProof,
+  type InitialIngestTicket, type InitialIngest, type InitialRecoveryProof } from "./initial-ingest-contract";
+import { InitialRecoveryJournal } from "./initial-recovery";
+export type { InitialIngestTicket } from "./initial-ingest-contract";
 export type Ref = { id: string; version: number; hash: string };
 export type EnginePermit = { source: SourceFence; origin?: OriginFence; ownerOnce?: OnceGrant };
 export type EngineSearch = { query: string; allowedSources: Ref[]; limit: number; actor: TrustedActor; permits: EnginePermit[]; coverage?: CoverageProof };
@@ -16,11 +20,6 @@ const ingestPermit = (input: EngineIngest): EnginePermit => ({ source: input.sou
   ...(input.origin ? { origin: input.origin } : {}), ...(input.ownerOnce ? { ownerOnce: input.ownerOnce } : {}) });
 export type InitialIngestAdmission = {itemId:string;owner:string;kind?:"owner_once"};
 export type InitialIngestCheckInput = {actor:TrustedActor;source:{fence:SourceFence}};
-export type InitialIngestTicket = {itemId:string;inputHash:string;indexEpoch:string;operationId:string;admissionKind?:"owner_once"};
-type InitialIngest = {ticket:InitialIngestTicket;state:'reserved'|'attempting'|'complete'|'uncertain'};
-const initialTicketSchema=z.object({itemId:z.string().regex(/^[a-f0-9]{64}$/),inputHash:z.string().regex(/^[a-f0-9]{64}$/),indexEpoch:z.string().uuid(),operationId:z.string().regex(/^[a-f0-9]{64}$/),admissionKind:z.literal("owner_once").optional()}).strict();
-const initialStateSchema=z.object({ticket:initialTicketSchema,state:z.enum(['reserved','attempting','complete','uncertain'])}).strict();
-const sameInitial=(a:InitialIngestTicket,b:InitialIngestTicket)=>a.itemId===b.itemId&&a.inputHash===b.inputHash&&a.indexEpoch===b.indexEpoch&&a.operationId===b.operationId&&a.admissionKind===b.admissionKind;
 export type EngineSearchOutcome = { state: "complete"; operationId: string; result: { candidates: (Ref & { via: string[]; relationCount: number })[]; missing: Ref[] }; indexRevision: string; indexState: "needs_checkpoint" | "checkpoint_confirmed" }
   | { state: "blocked" | "uncertain"; reason: string; operationId?: string };
 export interface EnginePort { search(input: EngineSearch): Promise<EngineSearchOutcome> }
@@ -31,6 +30,8 @@ export interface SemanticEnginePort { prepare(alias: string, input: EngineSearch
 export interface EngineStore { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>;
   list?<T>(options: { prefix: string; limit: number }): Promise<Map<string, T>>;
   transaction?<T>(operation: (store: EngineStore) => Promise<T>): Promise<T>;
+  /** Available only on the internal transactional adapter. */
+  delete?(key: string): Promise<void>;
   putFenced?(key: string, value: unknown, indexEpoch: string, owner: string): Promise<void> }
 export interface ContainerPort {
   readonly running: boolean;
@@ -46,6 +47,7 @@ export interface EngineGuard {
   issue(source: SourceFence, expiresAt: number): Promise<string>;
   revoke(token: string): Promise<void>;
   checkInitialAdmission?(admission:InitialIngestAdmission,input:InitialIngestCheckInput,indexEpoch?:string,continuing?:boolean):Promise<boolean>;
+  checkInitialRecovery?(admission:InitialIngestAdmission,input:InitialIngestCheckInput,proof:InitialRecoveryProof):Promise<boolean>;
 }
 type Active = { epoch: string; operationId: string; token: string; period: string; actor: TrustedActor; permits: EnginePermit[]; until: number; coverage?: CoverageProof; searchIndex?: { epoch: string; revision: string }; mode?: "replay_only"; indexEpoch?: string; owner?: string;initial?:{admission:InitialIngestAdmission;indexEpoch:string;ticket?:InitialIngestTicket} };
 type Meta = { namespace: string; revision: string; lost: boolean; epoch?: string; sources?: SourceStamp[]; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
@@ -95,6 +97,37 @@ export class CogneeEngine implements EnginePort {
   }
   async ingest(input: EngineIngest): Promise<unknown> {
     return this.ingestSource(input);
+  }
+  async prepareInitialRecovery(previousId: string) {
+    if (this.busy) return { state: "blocked" as const, reason: "initial_recovery_busy" };
+    this.busy = true;
+    try { return await new InitialRecoveryJournal(this.store, this.scope).witness(previousId,
+      () => !this.container.running && this.activeEpoch === null); }
+    finally { this.busy = false; }
+  }
+  async reserveRecoveredInitialIngest(input: EngineIngest, admission: InitialIngestAdmission, proof: InitialRecoveryProof) {
+    if (this.busy) return { state: "blocked" as const, reason: "initial_recovery_busy" };
+    this.busy = true;
+    try {
+      proof = initialRecoveryProof.parse(proof); admission = { ...admission };
+      if (admission.kind !== "owner_once" || input.actor.kind !== "owner" || input.expectedIndex !== undefined
+        || input.ownerOnce?.id !== admission.itemId || input.ownerOnce.token !== admission.owner)
+        return { state: "blocked" as const, reason: "initial_recovery_authority_changed" };
+      const owned = await this.initialInput(input, admission.itemId);
+      if (!await this.guard.check(owned.input.actor, [ingestPermit(owned.input)])
+        || !await this.guard.checkInitialAdmission?.(admission, owned.input))
+        return { state: "blocked" as const, reason: "initial_recovery_denied" };
+      const operationId = await bridgeHash([this.scope, proof.indexEpoch, "/ingest", { source: owned.source }, null]);
+      const ticket: InitialIngestTicket = { itemId: admission.itemId, inputHash: owned.inputHash,
+        indexEpoch: proof.indexEpoch, operationId, admissionKind: "owner_once" };
+      const result = await new InitialRecoveryJournal(this.store, this.scope).reserve(ticket, proof,
+        () => !this.container.running && this.activeEpoch === null,
+        async () => !!await this.guard.checkInitialRecovery?.(admission, owned.input, proof));
+      if (result.state === "blocked") return result;
+      if (result.clearQuarantine) this.quarantined = false;
+      return { state: result.state, ticket: result.ticket, created: result.created };
+    } catch { return { state: "uncertain" as const, reason: "initial_recovery_reservation_unknown" }; }
+    finally { this.busy = false; }
   }
   private async initialInput(input:EngineIngest,itemId:string){
     if(!/^[a-f0-9]{64}$/.test(itemId)||bytes(input)>65536||!input.source.text?.trim())throw Error('initial_input');

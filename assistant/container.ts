@@ -443,7 +443,7 @@ export class CogneeContainer extends DurableObject<AssistantEnv> {
       const exports = this.ctx.exports as unknown as { CogneeBroker(options: { props: { epoch: string; owner: string } }): Fetcher };
       const port = new DirectContainerPort(this.ctx.container, epoch => exports.CogneeBroker({ props: { epoch, owner: this.ctx.id.toString() } }), scope);
       this.port = port;
-      this.engine = new CogneeEngine(scope, { transaction: operation => this.ctx.storage.transaction(transaction => operation({get:key=>transaction.get(key),put:(key,value)=>transaction.put(key,value),list:options=>transaction.list(options)})), get: key => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value),
+      this.engine = new CogneeEngine(scope, { transaction: operation => this.ctx.storage.transaction(transaction => operation({get:key=>transaction.get(key),put:(key,value)=>transaction.put(key,value),list:options=>transaction.list(options),delete:async key=>{await transaction.delete(key);}})), get: key => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value),
         putFenced: (key, value, indexEpoch, owner) => this.ctx.storage.transaction(async transaction => {
           const run = await transaction.get<RebuildState>("rebuild"), index = await transaction.get<{ epoch: string }>("index");
           if (run?.indexEpoch !== indexEpoch || run.owner !== owner || index?.epoch !== indexEpoch || !["preparing", "materializing"].includes(run.phase)) throw new Error("rebuild_fenced");
