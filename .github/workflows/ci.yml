@@ -17,6 +17,7 @@ jobs:
       - run: npx --yes npm@11 ci
       - run: npm run check
       - run: npm test
+      - run: npm run test:oauth-reliability
       - run: npm run test:assistant-runtime
       - run: npm run test:calendar-oauth
       - run: npm run test:assistant-index-budget

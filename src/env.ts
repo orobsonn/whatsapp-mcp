@@ -1,5 +1,6 @@
 import type { OwnerAssistantRPC } from "../assistant/mcp";
-export interface Env {
+import type { AuthorityEnv } from "./oauth-storage";
+export interface Env extends AuthorityEnv {
   DB: D1Database;
   MEDIA: R2Bucket;
   OAUTH_KV: KVNamespace;
