@@ -93,6 +93,12 @@ Pausa global da atuação: manter ROUTINES_PAUSED=true; para interromper o sched
 
 Rollback de Worker/configuração pode reaplicar uma versão compatível anterior e desligar gates. Não promete desfazer migrações D1, apagar efeitos remotos ou liberar operações incertas. Não destruir DOs, limpar ledger, regressar checkpoint, trocar alias ou geração como retry. Antes de parar Container, confirmar checkpoint da revisão atual; recovery usa candidato exato, sem start vazio. Export JSON paginado ao vivo não é snapshot consistente; backup/restauração exige procedimento próprio #55, incluindo tombstones externos, gerações, custos agregados e objetos privados. R2 ARTIFACTS é próprio para artefatos/backups deliberados, sem transformar export live em backup atômico.
 
+### Preservação de runtime ao publicar código ou configuração
+
+Antes de alterar código, vars ou secrets, capturar o deployment ativo e os recursos de sua versão, além de settings, cron, exposição e hashes dos módulos. Preservar explicitamente `resources.script_runtime.containers`, incluindo alias e imagem imutável: conferir apenas bindings/settings não detecta a perda desse mapa. Uma atualização anterior de secrets removeu o mapa, e o bootstrap recusou; a recuperação manteve os recibos e não repetiu a ingestão incerta.
+
+Upload versionado deve reter os bindings existentes no servidor, sem extrair/copiar secrets, e enviar o runtime completo. Conferir o candidato antes de promover100% e repetir as comparações depois. Durante a configuração pública GitHub, GETsettings passou a refletir a única binding nova logo após upload; a comparação inicial recusou, sem promoção. A reconciliação releu a mesma versão candidata, conferiu exatamente o delta autorizado e preservação dos demais recursos, e só então a promoveu. Não repetir upload ou criar outra versão por falha de observação. Deployment/versão ativa, módulos e chamada funcional constituem provas distintas.
+
 ## Orçamento e dependências
 
 Teto autorizado de testes pagos: US$10. O executor deve consultar todos os períodos/gerações/instalações anteriores e reservas incertas antes de configurar novo cap insert-only. O handoff registrava 48.405 microUSD comprometidos, incluindo 40.000 incertos; isso é referência histórica, não saldo atual. O instalador não cria cap de US$10 por geração/dia nem um ledger paralelo. Container/infra têm custo separado de inferência; não inferir mensalidade por amostra sintética.

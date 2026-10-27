@@ -2,6 +2,23 @@
 
 ## Homologação própria em27/10/2026
 
+Os quatro botões foram exercitados pelo Chrome já autenticado, após o dono liberar o controle assistivo do macOS. A seleção conferiu bot, mensagem e texto técnico antes de cada clique. O servidor registrou duas revisões e duas aprovações simuladas, com quatro recibos distintos e `answer_state=answered`. Foram cliques do executor autorizado; não são avaliações humanas de utilidade.
+
+Uma única repetição do botão já consumido foi feita enquanto sua expiração ainda era futura, vínculo/tópico/mensagem permaneciam iguais e o diário confirmava `freshness=current`. Um tail temporário, confirmado ativo antes do clique, observou o POST correlacionado ao webhook com HTTP200/outcomeok. A comparação integral dos quatro recibos e estados das quatro notificações, antes/depois do processamento, conservou o mesmo SHA256: sem quinto recibo, nova transição ou resposta ao callback. HTTP200 não revela o corpo `denied`: a prova real é comportamental, complementada pela condição de consumo e pelas contraprovas do código. O tail foi removido com confirmação, e seu processo local foi encerrado.
+
+| Critério #48 | Prova e limite |
+| --- | --- |
+|14.221 — tópicos persistidos | Quatro IDs existentes relidos pelo MCP; uma notificação real por tópico, sem recriação. |
+|14.222 — vínculo do callback | Quatro cliques reais no dono/chat/tópico/mensagem/proposta configurados; trocas de identidade/thread/message/hash/revisão/expiração são contraprovas da CI, sem induzir acesso alheio real. |
+|14.223 — callback velho recusa | Botão consumido repetido uma vez, antes da expiração, com webhook correlacionado e recibos/estados integralmente iguais. Não se alega captura do corpo de resposta nem negativa por expiração real. |
+|14.224 — tentativa limitada/incerto | Quatro envios reais com um preflight/tentativa cada; concorrência, timeout e ACK perdido sem reenvio têm contraprovas integradas. Não se induziu envio incerto real nem repetiu notificação. |
+
+Aceites técnicos demonstrados nestas fronteiras; revisão final, CI do commit entregue, versão/tag/release e encerramento da issue continuam gates de publicação. A criação posterior de suporte administrativo GitHub altera o catálogo; a atualidade acima é a observada nos instantes de envio/revisão, sem renovar botões ou reescrever decisões históricas.
+
+Permissão operacional residual: JavaScript por Eventos da Apple continua habilitado no Chrome utilizado, após a liberação de controle solicitada ao dono. As tentativas de desativação pela interface não foram confirmadas; não se declara essa preferência restaurada. O tail remoto e seu processo foram efetivamente removidos. Essa permissão do navegador não substitui autorização de envio, não cria avaliação humana e não é capacidade entregue ao Worker.
+
+### Registro anterior ao controle do navegador
+
 Vínculo autenticado/revisão3 e quatro tópicos persistidos foram relidos pelo cliente MCP. A [jornada Owner real](140-owner-once-cloud-20261027.md) publicou uma proposta atual com citação literal, sem inserir decisão porSQL. O cliente preparou quatro notificações com operações fixas e expiração de uma hora, uma por tópico; cada dispatch retornou `sent`. O status posterior confirmou quatro notificações enviadas com `review_state=pending`, sem truncamento e com um preflight por envio. Não houve recriação de tópico ou reenvio.
 
 Ainda faltam os cliques reais dos botões, a recusa de clique já consumido e a conciliação dos respectivos recibos antes do aceite final. O Chrome aberto no bot foi localizado, mas recusou JavaScript por Eventos da Apple; o macOS também recusou controle assistivo. Essa indisponibilidade não foi substituída por callback fabricado. O dono foi informado do controle necessário para prosseguir pelo navegador. Os registros abaixo descrevem as provas anteriores e não constituem homologação dos cliques.

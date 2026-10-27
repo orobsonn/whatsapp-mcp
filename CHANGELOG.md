@@ -4,6 +4,8 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-27
+
 ### Added
 - Execução pontual Owner em sombra com operação, projeto, corpus, prazo e orçamento vinculados, reutilizando os ledgers de ingestão, busca, episódio e diário. Operador local autenticado avança somente a operação selecionada, mantendo o processamento global pausado.
 - Inspeção nominal somente de leitura para metadados da operação existente, com snapshot durável atômico, geração atual e distinção entre ticket ausente e corrompido. Não reabre tentativas incertas ou grants expirados.
@@ -17,7 +19,8 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Assinatura do catálogo Owner ordena as entradas no próprio agregado JSON, preservando sua igualdade quando os guards de cobertura e execução são compostos. Duas fontes inseridas na ordem inversa dos IDs não são mais recusadas por uma mudança de ordem da consulta.
 
 ### Notes
-- Homologação cloud própria publicou uma proposta atual pelo diário normal e enviou quatro notificações privadas. Uma resposta anterior com citação não literal foi recusada, conservando recibos e custos. Callbacks reais da #48, revisão final e release continuam pendentes. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.
+- Homologação cloud própria publicou uma proposta atual pelo diário normal e enviou quatro notificações privadas. Os quatro callbacks registraram revisões/simulações e a repetição de botão consumido conservou os mesmos recibos, sem novo efeito. Uma resposta anterior com citação não literal foi recusada, conservando recibos e custos. O ensaio recusa índice com originais fora do manifesto; não constitui validação geral de múltiplos projetos ou operação longitudinal.
+- Leitura GitHub própria configurada somente para o repositório público autorizado, sem token: README em commit fixado, paginação completa da raiz e repositório desconhecido recusado. Calendar próprio permanece somente leitura. [Provas, limites e auditoria](docs/construcao-assistente/evidencias/piloto-canais-proprios-20261027.md).
 
 ## [0.48.1] - 2026-10-27
 
