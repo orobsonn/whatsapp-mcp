@@ -32,5 +32,5 @@ export async function planCanonicalRestore(rawManifest: unknown, input: Snapshot
   };
   const steps = indexed.map(row => { const source = relatedSource(row.record); return { ...row, ...(source ? { source: pair(source) } : {}) }; }).sort((left, right) => order.indexOf(left.record.table) - order.indexOf(right.record.table) || left.proof.index - right.proof.index);
   if (steps.some(step => order.indexOf(step.record.table) < 0)) throw new Error("restore_table_adapter_required");
-  return { state: "planned_inactive_authority_unchecked" as const, manifest: manifest as SnapshotManifest, steps, sourceCount: headers.size, excluded: ["jobs", "episodes", "model_receipts", "canonical_extractions", "media_derivations", "telegram", "oauth", "budget_import"] };
+  return { state: "planned_inactive_authority_unchecked" as const, manifest: manifest as SnapshotManifest, steps, sourceCount: headers.size, excluded: ["jobs", "episodes", "model_receipts", "canonical_extractions", "relation_batches", "owner_canonical_supports", "owner_relation_proofs", "owner_canonical_status", "media_derivations", "telegram", "oauth", "budget_import"] };
 }

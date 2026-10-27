@@ -48,9 +48,23 @@ export class RetentionPurge {
     }
     const tables = new Set((await this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_routine_*'").all<{ name: string }>()).results.map(row => row.name));
     const routines = tables.has("assistant_routine_items");
+    const ownerTables = ["assistant_owner_canonical_supports", "assistant_owner_relation_proofs", "assistant_owner_canonical_status"], ownerContext = ownerTables.every(name => catalog.some(row => row.name === name));
+    if (!ownerContext && ownerTables.some(name => catalog.some(row => row.name === name))) return { state: "blocked", reason: "owner_context_schema_incomplete", d1: "pending" };
     if (tables.size && !["assistant_routine_items", "assistant_routine_event_items", "assistant_routine_ingestions", "assistant_routine_state", "assistant_routine_cycles", "assistant_routine_fup_results"].every(table => tables.has(table))) return { state: "blocked", reason: "routines_schema_incomplete", d1: "pending" };
     const collect = (kind: string, query: string) => sql(`INSERT INTO assistant_retention_purge_refs SELECT ?1,?2,?3,'${kind}',found.id FROM (${query}) found WHERE found.id IS NOT NULL AND found.id NOT IN (${refs(kind)}) ORDER BY found.id LIMIT 128 ON CONFLICT DO NOTHING`);
     const collection = () => [
+      // A private support is not the source/anchor of its derived batch. Keep
+      // that anchor's UNIQUE attempt while collecting every private copy.
+      ...(ownerContext ? [
+        collect("owner_slot", `SELECT s.slot_key AS id FROM assistant_owner_canonical_supports s WHERE ${namespace("s")} AND (s.source_id=?4 OR EXISTS(SELECT 1 FROM json_each(s.proof_json,'$.notes') n WHERE json_extract(CASE WHEN n.type='object' THEN n.value ELSE '{}' END,'$.fence.source.id')=?4))
+          UNION SELECT x.slot_key FROM assistant_canonical_extractions x WHERE ${namespace("x")} AND substr(x.slot_key,1,19)='canonical-owner-v2:' AND (x.source_id=?4 OR EXISTS(SELECT 1 FROM json_each(x.catalog_json) c,json_each(CASE WHEN c.type='object' THEN c.value ELSE '{}' END,'$.supports') n WHERE json_extract(CASE WHEN n.type='object' THEN n.value ELSE '{}' END,'$.id')=?4))`),
+        collect("owner_anchor", `SELECT source_id AS id FROM assistant_canonical_extractions x WHERE ${namespace("x")} AND x.slot_key IN (${refs("owner_slot")})`),
+        collect("model", `SELECT operation_key AS id FROM assistant_canonical_extractions x WHERE ${namespace("x")} AND x.slot_key IN (${refs("owner_slot")})`),
+        // Guest ranking never observes Owner batches. Only Owner runs which
+        // evaluated this anchor can contain copies of its private relations.
+        collect("run", `SELECT r.id FROM assistant_retrieval_runs r WHERE ${namespace("r")} AND json_extract(r.actor_json,'$.kind')='owner' AND (EXISTS(SELECT 1 FROM assistant_retrieval_items i WHERE i.installation_id=r.installation_id AND i.generation=r.generation AND i.run_id=r.id AND i.source_id IN (${refs("owner_anchor")})) OR EXISTS(SELECT 1 FROM json_each(r.pack_json) j WHERE json_extract(j.value,'$.id') IN (${refs("owner_anchor")})))`),
+        collect("job", `SELECT e.job_id AS id FROM assistant_episodes e WHERE ${namespace("e")} AND (json_extract(e.binding_json,'$.runId') IN (${refs("run")}) OR (e.profile='owner' AND (json_extract(e.binding_json,'$.lease.source_id') IN (${refs("owner_anchor")}) OR EXISTS(SELECT 1 FROM json_each(e.binding_json,'$.context.sources') j WHERE json_extract(j.value,'$.id') IN (${refs("owner_anchor")})))))`),
+      ] : []),
       collect("mission", `SELECT id FROM assistant_missions t WHERE ${namespace("t")} AND t.source_id=?4`),
       collect("mission_version", `SELECT json_array(id,revision) AS id FROM assistant_mission_versions t WHERE ${namespace("t")} AND json_extract(body_json,'$.sourceId')=?4`),
       collect("fup", `SELECT id FROM assistant_follow_ups t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.mission_id IN (${refs("mission")}))`),
@@ -97,6 +111,16 @@ export class RetentionPurge {
       del("assistant_fup_provenance", `t.fup_id IN (${refs("fup")})`), del("assistant_fup_occurrences", `t.follow_up_id IN (${refs("fup")})`), del("assistant_follow_ups", `t.id IN (${refs("fup")})`), del("assistant_mission_versions", `t.id IN (${refs("mission")}) OR json_array(t.id,t.revision) IN (${refs("mission_version")})`), del("assistant_missions", `t.id IN (${refs("mission")})`),
       del("assistant_owner_commands", `t.operation_id IN (${refs("command")})`),
       del("assistant_retrieval_items", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_steps", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_semantic", `t.run_id IN (${refs("run")})`), del("assistant_retrieval_runs", `t.id IN (${refs("run")})`),
+      ...(ownerContext ? [
+        del("assistant_owner_relation_proofs", `t.source_id=?4 OR t.slot_key IN (${refs("owner_slot")})`),
+        del("assistant_owner_canonical_supports", `t.source_id=?4 OR t.slot_key IN (${refs("owner_slot")})`),
+        del("assistant_owner_canonical_status", `t.source_id=?4 OR t.item_id IN (${refs("routine")})`),
+        sql(`UPDATE assistant_owner_canonical_status AS t SET body_json='{"state":"blocked","gap":"canonical_context_purged"}' WHERE ${namespace("t")} AND t.source_id IN (${refs("owner_anchor")}) AND ${gate}`),
+        del("assistant_relation_batches", `t.operation_key IN (${refs("owner_slot")})`),
+        // Preserve source/revision, identity/pin, operation/request and money.
+        // The terminal state and empty payload cannot admit another model call.
+        sql(`UPDATE assistant_canonical_extractions AS t SET state='rejected',gap='canonical_context_purged',claims_count=NULL,catalog_json='[]',payload_json='{}' WHERE ${namespace("t")} AND t.slot_key IN (${refs("owner_slot")}) AND t.source_id<>?4 AND ${gate}`),
+      ] : []),
       del("assistant_relation_batches", sameSource), ...(catalog.some(row=>row.name==="assistant_canonical_extractions")?[del("assistant_canonical_extractions",sameSource)]:[]), del("assistant_model_permits", sameSource), del("assistant_model_receipts", `t.operation_key IN (${refs("model")})`), del("assistant_media_artifacts", sameSource), del("assistant_media_receipts", sameSource), del("assistant_origin_versions", "t.canonical_id=?4"),
       ...(catalog.some(row => row.name === "assistant_retention_restored_work") ? [del("assistant_retention_restored_work", `t.source_id=?4 OR (t.kind='mission' AND t.id IN (${refs("mission")})) OR (t.kind='follow_up' AND t.id IN (${refs("fup")}))`)] : []),
       ...(routines ? [sql(`UPDATE assistant_routine_state AS t SET paused=1,state='uncertain',last_gap='retention_purged' WHERE ${namespace("t")} AND t.active_item_id IN (${refs("routine")}) AND ${gate}`), sql(`UPDATE assistant_routine_cycles AS t SET state='uncertain',last_gap='retention_purged' WHERE ${namespace("t")} AND t.active_item_id IN (${refs("routine")}) AND ${gate}`),

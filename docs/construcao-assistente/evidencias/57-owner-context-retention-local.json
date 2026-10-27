@@ -1,0 +1,54 @@
+{
+  "issue": 57,
+  "scope": "Owner canonical support retention adapters; synthetic D1 only",
+  "baseCommit": "4bd0e1d",
+  "red": {
+    "command": "npx vitest run tests/assistant-owner-retention.test.ts",
+    "failed": 3,
+    "passed": 1,
+    "durationSeconds": 10.15,
+    "causes": [
+      "support payload and paid response survive support purge",
+      "missing-proof catalog fallback survives support purge",
+      "anchor purge violates sidecar foreign keys"
+    ]
+  },
+  "validation": {
+    "initialGreen": {
+      "passed": 4,
+      "durationSeconds": 12.83
+    },
+    "finalGreen": {
+      "command": "npx vitest run tests/assistant-owner-retention.test.ts tests/assistant-retention-purge.test.ts",
+      "passed": 24,
+      "files": 2,
+      "durationSeconds": 21.64
+    },
+    "typecheck": "npm run check passed",
+    "diffCheck": "git diff --check passed"
+  },
+  "guarantees": [
+    "support purge scrubs retained slot, response, private claims and Owner downstream closure",
+    "active anchor and its unique source/revision attempt survive; pin/op/request identity unchanged",
+    "guest retrieval/item state preserved; private status becomes body-free blocked metadata",
+    "financial reservations remain intact, including exact settlement before receipt removal",
+    "sidecar deletion precedes FK parents on anchor purge",
+    "zero-claim slots are purged without requiring a relation batch",
+    "snapshot freeze blocks sidecar deletion and unauthorized slot scrub",
+    "full Owner export includes sidecars; canonical snapshot/restore allowlist excludes them"
+  ],
+  "admission": "bounded closure collection; final transaction rechecks closure and financial proof before purge grant",
+  "limits": [
+    "health feature inventory is not complete migration proof",
+    "Owner run cleanup conservatively includes Owner runs which evaluated the affected anchor; guest runs are excluded because they cannot read Owner batches",
+    "new upstream support catalog/consumer integration and cloud homologation remain separate",
+    "no real model/Cloudflare/secret/send/Calendar operation performed"
+  ],
+  "estimatedPaidCostUsd": 0,
+  "fileSha256": {
+    "assistant/retention-purge.ts": "8987670a3b2b867d16346f6b096609359786c101e082765fa8da6ee87b2fddac",
+    "assistant/retention-snapshot-contract.ts": "6debd29933075321b871a9b15c9149c000fe88a7f4e7588c5a59a4cdd5cdb7a6",
+    "assistant/retention-restore-plan.ts": "8dd2714e12430eb63343b71eac905cbc85442420c70029e4208f4a32ab84c97a",
+    "tests/assistant-owner-retention.test.ts": "c2dd42db43e48c0e20aea284ed7f78a94e05ef79f74c005c304e57ed9efe50a9"
+  }
+}
