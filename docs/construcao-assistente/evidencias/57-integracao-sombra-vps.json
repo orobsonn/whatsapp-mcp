@@ -1,0 +1,606 @@
+{
+  "issue": 57,
+  "status": "cloud_synthetic_integration_and_guarded_G1_configuration_recovery_observed",
+  "pilotReady": false,
+  "source": {
+    "head": "5963734472b7df1e63c35a6fe262e4c3ce1b9022",
+    "ci": {
+      "run": 40437755775,
+      "conclusion": "success",
+      "generalPassed": 1350,
+      "nativePassed": 64,
+      "scope": "exact_runtime_head_before_this_documentation_delta"
+    },
+    "releaseVersion": "0.44.0"
+  },
+  "observation": {
+    "dateUTC": "2026-10-27",
+    "databaseFinalObservedAtUTC": "2026-10-27T04:21:30.500588+00:00",
+    "environment": "new_isolated_owned_cloudflare_resources",
+    "data": "synthetic_only",
+    "sourceWorker": "assistant-pilot57-source",
+    "hostWorker": "assistant-pilot57-check",
+    "schemaMigrations": 27,
+    "transport": "real_named_service_bindings_and_natural_cron",
+    "manualSchedulerTickUsedAsCronProof": false,
+    "upstreamWhatsAppHistory": "not_exercised"
+  },
+  "acceptance": [
+    {
+      "id": "ac-16.311",
+      "state": "observed_synthetic_cloud_to_owner_review_surface",
+      "limits": [
+        "technical_exposure_only",
+        "no_actual_owner_quality_assessment",
+        "G1_configuration_recovery_is_not_full_backlog_processing"
+      ]
+    },
+    {
+      "id": "ac-16.312",
+      "state": "demonstrated_cloud_negatives_and_causal_native_restart_tests",
+      "cloudObserved": [
+        "duplicate_ingress",
+        "support_revocation",
+        "source_correction",
+        "budget_precheck_denial",
+        "remote_withdraw_before_local_apply",
+        "withdraw_after_local_apply"
+      ],
+      "controlledCI": [
+        "cold_runtime_restart",
+        "dispatch_and_publication_ACK_loss",
+        "canonical_uncertainty_no_rekey"
+      ],
+      "cloudAssistantCrash": "not_observed",
+      "operatorFailuresAreAssistantCrashEvidence": false,
+      "acceptanceBasis": "Issue57 ac16.311 explicitly requires real resources; ac16.312 requires failure cases without requiring every fault in Cloud or in one paid run. PRD milestone requires integrated critical-contract tests.",
+      "scope": "Cloud duplicates/correction/revocation/budget plus exact-code native workerd/D1 restart and effect-boundary fault injection; no physical Cloud assistant crash claimed"
+    },
+    {
+      "id": "ac-16.313",
+      "state": "shadow_no_whatsapp_or_calendar_outgoing_observed",
+      "externalAttempted": false,
+      "capabilities": {
+        "whatsappSend": false,
+        "calendarWrite": false
+      },
+      "limits": "architecture_and_scoped_runtime_receipts; no_real_outgoing_provider_test"
+    },
+    {
+      "id": "ac-16.314",
+      "state": "fulfilled_pending_dependencies_explicit",
+      "pending": [
+        "Google_readonly_consent_and_real_refresh",
+        "Telegram_owner_link_and_actual_topic_review",
+        "new_MCP_tools_discovery_and_client_calls",
+        "real_pilot_longitudinal_quality"
+      ]
+    },
+    {
+      "id": "ac-16.315",
+      "state": "independent_integrated_runtime_review_approved",
+      "documentaryReview": "required_before_commit_merge_release",
+      "readinessLimits": [
+        "real_client_channels_not_homologated",
+        "no_full_personal_backlog_processing_claim"
+      ]
+    }
+  ],
+  "positive": {
+    "captureEventsReceived": 2,
+    "captureEventsApplied": 2,
+    "canonical": {
+      "state": "published",
+      "claims": 2,
+      "visibility": "owner",
+      "review": "unreviewed",
+      "semanticValidation": "unverified",
+      "contextFromOtherOwnerNote": true,
+      "sourceAdminProjectRemainedNull": true,
+      "literalQuotes": true,
+      "negationPreserved": true,
+      "deadlineConditionalPreserved": true,
+      "identityOrAdministrativeAssociationInferred": false
+    },
+    "semantic": {
+      "state": "complete",
+      "indexState": "checkpoint_confirmed",
+      "runCount": 1,
+      "observationScope": "positive_v1_before_correction_and_withdrawal",
+      "currentAfterNegatives": "not_claimed; old_checkpoint_must_not_override_current_source_guards"
+    },
+    "nativeFlue": {
+      "episodeState": "settled",
+      "submissionCount": 1,
+      "transportAttempts": 1,
+      "completedModelCallbacks": 1
+    },
+    "decision": {
+      "state": "proposed",
+      "mode": "shadow",
+      "externalAttempted": false,
+      "semanticValidation": "structure_and_attribution_only",
+      "historicalMetadataRetainedAfterWithdraw": true
+    },
+    "review": {
+      "technicalExposureAcknowledged": 1,
+      "humanAssessmentCreated": false,
+      "qualityFraction": null
+    }
+  },
+  "negative": {
+    "duplicate": {
+      "sameSequence": 2,
+      "sameMetadataHash": true,
+      "additionalCaptureEvent": false,
+      "scope": "ingress_idempotence; native_episode_replay_proved_separately_in_CI"
+    },
+    "supportAWithdraw": {
+      "anchorRevisionRemained": 1,
+      "anchorAvailable": true,
+      "canonicalCandidates": "unavailable",
+      "newModelAttempt": false
+    },
+    "correctionAndBudget": {
+      "sourceRevision": 2,
+      "sourceVersion": 2,
+      "captureSequence": 3,
+      "sourceState": "available",
+      "supportBKnownAck": true,
+      "canonicalCandidates": "not_observed",
+      "currentContextMetadataCensus": true,
+      "builderEvaluatedNow": false,
+      "slotObserved": false,
+      "durableGap": "budget_blocked",
+      "deltaModelReceipts": 0,
+      "deltaModelPermits": 0,
+      "deltaReservations": 0,
+      "deltaSettledMicroUsd": 0,
+      "scope": "scheduler_budget_precheck; not_an_executed_v2_extractor_or_deep_model_admission"
+    },
+    "remoteWithdraw": {
+      "captureSequence": 4,
+      "beforeLocalApply": {
+        "localApplicationState": "pending",
+        "sourceState": "unavailable",
+        "reason": "origin_unavailable"
+      },
+      "afterLocalApply": {
+        "localApplicationState": "applied",
+        "sourceState": "unavailable",
+        "reason": "not_returned"
+      },
+      "finalAppliedEvents": 4,
+      "finalPendingEvents": 0,
+      "costUnchanged": true
+    }
+  },
+  "failureEvidence": {
+    "controlledNativeTests": [
+      {
+        "file": "tests/assistant-episodes.test.ts",
+        "cases": [
+          "native exact submission replay survives cold restart",
+          "native publication ACK loss preserves one journal reference across cold restart",
+          "lost dispatch ACK before_commit/after_model reconciles only identical native envelope"
+        ]
+      },
+      {
+        "file": "tests/assistant-flue-runtime.test.ts",
+        "case": "retained conversation after process restart",
+        "provider": "faux_with_external_network_forbidden"
+      },
+      {
+        "file": "tests/assistant-checkpoint-runtime.test.ts",
+        "case": "native operation and ticket claims survive rollback/ack_lost with correct effect boundary"
+      }
+    ],
+    "controlledGeneralTests": [
+      {
+        "file": "tests/assistant-canonical-extraction.test.ts",
+        "case": "uncertain attempt across catalog changes/restart and lost publication ACK"
+      },
+      {
+        "file": "tests/assistant-routines.test.ts",
+        "case": "same uncertain episode after restart without new job/alias/model charge"
+      }
+    ],
+    "operatorOnly": [
+      "workerd_unsupported_redirect_error_constructor_before_fake_fetch_zero_dispatch",
+      "Root_consume_process_abort_before_consume_intent_then_one_known_consume_ACK"
+    ],
+    "cloudAssistantCrashOrForcedRestartObserved": false,
+    "ciExecution": {
+      "workflow": ".github/workflows/ci.yml",
+      "nativeCommand": "npm run test:assistant-runtime",
+      "nativeConfig": "assistant/flue-test.config.ts",
+      "includedFaultFiles": [
+        "tests/assistant-episodes.test.ts",
+        "tests/assistant-flue-runtime.test.ts",
+        "tests/assistant-checkpoint-runtime.test.ts"
+      ],
+      "generalCommand": "npm test",
+      "nativeFilesExcludedFromGeneral": true,
+      "nativeNetwork": "forbidden_or_faux_provider",
+      "sourceHeadSameAsCloud": true
+    }
+  },
+  "teardown": {
+    "syntheticHostPaused": true,
+    "syntheticCronCount": 0,
+    "syntheticHostVersionAfterTeardown": "5936f112-0699-4899-b196-a1ee6ba506f3",
+    "localOperatorStopReceipts": 17,
+    "allStoppedReceiptsConfirmGroupStoppedAndTemporaryCredentialsRemoved": true,
+    "claimScope": "referenced_local_sessions_and_scoped_synthetic_instance_listing; no_global_other_applications_or_historical_billing_claim",
+    "syntheticListedInstancesPhysicallyStopped": true,
+    "instancesListingHasNextPage": false,
+    "stopMutationExecuted": false,
+    "physicalStopStateUpdatedAtUTC": "2026-10-27T04:26:27.923Z"
+  },
+  "ownInstallation": {
+    "state": "guarded_known_pre_admission_configuration_recovery_observed_then_official_code_restored_paused",
+    "workerVersion": "13833dea-90da-4256-9f0e-6205f2af1890",
+    "schemaMigrations": 27,
+    "bindingCount": 26,
+    "secretMarkers": 5,
+    "durableObjectNamespaces": 5,
+    "imageAndTagPreserved": true,
+    "cronCount": 1,
+    "paused": true,
+    "G1PreAdmissionBacklogRecovery": "eligible_known_bindings_configuration_only_under_current_original_actor_source_origin_retention_guards",
+    "CoreG1Inventory": "pristine_observed_for_recovery_commands_without_engine_start",
+    "sourceWorkerVersion": "47e637b5-9a12-416a-a676-49bd444e1775",
+    "publicEvidence": {
+      "eligibleConfigCASObserved": true,
+      "deniedPreserved": true,
+      "admissionUnknownObserved": false,
+      "currentOriginalActorAndSourceOriginRetentionGuarded": true,
+      "identitiesAndSourcePinsPreserved": true,
+      "comparedMetadataPreserved": true,
+      "allNineEffectsAbsent": true,
+      "routinesRemainPaused": true,
+      "official596ModulesRestored": true,
+      "temporaryDiagnosticAndTokenRemoved": true,
+      "allScannedItemsProcessed": false,
+      "realPilotHomologated": false
+    },
+    "temporaryLocalCredentialCopiesRemoved": true,
+    "originalBridgeInputPreserved": true,
+    "attemptAckUnknownCostHistoryPreserved": true,
+    "bodyOrPersonalQueryPublished": false,
+    "realCaptureStillActive": true
+  },
+  "costs": {
+    "unit": "microUSD",
+    "newSyntheticInstallation": {
+      "settledEntries": 60,
+      "settled": 2121,
+      "reserved": 0,
+      "uncertain": 0,
+      "usd": "0.002121"
+    },
+    "historicalGlobalCommitted": 55310,
+    "historicalGlobalUncertainIncluded": 40000,
+    "historicalGlobalCommittedUsd": "0.055310",
+    "authorizedPaidTestCeilingUsd": 10,
+    "historyReset": false,
+    "containerAndPlatformInvoice": "not_observed_not_included_in_API_model_ledger",
+    "thisDocumentationWork": {
+      "providerCalls": 0,
+      "paidUsd": 0,
+      "authenticatedCloudApiCalls": 0,
+      "publicPricingDocumentationRead": true
+    },
+    "containerComputeEstimate": {
+      "state": "conservative_planning_bound_not_invoice",
+      "scope": "one_new_nominal_standard_1_engine_only_full_capacity_for_entire_creation_to_physical_STOPPED_interval",
+      "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+      "instanceType": "standard-1",
+      "maxVcpu": "0.5",
+      "memoryGiB": 4,
+      "diskGB": 8,
+      "secondsRoundedUp10ms": "6439.92",
+      "rateUsdPerSecondAtFullCpu": "0.00002056",
+      "grossComputeBoundUsd": "0.1324047552",
+      "roundedUpPlanningAllowanceUsd": "0.133",
+      "includedCreditsApplied": false,
+      "historicalBillingOrRemovedInstancesAudited": false,
+      "excluded": [
+        "Workers_and_Durable_Objects",
+        "R2_and_snapshot_image_storage",
+        "network_egress",
+        "plan_fee",
+        "other_applications_instances",
+        "models_and_old_uncertain_attempts"
+      ],
+      "actualInvoice": "not_observed"
+    },
+    "allProjectSpendUnderCeilingClaimed": false
+  },
+  "notProven": [
+    "cloud_assistant_crash_or_forced_restart",
+    "real_owner_review_quality_or_utility",
+    "Google_and_Telegram_real_client_consent",
+    "new_tools_available_in_actual_MCP_client",
+    "production_scale_or_SLA",
+    "complete_WhatsApp_history",
+    "infra_final_invoice",
+    "all_personal_backlog_processed_or_longitudinal_operation"
+  ],
+  "privateEvidence": [
+    {
+      "id": "database_final",
+      "privateArtifact": "e2e57-cloud-proof-v1/database.actual.private.json",
+      "sha256": "7ab7a2cd2a5555ab3778fef7b103392f09954a5e395dc554b3e91d57ddc6caf7"
+    },
+    {
+      "id": "technical_gold",
+      "privateArtifact": "e2e57-positive-gold.private.json",
+      "sha256": "bf4721bfc8b27fbe699dcb661db2be06fde3d69b908f6be81b78d7e1e5af3d4d"
+    },
+    {
+      "id": "synthetic_gold_reference",
+      "privateArtifact": "e2e57-fixture-gold-private-v1/semantic-gold.private.json",
+      "sha256": "fcb33ad796b913b3c8d0d7d6f6513ef1c41f2c26fa66db380bcd67bef917ae0f"
+    },
+    {
+      "id": "positive_owner_read",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/observe-current-a1afb01d34e26d8d.observation.private.json",
+      "sha256": "5dc5ea023eea78f9a2c19e51e64b76d00d1d6b82907c4bea3a3b9d3bc37f1fb5"
+    },
+    {
+      "id": "duplicate",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/ingress-duplicate.observation.private.json",
+      "sha256": "cd3a270f10999d8eed6cef23c67561bf796dead567593d483c01bd173d0b9076"
+    },
+    {
+      "id": "support_withdrawal",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-after-support-8c82c91b7327f15f.observation.private.json",
+      "sha256": "a4aef8d77f19910aee78a6203c5b17bdc763562b4647843e010db5e0f3f768b4"
+    },
+    {
+      "id": "support_b_ack",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-support-b-create.ack.private.json",
+      "sha256": "a1bfd34805ae48d81384a79f328b28105393c9e00143cee6fb0abc7169b4cfe3"
+    },
+    {
+      "id": "correction_ack",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-correct.ack.private.json",
+      "sha256": "a27c7ed9ecd6f1d45c27bc2c82c7eb5ffa01d5510d910e23041caf6e835d79f2"
+    },
+    {
+      "id": "budget_precheck",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-current-5edde4129a2c595a.observation.private.json",
+      "sha256": "51c666c8c0a2fb3a45da72ec3a1c04320e01aff1698960d495b3fa179345ee99"
+    },
+    {
+      "id": "withdraw_before_local_apply",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-final-1ed59beac77c61a2.observation.private.json",
+      "sha256": "8ff1fef29685c26125a14a430c4b1e6165b5d7ee1e76284c3906b542b225bc8a"
+    },
+    {
+      "id": "withdraw_after_local_apply",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/negative-final-f8ccb16339c221ca.observation.private.json",
+      "sha256": "c409626a64b230374b27252e723e5b60a2489a713f9ad9578deee2a12f456fa1"
+    },
+    {
+      "id": "technical_exposure",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/observe-expose.observation.private.json",
+      "sha256": "8b8b5db7961b126fd7ba4c9ed846a2ad862257b0c8becd63d9dee876f426c1f0"
+    },
+    {
+      "id": "synthetic_cron_enabled",
+      "privateArtifact": "e2e57-activation-root-v1/host-cron.verified.private.json",
+      "sha256": "61da610e02a79a4f23b328555278a523d3c41bebc4df91f45368cc5e5cad10d4"
+    },
+    {
+      "id": "synthetic_paused",
+      "privateArtifact": "e2e57-activation-root-v1/host-pause.verified.private.json",
+      "sha256": "531e997314b8fdf1cb7be1409a559c9789a4e348fc616f06e73494de883e2180"
+    },
+    {
+      "id": "synthetic_cron_removed",
+      "privateArtifact": "e2e57-activation-root-v1/host-decron.verified.private.json",
+      "sha256": "60613be0a0080672fbf2cb292c04043c547bad45dbaec4753d3a6e24b0df4674"
+    },
+    {
+      "id": "own_schema27_ack",
+      "privateArtifact": "schema27-5963734-v1/ack.private.json",
+      "sha256": "81055a9473c9200bc7ed042d2e0cb19719f8c7bc394c6098716c6b521642a1cf"
+    },
+    {
+      "id": "own_schema27_readback",
+      "privateArtifact": "schema27-5963734-v1/observed.private.json",
+      "sha256": "3bbb2a5eb5151fbbebd93931c1c6b52cd3e99af76bc53714d9ae73e56339c5aa"
+    },
+    {
+      "id": "own_code_readback",
+      "privateArtifact": "own-context044-5963734-v1/verified.private.json",
+      "sha256": "c57fba9065c1fb831114550fead065a64b0b198a6b4f749ff2c25aeef137c4ba"
+    },
+    {
+      "id": "operator_stop_1",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-094fda086be0e70a.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_2",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-0f515b556a807507.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_3",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-21f0deb6e35a991d.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_4",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-36165b9680a7e7dd.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_5",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-447d282e00d7d4be.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_6",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-44ade81a7742efb6.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_7",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-50e3baf9505e6d4f.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_8",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-799c9b334bd365f8.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_9",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-839466a577b54c17.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_10",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-842e7ace97ecb80b.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_11",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-90d8c6d6f8e586ae.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_12",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-b7aedf9274c5c620.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_13",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-c2c376d498d9563a.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_14",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-c65252f82c789c69.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_15",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-d8ff0bad7dc25d63.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_16",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-de6677fdf479eebb.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "operator_stop_17",
+      "privateArtifact": "e2e57-fixture-active-v1/run-private-v1/operator-f6535db78493fc48.stopped.private.json",
+      "sha256": "9e3a965e9cc9f56a7c2f853912a57b4edf7d857c6b0e4eb6d0693cf58367980c"
+    },
+    {
+      "id": "mcp_managed_catalog_metadata",
+      "privateArtifact": "mcp-managed-catalog-v1/observed.private.json",
+      "sha256": "d8630ce0e82515b5717f615b5c901a048b727dc67906bc29fb49de3e26502d47"
+    },
+    {
+      "id": "zap_skill_publish_verified",
+      "privateArtifact": "zap-skill-draft-v1/publish-verified.private.json",
+      "sha256": "e422468d03d734400ae54e2e9acb15d5b67f597382ff33b8df50983e81bad351"
+    },
+    {
+      "id": "zap_skill_published_readback",
+      "privateArtifact": "zap-skill-draft-v1/published-readback.private.json",
+      "sha256": "0e5014ae0de52058684e9b90cb547054d7ce338ca1ab95501af61ebbfa8526c1"
+    },
+    {
+      "id": "g1_final_public_summary",
+      "privateArtifact": "g1-final-proof-v1/summary.private.json",
+      "sha256": "41c6d388e39f86c09b6213b73deca573e6e304eaf0fb29a8849d7b3f2d3ac89c"
+    },
+    {
+      "id": "g1_final_database_audit",
+      "privateArtifact": "g1-final-read-v1/1793077007276328629/observed.private.json",
+      "sha256": "2d8c63d34b6767567469f8926870d46bbd07bd44c941817766814e3098719cba"
+    },
+    {
+      "id": "synthetic_instances_physically_stopped",
+      "privateArtifact": "e2e57-infra-final-v1/instances-filtered.private.json",
+      "sha256": "fb3e64f5fd79607b0f80490cd11008ea9a95034d25c301c2edd6d5b0bc7a03f1"
+    },
+    {
+      "id": "synthetic_compute_upper_bound",
+      "privateArtifact": "e2e57-infra-final-v1/cost-upper-bound.private.json",
+      "sha256": "a90be65f9798d2a67ab6b7fd76c9f0e51e2cd2ecf69ffc575ffa3312339b3803"
+    },
+    {
+      "id": "g1_temporary_local_teardown",
+      "privateArtifact": "g1-final-proof-v1/local-teardown.private.json",
+      "sha256": "3b73d0c0d84fd47b8690ae0fd513f2d5c4d12b585b552bc054a04f9f5289d629"
+    }
+  ],
+  "clientCatalogue": {
+    "backendRegisteredAuthenticatedTools": 39,
+    "sessionExposedTools": 32,
+    "assistantToolsVisibleInSession": false,
+    "resolverVisibleInSession": false,
+    "managedPluginRelease": "1.0.5",
+    "metadataToolFilterFound": false,
+    "managementRefreshOrEndpointConfigurationAPIAvailable": false,
+    "permissionsChanged": false,
+    "OAuthReconnectRequired": "not_proven",
+    "status": "catalogue_discovery_refresh_and_actual_client_calls_pending",
+    "freshServerToolsListCompared": "pending",
+    "previousInspectedPluginRelease": "1.0.4",
+    "privateSkillPublicationVerified": true,
+    "skillSha256": "0a19d6b2e0386cacec1d4b1943933aa4e0ae52672385d4cbb866d473bedd12a9",
+    "permissionChanges": false,
+    "pluginUrl": "https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64",
+    "catalogueRefreshProven": false,
+    "documentationTaskPluginWrites": 0
+  },
+  "releaseGate": {
+    "pullRequest": 137,
+    "checksUrl": "https://github.com/orobsonn/whatsapp-mcp/pull/137/checks",
+    "requirement": "independent_final_review_and_successful_checks_on_exact_integrated_PR_head_before_merge_then_main_CI_and_consistent_version_tag_release",
+    "runtimeEvidenceCIAlreadyObserved": true,
+    "publicationOrNewHeadCIResultClaimedByThisObservation": false
+  },
+  "humanDependencies": [
+    {
+      "issues": [
+        46
+      ],
+      "dependency": "client_discovery_of_resolver_and_six_assistant_tools_then_authenticated_owner_command_homologation",
+      "status": "pending",
+      "OAuthReconnectRequired": "not_proven"
+    },
+    {
+      "issues": [
+        47,
+        48
+      ],
+      "dependency": "own_Telegram_bot_private_credentials_two_challenge_pairing_and_private_topic_review",
+      "status": "pending",
+      "secretsChannel": "private_never_chat"
+    },
+    {
+      "issues": [
+        51
+      ],
+      "dependency": "own_Google_OAuth_client_readonly_owner_consent_and_authorized_calendars",
+      "status": "pending",
+      "VpsComputerUseRequired": false,
+      "loopbackCallbackImplemented": true,
+      "callbackUri": "http://localhost:8977/callback",
+      "sshLocalForward": "8977:127.0.0.1:8977",
+      "ownerBrowserRequired": true,
+      "secretsChannel": "private_never_chat"
+    }
+  ]
+}

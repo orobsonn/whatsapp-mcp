@@ -1,6 +1,24 @@
-# Construção na VPS — 26/10/2026
+# Construção na VPS — atualização27/10/2026
 
-Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; ainda não há homologação integrada do produto. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
+Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; a homologação integrada é parcial e seus gates atuais estão separados abaixo. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
+
+## Atualização atual — #57 cloud sintética e recuperação G1 limitada
+
+A candidata0.44.0 em `5963734` passou CI40437755775 com1350 gerais/64 nativos. Ensaio em recursos novos próprios confirmou captura/materialização de dois eventos, extração de dois candidatos Owner privados por contexto de outra nota, busca/checkpoint, um episódio Flue nativo liquidado e proposta no diário sombra. Quotes preservaram negação/condição; projeto administrativo da mensagem permaneceu null. Uma exposição técnica foi registrada, sem assessment humano. [MD/JSON de evidência](evidencias/57-integracao-sombra-vps.md) distinguem cada fronteira.
+
+Duplicata reutilizou o evento; retirar suporte invalidou candidatos sem alterar a âncora; correção v2 ficou disponível, mas orçamento bloqueou antes da extração, sem slot v2 ou nova reserva/chamada. Retirada remota negou leitura antes de applied local e depois continuou unavailable. O aceite312 combina essas negativas cloud com restart/perda de ACK causais da mesma composição em workerd/D1 na CI. Não exige textual ou tecnicamente nova falha paga Cloud; crash físico Cloud não foi observado e falhas pré-dispatch do operador não são usadas como prova de crash.
+
+O host sintético foi pausado/decronado e sua instância foi observada fisicamente stopped. Core G1 pristine e ausência de efeitos permitiram recuperar somente configuração/hash de vínculos conhecidos pré-admissão, sob guardas atuais e ator original; itens que não passaram nos guards atuais ficaram intocados, com identidades/pins/metadados comparados preservados, sem nova incerteza. Não se publica contagem/ID pessoal nem se alega processamento de todo o backlog. Own retornou aos módulos oficiais596/schema27, versão13833dea, sem diagnóstico/token temporários, mantendo26bindings, cinco namespaces/secrets, imagem/tag/cron e pausa; captura Source continua ativa. Revisão final e checks do [PR137](https://github.com/orobsonn/whatsapp-mcp/pull/137/checks) são gates antes de merge/release, não um estado DRAFT permanente da validação técnica.
+
+Ledger global comprometido55310microUSD (US$0,055310), incluindo40000 antigos incertos;2121 novos liquidados neste ensaio,60 entradas, zero reserva/incerteza nova. Compute do novo engine tem margem conservadoraUS$0,133 até o STOPPED físico; demais recursos/fatura são separados e não se declara invoice total abaixo do tetoUS$10. Telegram/Google reais, catálogo MCP do cliente e qualidade longitudinal continuam explícitos. Os checkpoints seguintes são históricos, não o estado atual.
+
+## Dependências humanas atuais
+
+- #46: atualizar/verificar discovery das sete ferramentas novas no cliente MCP e homologar os comandos Owner; não foi provada necessidade de reconectar OAuth. Zap1.0.5 privado já foi publicado, mas a sessão continua com32 ferramentas.
+- #47/#48: bot Telegram próprio, credencial por canal privado, pareamento de dois desafios e tópicos privados/revisão pelo dono.
+- #51: cliente OAuth Google próprio, agendas autorizadas e consentimento readonly. O [script existente](evidencias/51-calendar-oauth.md) usa callback127.0.0.1:8977 com URI `http://localhost:8977/callback`; o dono abre o navegador na sua máquina com SSH `-L 8977:127.0.0.1:8977`. A VPS sem computer use não é impedimento técnico nem exige HTTPS novo; faltam credencial Google e consentimento humano.
+
+Segredos não entram no chat. Sem WhatsApp automático/escrita Calendar. Pendências estão explícitas conforme314; sua identificação não é homologação desses canais ou avaliação longitudinal de utilidade.
 
 ## Atualização — v0.36.0 publicada; mídia e cron comprovados nas fronteiras descritas
 

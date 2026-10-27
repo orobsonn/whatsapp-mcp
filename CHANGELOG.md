@@ -17,7 +17,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ### Validation
 - Contraprovas D1 incluem catálogo por outra nota, isolamento guest, limite16 e overflow17, zero claims/claims positivos, revogação temporal, escopo trocado, publicação com ACK perdido, recibos/custos e purga. Resultados exatos e revisões em [evidências locais](docs/construcao-assistente/evidencias/57-owner-context-local.json).
-- Homologação cloud do fluxo completo e respectivos recibos pertencem à evidência da release/issue57 no mesmo código; publicação e fechamento permanecem condicionados a essa validação, CI completa e revisão final.
+- Ensaio cloud sintético atravessou captura, extração Owner privada, busca/checkpoint, Flue nativo e diário em sombra; duplicata, suporte retirado, correção/precheck de orçamento e retirada remota conservaram o financeiro. Recuperação G1 limitou-se à configuração/hash de vínculos elegíveis pré-admissão, mantendo recusas e pins; módulos oficiais/restauração de pausa e remoção do diagnóstico temporário foram verificados. [Evidências integradas e limites](docs/construcao-assistente/evidencias/57-integracao-sombra-vps.md). Publicação exige revisão final e checks do HEAD integrado exato do PR137; não constitui homologação de todos os canais ou processamento de todo o backlog.
 
 ### Notes
 - Composição preserva a iniciativa em sombra da #128 e seus contratos de destinatário/envelope. Captura real continua ativa; atuação Own permanece pausada. Telegram, Google e catálogo novo no cliente são dependências explícitas. Nenhum envio WhatsApp ou escrita Calendar foi habilitado.
