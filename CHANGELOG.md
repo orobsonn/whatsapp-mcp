@@ -4,6 +4,16 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-27
+
+### Validation
+- Homologação dos quatro tópicos Telegram próprios: uma notificação real por tópico, duas revisões e duas aprovações simuladas pelo navegador autenticado, com quatro respostas confirmadas no servidor.
+- Uma única repetição de botão consumido, ainda válido e com decisão atual, conservou integralmente os quatro recibos/estados após POST200 correlacionado. Não se alega captura do corpo `denied`, leitura humana ou avaliação de utilidade.
+- Marco próprio da #48 após a publicação0.49.0/#140, sem novo código funcional ou inferência. Evidências preservam o estado histórico da decisão, a configuração GitHub somente pública, Calendar readonly, custos e limites. [Matriz de aceite e prova real](docs/construcao-assistente/evidencias/48-telegram-review.md).
+
+### Notes
+- Sombra/pausa continuam ativas; nenhuma capacidade de WhatsApp automático ou escrita Calendar foi habilitada. Cobertura parcial, utilidade longitudinal, validade Google de7dias e permissão AppleEvents ainda habilitada no Chrome permanecem explícitas na [auditoria](docs/construcao-assistente/evidencias/piloto-canais-proprios-20261027.md).
+
 ## [0.49.0] - 2026-10-27
 
 ### Added
