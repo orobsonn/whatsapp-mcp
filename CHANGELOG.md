@@ -4,6 +4,19 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-27
+
+### Added
+- Formaliza a entrega da #126: resolvedor MCP autenticado para telefone internacional explícito, inclusive sem agenda/mensagens anteriores, reutilizando referências individuais estáveis nos preparos existentes de texto/imagem/PDF/áudio. O código funcional já está no Source6b4; esta fatia acrescenta evidência/documentação e versão, sem novo runtime.
+- Skill Zap privada1.0.5 publicada com orientação para o resolvedor e seis ferramentas da assistente, preservando app, permissões e instruções legadas.
+
+### Validation
+- Matriz dos seis critérios,55 checks dirigidos originais e CI integrada596 aprovada com1350 gerais/64 nativos, sem reatribuir essas execuções ao novo commit de release. A nova versão exige CI verde no HEAD integrado exato antes de merge/tag/publicação. [Evidências e limites](docs/construcao-assistente/evidencias/126-resolucao-destinatario-vps.md).
+- Diagnóstico MCP existente respondeu autenticado na versão0.40.0 com epoch/geração configurados. Isso não é teste live de conexão do provedor; catálogo continua32 ferramentas e não expõe as sete novas.
+
+### Notes
+- Homologação real de cliente/provedor e entrega WhatsApp permanecem documentadas pendentes, como pede o critério5 da #126; o gate explícito de cliente da #46 é separado. Skill publicada não prova refresh. Nenhum envio automático WhatsApp ou escrita Calendar foi habilitado; o caminho manual mantém sua autorização existente.
+
 ## [0.44.0] - 2026-10-27
 
 ### Added

@@ -1,0 +1,249 @@
+{
+  "issue": 126,
+  "status": "reviewed_implementation_release_gates_explicit",
+  "dateUTC": "2026-10-27",
+  "plannedRelease": "0.45.0",
+  "versionBumped": true,
+  "runtime": {
+    "reviewedHead": "5963734472b7df1e63c35a6fe262e4c3ce1b9022",
+    "implementationCommit": "0272452",
+    "testMetadataFix": "a176d82",
+    "recipientImplementationSha256": "aa5f0ec892ac87d10d7dbe8fdbadf913e816a128ee18880550a03b2ac1d71a08",
+    "deployedSourceHead": "6b4bd49822a2da27f67ccc77409969bf8d80ea40",
+    "deployedSourceVersion": "47e637b5-9a12-416a-a676-49bd444e1775",
+    "sameRecipientImplementationBytesInDeployedSourceAndReviewedHead": true,
+    "cloudObservation": "code_only_verified_no_live_resolver_or_client_call_claimed"
+  },
+  "acceptance": [
+    {
+      "criterion": 1,
+      "state": "implemented_controlled_proof_passed",
+      "contract": "Authenticated strict MCP resolves explicit international phone to individual reference without send/contact/history creation",
+      "implementation": [
+        "src/recipients.ts:8",
+        "src/recipients.ts:16",
+        "src/mcp.ts:199",
+        "src/mcp.ts:495"
+      ],
+      "tests": [
+        "tests/recipients.test.ts:20",
+        "tests/recipients.test.ts:42",
+        "tests/recipients.test.ts:45",
+        "tests/recipients.test.ts:71"
+      ]
+    },
+    {
+      "criterion": 2,
+      "state": "implemented_controlled_proof_passed",
+      "contract": "Exact address/epoch/generation and individual-kind guard; concurrent unique reference; known zero-history and new number work with existing text/image/pdf/audio preparation",
+      "implementation": [
+        "src/recipients.ts:22",
+        "src/recipients.ts:27",
+        "src/store.ts:41",
+        "migrations/0001_initial.sql:7"
+      ],
+      "tests": [
+        "tests/recipients.test.ts:24",
+        "tests/recipients.test.ts:33",
+        "tests/recipients.test.ts:36",
+        "tests/recipients.test.ts:55"
+      ]
+    },
+    {
+      "criterion": 3,
+      "state": "implemented_controlled_proof_passed",
+      "contract": "Current device/connection fences before/after awaits, SQL connection CAS and postmutation check; group/LID/invalid/type collision reject",
+      "implementation": [
+        "src/recipients.ts:19",
+        "src/recipients.ts:29",
+        "src/recipients.ts:33",
+        "src/recipients.ts:35",
+        "src/connection.ts:204"
+      ],
+      "tests": [
+        "tests/recipients.test.ts:48",
+        "tests/recipients.test.ts:52",
+        "tests/recipients.test.ts:61",
+        "tests/recipients.test.ts:64",
+        "tests/recipients.test.ts:67"
+      ]
+    },
+    {
+      "criterion": 4,
+      "state": "implemented_controlled_proof_passed",
+      "contract": "Existing alias/name/capture/settings/since/history/tombstones untouched; new insert uses unchanged current creation trigger/default and reports effective capture",
+      "implementation": [
+        "src/recipients.ts:25",
+        "src/recipients.ts:30",
+        "src/recipients.ts:38",
+        "migrations/0009_capture_optout.sql:35"
+      ],
+      "tests": [
+        "tests/recipients.test.ts:24",
+        "tests/recipients.test.ts:27",
+        "tests/recipients.test.ts:30",
+        "tests/recipients.test.ts:39"
+      ]
+    },
+    {
+      "criterion": 5,
+      "state": "implemented_controlled_proof_passed_real_homologation_documented_pending",
+      "contract": "D1/workerd and actual HTTP MCP boundary tested without real sends; provider requests mocked GET status/device only",
+      "tests": [
+        "tests/recipients.test.ts:71",
+        "tests/assistant-episodes.test.ts:564"
+      ],
+      "controlledEvidence": "docs/construcao-assistente/evidencias/126-recipient-resolution-local.json",
+      "realProviderAndClientHomologation": "pending_explicit_not_an_added_issue126_closure_gate"
+    },
+    {
+      "criterion": 6,
+      "state": "reviewed_implementation_release_gates_explicit",
+      "contract": "Independent adversarial review and exact release CI/version/changelog/tag required; do not claim WhatsApp delivery",
+      "runtimeIndependentReview": "approved_original_cf3356f_and_readonly_596_coverage_audit",
+      "existingCI": 40437755775,
+      "releaseCI": "required_exact_release_commit_success_before_publication_external_receipt",
+      "releaseVersion": "0.45.0_prepared"
+    }
+  ],
+  "tests": {
+    "controlledLocalEvidence": "docs/construcao-assistente/evidencias/126-recipient-resolution-local.json",
+    "controlledLocalEvidenceSha256": "65461b9880f696492eed0231e3e837d56449544a573ed000d66bb30b9edb076e",
+    "originalRedGreenAndPendingSnapshotPreserved": true,
+    "originalDirectedFinal": {
+      "passed": 55,
+      "files": 3,
+      "durationSeconds": 19.5
+    },
+    "httpMCP": "actual_mcpFetch_runtime_boundary_with_synthetic_owner_props_and_mocked_provider",
+    "nativeAdditionalJourney": "real_Flue_workerd_fixture_with_fake_source_provider_and_no_send_capability",
+    "integrationCI": {
+      "run": 40437755775,
+      "headSha": "5963734472b7df1e63c35a6fe262e4c3ce1b9022",
+      "conclusion": "success",
+      "generalPassed": 1350,
+      "nativePassed": 64,
+      "releaseSpecificCI": {
+        "requirement": "successful_CI_for_exact_delivered_commit_before_publication",
+        "externalReceiptAsset": "https://github.com/orobsonn/whatsapp-mcp/releases/download/v0.45.0/v0.45.0-ci-evidence.json",
+        "successClaimedByThisObservation": false
+      }
+    },
+    "newSuiteRunByThisAudit": false
+  },
+  "client": {
+    "backendAuthenticatedRegisteredTools": 39,
+    "sessionExposedTools": 32,
+    "resolverAvailableInSession": false,
+    "assistantToolsAvailableInSession": false,
+    "freshServerToolsListCompared": "pending",
+    "pluginObservedVersion": "1.0.5",
+    "managedPluginMetadataFilterFound": false,
+    "managementRefreshOrEndpointAPIAvailable": false,
+    "OAuthReconnectRequired": "not_proven",
+    "actualNewToolCall": "not_observed",
+    "clientHomologation": "pending",
+    "issue46ClientGate": "separate_explicit_gate_not_inherited_by_issue126",
+    "authenticatedExistingDiagnostic": {
+      "state": "authenticated_mcp_diagnostic_observed",
+      "serverVersion": "0.40.0",
+      "epochConfigured": true,
+      "generationConfigured": true,
+      "authenticatedToolSucceeded": true,
+      "newToolsExposedInCurrentSession": 0,
+      "providerConnectionLiveCheckClaimed": false,
+      "personalCountsSaved": false,
+      "sendOrCalendarWriteAttempted": false
+    },
+    "existingOAuthAccessible": true,
+    "diagnosticProvesLiveProviderConnection": false
+  },
+  "behaviorLimits": {
+    "validated_format": true,
+    "registeredOnWhatsApp": "unknown",
+    "resolverMessagesAttempted": 0,
+    "deviceContactsSaved": 0,
+    "historyImported": false,
+    "existingCapturePreserved": true,
+    "newCapturePolicy": "current_default_inherited",
+    "captureOffMeansDoNotContact": false,
+    "assistantMode": "shadow",
+    "assistantAutomaticWhatsAppEnabled": false,
+    "calendarWriteEnabled": false,
+    "manualActionAuthorizationUnchanged": true
+  },
+  "skill": {
+    "privatePublishedVersion": "1.0.5",
+    "knownAck": true,
+    "readbackVerified": true,
+    "skillByteExact": true,
+    "skillSha256": "0a19d6b2e0386cacec1d4b1943933aa4e0ae52672385d4cbb866d473bedd12a9",
+    "appPointerPreserved": true,
+    "manifestExceptVersionPreserved": true,
+    "userPrivatePreserved": true,
+    "permissionChanges": false,
+    "pluginUrl": "https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64",
+    "skillDoesNotRegisterOrRefreshTools": true,
+    "catalogueRefreshProven": false,
+    "actualNewClientToolCallProven": false,
+    "publishedByThisDocumentationTask": false
+  },
+  "realHomologationPending": [
+    "new_tools_discovery_and_actual_MCP_client_call",
+    "recipient_registration_if_needed_for_a_real_contact",
+    "actual_WhatsApp_provider_send_and_observed_acceptance_delivery_only_under_separate_owner_request"
+  ],
+  "notClaimed": [
+    "real_recipient_or_WhatsApp_delivery",
+    "new_catalog_refreshed_by_skill_change",
+    "new_OAuth_consent_required",
+    "pilot_automatic_sending_ready"
+  ],
+  "cost": {
+    "thisAuditProviderCalls": 0,
+    "thisAuditCloudCalls": 0,
+    "thisAuditPluginWrites": 0,
+    "estimatedUsd": 0
+  },
+  "privateEvidence": [
+    {
+      "id": "source_code_deployment",
+      "privateArtifact": "outgoing128-code-v1/source/verified.private.json",
+      "sha256": "119f2e327f4aeca57596f7062ad84f6aa16fa629f47d29da40ee0dace7d624ef"
+    },
+    {
+      "id": "managed_catalog_metadata",
+      "privateArtifact": "mcp-managed-catalog-v1/observed.private.json",
+      "sha256": "d8630ce0e82515b5717f615b5c901a048b727dc67906bc29fb49de3e26502d47"
+    },
+    {
+      "id": "zap_skill_publish_verified",
+      "privateArtifact": "zap-skill-draft-v1/publish-verified.private.json",
+      "sha256": "e422468d03d734400ae54e2e9acb15d5b67f597382ff33b8df50983e81bad351"
+    },
+    {
+      "id": "zap_skill_published_readback",
+      "privateArtifact": "zap-skill-draft-v1/published-readback.private.json",
+      "sha256": "0e5014ae0de52058684e9b90cb547054d7ce338ca1ab95501af61ebbfa8526c1"
+    },
+    {
+      "id": "authenticated_existing_mcp_diagnostic",
+      "privateArtifact": "mcp-managed-catalog-v1/authenticated-diagnostic.private.json",
+      "sha256": "c14cecb6ae4526174210ef29cf2c9c3cc6a6bbd16c0b979b436bb1f88b5a0c72"
+    }
+  ],
+  "preparedBase": "998325490cb760249b4bd68ec9aff170b2bb428c",
+  "releasePreparation": "version_lock_documentation_only_preflight_observation",
+  "publicationClaimedByThisObservation": false,
+  "releaseGate": {
+    "preparedVersion": "0.45.0",
+    "requiredBeforePublication": [
+      "independent_review",
+      "successful_CI_for_exact_delivered_commit",
+      "consistent_package_lock_changelog_tag_release"
+    ],
+    "externalCiReceiptAsset": "https://github.com/orobsonn/whatsapp-mcp/releases/download/v0.45.0/v0.45.0-ci-evidence.json",
+    "newReleaseCISuccessClaimedByThisObservation": false,
+    "cancelledDuplicateCIIsNotSuccess": true
+  }
+}
