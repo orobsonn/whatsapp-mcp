@@ -72,14 +72,16 @@ export class EpisodeController {
   private async guard(episode: BoundEpisode, lease: JobLease, now: number): Promise<RuntimeGuardPlan | null> {
     const binding = episode.binding;
     if (binding.purpose !== this.purpose || JSON.stringify(binding.config) !== JSON.stringify(this.config) || binding.lease.id !== lease.id || binding.lease.lease_generation !== lease.lease_generation) return null;
-    if(binding.outgoing&&(!this.outgoing||!await this.outgoing.check(binding.outgoing)))return null;now=this.clock();
+    if(binding.outgoing&&(!this.outgoing||!await this.outgoing.check(binding.outgoing)))return null;
+    const nonce = crypto.randomUUID(), search = await this.search.guard(binding.actor, binding.search, this.clock());
+    // Search/origin proofs may await remote work; temporal gates sample afterwards.
+    now=this.clock();
     const current: AccessGuard = { sql: `EXISTS(SELECT 1 FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id JOIN assistant_job_ledger l ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id JOIN(SELECT json(?) AS p) a
       WHERE e.installation_id=json_extract(p,'$.i') AND e.generation=json_extract(p,'$.g') AND e.id=json_extract(p,'$.id')
       AND e.binding_hash=json_extract(p,'$.hash') AND e.profile=json_extract(p,'$.profile') AND e.runtime_id=json_extract(p,'$.runtime')
       AND e.state IN ('prepared','dispatching','accepted','running') AND e.deadline>json_extract(p,'$.now')
       AND j.id=json_extract(p,'$.job') AND j.state='processing' AND j.lease_generation=json_extract(p,'$.lease') AND j.lease_until>json_extract(p,'$.now') AND json_extract(e.binding_json,'$.outgoing') IS json_extract(l.request_json,'$.outgoing'))`,
       values: [JSON.stringify({ i: this.scope.installationId, g: this.scope.generation, id: episode.id, hash: episode.binding_hash, profile: episode.profile, runtime: episode.runtime_id, job: lease.id, lease: lease.lease_generation, now })] };
-    const nonce = crypto.randomUUID(), search = await this.search.guard(binding.actor, binding.search, now);
     const attest = this.db.prepare(`UPDATE assistant_episodes SET search_nonce=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND profile=? AND runtime_id=? AND (${current.sql}) AND (${search.sql}) RETURNING id`)
       .bind(nonce, this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, episode.profile, episode.runtime_id, ...current.values, ...search.values);
     const proof: AccessGuard = { sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND search_nonce=?)",

@@ -230,7 +230,10 @@ export class DecisionJournal {
         ownerFences.push(current.fence);
       }
       const localGuards = async (at: number) => {
-        const guards: AccessGuard[] = [await search.guard(binding.actor, binding.search, at), access.guard(binding.actor, request.fence, at)];
+        const selected = await search.guard(binding.actor, binding.search, at);
+        // Do not admit a grant/deadline using a clock sampled before search awaited.
+        at=this.clock();
+        const guards: AccessGuard[] = [selected, access.guard(binding.actor, request.fence, at)];
         if (request.conversation) guards.push(conversationGuard(request.conversation));
         for (let index = 0; index < binding.context.sources.length; index++) guards.push(access.guard(binding.actor, binding.context.sources[index].fence, at), access.guard({ kind: "owner" }, ownerFences[index], at));
         if(binding.work.kind==='follow_up')guards.push(workIntentGuard(binding.work.fence,at));

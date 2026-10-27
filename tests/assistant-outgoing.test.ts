@@ -8,7 +8,7 @@ import {OwnerAssistant} from '../assistant/mcp';
 import {FollowUps} from '../assistant/followups';
 import {SourceAccess} from '../assistant/access';
 import {JobQueue} from '../assistant/queue';
-import {EpisodeController,type EpisodeDriver} from '../assistant/agent/controller';
+import {EpisodeController,type EpisodeDriver,type EpisodeSearch} from '../assistant/agent/controller';
 import {RetrievalRuns} from '../assistant/retrieval-runs';
 import {InferenceBudget} from '../assistant/budget';
 import {DEFAULT_BROKER_CONFIG} from '../assistant/model-transport';
@@ -116,6 +116,12 @@ it('requires current future_contact mandate coverage, preserving spend when it i
  await rpc.control(scope,{kind:'mandate.put',operationId:'mandate',id:'mandate',expectedVersion:0,conversationId:target,policyRevision:1,purpose:'Only this shadow proposal',status:'active',expiresAt:now+60000,actions:['future_contact'],sources:[{id:source.id,revision:source.revision}]});const input={...command(),mandate:{id:'mandate',version:1},outgoing:{...command().outgoing,authorization:{kind:'mandate',id:'mandate',version:1}}};
  now=Date.now();
  const p=await prepared(async()=>{await rpc.control(scope,{kind:'mandate.revoke',operationId:'revoke',id:'mandate',expectedVersion:1});},input);await expect(invoke(p)).rejects.toThrow();expect(p.model).toHaveBeenCalledTimes(1);expect((await new InferenceBudget(env.DB,{...scope,period:'fixture'}).status()).committed).toBe(3);
+});
+it.each(['model','publish','read'] as const)('expiry during the final search guard blocks %s using a fresh authority clock',async phase=>{
+ const expires=now+60000;await rpc.control(scope,{kind:'mandate.put',operationId:'mandate',id:'mandate',expectedVersion:0,conversationId:target,policyRevision:1,purpose:'Only this shadow proposal',status:'active',expiresAt:expires,actions:['future_contact'],sources:[{id:source.id,revision:1}]});now=Date.now();const input={...command(),mandate:{id:'mandate',version:1},outgoing:{...command().outgoing,authorization:{kind:'mandate',id:'mandate',version:1}}},p=await prepared(async()=>{},input);
+ const text=phase==='model'?undefined:await invoke(p),published=phase==='read'?await p.host.publish(p.episode.id,{...p.receipt,text:text!,data:{}}):undefined;let crossed=false;const guard=p.search.guard.bind(p.search),asynchronous:EpisodeSearch=p.search;vi.spyOn(asynchronous,'guard').mockImplementation(async(...args)=>{const result=await guard(...args);crossed=true;now=expires+1;return result;});
+ if(phase==='model')await expect(invoke(p)).rejects.toThrow();else if(phase==='publish')expect(await p.host.publish(p.episode.id,{...p.receipt,text:text!,data:{}})).toEqual({state:'blocked'});else{expect(published?.state).toBe('shadow_completed');const detail=await new DecisionJournal(env.DB,scope,{kind:'owner'},{clock:()=>now,search:p.search,outgoing:outgoingPort(settings)}).get(published!.decisionId!);expect(detail).not.toHaveProperty('proposal');}
+ expect(crossed).toBe(true);expect(p.model).toHaveBeenCalledTimes(phase==='model'?0:1);expect((await new InferenceBudget(env.DB,{...scope,period:'fixture'}).status()).committed).toBe(phase==='model'?0:3);expect((await p.queue.ledger(p.episode.job_id))!.request_json).toBe(p.ledger.request_json);
 });
 it.each(['text','envelope'] as const)('rejects a model attempt to replace the authorized %s',async change=>{
  const p=await prepared(),read=(await new SourceAccess(env.DB,scope).read({kind:'owner'},source.id))!;p.model.mockResolvedValue({status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:'proposed',text:change==='text'?'Changed by the model':command().outgoing.envelope.text,citations:[{id:source.id,revision:1,version:1,hash:read.fence.source.hash,quote:read.text}],...(change==='envelope'?{outgoing:{envelope:{chatId:'invented',kind:'text',text:'Forbidden'}}}:{})})}}]})});

@@ -24,10 +24,13 @@
     "provider": "Synthetic adapters only; no real provider/model/Cloudflare calls",
     "estimatedPaidTestsUsd": 0,
     "policyCaptureRed": "Target with capture OFF and no Own policy initially failed control_input. A further trial passed31/32: source note explicitly associated with a withdrawn attendance context failed episode_waiting_context. This was preserved as a negative source-anchor contract, with no Retrieval/Origin/queue bypass; no note was copied or reassociated to evade it.",
-    "policyCaptureGreen": "Default unassociated owner command note plus a target already projected capture-disabled/withdrawn produces a shadow proposal with policy absent0 and target.fence null, without policy/frame/capture/history writes. Existing policy, new policy during await, policy revision/exclusion, explicit pause during model, and old pins without policy all deny without repinning; known model cost remains settled."
+    "policyCaptureGreen": "Default unassociated owner command note plus a target already projected capture-disabled/withdrawn produces a shadow proposal with policy absent0 and target.fence null, without policy/frame/capture/history writes. Existing policy, new policy during await, policy revision/exclusion, explicit pause during model, and old pins without policy all deny without repinning; known model cost remains settled.",
+    "temporalRed": "Independent review found a clock sampled before the final awaited search guard. After fixing a not-yet-issued mandate fixture, a real D1 journal read exposed proposal/current after mandate expiry during that await. Model admission and publication were already suppressed by subsequent guards; the read was the causal failure.",
+    "temporalGreen": "Final36/36 directed D1 tests passed in15.15s (22.38s total), including expiry during the final awaited search guard before model/publication/read. Controller and journal now sample temporal predicates after that await; original job/proof and known cost remain unchanged.",
+    "independentReview": "ReviewRelease read-only adversarial implementation review approved18e9f92,ea81b38,7961749 and final temporal delta; no independent test/network execution claimed. Integration CI and native/real boundaries remain pending."
   },
   "remaining": [
-    "Independent implementation review and integrated CI, including the new native Flue case",
+    "Integrated CI, including the new native Flue case",
     "Reviewed deployment of the same CaptureReader entrypoint and Own code; no binding for sending",
     "Actual MCP client refresh/call and real pilot acceptance remain separate proof boundaries",
     "No real WhatsApp contact or Calendar write was attempted"
