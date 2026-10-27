@@ -4,6 +4,18 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-27
+
+### Added
+- Leitor GitHub com GET limitado a repositório/projeto autorizado e commit completo, arquivo/hash atribuídos e paginação que informa a cobertura observada (#50).
+- Conteúdo consultado permanece dado privado ao dono; não concede controle nem é declarado implantado. Retirada do suporte canônico bloqueia a leitura.
+
+### Validation
+- Worker real leu README/blob/hash fixados e duas páginas cobrindo 22 entradas da raiz de um repositório público; repositório não autorizado e suporte retirado foram recusados. A primeira listagem falhou e foi preservada; uma repetição explícita do mesmo GET completou a leitura. [Evidência cloud e limites](docs/construcao-assistente/evidencias/50-github-cloud-vps.md).
+
+### Notes
+- RPC real recusou os dois inputs de URL inválida como ZodError, sem preservar detalhes do campo; essa limitação do diagnóstico está registrada. Acesso upstream privado/token e cliente MCP permanecem sem homologação própria. Allowlist temporária removida; nenhum modelo, envio WhatsApp ou escrita Calendar habilitado.
+
 ## [0.38.0] - 2026-10-26
 
 ### Added
