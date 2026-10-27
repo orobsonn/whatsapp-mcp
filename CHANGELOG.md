@@ -4,6 +4,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+### Fixed
+- Transporte Telegram usa o `fetch` nativo sem vinculá-lo à instância do adaptador; o vínculo indevido bloqueava o preflight e a criação dos tópicos no Worker real. Regressão nativa do bundle oficial cobre pareamento, quatro tópicos e repetição sem nova rede.
+
+### Validation
+- Catálogo do Zap atualizado na conexão existente: sete ferramentas novas disponíveis e comandos Owner exercitados pelo cliente autenticado. Configuração e vínculo Telegram reais confirmados; tópicos/callbacks e OAuth Calendar ainda têm gates próprios. [Fronteiras e evidências](docs/construcao-assistente/evidencias/46-47-48-homologacao-local-20261027.md).
+
 ## [0.45.0] - 2026-10-27
 
 ### Added

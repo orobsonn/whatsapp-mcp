@@ -1,5 +1,9 @@
 # Construção na VPS — atualização27/10/2026
 
+## Retomada no Mac — catálogo e vínculo reais; tópicos em correção
+
+O discovery da conexão Zap existente foi atualizado sem novo OAuth: as sete ferramentas faltantes apareceram, e comandos Owner reais foram exercitados com fixtures sintéticas. O bot próprio recebeu secrets e webhook com readback, mantendo os módulos,26 bindings anteriores, cron e pausa; a exposição restrita do Worker passou16 testes nativos do bundle instalado e nove públicos. O pareamento A/B feito pelo Chrome autenticado, sob pedido explícito do dono, ficouactive/revision1. Tópicos ainda não homologados: dois preflights sem criação expuseram vínculo incorreto do fetch nativo; a regressão reproduziu e a correção mínima passou, com revisão independente. CI/rollout, callbacks, revogação/revínculo e Calendar continuam gates. [Registro por fronteira](evidencias/46-47-48-homologacao-local-20261027.md). Os checkpoints abaixo preservam a história anterior.
+
 Continuação do RETOMADA-VPS.md preservado. Goal: cumprir os critérios técnicos do piloto sombra; a homologação integrada é parcial e seus gates atuais estão separados abaixo. Engenharia/autorização seguem o pedido do dono, sem WhatsApp automático, escrita Calendar, alteração do Elo ou instalação do harness.
 
 ## Preparação v0.45.0 — resolução individual sem histórico (#126)
