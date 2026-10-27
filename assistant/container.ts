@@ -302,7 +302,14 @@ export function makeCheckpointStore(storage: DurableObjectStorage, scope: { inst
     }),
   };
 }
+/** The timeout belongs to a DO incarnation, not to the surviving process.
+ * Rearming a running instance never starts a stopped container or grants work. */
+export function retainRunningContainer(ctx: Pick<DurableObjectState, "container" | "blockConcurrencyWhile">) {
+  const container = ctx.container;
+  if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(60000));
+}
 export class CogneeContainer extends DurableObject<AssistantEnv> {
+  constructor(ctx: DurableObjectState, env: AssistantEnv) { super(ctx, env); retainRunningContainer(ctx); }
   private engine?: CogneeEngine;
   private port?: DirectContainerPort;
   /** Global index health, independent of the current guest/project pack. Six

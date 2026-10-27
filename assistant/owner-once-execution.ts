@@ -102,8 +102,8 @@ export class OnceExecution {
         AND source_ref_json=? AND index_epoch=? AND state='prepared' AND (${guard.sql}) RETURNING source_id`,
         ...this.keys(), this.receipt.id, source.id, serialized, epoch, ...guard.values).first();
       if (!claimed) return this.result("pending", "index_busy");
-      let outcome: { state?: string };
-      try { outcome = await (ticket ? engine.commitInitialIngest(input, ticket, admission) : engine.ingest(input)) as { state?: string }; }
+      let outcome: { state?: string; indexRevision?: string };
+      try { outcome = await (ticket ? engine.commitInitialIngest(input, ticket, admission) : engine.ingest(input)) as { state?: string; indexRevision?: string }; }
       catch { return this.result("uncertain", "index", "ingestion_ack_unconfirmed"); }
       if (outcome.state !== "complete") {
         await this.sql(`UPDATE assistant_routine_ingestions SET state='uncertain' WHERE ${ns} AND item_id=? AND source_id=? AND state='attempting'`,
@@ -111,6 +111,17 @@ export class OnceExecution {
         return this.result("uncertain", "index", "ingestion_unconfirmed");
       }
       await this.finishSlot(source.id, epoch);
+      // Persist the derived filesystem before yielding to another operator RPC:
+      // inactivity or a DO restart can stop the process between selected steps.
+      const fresh = await engine.lifecycleState();
+      if (!fresh.running || fresh.busy || fresh.quarantine || fresh.maintenance || !fresh.index || fresh.index.lost
+        || fresh.index.epoch !== epoch || fresh.index.revision !== outcome.indexRevision)
+        return this.result("blocked", "checkpoint", "indexed_projection_changed");
+      await this.authority();
+      try {
+        const checkpoint = await engine.checkpoint({ indexEpoch: epoch, indexRevision: fresh.index.revision });
+        if (checkpoint.state !== "checkpoint_confirmed") return this.result("uncertain", "checkpoint", "checkpoint_unconfirmed");
+      } catch { return this.result("uncertain", "checkpoint", "checkpoint_ack_unconfirmed"); }
       return this.result("pending", "indexed");
     }
     if (!state.index) return this.result("blocked", "index", "index_unavailable");

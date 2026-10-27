@@ -6,6 +6,7 @@ import {SourceController} from '../assistant/sources';
 import {SourceAccess} from '../assistant/access';
 import {OriginGuard} from '../assistant/origin-guard';
 import {CogneeContainer,CanonicalEngineGuard} from '../assistant/container';
+import * as containerHost from '../assistant/container';
 import {CogneeEngine,type EngineSearch} from '../assistant/engine';
 import {InferenceBudget} from '../assistant/budget';
 import {receiveCapture,bridgeHash} from '../assistant/ingress';
@@ -72,6 +73,14 @@ beforeEach(async()=>{
   driver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return{submissionId:'submission-first',uid:'uid-first',acceptedAt:new Date(now).toISOString()};},read:async receipt=>{const {search}=hostConfiguredSearch(settings,'automation',()=>now),host=new EpisodeController(env.DB,{...scope,period:'2026-10-26'},search,model,DEFAULT_BROKER_CONFIG,{purpose:'automation',clock:()=>now});const row=await sql('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?',...keys(),runtimeId).first<{id:string}>();const episode=boundEpisode((await host.episodes.get(row!.id))!);return{...receipt,text:await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:'user',content:host.message(episode)}]}),data:{}};}});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
+it.each([true,false])('rearms only an already running container after a Durable Object constructor restart (%s)',async active=>{
+  const timeout=vi.fn(async()=>{}),pending:Promise<unknown>[]=[],container={running:active,setInactivityTimeout:timeout};
+  const ctx={container,blockConcurrencyWhile:vi.fn((fn:()=>Promise<unknown>)=>{const result=fn();pending.push(result);return result;})};
+  const rearm=(containerHost as unknown as {retainRunningContainer(ctx:unknown):void}).retainRunningContainer;
+  rearm(ctx);await Promise.all(pending);
+  expect(timeout).toHaveBeenCalledTimes(active?1:0);if(active)expect(timeout).toHaveBeenCalledWith(60000);
+  expect(ctx.blockConcurrencyWhile).toHaveBeenCalledTimes(active?1:0);expect(data.size).toBe(0);expect(port.start).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
+});
 it('observes initial metadata and the current image binding without waking or changing the engine',async()=>{
   const context=(engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx;
   delete context.container.images.cognee;
@@ -186,7 +195,7 @@ it.each(['complete','uncertain'] as const)('binds the paused Owner bootstrap tic
   expect(await engine.lookup(reserved.ticket.operationId)).toMatchObject({state:'uncertain'});
   expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
 });
-it.each(['complete','uncertain_search','missing_image'] as const)('advances only the selected Owner request through existing ledgers (%s)',async outcome=>{
+it.each(['complete','uncertain_search','missing_image','checkpoint_ack'] as const)('advances only the selected Owner request through existing ledgers (%s)',async outcome=>{
   settings.ROUTINES_PAUSED='true';settings.SEMANTIC_SEARCH_MODE='required';
   await sql('UPDATE assistant_budget_accounts SET cap_units=600000 WHERE installation_id=? AND generation=?',...keys()).run();
   await new OwnerControl(env.DB,scope,{kind:'owner'},()=>now).execute({kind:'project.put',id:'selected',name:'Synthetic selected Owner work',expectedVersion:0,operationId:'selected-project'});
@@ -199,18 +208,26 @@ it.each(['complete','uncertain_search','missing_image'] as const)('advances only
   let once=new OwnerOnce(settings,scope,()=>now,options);await once.execute(command);
   expect(await once.execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'admitted'});
   if(outcome==='missing_image')delete (engine as unknown as {ctx:{container:{images:{cognee?:string}}}}).ctx.container.images.cognee;
+  if(outcome==='checkpoint_ack'){const checkpoint=engine.checkpoint.bind(engine);vi.spyOn(engine,'checkpoint').mockImplementationOnce(async(...args)=>{await checkpoint(...args);throw Error('synthetic_checkpoint_ACK_lost_after_commit');});}
   const first=await once.execute({kind:'owner_once.advance',operationId:command.operationId});
   if(outcome==='missing_image'){
     expect(first).toMatchObject({state:'blocked',phase:'index',reason:'engine_image_unconfigured'});
     expect(data.has('initial-ingest-v1')).toBe(false);expect(data.has('index')).toBe(false);expect(port.start).not.toHaveBeenCalled();expect(port.request).not.toHaveBeenCalled();expect(modelCalls).toBe(0);
     expect(await sql('SELECT COUNT(*) n FROM assistant_routine_ingestions WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);return;
   }
-  expect(first).toMatchObject({state:'pending',phase:'indexed'});
+  if(outcome==='checkpoint_ack')expect(first).toMatchObject({state:'uncertain',phase:'checkpoint',reason:'checkpoint_ack_unconfirmed'});
+  else expect(first).toMatchObject({state:'pending',phase:'indexed'});
+  expect(data.get('checkpoint')).toMatchObject({phase:'confirmed'});
   expect(port.request.mock.calls.filter(([path])=>path==='/ingest')).toHaveLength(1);
   if(outcome==='uncertain_search'){
     const request=port.request.getMockImplementation()!;port.request.mockImplementation(async(path,body)=>{if(path==='/search')throw Error('synthetic_search_ACK_lost');return request(path,body);});
   }
   let result:Record<string,unknown>=first;
+  if(outcome==='complete'){
+    running=false;physical.clear(); // Genuine filesystem loss between operator RPCs.
+    expect(await new OwnerOnce(settings,scope,()=>now,options).execute({kind:'owner_once.advance',operationId:command.operationId})).toMatchObject({state:'pending',phase:'restored'});
+  }
+  if(outcome==='checkpoint_ack')result={state:'pending'}; // Explicit same-operation receipt reconciliation, never re-ingest.
   for(let i=0;i<16&&!['complete','uncertain','blocked'].includes(String(result.state));i++){
     once=new OwnerOnce(settings,scope,()=>now,options); // Coordinator restart, same durable operation.
     result=await once.execute({kind:'owner_once.advance',operationId:command.operationId});
