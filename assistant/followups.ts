@@ -6,7 +6,7 @@ import { JobQueue, type JobScope } from "./queue";
 import { seedDecisionJob } from "./decisions";
 import type { OriginGuard } from "./origin-guard";
 import { normalizeRetrievalInput } from "./retrieval";
-import {outgoingProof,type OutgoingPort} from './outgoing';
+import {outgoingProof,outgoingGuard,type OutgoingPort} from './outgoing';
 const ns = "installation_id=? AND generation=?";
 const id = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/), version = z.number().int().positive();
 export const fupProvenanceSchema = z.object({ evidenceKind: z.enum(["owner_directive", "attributed_candidate"]),
@@ -67,7 +67,7 @@ export function dueFollowUpGuard(scope:SourceScope, ref:{id:string;version:numbe
     AND f.version=(SELECT MAX(version) FROM assistant_follow_ups v WHERE v.installation_id=f.installation_id AND v.generation=f.generation AND v.id=f.id)
     AND f.state IN ('scheduled','awaiting_condition') AND f.due_at IS NOT NULL AND f.due_at<=? AND f.next_evaluation_at<=?
     AND (f.mission_id IS NULL OR m.state='active')
-    AND EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id AND p.excluded=0 AND (p.kind='private' OR p.group_mode<>'ignore'))
+    AND (EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id AND p.excluded=0 AND (p.kind='private' OR p.group_mode<>'ignore')) OR (NOT EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id) AND EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version AND json_extract(p.body_json,'$.outgoing.policy.kind')='absent' AND json_extract(p.body_json,'$.outgoing.policy.revision')=0)))
     AND (f.mandate_id IS NULL OR EXISTS(SELECT 1 FROM assistant_mandates g WHERE g.installation_id=f.installation_id AND g.generation=f.generation AND g.id=f.mandate_id AND g.version=f.mandate_version AND g.status='active' AND g.issued_at<=? AND g.expires_at>?
       AND g.version=(SELECT MAX(version) FROM assistant_mandates v WHERE v.installation_id=g.installation_id AND v.generation=g.generation AND v.id=g.id)))
     AND NOT EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version AND
@@ -99,6 +99,7 @@ export class FollowUps {
     if(source.fence.source.origin==="whatsapp") {const fence=await this.options.origin?.fence(source.id);if(!fence||!await this.options.origin!.check(fence))return {...metadata,provenance:{state:"unavailable"}};}
     if(parsed?.success&&parsed.data.outgoing&&(!this.options.outgoing||!await this.options.outgoing.check(parsed.data.outgoing)))return {...metadata,provenance:{state:'unavailable'}};
     if(!await access.revalidate({kind:"owner"},source.fence))return {...metadata,provenance:{state:"unavailable"}};
+    if(parsed?.success&&parsed.data.outgoing){const gate=outgoingGuard(this.scope,{id:key,version:row.version},parsed.data.outgoing,this.clock(),source.id);if(!await this.db.prepare('SELECT 1 WHERE '+gate.sql).bind(...gate.values).first())return {...metadata,provenance:{state:'unavailable'}};}
     if(!parsed)return {...metadata,provenance:{state:required?"unavailable":"legacy_unavailable"}};
     if(!parsed.success||parsed.data.source.id!==source.id||parsed.data.source.revision!==source.fence.source.revision||parsed.data.source.version!==source.fence.source.version||parsed.data.source.hash!==source.fence.source.hash)return {...metadata,provenance:{state:"unavailable"}};
     return {...metadata,purpose:row.purpose,condition:row.condition_text,provenance:{...parsed.data,commandOperationId:stored!.command_operation_id}};

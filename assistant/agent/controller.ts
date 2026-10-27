@@ -90,10 +90,10 @@ export class EpisodeController {
       const target = binding.work.target;
       const attestations: ["work_nonce" | "target_nonce", AccessGuard][] = [
         ["work_nonce", binding.outgoing?merge(workGuard(binding.work.fence,now),outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,now,lease.source_id)):workGuard(binding.work.fence, now)],
-        ["target_nonce", merge(conversationGuard(target.fence), {
+        ["target_nonce", binding.outgoing?outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,now,lease.source_id):target.fence?merge(conversationGuard(target.fence), {
           sql: "EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=? AND kind=? AND revision=? AND effective_mode=? AND effective_mode<>'ignore')",
           values: [this.scope.installationId, this.scope.generation, target.fence.chatId, target.policy.kind, target.policy.revision, target.policy.mode],
-        })],
+        }):{sql:'0',values:[]}],
       ];
       // Each fixed predicate is attested separately to stay below D1's SQL
       // depth limit. Only this fresh plan's nonces authorize later statements;
@@ -145,7 +145,8 @@ export class EpisodeController {
     if (lease.kind === "follow_up" && !work) throw new Error("episode_denied");
     if(request.outgoing){if(!work||request.outgoing.envelope.chatId!==await this.db.prepare('SELECT conversation_id FROM assistant_follow_ups WHERE installation_id=? AND generation=? AND id=? AND version=?').bind(this.scope.installationId,this.scope.generation,work.followUpId,work.version).first('conversation_id')||!this.outgoing||!await this.outgoing.check(request.outgoing))throw Error('episode_denied');const gate=outgoingGuard(this.scope,{id:work.followUpId,version:work.version},request.outgoing,this.clock(),lease.source_id);if(!await this.db.prepare('SELECT 1 WHERE '+gate.sql).bind(...gate.values).first())throw Error('episode_denied');}
     let target;
-    if (work) {
+    if(work&&request.outgoing)target={fence:null,policy:{kind:'private',revision:request.outgoing.policy.revision,mode:request.outgoing.policy.kind==='absent'?'unconfigured':request.outgoing.policy.mode}};
+    else if (work) {
       const row = await this.db.prepare(`SELECT f.conversation_id,p.kind,p.revision,p.effective_mode AS mode FROM assistant_follow_ups f
         JOIN assistant_conversation_modes p ON p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id
         WHERE f.installation_id=? AND f.generation=? AND f.id=? AND f.version=? AND p.effective_mode<>'ignore'`)

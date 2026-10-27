@@ -17,6 +17,10 @@ import {OwnerControl} from '../assistant/control';
 import {outgoingPort} from '../assistant/outgoing';
 import {uploadMedia} from '../src/media';
 import {setCapture} from '../src/directory';
+import {readCaptureSnapshot} from '../src/assistant-source-reader';
+import {receiveCapture} from '../assistant/ingress';
+import {CaptureMaterializer} from '../assistant/materialize';
+import {Conversations} from '../assistant/conversations';
 const archive=(env as unknown as {RECIPIENT_DB:D1Database}).RECIPIENT_DB,secret='synthetic-outgoing-nominal-reader-secret',phone='12025550100';
 let e:Env,scope:{installationId:string;generation:string;sourceEpoch:string;sourceGeneration:string},settings:any,rpc:OwnerAssistant,source:{id:string;revision:number},target:string,now:number;
 const status=vi.fn(async()=>({connected:true,phone}));
@@ -46,6 +50,29 @@ it('pins a resolved new recipient with no history to a FUP and one guarded shado
  for(const table of ['messages','actions'])expect(await archive.prepare('SELECT COUNT(*) n FROM '+table).first('n')).toBe(0);expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_origin_conversations WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);
 });
 const leaseId=(episode:Awaited<ReturnType<EpisodeController['prepare']>>)=>episode.job_id;
+async function captureOffProjection(){
+ await setCapture(e,target,false,{epoch:e.INSTALLATION_EPOCH,generation:e.CONNECTION_GENERATION});settings.CAPTURE_READER.readSnapshot=(input:unknown)=>readCaptureSnapshot(e,input);
+ const response=await receiveCapture(new Request('https://fixture.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify({protocol:1,...scope,sequence:1,previousSequence:0,chatId:target,sourceId:target,sourceKind:'conversation',operation:'access',recordedAt:now})}),settings);expect(response.status).toBe(200);await new CaptureMaterializer(env.DB,()=>scope,settings.CAPTURE_READER,secret).process(1);
+ await env.DB.prepare('DELETE FROM assistant_policy_versions WHERE installation_id=? AND generation=?').bind(scope.installationId,scope.generation).run();await env.DB.prepare('DELETE FROM assistant_conversation_policies WHERE installation_id=? AND generation=?').bind(scope.installationId,scope.generation).run();await new Conversations(env.DB,()=>scope).ensure(target);
+}
+it('capture OFF projected to Own does not become no-contact or create a policy/frame',async()=>{
+ await captureOffProjection();const before=(await env.DB.prepare('SELECT * FROM assistant_conversations WHERE installation_id=?').bind(scope.installationId).all()).results;expect(await env.DB.prepare('SELECT access_state FROM assistant_origin_conversations WHERE installation_id=?').bind(scope.installationId).first('access_state')).toBe('withdrawn');
+ const p=await prepared(async()=>{},{...command(),policyRevision:0}),text=await invoke(p),result=await p.host.publish(p.episode.id,{...p.receipt,text,data:{}});expect(result).toMatchObject({state:'shadow_completed',proposal:{externalAttempted:false,outgoing:{policy:{kind:'absent',revision:0}}}});expect(p.episode.binding.work.kind==='follow_up'&&p.episode.binding.work.target.fence).toBeNull();
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_conversation_policies WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);expect((await env.DB.prepare('SELECT * FROM assistant_conversations WHERE installation_id=?').bind(scope.installationId).all()).results).toEqual(before);expect(await archive.prepare('SELECT capture_enabled FROM chats WHERE id=?').bind(target).first('capture_enabled')).toBe(0);for(const table of ['messages','actions'])expect(await archive.prepare('SELECT COUNT(*) n FROM '+table).first('n')).toBe(0);
+});
+it('does not bypass an unavailable source attendance anchor even when its target has an outgoing proof',async()=>{
+ await captureOffProjection();source=await new SourceController(env.DB,scope,{kind:'owner'},()=>now).create({originKey:'attached',text:'The owner explicitly requests this exact shadow proposal.',occurredAt:now,conversationId:target});await rpc.control(scope,{...command(),policyRevision:0});expect((await new FollowUps(env.DB,scope,{clock:()=>now}).admitDue()).items[0]).toMatchObject({state:'unavailable',reason:'admission_uncertain'});expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_episode_calls WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);
+});
+it.each(['policy_arrives','policy_revision','policy_excluded','frame_pause'] as const)('revalidates %s during the model without repinning, preserving its paid receipt',async change=>{
+ const absent=change==='policy_arrives'||change==='frame_pause';if(absent)await captureOffProjection();const p=await prepared(async()=>{if(change==='policy_arrives')await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind) VALUES(?,?,?,'private')").bind(scope.installationId,scope.generation,target).run();else if(change==='frame_pause')await new Conversations(env.DB,()=>scope).setPaused(target,1,true);else await rpc.control(scope,{kind:'policy.put',operationId:'changed-policy',id:target,expectedRevision:1,conversationKind:'private',excluded:change==='policy_excluded'});},{...command(),policyRevision:absent?0:1});
+ await expect(invoke(p)).rejects.toThrow();expect(p.model).toHaveBeenCalledTimes(1);expect((await new InferenceBudget(env.DB,{...scope,period:'fixture'}).status()).committed).toBe(3);expect((await p.queue.ledger(p.episode.job_id))!.request_json).toBe(p.ledger.request_json);
+});
+it('a policy appearing during the metadata await cannot be silently treated as the original absence pin',async()=>{
+ await captureOffProjection();let changed=false;status.mockImplementation(async()=>{if(!changed){changed=true;await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind) VALUES(?,?,?,'group')").bind(scope.installationId,scope.generation,target).run();}return {connected:true,phone};});await expect(rpc.control(scope,{...command(),policyRevision:0})).rejects.toThrow('control_precondition');expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);
+});
+it('policy zero never bypasses an existing policy, an explicit pause or a legacy FUP contract',async()=>{
+ await expect(rpc.control(scope,{...command(),policyRevision:0})).rejects.toThrow('control_precondition');const {outgoing,...legacy}=command();await expect(rpc.control(scope,{...legacy,policyRevision:0})).rejects.toThrow('control_input');await captureOffProjection();await new Conversations(env.DB,()=>scope).setPaused(target,1,true);await expect(rpc.control(scope,{...command(),policyRevision:0})).rejects.toThrow('control_precondition');
+});
 it('denies unproven target, envelope mismatch and missing explicit authorization without making a FUP',async()=>{
  for(const extra of [{outgoing:{...command().outgoing,envelope:{...command().outgoing.envelope,chatId:'invented'}}},{outgoing:{...command().outgoing,authorization:undefined}}])await expect(rpc.control(scope,{...command(),...extra})).rejects.toThrow();
  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);
@@ -57,8 +84,9 @@ it('bounds the complete UTF-8 outgoing provenance instead of truncating its enve
  await expect(rpc.control(scope,{...command(),outgoing:{...command().outgoing,envelope:{...command().outgoing.envelope,text:'é'.repeat(4096)}}})).rejects.toThrow('control_input');expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(0);
 });
 const invoke=(p:Awaited<ReturnType<typeof prepared>>)=>p.host.model(p.episode.id,{profile:'owner',runtimeId:p.episode.runtime_id,submissionId:p.receipt.submissionId},{messages:[{role:'user',content:p.host.message(p.episode)}]});
-it.each(['device','generation','source','pin'] as const)('revokes %s after preparation without repinning or calling a model',async change=>{
+it.each(['device','generation','source','pin','legacy_pin'] as const)('revokes %s after preparation without repinning or calling a model',async change=>{
  const p=await prepared(),before=p.episode.binding_hash;if(change==='device')status.mockResolvedValue({connected:true,phone:'12025550999'});if(change==='generation')e.CONNECTION_GENERATION='other';if(change==='source')await new SourceController(env.DB,scope,{kind:'owner'}).withdraw(source.id,1);if(change==='pin')await env.DB.prepare("UPDATE assistant_fup_provenance SET body_json=json_set(body_json,'$.outgoing.envelope.text','Changed') WHERE installation_id=?").bind(scope.installationId).run();
+ if(change==='legacy_pin')await env.DB.prepare("UPDATE assistant_fup_provenance SET body_json=json_remove(body_json,'$.outgoing.policy') WHERE installation_id=?").bind(scope.installationId).run();
  await expect(invoke(p)).rejects.toThrow();expect(p.model).not.toHaveBeenCalled();expect((await p.host.episodes.get(p.episode.id))!.binding_hash).toBe(before);expect((await p.queue.ledger(p.episode.job_id))!.request_json).toBe(p.ledger.request_json);expect(await archive.prepare('SELECT COUNT(*) n FROM actions').first('n')).toBe(0);
 });
 it('local cancellation during the remote proof await prevents model admission',async()=>{

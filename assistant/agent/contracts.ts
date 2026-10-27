@@ -33,7 +33,7 @@ const work = z.object({ ...scope, kind: z.literal("follow_up"), jobId: label, oc
   version, state: label, sourceId: label, sourceRevision: version, missionId: label.nullable(), missionRevision: version.nullable(), mandateId: label.nullable(), mandateVersion: version.nullable() }).strict();
 export const conversationFence = z.object({ ...scope, chatId: label, sourceEpoch: label.nullable(), sourceGeneration: label.nullable(),
   revision: time, policyRevision: time, mode: label, applied: time, received: time, coverageFrom: time }).strict();
-const target = z.object({ fence: conversationFence, policy: z.object({ kind: z.enum(["private", "group"]), revision: version, mode: label }).strict() }).strict();
+const target = z.object({ fence: conversationFence.nullable(), policy: z.object({ kind: z.enum(["private", "group"]), revision: time, mode: label }).strict() }).strict();
 
 export const decisionSubject = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("capture_event"), sourceEpoch: label, sourceGeneration: label, chatId: label, sequence: version, metadataHash: hash }).strict(),
@@ -50,7 +50,7 @@ const binding = z.object({ lease, actor, purpose, search, subject: decisionSubje
     focus: z.array(z.object({ id: label, spans: z.array(z.object({ start: time, end: time, quote: z.string().max(4096) }).strict()).max(4) }).strict()).max(10),
     gaps: z.array(label).max(32), receipt: z.object({ state: label, operationKey: label }).strict().optional() }).strict(),
   work: z.discriminatedUnion("kind", [z.object({ kind: z.literal("not_follow_up") }).strict(), z.object({ kind: z.literal("follow_up"), fence: work, target }).strict()]),
-}).strict();
+}).strict().superRefine((value,ctx)=>{if(value.work.kind==='follow_up'&&(!value.work.target.fence||value.work.target.policy.revision===0)&&!value.outgoing)ctx.addIssue({code:'custom',message:'recipient_proof_required'});if(value.outgoing&&(value.work.kind!=='follow_up'||value.work.target.policy.kind!=='private'||value.work.target.policy.revision!==value.outgoing.policy.revision))ctx.addIssue({code:'custom',message:'outgoing_target_policy'});});
 export const nativeReceipt = z.object({ submissionId: label, uid: label, acceptedAt: z.string().min(1).max(64), deduplicated: z.literal(true).optional() }).strict();
 const receipt = z.object({ profile: z.enum(["owner", "interlocutor"]), runtimeId: label, bindingHash: hash, envelopeHash: hash, receipt: nativeReceipt }).strict();
 const envelope = z.object({ message: z.string().max(60000), initialData: z.object({ bindingId: hash }).strict(), idempotencyKey: label }).strict();

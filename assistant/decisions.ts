@@ -233,9 +233,10 @@ export class DecisionJournal {
         const guards: AccessGuard[] = [await search.guard(binding.actor, binding.search, at), access.guard(binding.actor, request.fence, at)];
         if (request.conversation) guards.push(conversationGuard(request.conversation));
         for (let index = 0; index < binding.context.sources.length; index++) guards.push(access.guard(binding.actor, binding.context.sources[index].fence, at), access.guard({ kind: "owner" }, ownerFences[index], at));
-        if (binding.work.kind === "follow_up") guards.push(workIntentGuard(binding.work.fence, at), conversationGuard(binding.work.target.fence), {
+        if(binding.work.kind==='follow_up')guards.push(workIntentGuard(binding.work.fence,at));
+        if (binding.work.kind === "follow_up"&&!binding.outgoing) {if(!binding.work.target.fence)throw 0;guards.push(conversationGuard(binding.work.target.fence), {
           sql: `EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE ${ns} AND conversation_id=? AND kind=? AND revision=? AND effective_mode=?)`,
-          values: [...keys(this.scope), binding.work.target.fence.chatId, binding.work.target.policy.kind, binding.work.target.policy.revision, binding.work.target.policy.mode] });
+          values: [...keys(this.scope), binding.work.target.fence.chatId, binding.work.target.policy.kind, binding.work.target.policy.revision, binding.work.target.policy.mode] });}
         if(binding.outgoing){if(binding.work.kind!=='follow_up')throw 0;guards.push(outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,at,request.sourceId));}
         return guards;
       };

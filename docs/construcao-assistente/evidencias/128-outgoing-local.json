@@ -12,19 +12,21 @@
     "state": "Existing owner command ledger, FUP provenance, immutable job request/hash, episode binding/hash and shadow journal",
     "mode": "shadow",
     "externalAttempted": false,
-    "recipientRegistration": "unknown"
+    "recipientRegistration": "unknown",
+    "ownPolicy": "Pinned current private revision or explicit absence revision0; absence requires no Own policy at every final SQL guard. Capture OFF is not a contact prohibition; source/Origin attendance guards remain unchanged."
   },
   "validation": {
     "red": "After correcting a missing fixture owner principal, the real D1 recipient-to-FUP test failed at control_input because outgoing was not supported; its unauthorized-input control passed.",
-    "directedD1": "24/24 passed in 20.99s. Includes an additional causal RED for a recipient change during HMAC followed by a final atomic metadata/connection guard and GREEN.",
+    "directedD1": "Snapshot24/24 passed in20.99s, including causal recipient/HMAC race RED then atomic-guard GREEN. Final policy/capture follow-up33/33 passed in22.42s (30.12s total).",
     "nativeFlue": "One integrated native case prepared in the existing assistant-episodes.test.ts; intentionally not run on the VPS, pending integrated CI",
     "transitiveImports": "npm run test:assistant-outgoing passed: only assistant/outgoing.ts, src/send-envelope.ts and src/core.ts are local runtime imports; no action/sender/provider runtime imported",
     "typescript": "npm run check and git diff --check passed",
     "provider": "Synthetic adapters only; no real provider/model/Cloudflare calls",
-    "estimatedPaidTestsUsd": 0
+    "estimatedPaidTestsUsd": 0,
+    "policyCaptureRed": "Target with capture OFF and no Own policy initially failed control_input. A further trial passed31/32: source note explicitly associated with a withdrawn attendance context failed episode_waiting_context. This was preserved as a negative source-anchor contract, with no Retrieval/Origin/queue bypass; no note was copied or reassociated to evade it.",
+    "policyCaptureGreen": "Default unassociated owner command note plus a target already projected capture-disabled/withdrawn produces a shadow proposal with policy absent0 and target.fence null, without policy/frame/capture/history writes. Existing policy, new policy during await, policy revision/exclusion, explicit pause during model, and old pins without policy all deny without repinning; known model cost remains settled."
   },
   "remaining": [
-    "Follow-up required: capture-disabled targets already projected into Own must not be treated as no-contact; policy absence and capture-frame separation are under adversarial review",
     "Independent implementation review and integrated CI, including the new native Flue case",
     "Reviewed deployment of the same CaptureReader entrypoint and Own code; no binding for sending",
     "Actual MCP client refresh/call and real pilot acceptance remain separate proof boundaries",

@@ -4,7 +4,7 @@ import type { TrustedActor, AccessGuard } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger } from "./command-ledger";
 import { fupInstant, prepareFupProvenance } from "./followups";
-import {outgoingInput,outgoingAuthorityGuard,type OutgoingPort} from './outgoing';
+import {outgoingInput,outgoingProof,outgoingPolicyGuard,outgoingAuthorityGuard,type OutgoingPort} from './outgoing';
 const id = z.string().min(1).max(256), version = z.number().int().min(0).max(2147483646);
 const time = z.number().int().nonnegative().safe(), revision = version.refine(n => n > 0);
 const reference = z.object({ id, revision }).strict();
@@ -23,7 +23,7 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
     purpose: z.string().min(1).max(2048), expiresAt: time, status: z.enum(["draft", "active"]).default("draft"),
     actions: z.array(actions).max(7), sources: z.array(reference).max(32) }).strict(),
   z.object({ ...base, kind: z.literal("mandate.revoke"), expectedVersion: revision }).strict(),
-  z.object({ ...base, kind: z.literal("fup.put"), conversationId: id, policyRevision: revision, source: reference,
+  z.object({ ...base, kind: z.literal("fup.put"), conversationId: id, policyRevision: version, source: reference,
     project: reference.optional(), mission: reference.optional(), recipientId: id.optional(),
     mandate: z.object({ id, version: revision }).strict().optional(), purpose: z.string().min(1).max(2048),
     dueAt: z.union([time,z.string().max(40)]).optional(), windowEnd: z.union([time,z.string().max(40)]).optional(), timezone: id.default("UTC"), precision: z.enum(["unset", "exact", "day", "window"]).default("unset"),
@@ -87,6 +87,7 @@ export class OwnerControl {
   async execute(input: unknown): Promise<CommandReceipt> {
     if (this.principal.kind !== "owner") throw new Error("owner_required");
     const item = command(input);
+    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0)throw Error('control_input');
     if (item.kind === "policy.put" && (!this.scope.sourceEpoch || !this.scope.sourceGeneration)) throw new Error("control_origin_unconfigured");
     const ledger = new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item));
     const previous = await ledger.recover<CommandReceipt>(); if (previous) return previous;
@@ -100,7 +101,9 @@ export class OwnerControl {
     if(item.kind==='fup.put'&&item.outgoing){
       if(!this.outgoing||item.outgoing.envelope.chatId!==item.conversationId||item.candidate||provenance?.source.fence.source.origin!=='owner_note'||provenance.source.fence.source.audience!=='owner')throw Error('control_precondition');
       const a=item.outgoing.authorization;if(a.kind==='mandate'&&(item.mandate?.id!==a.id||item.mandate.version!==a.version))throw Error('control_precondition');
-      provenance.body.outgoing=await this.outgoing.prepare(item.outgoing);const gate=outgoingAuthorityGuard(this.scope,a,item.source.id,item.conversationId,this.clock());require(gate.sql,...gate.values);
+      const row=await this.db.prepare(`SELECT kind,revision,effective_mode mode FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=?`).bind(...this.keys(),item.conversationId).first<{kind:string;revision:number;mode:string}>();
+      if(item.policyRevision===0?!!row:!row||row.kind!=='private'||row.revision!==item.policyRevision||row.mode==='ignore')throw Error('control_precondition');
+      provenance.body.outgoing=outgoingProof.parse({...await this.outgoing.prepare(item.outgoing),policy:row?{kind:'private',revision:row.revision,mode:row.mode}:{kind:'absent',revision:0}});const gate=outgoingAuthorityGuard(this.scope,a,item.source.id,item.conversationId,this.clock()),policy=outgoingPolicyGuard(this.scope,provenance.body.outgoing);require(gate.sql,...gate.values);require(policy.sql,...policy.values);
       if(new TextEncoder().encode(JSON.stringify(provenance.body)).length>16384)throw Error('control_input');
     }
     if(provenance)result.fupProvenance=1;
@@ -130,7 +133,7 @@ export class OwnerControl {
         ...this.keys(), item.id, item.conversationKind, ...originKeys, item.conversationKind);
     }
     if (item.kind === "mandate.put" || item.kind === "fup.put") {
-      require(`EXISTS(SELECT 1 FROM assistant_conversation_policies WHERE ${ns} AND conversation_id=? AND revision=? AND excluded=0 AND (kind='private' OR group_mode<>'ignore'))`, ...this.keys(), item.conversationId, item.policyRevision);
+      if(!(item.kind==='fup.put'&&item.outgoing))require(`EXISTS(SELECT 1 FROM assistant_conversation_policies WHERE ${ns} AND conversation_id=? AND revision=? AND excluded=0 AND (kind='private' OR group_mode<>'ignore'))`, ...this.keys(), item.conversationId, item.policyRevision);
       const refs = item.kind === "mandate.put" ? item.sources : [item.source];
       require(`NOT EXISTS(SELECT 1 FROM json_each(?) r WHERE NOT EXISTS(
         SELECT 1 FROM assistant_sources s WHERE ${scoped("s")} AND s.id=json_extract(r.value,'$.id')
