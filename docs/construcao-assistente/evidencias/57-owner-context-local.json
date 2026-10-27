@@ -41,6 +41,14 @@
       "veto": "Withdrawal/correction of a support and semantic project rename during adapter suppress private publication, preserve the immutable pin, keep one provider attempt and settled spend.",
       "recovery": "Lost publication ACK recovers the same complete receipt/batch with one reservation and one provider call.",
       "remaining": "Independent follow-up code review, summary composition and integration regressions/CI/cloud remain gates."
+    },
+    {
+      "phase": "canonical_v2_regression_and_legacy_uncertainty",
+      "red": "Initial legacy57 regression:35 passed/22 failed in23.35s. Expectations still allowed guest discovery/crossactor reuse and ignored semantic names; DTOs lacked descriptors/supports, protected-field mutation bypassed new immutability, and WA fixture had no automation-ready conversation frame.",
+      "fixtureChanges": "Preserved prior57 cases under the approved Owner-private contract: deny guest before admission, retain guest SourceAccess revocation check, require actual Conversations.replay/OriginGuard for WA, assert protected mutation is rejected, delete proof before batch for backing-negative, and use semantic-identical CAS revisions. No production authorization predicate was removed.",
+      "green": "60/60 real D1 cases passed in27.83s (21.48s tests). Added published semantic project-name/mission-objective rejection and uncertain legacy slot preservation with no new key, receipt or adapter attempt.",
+      "configuration": "Exported pure schedulerConfiguration(scope,envPick), delegated by the original private method without changing its hash input or actor binding. It does not authorize item recovery.",
+      "remaining": "Summary composition, independent final code review, integration regression/CI and cloud proof remain gates."
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,

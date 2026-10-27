@@ -26,6 +26,9 @@ import type { CogneeContainer, IndexPreflight } from "./container";
 type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string};
 type Item={id:string;subject_json:string;binding_hash:string;binding_json:string;actor_json:string;profile:"owner"|"interlocutor";source_id:string;source_revision:number;state:string;phase:string;index_sources_json:string|null;run_id:string|null;search_checkpoint:number;search_state:string|null;job_id:string|null;episode_id:string|null;last_gap:string|null;created_at:number};
 type Event={sequence:number;chat_id:string;source_kind:string;metadata_hash:string;state:string;canonical_id:string|null;observed_revision:number|null;observed_version:number|null;observed_watermark:number|null;coalesced:number};
+/** Pure host configuration identity for explicit pre-admission recovery plans.
+ * It does not reconstruct actors, alter items or authorize their execution. */
+export function schedulerConfiguration(scope:OriginScope,env:Pick<AssistantEnv,'SEMANTIC_SEARCH_MODE'|'COGNEE'>){return bridgeHash(["routines-v1",scope,DEFAULT_BROKER_CONFIG,CANONICAL_EXTRACTION_CONFIG,env.SEMANTIC_SEARCH_MODE??(env.COGNEE?"required":"lexical")]);}
 /** One bounded host pipeline. Production uses the existing concrete controllers;
  * only model/Flue transports can be replaced by controlled test adapters. */
 export class AssistantScheduler {
@@ -40,7 +43,7 @@ export class AssistantScheduler {
  private item(id:string){return this.sql(`SELECT * FROM assistant_routine_items WHERE ${originScopeSql} AND id=?`,...this.keys(),id).first<Item>();}
  private async update(cycle:RoutineCycle,id:string,sql:string,values:(string|number|null)[]=[]){const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_items SET ${sql},updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql}`,...values,this.clock(),...this.keys(),id,...owner.values).run();}
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
- private async configuration(){return bridgeHash(["routines-v1",this.scope,DEFAULT_BROKER_CONFIG,CANONICAL_EXTRACTION_CONFIG,this.env.SEMANTIC_SEARCH_MODE??(this.env.COGNEE?"required":"lexical")]);}
+ private configuration(){return schedulerConfiguration(this.scope,this.env);}
  async tick(){
   if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";
   try{await assertRestoredGeneration(this.env);}catch(error){const known=["restore_runtime_paused","restore_generation_inactive","restore_generation_seal_required","canonical_writers_quiesced"];return {state:"blocked",gap:error instanceof Error&&known.includes(error.message)?error.message:"restore_runtime_unavailable"};}

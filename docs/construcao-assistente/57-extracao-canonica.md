@@ -71,34 +71,39 @@ divergente, valores não primitivos/inteiros seguros e JSON acima de 32 KiB.
 
 Após unknown, não há reset, rekey ou replanejamento por novo catálogo/actor. O
 mesmo slot só pode recuperar o recibo completo exato, sem provider retry. Depois
-de publicado, outro actor atualmente autorizado pode ler o terminal sem mudar
-o actor pinado. Isso exige mesma fonte/configuração e topologia do catálogo
+de publicado, o Owner atualmente autorizado pode ler o terminal sem mudar
+o actor pinado; interlocutores não podem reusar sua descoberta privada. Isso exige mesma fonte/configuração e topologia do catálogo
 (kind/id/projectId/cardinalidade), com DTOs estritos. Apenas revisões CAS das
 entradas do catálogo podem diferir, incluindo o mesmo catálogo no JSON user do
 payload. Source.revision, autor, texto, system, modelo, tokens e demais campos
-continuam exatos; formato legado inválido ou campos desconhecidos negam reuso.
+continuam exatos. Nomes, objetivos e textos/refs dos supports também são semânticos
+e precisam continuar idênticos; formato legado inválido ou campos desconhecidos
+negam reuso.
 O guard SQL usa revisões atuais, com origem/ACL/lease/hold atuais, recibo completo,
 settlement correspondente e lote/hash de claims consistentes. Os dados pinados
 originais não mudam. Backing ausente/divergente permanece lacuna, sem reinferência.
 
 ## Operação e retenção
 
-Pausa impede a chamada ao extrator. O resumo diário conta fontes ativas textuais
-owner note/WhatsApp da geração atual,
-terminais com backing presente, pendências, catálogo ausente e unknown; também
-preserva gaps concretos dos itens. Uma fonte positiva não remove a lacuna de
+Pausa impede a chamada ao extrator. O resumo diário do Owner deve contar fontes
+textuais elegíveis da geração atual, terminais com backing/contexto local atual,
+pendências, catálogo ausente e unknown; sua leitura metadata não atesta freshness
+remota nem validação semântica. A implementação desse resumo está em composição
+separada, sem tratar o resumo anterior como prova do catálogo global. Uma fonte positiva não remove a lacuna de
 outras fontes. Namespace sem fontes informa `not_observed`, sem percentual de
 completude. O resumo diário continua sendo uma fotografia de metadados, não
 prova semântica de toda a memória.
 
-A tabela nova participa de feature health e export completo do dono. Purga
-remove seu payload junto ao fechamento da fonte e preserva orçamento/recibos
-financeiros. Triggers bloqueiam admissão/publicação durante quiescence;
+Os três sidecars de 0027 participam de feature health e export completo do dono.
+Purga de support retira as projeções e payloads Owner derivados, preservando o
+slot 0026 como rejeitado/context_purged e seus pins quando a âncora continua ativa.
+Purga da própria âncora remove seu fechamento operacional; ambas preservam o
+orçamento e os recibos financeiros. Triggers bloqueiam admissão/publicação durante quiescence;
 settlement e a marcação conservadora de unknown continuam possíveis. Snapshots
 canônicos e restore excluem slots/payloads de extração e não ativam tentativas
 antigas. A migração é aditiva e não foi aplicada em cloud nesta entrega.
 
-No rollout, aplicar 0026 no D1 próprio da assistente antes do novo código/daily,
+No rollout, aplicar 0026 e 0027 no D1 próprio da assistente antes do novo código/daily,
 mesmo em pausa. A configuração do scheduler mudou: itens preparados sob a
 configuração anterior ficam bloqueados por `configuration_or_binding_changed`.
 Medir esse backlog; não rekeyar trabalho desconhecido para fazê-lo avançar.
@@ -109,7 +114,7 @@ Os testes dirigidos usam D1/guards reais com adapters sintéticos. Há contrapro
 do módulo ausente e do hook removido, teste de WhatsApp materializado com missão
 e projeto explícitos e recuperação da fonte pela relation lane, revogações
 durante modelo/no INSERT final, ACK perdido, orçamento, whitelist, zero claims,
-reuso por guest, export/purga e exclusão do restore. Nenhum teste usa provider,
+negação de reuso pelo guest, export/purga e exclusão do restore. Nenhum teste usa provider,
 segredo real, deploy ou dados pessoais. Custo de provider nesta implementação:
 US$0.
 
