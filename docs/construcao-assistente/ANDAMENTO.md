@@ -1,5 +1,20 @@
 # Construção até piloto sombra
 
+## Estado confirmado em27/10/2026 antes da homologação final57
+
+Main publicada emv0.43.0. São36 das41 issues originais concluídas; seis abertas ao incluir a nova126:46,47,48,51,57,126. O código e o histórico das branches foram preservados por integração/cherry-pick; uma ponta antiga não ancestral não significa trabalho descartado.
+
+- v0.34/#121 e v0.35/#112 concluíram recuperação e correções da busca semântica; checkpoint/custos/tentativas incertas anteriores foram mantidos.
+- v0.36/#49, v0.37/#52, v0.38/#53 e v0.39/#50 concluíram FUPs, mídia, rotinas e leitura GitHub.
+- v0.40/#128 concluiu iniciativa individual em sombra sem histórico; v0.41/#55, v0.42/#54 e v0.43/#56 concluíram retenção, instrumentação e instalação própria com CI, minor e limites específicos publicados.
+- Captura real permanece ativa. Source/Own têm builds oficiais6b4 verificados, bindings/segredos/rotas/cron preservados; Own está emshadow/paused, mídia e resumosTelegram desabilitados. MCP existente autenticou e respondeu versão0.40.0; catálogo novo do cliente ainda não foi homologado.
+- A composição44 integra contexto Owner27 e suas contraprovas. Fluxo captura→extração→busca→Flue→decisão→revisão em recursos reais/sintéticos, recuperação explícita de metadados sem admissão do backlogG1 e CI final permanecem gates antes de concluir57. Nenhum resultado futuro é marcado como obtido aqui; evidência remota do mesmo código será publicada com a release/issue.
+- Histórico comprometido de testes de API registrado:53189microUSD (US$0,053189), incluindo40000microUSD incertos. Infraestrutura não é fatura nessa soma. Teto global autorizadoUS$10; não reiniciar por geração/período.
+
+Telegram47/48 exige credenciais/vínculo; Google51 exige client/consentimento; MCP46/126 exige refresh/homologação no cliente. Canais indisponíveis são pendências explícitas, sem impedir engenharia independente. Piloto real, utilidade, revisão humana e contato externo não estão homologados. Nenhum envio automático WhatsApp, escrita Calendar, alteração Elo ou instalação do harness.
+
+## Histórico anterior preservado
+
 Goal ativo desde 25/10/2026. Issues #27–45, #69, #70 e #79/#91/#93/#96/#100/#114 concluídas, com CI/revisão e releases v0.7.0–v0.33.0 publicadas. Extração, busca e recuperação do motor homologadas com dados sintéticos na Cloudflare; canais do produto ainda não ativados.
 
 ## Método

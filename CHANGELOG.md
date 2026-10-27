@@ -4,6 +4,24 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-27
+
+### Added
+- Contexto canônico privado do dono a partir de notas autorizadas de outros projetos, com descritores literais, suportes atuais e candidatos visíveis em consultas de fonte; a mensagem não precisa ter projeto/missão previamente atribuído (#57).
+- Sidecars aditivos0027 conservam prova de contexto, audiência privada e status sem criar segunda tentativa por fonte/revisão. Extração/diário/resumo distinguem candidato não revisado, zero claims, contexto ausente, orçamento e resultado incerto.
+
+### Fixed
+- Descoberta Owner permanece independente do ator interlocutor: contexto, contagens, score/fingerprint e lacunas privadas não entram na resposta guest. Orçamento/pausa globais continuam valendo.
+- Escopo atual completo, suportes, origem, catálogo inteiro e autorização são conferidos antes da admissão/publicação/leitura; retirada durante await, rename semântico, ACK perdido, legado e incerteza não geram repin/retry.
+- Retenção remove contexto/derivados privados, preserva a âncora ainda ativa, trava de tentativa e financeiro, e trata ausência/corrupção de prova como bloqueio. Export/snapshot/restore/saúde incluem o novo schema.
+
+### Validation
+- Contraprovas D1 incluem catálogo por outra nota, isolamento guest, limite16 e overflow17, zero claims/claims positivos, revogação temporal, escopo trocado, publicação com ACK perdido, recibos/custos e purga. Resultados exatos e revisões em [evidências locais](docs/construcao-assistente/evidencias/57-owner-context-local.json).
+- Homologação cloud do fluxo completo e respectivos recibos pertencem à evidência da release/issue57 no mesmo código; publicação e fechamento permanecem condicionados a essa validação, CI completa e revisão final.
+
+### Notes
+- Composição preserva a iniciativa em sombra da #128 e seus contratos de destinatário/envelope. Captura real continua ativa; atuação Own permanece pausada. Telegram, Google e catálogo novo no cliente são dependências explícitas. Nenhum envio WhatsApp ou escrita Calendar foi habilitado.
+
 ## [0.43.0] - 2026-10-27
 
 - Conclui #56 com instalação própria reproduzível, schema26, bindings/secrets privados, ponte de captura e cron natural independente do operador local.
