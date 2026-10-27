@@ -12,25 +12,40 @@
     "verification": "GitHub read-only run metadata"
   },
   "scope": "evaluation_instrumentation_not_longitudinal_pilot_result",
-  "pendingRemoteProbe": true,
+  "pendingRemoteProbe": false,
   "remoteProbe": {
-    "state": "pending",
+    "state": "observed_readonly_cloud",
     "queries": [
       "assistant.health",
       "evaluation.metrics",
       "evaluation.sample"
     ],
-    "observedRows": null,
-    "results": null,
-    "proofSha256": null,
-    "providerCallsExpected": 0,
-    "modelCallsExpected": 0
+    "results": {
+      "pausedShadowHealthVerified": true,
+      "boundedMetadataSample": true,
+      "sampleLimit": 5,
+      "sampleCount": "private_not_published",
+      "qualityDenominator": 0,
+      "correctFraction": null,
+      "latencyDenominator": 0,
+      "meanLatencyMs": null,
+      "quality": "unknown",
+      "ownLedgerAllGenerationsSettledReservedUncertainCommitted": 0,
+      "projectGlobalLedgerNotReplaced": true,
+      "humanAssessmentsCreated": false,
+      "cleanupVerified": true
+    },
+    "proofSha256": "708118f22a5a431890af41a362cf8c74a6e419ae8fe2260be3f4098c5533d99c",
+    "privateProof": "readonly128-54-56-v1/verified.private.json",
+    "inferenceCalls": 0,
+    "mutations": 0
   },
   "criteria": {
     "ac-15.281": {
-      "status": "local_integrated_contract_proven_remote_sample_pending",
+      "status": "local_integrated_contract_proven_cloud_bounded_sample_observed",
       "evidence": [
-        "local_evaluation"
+        "local_evaluation",
+        "remote_probe"
       ],
       "scope": "Real DecisionJournal pagination/states in D1 fixtures; no cloud sample invented"
     },
@@ -45,21 +60,28 @@
       "currentCorrectness": "unknown"
     },
     "ac-15.283": {
-      "status": "local_cost_latency_review_instrumentation_proven_remote_metrics_pending",
+      "status": "local_cost_latency_review_instrumentation_proven_cloud_metrics_observed",
       "evidence": [
-        "local_evaluation"
+        "local_evaluation",
+        "remote_probe"
       ],
       "costUnit": "microUSD",
       "costScope": "authenticated_installation_all_generations_all_periods",
       "uncertainCeilingsPreserved": true,
       "providerInvoice": false,
       "reviewDuration": "elapsed_wall_not_active_review",
-      "cloudMeasurements": null
+      "cloudMeasurements": {
+        "qualityDenominator": 0,
+        "latencyDenominator": 0,
+        "meanLatencyMs": null,
+        "reviewTime": "no_human_assessments"
+      }
     },
     "ac-15.284": {
-      "status": "local_empty_denominator_null_unknown_proven_remote_pending",
+      "status": "local_empty_denominator_null_unknown_proven_cloud_zero_denominator_observed",
       "evidence": [
-        "local_evaluation"
+        "local_evaluation",
+        "remote_probe"
       ],
       "zeroEventsCoveragePercent": null
     }

@@ -4,6 +4,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-27
+
+- Conclui #54 com instrumentação integrada de amostras, avaliações explícitas do dono, custo, latência, revisão e saúde; fixtures de owner_report não são julgamentos humanos reais.
+- Smoke RPC no host em sombra pausada confirmou saúde/afinidade, amostra limitada de metadados e denominadores zero com fração/média nulas. Nenhum evento, assessment, modelo ou envio foi criado para preencher métricas.
+- Ledger da instalação e histórico global do projeto permanecem distintos. Qualidade, utilidade e tempo de revisão reais continuam dependentes do piloto. [Evidências e limites](docs/construcao-assistente/evidencias/54-avaliacao-integrada-vps.md).
+
 ## [0.41.0] - 2026-10-27
 
 - Conclui #55 com provas controladas na Cloudflare de export autenticado paginado, retirada antes da limpeza e snapshot selado restaurado em geração nova, inativa e em sombra.
