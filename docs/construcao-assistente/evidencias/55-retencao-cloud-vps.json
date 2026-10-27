@@ -1,0 +1,200 @@
+{
+  "schema": 1,
+  "issue": 55,
+  "issueUrl": "https://github.com/orobsonn/whatsapp-mcp/issues/55",
+  "documentationBase": "7157b54d6b98704ba99c42fede83fdc36036de66",
+  "runtimeSource": "6171513cdc461b375b81b6804a3ea9d79aec07eb",
+  "restoreSchemaThrough": "0025",
+  "ownerContextMigration27Exercised": false,
+  "evidenceKind": "controlled_cloud_production_classes_synthetic_namespace",
+  "observations": {
+    "liveExport": {
+      "pages": 16,
+      "parts": 15,
+      "records": 14,
+      "rowHashesVerified": true,
+      "consistency": "live_paginated_not_snapshot",
+      "scope": "authenticated_installation_only"
+    },
+    "snapshot": {
+      "state": "sealed",
+      "rows": 9
+    },
+    "restore": {
+      "state": "inactive_complete",
+      "mode": "shadow",
+      "execution": "inactive",
+      "rows": 9,
+      "skippedRetired": 2,
+      "quarantine": "owner_reproof_required",
+      "accountCreated": false,
+      "activationCalled": false,
+      "release": "released_paused",
+      "executionHold": true,
+      "oldJob": "cancelled",
+      "targetJobs": 0,
+      "missionAndFollowUp": "paused"
+    },
+    "withdrawBeforeCleanup": {
+      "queryState": "unavailable",
+      "bodyAndDerivedRowsStillPresent": true
+    },
+    "purge": {
+      "d1": "purged_current_namespace_source_closure",
+      "originalVersions": 0,
+      "relationBatches": 0,
+      "modelPermits": 0,
+      "modelReceipts": 0,
+      "financialPreserved": true,
+      "existingMediaActualMicroUsd": 4136,
+      "syntheticFinancialReceiptMicroUsd": 0,
+      "otherGenerations": "pending",
+      "externalCopies": "pending",
+      "externalIndex": "pending"
+    },
+    "objects": {
+      "retired": "missing",
+      "orphan": "missing",
+      "referenced": "present_hash_exact",
+      "foreignGenerationSentinel": "present_hash_exact",
+      "foreignGenerationRpc": "502_uncertain_no_accepted_result",
+      "controlledAckLoss": {
+        "faultInjectionExplicit": true,
+        "spontaneousNetworkFailure": false,
+        "observerKnewCommit": true,
+        "soleReferenceInOtherSyntheticInstallation": true,
+        "collectorOutcome": "retained",
+        "readbackHashExact": true,
+        "automaticRetry": false
+      }
+    },
+    "additionalModelCalls": 0,
+    "additionalInferenceCostUsd": 0,
+    "cloudInfrastructureCost": "not_estimated"
+  },
+  "criteria": {
+    "ac-16.291": [
+      "live_export"
+    ],
+    "ac-16.292": [
+      "withdraw_before_cleanup",
+      "source_read_unavailable"
+    ],
+    "ac-16.293": [
+      "sealed_snapshot",
+      "inactive_restore"
+    ],
+    "ac-16.294": [
+      "released_paused",
+      "restore_d1_readback",
+      "old_job_resume_denied"
+    ],
+    "ac-16.295": [
+      "d1_purge_receipt",
+      "r2_readbacks"
+    ],
+    "ac-16.296": [
+      "r2_collect_outcomes",
+      "r2_readbacks",
+      "foreign_generation_rpc_uncertain",
+      "controlled_ackloss_caller",
+      "controlled_ackloss_observer",
+      "controlled_ackloss_reference_retained"
+    ],
+    "ac-16.297": [
+      "d1_purge_receipt",
+      "d1_purge_financial_readback"
+    ],
+    "ac-16.298": [
+      "d1_purge_financial_readback"
+    ]
+  },
+  "limits": [
+    "No actual restored-generation activation or operational-generation switch",
+    "No physical D1 rollback or cross-database restore",
+    "No export of foreign installations",
+    "No real private messages or provider/model credentials used by this retention host",
+    "Cloud readbacks are separate observations; SQL deletion-order guarantees also rely on local D1 tests",
+    "Foreign-generation RPC rejection reason was not exposed; no fabricated ACK",
+    "No scale-maximum benchmark or promise to erase external copies",
+    "MCP client homologation and full shadow pilot readiness are not established"
+  ],
+  "proofs": {
+    "host_readback": {
+      "privatePath": "host.verified.private.json",
+      "sha256": "7a838a97c41d0cabd1f33dfd2da429f251546401029cfeb691fabc0d51c07be2"
+    },
+    "live_export": {
+      "privatePath": "export-all-v1/summary.private.json",
+      "sha256": "0bf8d03a6b06c2ad0dc1dcb5ed95a4856bb9f703f347546a8234bb53a984107a"
+    },
+    "sealed_snapshot": {
+      "privatePath": "snapshot-command/123c01e9-d302-47ad-b8da-75e4bd461853.rpc-response.private.json",
+      "sha256": "ebc20a7a73fc7b6a2dd617015886663261ad6f4995bcdd60ee42b5c573f31f7b"
+    },
+    "withdraw_before_cleanup": {
+      "privatePath": "withdraw-before-cleaning.private.json",
+      "sha256": "27e1095657dec0dcff008fc8e47905bc759c3f1557d29fe3d6aad043c82ea43b"
+    },
+    "source_read_unavailable": {
+      "privatePath": "source-unavailable-read-v1/observation.private.json",
+      "sha256": "da1354c2626f2e3ea6815896cbd972c68e3618818ec60d9b695b26eb458575f0"
+    },
+    "inactive_restore": {
+      "privatePath": "restore-command/9858a932-2244-415b-9d66-a6b3e8101ac5.rpc-response.private.json",
+      "sha256": "06711c48070ed3ef340d111c9ded16d209c7d2f199c21ecc0b07eb86aa15944a"
+    },
+    "released_paused": {
+      "privatePath": "restore-command/70c4b7a5-31a8-49d0-91ab-acfaaa8ece7a.rpc-response.private.json",
+      "sha256": "fb1d3fb6d36a8f8e504c8f000c5d5695e9a34f4ccaf89ffd0027672b2f47f3d6"
+    },
+    "restore_d1_readback": {
+      "privatePath": "restore-released-observed.private.json",
+      "sha256": "0842a22f78bf6e345395c774a507c1272a553d3c57352b5e72b019de74b6116e"
+    },
+    "old_job_resume_denied": {
+      "privatePath": "old-job-resume-blocked.private.json",
+      "sha256": "c7df5024185cba2214c45afb97e9452ba02005b886e1522306105c7ad601843b"
+    },
+    "d1_purge_receipt": {
+      "privatePath": "purge-a-command/d1-purge-summary.private.json",
+      "sha256": "0f804cb77599b3059cc071b1fc38d470816c4fd5c98d6a0927571616baef6998"
+    },
+    "d1_purge_financial_readback": {
+      "privatePath": "d1-purge-finance-verified.private.json",
+      "sha256": "d844e9ff389e193ecec887b7d9d0253b0d17f029bc49e16b10dcda808fc7d9c9"
+    },
+    "r2_readbacks": {
+      "privatePath": "r2-after-gc/summary.private.json",
+      "sha256": "f51d3f50a56191331a246d5c4d5e0672e066be0042233fa66090cdea14809b8a"
+    },
+    "r2_collect_outcomes": {
+      "privatePath": "gc-cases-v1/summary.private.json",
+      "sha256": "e50cf647383cef813ceeb8a83c91d3054eeca579577410b7c92cab46d551471f"
+    },
+    "foreign_generation_rpc_uncertain": {
+      "privatePath": "gc-cases-v1/negative-transport-verified.private.json",
+      "sha256": "e3916168429293a4bb14c22ee2ce25c0b18cd5ff9a3a8302b25237da9dd68438"
+    },
+    "controlled_ackloss_caller": {
+      "privatePath": "controlled-ackloss-reference.caller-unknown.private.json",
+      "sha256": "a3fd495626f6652f9a31d49f76b8fd0920574aff383bb385c9e6a5b76fa3b43f"
+    },
+    "controlled_ackloss_observer": {
+      "privatePath": "controlled-ackloss-reference.observer-ack.private.json",
+      "sha256": "9e6b924597233d43dd155439fa6cde83ab90bf485c8bf2ceaca9b877e76f1437"
+    },
+    "controlled_ackloss_reference_retained": {
+      "privatePath": "controlled-ackloss-v1/verified.private.json",
+      "sha256": "95840713d8b5003fa84550bdd410e591e3bfbef3faf88e7ad2fc2872c25ce3c1"
+    },
+    "source_read_operator_cleanup": {
+      "privatePath": "source-unavailable-read-v1/stopped.private.json",
+      "sha256": "b2baaa8afac459bd775465188756a6fba90bac27124e2dfabe6c005dc9697b9a"
+    },
+    "restore_operator_cleanup": {
+      "privatePath": "restore-command/85867071-b249-4181-a044-25b57bd537ef.stopped.private.json",
+      "sha256": "9f7b602eefaf3060859995ed069ac5956a11d15d7ff47e011f085d4fc6a555c0"
+    }
+  }
+}
