@@ -19,6 +19,7 @@ import { onceExecutionMetadata } from "./owner-once-contract";
 import { initialRecoveryProof, type InitialRecoveryProof } from "./initial-ingest-contract";
 import { resolveOwnerRecoveryPlan } from "./owner-once-recovery";
 import { compactStatement } from "./d1-statement";
+import { reportModelAdmissionFailure, ownerAdmissionFailure, type ModelAdmissionFailure } from "./model-admission-diagnostics";
 const deny = () => Response.json({ error: "engine_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
 export const engineName = (installationId: string, generation: string) => JSON.stringify(["cognee", installationId, generation]);
 export async function boundedJson(request: Request | Response, max = 65536): Promise<unknown> {
@@ -126,25 +127,31 @@ function coverageHost(env:AssistantEnv,proof:CoverageProof) {
 export function engineModelAdmission(env: AssistantEnv, period: string, proof?: CoverageProof, grant?: OnceGrant): ModelAdmission | undefined {
   if (!proof && !grant) return undefined;
   return { prepare: async () => {
+    const startedAt = performance.now();
+    let stage: ModelAdmissionFailure = "host_generation_before";
     try {
       await assertRestoredGeneration(env);
       const guards = [];
       if (proof) {
+        stage = "host_coverage_check";
         const host = coverageHost(env, proof);
-        if (!await host.checkProof(proof)) return null;
+        if (!await host.checkProof(proof)) { reportModelAdmissionFailure("host_coverage_denied", startedAt); return null; }
+        stage = "host_coverage_guard";
         guards.push(await host.proofGuard(proof));
       }
       if (grant) {
+        stage = "host_owner_authority";
         const scope = onceScope.parse({ installationId: env.INSTALLATION_ID, generation: env.OPERATIONAL_GENERATION,
           sourceEpoch: env.BRIDGE_SOURCE_EPOCH, sourceGeneration: env.BRIDGE_SOURCE_GENERATION });
         const authority = await onceAuthority(env, scope, grant, Date.now());
-        if (authority.receipt.period !== period || Date.now() >= authority.receipt.deadlineAt) return null;
+        if (authority.receipt.period !== period || Date.now() >= authority.receipt.deadlineAt) { reportModelAdmissionFailure("host_owner_period_or_deadline", startedAt); return null; }
         guards.push(authority.guard);
       }
+      stage = "host_generation_after";
       await assertRestoredGeneration(env);
       const guard = combineOnceGuards(...guards);
       return { guard, statements: [] };
-    } catch { return null; }
+    } catch (error) { reportModelAdmissionFailure(stage === "host_owner_authority" ? ownerAdmissionFailure(error) : stage, startedAt); return null; }
   }, uncertain: async () => {} };
 }
 export class CanonicalEngineGuard implements EngineGuard {

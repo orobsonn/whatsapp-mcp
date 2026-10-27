@@ -1,4 +1,22 @@
-# #140 — execução Owner própria: ingestão comprovada, checkpoint e publicação pendentes
+# #140 — execução Owner própria: checkpoint comprovado, publicação pendente
+
+## Estado atual — checkpoint real e recusa semântica, 27/10 às18:47UTC
+
+O delta `0d9fd49f5a34c223df33e9442261f230735af170` passou na [CI40556227822](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40556227822):1.492gerais,65nativos,13OAuth, checksNode, tipos, dois builds e audit sem vulnerabilidades. Foi implantado na versão própria `c50528a8-e83d-4390-a205-a291c4543250`, com cinco módulos conferidos e37bindings/imagem/cron/pausa/exposição preservados.
+
+O rebuild existente em `replay_only` reconstruiu a primeira nota exclusivamente de recibos completos e confirmou checkpoint. Censo posterior permaneceu72recibos/72reservas liquidadas em1.252microUSD, sem chamada paga nova nesse rebuild. O operador temporário foi removido, com ACK e consulta404, e sua credencial local foi apagada. Não houve renovação do Root expirado.
+
+Um segundo caso técnico distinto, identificado como registro do agente e sem avaliação humana, foi admitido com prazo próprio imutável. A sequência real restaurou o checkpoint anterior após parada, ingeriu a segunda nota e confirmou seu checkpoint antes de retornar `indexed`. Portanto, a correção de continuidade entreRPCs foi exercitada na instalação real. O corpus controlado contém duas notas técnicas/964bytes; isso não representa todo o arquivo pessoal.
+
+A busca semântica seguinte recusou antes de publicar proposta: `semantic_uncertain`, seguido de `index_maintenance_required`. Há163recibos completos/163reservas liquidadas em2.578microUSD e uma reserva adicional de1.500microUSD, sem recibo correspondente observado. Essa reserva e a tentativa de busca permanecem preservadas, sem repetição, limpeza ou troca de chave para obter sucesso. Não existe episódio ou decisão deste caso, nem nova notificação Telegram.
+
+O diagnóstico somente leitura confirmou `checkProof=true`, compilou o INSERT exato via `EXPLAIN` e observou os predicados de cobertura/RootSQL isolados e combinados verdadeiros no snapshot consultado. Isso descarta a hipótese de limite de binds/profundidade SQL para este caso. Não reconstitui a admissão original: o permit já foi revogado, o prazo expirou e a configuração completa não foi extraída de bindings secretos. Holds, gates, snapshots e restores atuais estavam vazios; não há timestamp de reserva nem prova histórica de ausência de hold transitório.
+
+O próximo delta é diagnóstico, sem relaxar guards: códigos estáticos da etapa de recusa e tempo decorrido, sem conteúdo, SQL, identificadores ou erro bruto. A revisão adversarial também exige distinguir tempo/período de configuração Owner sem alterar a mensagem de erro ou a ordem das verificações. A causa da recusa permanece não comprovada; instrumentação local não equivale a correção homologada.
+
+Esse delta passou localmente em111testes dirigidos e tipos. Os novos testes reproduziram primeiro a ausência dos códigos e a ambiguidade tempo/configuração; também verificam reserva conservada, zero chamada ao adapter e isolamento de falha do logger. A CI exata e a implantação continuam gates separados.
+
+O censo18:47:07UTC registra59.388microUSD (US$0,059388) comprometidos nos ledgers conhecidos, incluindo40.000incertos históricos e1.500reservados no novo caso. Infraestrutura/fatura continuam separadas. #140/#48 permanecem abertas; faltam decisão atual e callbacks reais nos quatro tópicos privados. Os registros abaixo são cronológicos e conservam os resultados conhecidos em cada etapa.
 
 27/10/2026. O código `335d6d3abc029f61e9b3be91ab52081f4f5ea541` passou na [CI40531323462](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40531323462) e foi implantado no Worker próprio. Os cinco módulos instalados foram comparados com o build; 37 bindings, cron e exposição foram preservados. O primeiro readback recusou uma mudança automática em `annotations.workers/triggered_by`; a reconciliação somente de leitura confirmou que era a única diferença de settings, sem repetir upload.
 

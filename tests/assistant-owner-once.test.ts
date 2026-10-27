@@ -69,6 +69,20 @@ async function fixture(text = "Synthetic private blue marker") {
     projectId: "once-project", query: "Explain the private blue marker", deadlineAt: now + 600000, maxCostMicroUsd: 600000 };
   return { sources, source, rpc, command };
 }
+it.each(["time", "config_hash", "configuration"] as const)("reports only a static Owner %s admission failure", async kind => {
+  const f = await fixture(); await f.rpc.ownerOnce(scope, f.command);
+  await f.rpc.ownerOnce(scope, { kind: "owner_once.advance", operationId: f.command.operationId });
+  const raw = await env.DB.prepare("SELECT result_json FROM assistant_owner_commands WHERE installation_id=? AND operation_id LIKE 'owner-once-v1:%'").bind(scope.installationId).first<string>("result_json");
+  const grant = (await readOnceGrant(settings, onceReceipt.parse(JSON.parse(raw!))))!;
+  if (kind === "time") vi.setSystemTime(f.command.deadlineAt);
+  if (kind === "config_hash") settings.MEDIA_CONTEXT_ENABLED = "true";
+  if (kind === "configuration") settings.SEMANTIC_SEARCH_MODE = "lexical_fallback";
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  expect(await engineModelAdmission(settings, "2026-10-27", undefined, grant)!.prepare({ key: "private-key", hash: "a".repeat(64), recovered: false })).toBeNull();
+  expect(warn).toHaveBeenCalledExactlyOnceWith({ event: "model_admission_failure", code: `host_owner_${kind}`, elapsedMs: expect.any(Number) });
+  expect(JSON.stringify(warn.mock.calls)).not.toContain(grant.token);
+  expect((await new InferenceBudget(env.DB, { ...scope, period: "2026-10-27" }).status()).committed).toBe(0);
+});
 async function recoveryFixture(){
  const f=await fixture(),old=await f.rpc.ownerOnce(scope,f.command) as {id:string;jobId:string};
  await f.rpc.ownerOnce(scope,{kind:"owner_once.advance",operationId:f.command.operationId});

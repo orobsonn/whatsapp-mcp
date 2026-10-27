@@ -43,6 +43,14 @@ it.each(["hold", "generation"])("restore %s after reservation prevents a new bro
   expect(adapter).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(config.chatCeiling);
   expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
 });
+it("a diagnostic sink failure cannot throw, free the reservation or call the adapter", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => { throw Error("private-logger-secret"); });
+  const latch = vi.fn(async () => {});
+  broker = new CogneeModelBroker(env.DB, scope, config, adapter, () => now, { prepare: async () => null, uncertain: latch });
+  expect(await broker.invoke(await permit(), path, payload())).toMatchObject({ state: "uncertain" });
+  expect(latch).toHaveBeenCalledTimes(1); expect(adapter).not.toHaveBeenCalled();
+  expect((await budget.status()).committed).toBe(config.chatCeiling);
+});
 it("restore hold after broker receipt admission prevents the adapter and preserves uncertainty", async () => {
   const token = await permit(), prepare = env.DB.prepare.bind(env.DB); let injected = false;
   const db = { prepare: (sql: string) => {
@@ -342,4 +350,37 @@ it("a lost settlement ACK also latches the episode despite preserving the paid r
   expect((await broker.invoke(await permit(), path, payload())).state).toBe("uncertain");
   expect(adapter).toHaveBeenCalledTimes(1); expect(latch).toHaveBeenCalledTimes(1);
   expect((await budget.status()).committed).toBe(3);
+});
+it.each(["prepare_denied", "prepare_error", "compile_error", "batch_error", "predicate_no_row", "recovered_receipt_incomplete"] as const)
+  ("reports only a static %s code while preserving the failed admission", async code => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {}), token = await permit(), latch = vi.fn(async () => {});
+  const prepare = env.DB.prepare.bind(env.DB), batch = env.DB.batch.bind(env.DB);
+  let preparing = false;
+  const database = { prepare(sql: string) {
+    if (preparing && code === "compile_error" && sql.includes("INSERT INTO assistant_model_receipts")) throw new Error("private-sql-secret");
+    return prepare(sql);
+  }, async batch(statements: D1PreparedStatement[]) {
+    if (preparing && code === "batch_error") throw new Error("private-batch-secret");
+    return batch(statements);
+  } } as D1Database;
+  const admission: ModelAdmission = { async prepare() {
+    preparing = true;
+    if (code === "prepare_error") throw new Error("private-prepare-secret");
+    if (code === "prepare_denied") return null;
+    return { statements: [], guard: { sql: code === "predicate_no_row" ? "0=1" : "1=1", values: [] } };
+  }, uncertain: latch };
+  broker = new CogneeModelBroker(database, scope, config, adapter, () => now, admission);
+  if (code === "recovered_receipt_incomplete") {
+    // The second invocation sees the first reservation, without inventing a receipt.
+    const reserve = InferenceBudget.prototype.reserve;
+    vi.spyOn(InferenceBudget.prototype, "reserve").mockImplementation(async function(this: InferenceBudget, ...args) {
+      await reserve.apply(this, args); return reserve.apply(this, args);
+    });
+  }
+  expect(await broker.invoke(token, path, payload())).toMatchObject({ state: "uncertain" });
+  expect(warn).toHaveBeenCalledExactlyOnceWith({ event: "model_admission_failure", code, elapsedMs: expect.any(Number) });
+  expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
+  expect(latch).toHaveBeenCalledTimes(1); expect(adapter).not.toHaveBeenCalled();
+  expect((await budget.status()).committed).toBe(config.chatCeiling);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
 });

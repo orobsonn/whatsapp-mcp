@@ -103,8 +103,10 @@ export function combineOnceGuards(...guards: AccessGuard[]): AccessGuard {
   return { sql: guards.map(g => `(${g.sql})`).join(" AND "), values: guards.flatMap(g => g.values) };
 }
 export async function currentOnceGuard(env: AssistantEnv, receipt: OnceReceipt, now: number): Promise<AccessGuard> {
-  if (now >= receipt.deadlineAt || now < receipt.createdAt || oncePeriod(now) !== receipt.period
-    || await onceConfiguration(env, receipt.scope) !== receipt.configHash) throw new Error("owner_once_expired_or_changed");
+  if (now >= receipt.deadlineAt || now < receipt.createdAt || oncePeriod(now) !== receipt.period)
+    throw new Error("owner_once_expired_or_changed", { cause: "owner_once_time" });
+  if (await onceConfiguration(env, receipt.scope) !== receipt.configHash)
+    throw new Error("owner_once_expired_or_changed", { cause: "owner_once_config_hash" });
   const current = await onceInventory(env.DB!, receipt.scope, receipt.projectId, now);
   if (JSON.stringify(current.corpus) !== JSON.stringify(receipt.corpus)) throw new Error("owner_once_corpus_changed");
   return combineOnceGuards(current.guard, onceBudgetGuard(receipt.scope, receipt.period, receipt.capMicroUsd), retentionExecutionGuard(receipt.scope));
