@@ -1,0 +1,65 @@
+{
+  "issue": 57,
+  "baseCommit": "2f64a00",
+  "scope": "private Owner metadata summary; synthetic D1 only",
+  "red": {
+    "command": "npx vitest run tests/assistant-owner-summary.test.ts",
+    "failed": 1,
+    "durationSeconds": 8.7,
+    "cause": "old source-only catalog reported missingCatalog=1 despite a current authorized context note for another source"
+  },
+  "validation": {
+    "causalGreen": {
+      "passed": 1,
+      "durationSeconds": 8.22
+    },
+    "directed": {
+      "passed": 10,
+      "total": 11,
+      "durationSeconds": 11.58,
+      "remainingFailure": "fixture Reader secret had31characters; no runtime helper failure"
+    },
+    "whatsappAfterFixtureFix": {
+      "passed": 1,
+      "skipped": 10,
+      "durationSeconds": 7.41
+    },
+    "legacyDaily": {
+      "command": "npx vitest run tests/assistant-routines.test.ts --testNamePattern 'daily|summary'",
+      "passed": 5,
+      "skipped": 44,
+      "durationSeconds": 20.47
+    },
+    "typescript": "npm run check passed",
+    "diff": "git diff --check passed"
+  },
+  "proofs": [
+    "any current eligible authorized Owner note with project can supply catalog context",
+    "zero-claim publication requires current source/support/config/pin/receipt and exact settled reservation without a relation batch",
+    "positive publication verifies Owner batch/projection hashes and current guards",
+    "CAS-only descriptor revision can remain backed; semantic descriptor edit or support withdrawal invalidates",
+    "missing proof or mismatched settled usage cannot become published",
+    "uncertain operation remains pending; repeated metadata reads do not call adapter or mutate financial ceilings",
+    "private purged/corrupt status blocks publication and never changes Guest item phase/last_gap/fingerprint",
+    "materialized WhatsApp evidence is checked against local pinned origin metadata; no remote Reader refresh",
+    "final per-source read-only D1 transaction rechecks support after intervening awaits",
+    "16-support boundary compiles with <=100 binds per statement",
+    "65-source fixture returns full denominator and a partial64-source examined page using <=1000 D1API calls",
+    "daily schema preserves earlier cached DTOs and metadata_unchecked semantics"
+  ],
+  "limits": [
+    "metadata counts are not atomic across all sources and never attest remote freshness, semantic completeness or human review",
+    "published is a verified lower bound when coverage=partial; pending includes all unexamined sources",
+    "missingCatalog,blocked,stale,redacted,overflow are observations within the examined page, not whole-installation completeness",
+    "runtime helper never models, reads remote snapshots, writes private statuses, grants admission, retries operations or settles budgets",
+    "Source P1 guard fixes and canonical re-export remain separate commits owned by Source agent",
+    "CI composition and real cloud E2E57 remain pending"
+  ],
+  "estimatedPaidCostUsd": 0,
+  "realSourceCountsIncluded": false,
+  "fileSha256": {
+    "assistant/owner-context-summary.ts": "ec120d991a8acaa0f885f8f7b9153bd103856a923dbc434dcc0b288bebbf20c7",
+    "assistant/routines.ts": "8a246b26101e7860feab4ba88ebdcd3762f05f515a01c460481363bfe82fa30d",
+    "tests/assistant-owner-summary.test.ts": "ff31ac0fcd1c69c0cebeed0d05f077cd7c1106a2b52adec3ca620255977b1dd6"
+  }
+}

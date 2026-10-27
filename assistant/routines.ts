@@ -3,12 +3,12 @@ import type { OriginScope } from "./origin-guard";
 import { originScopeSql,scopeKeys } from "./origin-guard";
 import { DecisionJournal } from "./decisions";
 import { bridgeHash } from "./ingress";
-import {canonicalExtractionSummary} from './canonical-extraction';
+import {ownerContextSummary as canonicalExtractionSummary,ownerSummarySchema} from './owner-context-summary';
 const count=z.number().int().nonnegative().safe();
 export const dailySummarySchema=z.object({kind:z.literal("daily_shadow_summary"),reportingScope:z.literal("current_generation_cumulative"),snapshotAt:count,period:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
  journal:z.record(z.string(),count),freshness:z.literal("metadata_unchecked"),gaps:count,pausedConversations:count,paused:z.boolean(),blockedFollowUps:count,
  budget:z.object({state:z.enum(["available","blocked","exhausted","unconfigured"]),periodCap:count.nullable(),committedMicroUsd:count,uncertainMicroUsd:count}).strict(),
- pipelineGaps:z.array(z.string()).max(16),canonicalExtraction:z.object({sources:count,published:count,pending:count,missingCatalog:count,uncertain:count,observation:z.enum(['current_generation_metadata','not_observed'])}).strict().optional(),indexGaps:z.array(z.object({reason:z.enum(["index_maintenance_required","index_preflight_unavailable"]),count}).strict()).max(2).optional()}).strict();
+ pipelineGaps:z.array(z.string()).max(16),canonicalExtraction:ownerSummarySchema.optional(),indexGaps:z.array(z.object({reason:z.enum(["index_maintenance_required","index_preflight_unavailable"]),count}).strict()).max(2).optional()}).strict();
 export type DailySummary=z.infer<typeof dailySummarySchema>;
 export type RoutineCycle={window:number;owner:string;until:number};
 export class Routines {
@@ -65,7 +65,7 @@ export class Routines {
   const budget=await this.sql(`SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual_units ELSE ceiling_units END),0) committed,COALESCE(SUM(CASE WHEN state='uncertain' THEN ceiling_units ELSE 0 END),0) uncertain FROM assistant_budget_reservations WHERE installation_id=? AND generation=?`,this.scope.installationId,this.scope.generation).first<{committed:number;uncertain:number}>();
   const periodSpend=await this.sql(`SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual_units ELSE ceiling_units END),0) n FROM assistant_budget_reservations WHERE installation_id=? AND generation=? AND period=?`,this.scope.installationId,this.scope.generation,period).first<number>("n");
   const indexGaps=(await this.sql(`SELECT last_gap reason,COUNT(*) count FROM assistant_routine_items WHERE ${originScopeSql} AND state IN ('waiting_context','blocked','uncertain') AND last_gap IN ('index_maintenance_required','index_preflight_unavailable') GROUP BY last_gap ORDER BY last_gap LIMIT 2`,...keys).all<{reason:string;count:number}>()).results;
-  const extraction=await canonicalExtractionSummary(this.db,this.scope),extractionGaps=[...(!extraction.sources?['canonical_relations_not_observed']:extraction.pending?['canonical_relations_unpublished']:[]),...(extraction.missingCatalog?['canonical_catalog_empty']:[]),...(extraction.uncertain?['canonical_extraction_uncertain']:[])];
+  const extraction=await canonicalExtractionSummary(this.db,this.scope,{clock:this.clock}),extractionGaps=[...(!extraction.sources?['canonical_relations_not_observed']:extraction.pending?['canonical_relations_unpublished']:[]),...(extraction.missingCatalog?['canonical_catalog_empty']:[]),...(extraction.uncertain?['canonical_extraction_uncertain']:[])];
   const canonicalGaps=(await this.sql(`SELECT DISTINCT last_gap reason FROM assistant_routine_items WHERE ${originScopeSql} AND state IN ('waiting_context','blocked','uncertain') AND last_gap LIKE 'canonical_%' ORDER BY last_gap LIMIT 8`,...keys).all<{reason:string}>()).results.map(row=>row.reason);
   const summary=dailySummarySchema.parse({kind:"daily_shadow_summary",reportingScope:"current_generation_cumulative",snapshotAt:this.clock(),period,journal:counts,freshness:"metadata_unchecked",gaps:(gaps??0)+(itemGaps??0)+unknownKinds,pausedConversations:pausedChats??0,paused,blockedFollowUps:fups??0,budget:{state:!account?"unconfigured":account.blocked?"blocked":(periodSpend??0)>=account.cap_units?"exhausted":"available",periodCap:account?.cap_units??null,committedMicroUsd:budget?.committed??0,uncertainMicroUsd:budget?.uncertain??0},pipelineGaps:[...new Set([...(unknownKinds?["conversation_kind_unobserved"]:[]),...extractionGaps,...canonicalGaps,...indexGaps.map(row=>row.reason)])],canonicalExtraction:extraction,indexGaps});
   const id=await bridgeHash(["daily-review-v1",...keys,period]),hash=await bridgeHash(summary);
