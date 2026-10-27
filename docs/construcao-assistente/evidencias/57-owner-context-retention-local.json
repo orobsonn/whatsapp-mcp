@@ -25,7 +25,21 @@
       "durationSeconds": 21.64
     },
     "typecheck": "npm run check passed",
-    "diffCheck": "git diff --check passed"
+    "diffCheck": "git diff --check passed",
+    "missingSchemaFollowUp": {
+      "red": {
+        "failed": 1,
+        "durationSeconds": 13.5,
+        "observed": "false complete with private Owner slot remaining when catalog omits all27 sidecars"
+      },
+      "green": {
+        "command": "npx vitest run tests/assistant-owner-retention.test.ts --testNamePattern 'missing all27|full export'",
+        "passed": 2,
+        "skipped": 6,
+        "durationSeconds": 12.09
+      },
+      "guard": "Absent sidecars are legacy only if no Owner-prefixed slot exists in this namespace; partial sidecars always block."
+    }
   },
   "guarantees": [
     "support purge scrubs retained slot, response, private claims and Owner downstream closure",
@@ -46,9 +60,10 @@
   ],
   "estimatedPaidCostUsd": 0,
   "fileSha256": {
-    "assistant/retention-purge.ts": "8987670a3b2b867d16346f6b096609359786c101e082765fa8da6ee87b2fddac",
+    "assistant/retention-purge.ts": "c00071b39aed56f44519b9caab25ce8265cd89c594229d4a163948b3080280b2",
     "assistant/retention-snapshot-contract.ts": "6debd29933075321b871a9b15c9149c000fe88a7f4e7588c5a59a4cdd5cdb7a6",
     "assistant/retention-restore-plan.ts": "8dd2714e12430eb63343b71eac905cbc85442420c70029e4208f4a32ab84c97a",
-    "tests/assistant-owner-retention.test.ts": "c2dd42db43e48c0e20aea284ed7f78a94e05ef79f74c005c304e57ed9efe50a9"
-  }
+    "tests/assistant-owner-retention.test.ts": "e2334e823c7014e8bf2ba222500e72be5add3964c1e7af0b00ed88d3c1360503"
+  },
+  "compositionRequirement": "Source consumer uses explicit redacted status variant {state:blocked,gap:canonical_context_purged}, never a current/healthy result."
 }

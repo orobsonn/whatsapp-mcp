@@ -73,6 +73,12 @@ test('snapshot freeze prevents sidecar deletion and unauthorized scrub',async()=
  await expect(env.DB.prepare('DELETE FROM assistant_owner_canonical_supports WHERE installation_id=?').bind(scope.installationId).run()).rejects.toThrow('canonical_writers_quiesced');
  await expect(env.DB.prepare(`UPDATE assistant_canonical_extractions SET state='rejected',gap='canonical_context_purged',catalog_json='[]',payload_json='{}' WHERE installation_id=?`).bind(scope.installationId).run()).rejects.toThrow('owner_context_slot_immutable');
 });
+test('missing all27 sidecars cannot masquerade as a legacy schema while private Owner slots remain',async()=>{
+ await sources.withdraw(b,1);
+ const db={prepare(query:string){const statement=env.DB.prepare(query);if(!query.includes("name GLOB 'assistant_*' LIMIT 129"))return statement;return {all:async()=>{const result=await statement.all<{name:string}>();return {...result,results:result.results.filter(r=>!['assistant_owner_canonical_supports','assistant_owner_relation_proofs','assistant_owner_canonical_status'].includes(r.name))};}} as D1PreparedStatement;},batch:env.DB.batch.bind(env.DB)} as D1Database;
+ expect(await new RetentionPurge(db,scope,owner,()=>100,guard).advance({kind:'source.purge',operationId:'missing-schema',sourceId:b})).toMatchObject({state:'blocked',reason:'owner_context_schema_incomplete'});
+ expect(await rows('assistant_canonical_extractions')).toMatchObject([{state:'published'}]);expect(await rows('assistant_source_versions')).toHaveLength(2);
+});
 test('full export retains Owner operational proofs while canonical restore catalog excludes them and health requires27',async()=>{
  const metadata=await new AssistantExport(env.DB,scope,owner,'canonical_snapshot_candidate').snapshotMetadata();
  for(const t of ['assistant_relation_batches','assistant_canonical_extractions','assistant_owner_canonical_supports','assistant_owner_relation_proofs','assistant_owner_canonical_status'])expect(metadata.tables).not.toContain(t);

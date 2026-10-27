@@ -50,6 +50,7 @@ export class RetentionPurge {
     const routines = tables.has("assistant_routine_items");
     const ownerTables = ["assistant_owner_canonical_supports", "assistant_owner_relation_proofs", "assistant_owner_canonical_status"], ownerContext = ownerTables.every(name => catalog.some(row => row.name === name));
     if (!ownerContext && ownerTables.some(name => catalog.some(row => row.name === name))) return { state: "blocked", reason: "owner_context_schema_incomplete", d1: "pending" };
+    if (!ownerContext && catalog.some(row => row.name === "assistant_canonical_extractions") && await this.db.prepare("SELECT 1 FROM assistant_canonical_extractions WHERE installation_id=? AND generation=? AND substr(slot_key,1,19)='canonical-owner-v2:' LIMIT 1").bind(this.scope.installationId, this.scope.generation).first()) return { state: "blocked", reason: "owner_context_schema_incomplete", d1: "pending" };
     if (tables.size && !["assistant_routine_items", "assistant_routine_event_items", "assistant_routine_ingestions", "assistant_routine_state", "assistant_routine_cycles", "assistant_routine_fup_results"].every(table => tables.has(table))) return { state: "blocked", reason: "routines_schema_incomplete", d1: "pending" };
     const collect = (kind: string, query: string) => sql(`INSERT INTO assistant_retention_purge_refs SELECT ?1,?2,?3,'${kind}',found.id FROM (${query}) found WHERE found.id IS NOT NULL AND found.id NOT IN (${refs(kind)}) ORDER BY found.id LIMIT 128 ON CONFLICT DO NOTHING`);
     const collection = () => [
