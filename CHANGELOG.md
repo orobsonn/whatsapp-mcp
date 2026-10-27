@@ -4,11 +4,20 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-27
+
+### Added
+- Conclui o controle Owner da #46 com discovery e comandos reais no cliente Zap autenticado, preservando a conexão OAuth existente. Nota/projeto/missão/mandato/FUP exercitados com fixtures sintéticas, replay, CAS, proveniência e retirada.
+
 ### Fixed
 - Transporte Telegram usa o `fetch` nativo sem vinculá-lo à instância do adaptador; o vínculo indevido bloqueava o preflight e a criação dos tópicos no Worker real. Regressão nativa do bundle oficial cobre pareamento, quatro tópicos e repetição sem nova rede.
 
 ### Validation
-- Catálogo do Zap atualizado na conexão existente: sete ferramentas novas disponíveis e comandos Owner exercitados pelo cliente autenticado. Configuração e vínculo Telegram reais confirmados; tópicos/callbacks e OAuth Calendar ainda têm gates próprios. [Fronteiras e evidências](docs/construcao-assistente/evidencias/46-47-48-homologacao-local-20261027.md).
+- Catálogo do Zap atualizado na conexão existente: sete ferramentas novas disponíveis e comandos Owner exercitados pelo cliente autenticado. Configuração, vínculo e quatro tópicos Telegram reais confirmados; callbacks reais, revogação/revínculo e OAuth Calendar continuam pendentes. [Fronteiras e evidências](docs/construcao-assistente/evidencias/46-47-48-homologacao-local-20261027.md).
+- Correção funcional `13d1998` integrada pelo PR139 com CI40494277416:1350 gerais/65 nativos, checks, builds, operadores Node e auditoria aprovados. Worker Owner recebeu somente os três módulos de produção, com hashes relidos; configuração, bindings, cron e pausa preservados. Os quatro tópicos reais ficaramready com IDs persistidos, sem zerar os dois preflights anteriores. CI do commit desta versão permanece obrigatória antes de tag/release.
+
+### Notes
+- A #46 é o marco concluído; #47/#48/#51 permanecem abertas para os gates próprios restantes. Sem WhatsApp automático, escrita Calendar, avaliação humana fabricada ou nova inferência paga. A instalação continua em sombra e pausada.
 
 ## [0.45.0] - 2026-10-27
 

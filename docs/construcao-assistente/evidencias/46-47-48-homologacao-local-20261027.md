@@ -26,6 +26,14 @@ A regressão nova usa o **bundle oficial**, dois Workers/workerd, D1 migrado, Ow
 
 Validação dirigida: novo nativo1/1; Telegram/auth/MCP72/72; `npm run check` e `git diff --check` passaram. Dois nativos anteriores de binding/scheduled também passaram na basev0.45.0, antes desta correção. Revisão adversarial independente não encontrou bloqueantes no diff; distinguiu a prova sintética do teste Bot API/MCP real. CI integrada do novo commit e homologação dos tópicos reais ainda são gates antes de publicar o runtime/fechar a #48.
 
-## Limites e custos
+## Atualização — correção integrada e quatro tópicos reais
+
+O PR139 integrou `13d19981aabd42c23997c6d4d0fc847c530cc9a9` na main pelo commit `8ca9390e0b82882c013d73e80084aee8b0a0d80e`. A CI40494277416 passou com1350 testes gerais/65 nativos e todos os checks/builds/auditoria. O bundle de produção foi construído fora do Vitest; removendo somente comentários de proveniência/source-map e normalizando o nome do chunk, a única diferença funcional contra os módulos instalados foi a extração do fetcher. Os assets permaneceram equivalentes.
+
+O endpoint oficial code-only `/content` recebeu uma tentativa e ACK. A primeira comparação detectou a anotação gerenciada pelo servidor `workers/triggered_by` mudando de secret para upload; não houve repetição do PUT. Recuperação somente leitura confirmou os três hashes novos e a preservação integral dos demais metadados,29 bindings, cinco namespaces, cron e exposição. Versão Owner observada `f4085d95-b133-4eb5-a6fa-7bc7a5c94f75`; SHA256 principal `e3adae2ee2923717f51cc8c9ed75275a124cae1610965f40e9899c7364a18601`.
+
+Antes da terceira ensure, o MCP confirmou vínculoactive/revision1 e quatro slotsprepared/preflights2/IDsnull. A mesma operação prevista criou Geral, Resumos, Pendências e Missões e retornos: quatro slotsready, IDs persistidos e preflights3. Não houve reset/rekey, criação incerta repetida ou ativação de resumos automáticos. Callbacks reais continuam pendentes. A homologação cliente/cloud da #46 está observada; a release0.46.0 ainda depende da CI/tag do seu commit específico. Não se atribui a CI funcional ao novo commit de versão.
+
+## Limites e custos atuais
 
 Sem nova inferência paga, envio WhatsApp ou escrita Calendar. Rotinas permanecem shadow/paused; resumos Telegram automáticosfalse. O ledger histórico deUS$0,055310, incluindoUS$0,04 incertos, não foi alterado nem reinterpretado como fatura. Chamadas de infraestrutura/armazenamento seguem separadas. Google possui projeto/cliente próprios preparados e credencial local0600, mas ainda não há consentimento Calendar/refresh real configurado no Worker. Nenhuma issue é encerrada só por esta nota.
