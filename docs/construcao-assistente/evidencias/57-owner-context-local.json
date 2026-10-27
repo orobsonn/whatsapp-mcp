@@ -1,7 +1,7 @@
 {
   "issue": 57,
   "base": "7157b54",
-  "status": "partial_owner_producer_consumer_scheduler_pending",
+  "status": "owner_runtime_integrated_summary_and_final_regressions_pending",
   "phases": [
     {
       "phase": "storage_and_permanent_visibility_marker",
@@ -28,6 +28,12 @@
       "green": "2 targeted causal D1 cases passed together with scheduler case:17 earlier paused notes cannot hide eligible support B; correction of B invalidates Owner fingerprint/search fence while guest fingerprint stays equal. Anchor withdrawal during private await returns no legacy quote.",
       "implementation": "Catalog/stamp share ownerNoteEligibleSQL before bounded selection. Source affinity stays separate from the normalized two-field SourceFence. Search guard leaves<=90 binds direct and packs only large local groups, preserving every predicate.",
       "types": "tsc --noEmit and git diff --check passed"
+    },
+    {
+      "phase": "scheduler_private_discovery_independent_from_reply_actor",
+      "red": "The previous hook used interlocutor as canonical actor and left the item waiting_context before its reply episode.",
+      "green": "Directed real D1 scenario passed: an unknown Owner model attempt remains one uncertain receipt/reservation/private status while the interlocutor episode dispatches/completes once with original actor and no private gap; a later tick does not retry either model.",
+      "state": "Private observations use assistant_owner_canonical_status. No second Flue item, actor elevation, source association, permission change or outgoing capability was added."
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,
