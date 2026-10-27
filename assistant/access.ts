@@ -1,3 +1,4 @@
+import {sourceRelationAudience} from './relation-visibility';
 import type { Audience, SourceScope } from "./sources";
 export type TrustedActor = Readonly<{ kind: "owner" }> | Readonly<{ kind: "extractor" }> | Readonly<{
   kind: "interlocutor"; provider: string; address: string; conversationId: string; conversationKind: "private" | "group";
@@ -145,7 +146,7 @@ export class SourceAccess {
         FROM assistant_source_origins o LEFT JOIN assistant_origin_conversations c ON c.installation_id=o.installation_id AND c.generation=o.generation AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
         LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
         WHERE o.installation_id=? AND o.generation=? AND o.canonical_id=visible.id) origins,
-       (SELECT json_group_array(json_array(operation_key,request_hash)) FROM (SELECT operation_key,request_hash FROM assistant_relation_batches b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash ORDER BY operation_key LIMIT 17)) relations,
+       (SELECT json_group_array(json_array(operation_key,request_hash)) FROM (SELECT operation_key,request_hash FROM assistant_relation_batches b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17)) relations,
        (SELECT json_group_array(json_array(operation_key,text_hash,config_hash,blob_hash)) FROM (SELECT operation_key,text_hash,config_hash,blob_hash FROM assistant_media_artifacts b WHERE b.installation_id=? AND b.generation=? AND b.source_id=visible.id AND b.source_revision=visible.revision AND b.source_version=visible.version AND b.source_hash=visible.content_hash ORDER BY operation_key)) media_artifacts
       FROM visible WHERE (? IS NULL OR project_id=?))
       SELECT facts.*,json_array(id,revision,version,content_hash,audience,origin,conversation_id,project_id,${authority},conversations,inboxes,origins,relations,media_artifacts) fingerprint

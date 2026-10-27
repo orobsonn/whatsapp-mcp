@@ -1,3 +1,4 @@
+import {sourceRelationAudience} from './relation-visibility';
 import { z } from "zod";
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
 import { SourceAccess, type SourceRead, type TrustedActor } from "./access";
@@ -75,8 +76,8 @@ export class Retrieval {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) throw new Error("retrieval_deadline");
   }
   private async relationScore(source: SourceRead, terms: string[], entities: EntityRef[], gap: (reason: string) => void) {
-    const rows = await this.db.prepare(`SELECT claims_json FROM assistant_relation_batches WHERE installation_id=? AND generation=?
-      AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? ORDER BY operation_key LIMIT 17`)
+    const rows = await this.db.prepare(`SELECT claims_json FROM assistant_relation_batches b WHERE installation_id=? AND generation=?
+      AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17`)
       .bind(this.scope.installationId, this.scope.generation, source.id, source.fence.source.revision, source.fence.source.version, source.fence.source.hash).all<{ claims_json: string }>();
     if (rows.results.length > 16 || rows.results.reduce((sum, row) => sum + row.claims_json.length, 0) > 65536) { gap("relation_limit"); return { score: 0, linked: false }; }
     let score = 0, linked = false;

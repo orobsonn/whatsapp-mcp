@@ -2,6 +2,7 @@ import type {SourceScope} from './sources';
 import {SourceAccess,type TrustedActor,type AccessGuard} from './access';
 import {z} from 'zod';
 import {bridgeHash} from './ingress';
+import {sourceRelationAudience} from './relation-visibility';
 export type EntityRef={kind:'person'|'project'|'mission';id:string};
 export type CandidateClaim={kind:'assertion'|'suggestion'|'decision'|'observation';subject:EntityRef;object?:EntityRef;predicate:string;quote:string};
 export type ExtractionBatch={key:string;sourceId:string;revision:number;version:number;hash:string;claims:CandidateClaim[]};
@@ -53,8 +54,8 @@ export class Relations {
  async read(actor:TrustedActor,sourceId:string):Promise<unknown[]>{
   const access=new SourceAccess(this.db,this.scope),source=await access.read(actor,sourceId);
   if(!source)return [];
-  const rows=await this.db.prepare(`SELECT author_id,author_label,claims_json FROM assistant_relation_batches
-   WHERE installation_id=? AND generation=? AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? ORDER BY operation_key LIMIT 17`)
+  const rows=await this.db.prepare(`SELECT author_id,author_label,claims_json FROM assistant_relation_batches b
+   WHERE installation_id=? AND generation=? AND source_id=? AND source_revision=? AND source_version=? AND source_hash=? AND (${sourceRelationAudience('b')}) ORDER BY operation_key LIMIT 17`)
    .bind(this.scope.installationId,this.scope.generation,sourceId,source.fence.source.revision,source.fence.source.version,source.fence.source.hash)
    .all<{author_id:string|null;author_label:string|null;claims_json:string}>();
   if(rows.results.length>16 || rows.results.reduce((n,row)=>n+new TextEncoder().encode(row.claims_json).length,0)>65536)

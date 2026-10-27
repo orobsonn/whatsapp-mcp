@@ -3,7 +3,7 @@ import { retentionAuthorityName } from "./retention-authority";
 import { retentionObjectPrefix } from "./retention-objects";
 const features = { memory: "assistant_sources", capture: "assistant_capture_inbox", budget: "assistant_budget_accounts", models: "assistant_model_receipts",
   episodes: "assistant_episodes", semantic: "assistant_retrieval_semantic", decisions: "assistant_shadow_decisions", owner: "assistant_owner_commands",
-  telegram: "assistant_telegram_links", review: "assistant_telegram_topics", followUps: "assistant_fup_provenance", media: "assistant_media_receipts", routines: "assistant_routine_state",canonicalExtraction:'assistant_canonical_extractions' };
+  telegram: "assistant_telegram_links", review: "assistant_telegram_topics", followUps: "assistant_fup_provenance", media: "assistant_media_receipts", routines: "assistant_routine_state",canonicalExtraction:'assistant_canonical_extractions',ownerContextSupports:'assistant_owner_canonical_supports',ownerContextProofs:'assistant_owner_relation_proofs',ownerContextStatus:'assistant_owner_canonical_status' };
 type InstallEnv = AssistantEnv & { ARTIFACTS?: R2Bucket; ROUTINES_ENABLED?: string; ROUTINES_PAUSED?: string; TELEGRAM_SUMMARIES_ENABLED?: string; MEDIA_CONTEXT_ENABLED?: string };
 async function bounded<T>(action: () => Promise<T>, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

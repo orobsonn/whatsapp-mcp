@@ -1,0 +1,16 @@
+{
+  "issue": 57,
+  "base": "7157b54",
+  "status": "partial_storage_privacy_only",
+  "phases": [{
+    "phase": "storage_and_permanent_visibility_marker",
+    "red": "Real D1:17 missing-proof Owner batches caused relation_scope_too_large for an authorized interlocutor.",
+    "green": "3/3 directed real D1 cases passed in455ms (8.54s total): invisible rows filtered before read LIMIT, scoring and inventory fingerprint;27 reapplies; immutable Owner marker and namespace/slot/pin FKs; deleting proof leaves the single attempt intact.",
+    "types": "tsc --noEmit and git diff --check passed",
+    "scope": "Partial boundary. Valid Owner context production/read, descriptor catalog, runtime integration and support purge remain work in progress."
+  }],
+  "estimatedPaidTestsUsdThisTask": 0,
+  "providerCalls": 0,
+  "cloudCalls": 0,
+  "pilotReady": false
+}
