@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "issue": 56,
+  "issueUrl": "https://github.com/orobsonn/whatsapp-mcp/issues/56",
+  "documentationBase": "6b4bd49822a2da27f67ccc77409969bf8d80ea40",
+  "ci": {
+    "runId": 40428641551,
+    "headSha": "6b4bd49822a2da27f67ccc77409969bf8d80ea40",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/orobsonn/whatsapp-mcp/actions/runs/40428641551",
+    "verification": "GitHub read-only run metadata"
+  },
+  "scope": "installed_integrated_paused_shadow_not_functional_pilot_homologation",
+  "pendingRemoteProbe": true,
+  "remoteProbe": {
+    "state": "pending",
+    "checks": [
+      "assistant.health",
+      "nominal_reader_affinity",
+      "wrong_reader_secret_denied"
+    ],
+    "results": null,
+    "proofSha256": null,
+    "modelCallsExpected": 0
+  },
+  "criteria": {
+    "ac-16.301": {
+      "status": "local_renderer_and_real_installation_readbacks_proven",
+      "evidence": [
+        "official_build",
+        "schema26_observed",
+        "source_readback",
+        "own_readback"
+      ],
+      "sourceBindingCount": 29,
+      "ownBindingCount": 26,
+      "ownDoNamespaces": 5,
+      "ownSecretMarkers": 5,
+      "secretValuesPublished": false,
+      "markersProveProviderFunctionality": false
+    },
+    "ac-16.302": {
+      "status": "implementation_ci_and_platform_metadata_proven_new_nominal_probe_pending",
+      "evidence": [
+        "source_readback",
+        "own_readback"
+      ],
+      "newRemoteHealthResult": null
+    },
+    "ac-16.303": {
+      "status": "natural_cloud_cron_proven_paused",
+      "evidence": [
+        "natural_cron_first",
+        "natural_cron_second",
+        "own_readback"
+      ],
+      "manualSchedulerTick": false,
+      "vpsPhysicalShutdownTested": false,
+      "unpausedPipelineProven": false
+    },
+    "ac-16.304": {
+      "status": "deployment_preservation_proven_client_catalog_separate",
+      "evidence": [
+        "source_bridge_baseline",
+        "source_readback",
+        "own_readback"
+      ],
+      "sourceExpectedHandlerAddition": "CaptureReader.readRecipientEnvelope",
+      "eloModified": false,
+      "accessModified": false,
+      "newMcpToolsClientHomologated": false
+    },
+    "ac-16.305": {
+      "status": "compatible_code_config_rollback_contract_documented",
+      "evidence": [
+        "source_attempt",
+        "source_readback",
+        "own_attempt",
+        "own_readback"
+      ],
+      "migrationRollbackPromised": false,
+      "actualRollbackPerformed": false
+    }
+  },
+  "observations": {
+    "schemaAppliedThrough": "0026",
+    "migration27Applied": false,
+    "sourceVersion": "47e637b5-9a12-416a-a676-49bd444e1775",
+    "ownVersion": "83542665-7413-47eb-9b82-9ee1e9fa8d72",
+    "sourceModules": 1,
+    "ownModules": 3,
+    "ownFlags": {
+      "routines": "shadow",
+      "paused": true,
+      "media": false,
+      "telegramSummaries": false
+    },
+    "ownWorkersDevAndPreviews": false,
+    "ownCronPreserved": true,
+    "containersAndNamespacesPreserved": true,
+    "ddlWrittenByCodeUpdates": false,
+    "financialReset": false,
+    "settingsAndSecretsUpdatedByCodeUploads": false
+  },
+  "privateProofs": {
+    "official_build": {
+      "privatePath": "build-6b4bd49-v1/build-receipt.private.json",
+      "sha256": "cf0641edc87c0c1729cef2dc06ccf2d116797b4bab705af758234c57fc0e8d01"
+    },
+    "source_attempt": {
+      "privatePath": "outgoing128-code-v1/source/attempt.private.json",
+      "sha256": "0bc5031f61ec5d613242df388fe006804cd36ec78634b407dbe6beea98f26492"
+    },
+    "source_ack": {
+      "privatePath": "outgoing128-code-v1/source/ack.private.json",
+      "sha256": "b7a2f06c929649a1001d77fccee2152f0d7450d30051c19df7a3b858a3d797f3"
+    },
+    "source_readback": {
+      "privatePath": "outgoing128-code-v1/source/verified.private.json",
+      "sha256": "119f2e327f4aeca57596f7062ad84f6aa16fa629f47d29da40ee0dace7d624ef"
+    },
+    "own_attempt": {
+      "privatePath": "outgoing128-code-v1/own/attempt.private.json",
+      "sha256": "17bbea5b8ea0787e6969cafec067641c399815732bff4e89a7495f72a73fa105"
+    },
+    "own_ack": {
+      "privatePath": "outgoing128-code-v1/own/ack.private.json",
+      "sha256": "07c7fc135db7e9a6762a297e1d9cdd5999bdeee0becc221ecc833778d549a21b"
+    },
+    "own_readback": {
+      "privatePath": "outgoing128-code-v1/own/verified.private.json",
+      "sha256": "8ae48f665260e5c20aa490a9bc01363479a898a15c8f5298f9519d1f5ebd9a6c"
+    },
+    "schema26_observed": {
+      "privatePath": "schema26-3bffd33-v1/observed.private.json",
+      "sha256": "a94b3660361b04809e0218c3bb5266b09715fe66a22e29490ec495f1a56baa97"
+    },
+    "natural_cron_first": {
+      "privatePath": "capture-observations/after-617-cron-1.private.json",
+      "sha256": "3b980b079ed238b8ae85e5dcacaa77870a4ec854c0a1ae1ae01406ada23e20f3"
+    },
+    "natural_cron_second": {
+      "privatePath": "capture-observations/after-617-cron-2.private.json",
+      "sha256": "0c1b1884a6cd09f964050d29d2ab2bf796b262eae103bd9d8eb20a5506bf373a"
+    },
+    "source_bridge_baseline": {
+      "privatePath": "live-capture-v1/verification.private.json",
+      "sha256": "376a548d9fb4042fd3b0833f43a7584cfab45440494b39fdb57e33a76555e86b"
+    }
+  },
+  "repositoryProofs": {
+    "initial_resources": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/56-own-resources-vps.md",
+      "sha256": "21a2dffac507137445529c320f1718b4b1419c6dd4dd2bc8ccd34fb5051e8359"
+    },
+    "initial_installation": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/56-worker-inactive-vps.md",
+      "sha256": "3e592b8f0bb8bb91b9f9292dc5ca172ccfdc5b95883e12c894e39a096fdf8f7e"
+    },
+    "bridge_and_owner_smoke": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/56-cloud-bridge-and-owner-smoke-vps.md",
+      "sha256": "5ef99a84775194dc87c5d20c23050e53419c92ea30fa3679f2a7f8d47e6491ac"
+    },
+    "natural_cron": {
+      "repositoryPath": "docs/construcao-assistente/evidencias/53-56-natural-cron-vps.md",
+      "sha256": "9c5aefb8cc67bf3c43754a3988f046f4c6a89ce0471e44c0aaca8da59ff16128"
+    },
+    "operation_and_rollback": {
+      "repositoryPath": "docs/construcao-assistente/operacao.md",
+      "sha256": "d4c05ac66fc7abbc6af085b395fd401d812a7d2ed29bd81e9e08fc3ded561474"
+    }
+  },
+  "remainingHumanDependencies": [
+    "Telegram credentials and explicit linkage",
+    "Google readonly client/consent",
+    "MCP client catalog refresh and homologation"
+  ],
+  "remainingEngineeringOrEvidence": [
+    "Pending readonly remote health/reader probe and hashes",
+    "Functional end-to-end pipeline57 proof",
+    "Release exact commit CI/version/changelog/tag"
+  ],
+  "additionalInferenceCostUsd": 0,
+  "infrastructureCost": "not_estimated",
+  "releaseStatus": "not_versioned_by_this_document",
+  "pilotReadyClaim": false
+}
