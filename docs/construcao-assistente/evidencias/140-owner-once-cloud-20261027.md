@@ -15,7 +15,11 @@ O mapa `resources.script_runtime.containers` estava ausente na versão do ensaio
 
 A restauração preservou o mesmo código e digest da imagem, sem tocar no estado do Core. O upload de versão foi inspecionado antes de promover100%: mesmos 37 bindings, mesmo etag de código e mapa de containers histórico exato. O readback após promoção confirmou os cinco módulos, cron e exposição. As falhas anteriores de upload multipart e de comparação da anotação da plataforma foram preservadas e reconciliadas; não se repetiu uma tentativa de modelo.
 
-A configuração corrigida não reabre o slot incerto nem estende o grant. O diagnóstico acrescentado por esta fatia é somente leitura: snapshot durável atômico de ticket/index/access/receipt/active, com ausência e corrupção distintas, vínculo ao mesmo Root e geração atual. O indicador de imagem descreve a configuração presente; a versão original continua sendo a prova histórica. A observação real desse diagnóstico depende de sua própria CI/publicação.
+A configuração corrigida não reabre o slot incerto nem estende o grant. O diagnóstico é somente leitura: snapshot durável atômico de ticket/index/access/receipt/active, com ausência e corrupção distintas, vínculo ao mesmo Root e geração atual. O indicador de imagem descreve a configuração presente; a versão original continua sendo a prova histórica.
+
+O commit `f0e32ad95161dad786e0311a396a04b03c7b3d74` passou na [CI40538028510](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40538028510):1.442gerais,13OAuth e65runtime, mais Node/tipos/builds/audit. Build fresco do SHA foi enviado como versão; módulos, runtime/containers e37bindings foram conferidos antes de promover100%. Cron/exposição permaneceram iguais; nenhuma escrita no Core foi feita pela publicação.
+
+A inspeção real do mesmo Root expirado observou imagem atual configurada, active ausente, índice na mesma epoch com revisionempty/zero fontes/losttrue e ticket inicialuncertain, sem access ou receipt para aquela operação. O comprovante privado tem SHA256 `fa787f80df8d494ec7e9c7d63be1adee24054e0b0eed65080235dc0c935e6bf5`. A fonte335 examinada persiste access antes de habilitar o dispatch e não oferece remoção desses registros nas APIs auditadas; o namespace/histórico externo deste ensaio foram conferidos. Isso sustenta a conclusão limitada de falha anterior à habilitação de `/ingest`, sem reclassificar/gravar sucesso retroativo. A recuperação ainda exige [contrato próprio](../owner-once-recovery-design.md); a inspeção não concede nova execução.
 
 ## Gates restantes e custos
 
