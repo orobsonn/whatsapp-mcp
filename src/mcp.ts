@@ -487,7 +487,7 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
       z.object({ command: ownerCommandSchema }).strict(), false, input => binding().control(affinity(), input.command));
     tool("assistente_avaliar", "Registra exposição e avaliação explicitamente informada pelo dono sobre uma entrada do diário sombra. Labels são juízo humano na exposição; ação humana é relato explícito, nunca inferida de fromMe, conteúdo recebido, revisão Telegram ou aprovação simulada. Não preencha avaliações sem relato do dono. Tempo é intervalo de relógio entre registros, sem medir atenção ativa.",
       z.object({ command: evaluationCommand }).strict(), false, input => binding().evaluate(affinity(), input.command));
-    tool("assistente_consultar", "Consulta estado e fontes atuais da assistente com paginação limitada. Decisões de sombra são propostas hipotéticas, nunca mensagens enviadas. Fonte indisponível ou dependência pendente é explícita; não é acervo vazio.",
+    tool("assistente_consultar", "Consulta estado e fontes atuais da assistente com paginação limitada. Decisões de sombra são propostas hipotéticas, nunca mensagens enviadas. Em kind=source, canonicalCandidates mostra hipóteses privadas do dono com quote do original, contexto canônico e freshness; unreviewed/semantic_unverified não confirmam fato, identidade ou autorização. Contexto pode vir de outra nota ativa autorizada do dono, sem alterar projeto/ACL da mensagem. Fonte indisponível ou dependência pendente é explícita; não é acervo vazio.",
       z.object({ query: ownerQuerySchema }).strict(), true, input => binding().query(affinity(), input.query));
   }
   return server;

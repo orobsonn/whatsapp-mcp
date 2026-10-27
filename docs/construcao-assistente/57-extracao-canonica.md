@@ -6,15 +6,29 @@ derivado do Cognee continua sendo outra projeção. Isso fecha a ausência do
 produtor runtime de `Relations.publish`, sem declarar homologação cloud do
 critério #57/ac-16.311.
 
-O host lê a fonte atual com `SourceAccess(actor)`. O catálogo contém somente
-projetos explicitamente associados a owner notes, ou missões **draft/active**
-ligadas à mesma fonte/revisão, com projeto opcional. Projetos de missões entram
-somente quando definidos explicitamente. Catálogo, guard e resumo usam a mesma
-consulta; paused/resolved/cancelled não viram nova atuação. São até 16 referências, com IDs
-e revisões canônicos; nomes, objetivos privados de missões, hashes de autores e
-HMACs não viram identidades. Não há inferência/criação de pessoas, identidades,
-memberships, autorização, missões ou FUPs. Fonte e autor originais permanecem
-registrados em cada lote de candidatos.
+A descoberta usa uma etapa host Owner privada, separada do actor/perfil do
+interlocutor. Fonte original e contexto precisam continuar elegíveis para
+leitura/automation, com origem, pausa, exclusão e hold atuais. Projetos podem
+ser ensinados por qualquer owner_note ativa autorizada com project_id explícito;
+a mensagem nova não precisa estar previamente ligada ao projeto. O catálogo
+fornece nomes/descritores necessários e IDs distintos, sem inferir pessoas ou
+alterar associações administrativas. Missões draft/active da fonte/revisão
+exatas preservam o projeto opcional. São16 entidades/16 notas,8KiB do catálogo
+enviado e32KiB de provas metadata; overflow do conjunto inteiro é explícito.
+
+O prefixo reservado canonical-owner-v2: é negação permanente ao interlocutor,
+nunca prova de autorização Owner. Provas sidecar0027 ficam vinculadas ao slot0026
+único por fonte/revisão; nenhum reset/rekey/lane financeira novo é criado.
+Missing/corrupt proof falha fechado. Relações novas são exclusivamente Owner;
+legado source audience conserva suas regras. Leitura, score e fingerprint guest
+não revelam claims, nomes, existência ou capacidade dos lotes privados.
+
+O query source existente do OwnerMCP expõe canonicalCandidates com claims,
+referências de supports e estado unreviewed/semantic_unverified. Quotes pertencem
+ao original atual; descritor de outra nota não é fala atribuída ao autor da
+mensagem. Zero claims usa o backing do slot/recibo, sem lote fictício. O modelo
+não concede ACL, não resolve identidade por nome e não cria Source.project_id,
+missões, FUPs ou ferramentas executáveis.
 
 Uma fonte sem catálogo retorna `canonical_catalog_empty` antes de criar slot,
 reservar orçamento ou chamar modelo. A busca/episódio existente pode continuar
@@ -103,3 +117,24 @@ Ainda é necessária execução do fluxo integrado em recursos reais com os novo
 bundle e schema, CI do commit integrado, revisão da integração e as demais
 fronteiras de #57. Atribuição de autor não homologa identidade canônica de
 pessoas; canais, consentimentos e cliente MCP mantêm suas pendências próprias.
+
+## Atualização de integração Owner privada
+
+O scheduler persiste o resultado/gap Owner em assistant_owner_canonical_status.
+Um erro/unknown de descoberta privada não altera o actor, coverage, phase,
+last_gap ou revisão do episódio interlocutor; o orçamento global e seus holds
+continuam valendo. O loop não cria um segundo episódio Flue nem repete inferência
+incerta. Perfil Owner pode manter sua própria pendência explícita.
+
+Guards de escrita recompõem os predicates concretos compartilhados de
+SourceAccess/Conversations e o catálogo atual completo, com clock após os awaits.
+Essa forma preserva profundidade100 e binds100 no D1; a fronteira16/16 é testada.
+Leituras de candidates executam SELECTs de todos os guards em um único D1.batch,
+um snapshot transacional, sem grant persistido entre awaits. Owner fingerprints
+usam o mesmo universo de notas elegíveis antes do limite; mudança de support
+invalida rank/fence mesmo quando a nota não participa do escopo de busca.
+
+Mudança de configuração não autoriza rekey de itens/slots antigos. Os itens
+capturados antes da configv2 precisam de inventário e recuperação explícita,
+separada da prova de novos eventos. CI, revisão de integração e cloud continuam
+pendentes; esta documentação não declara o piloto pronto.

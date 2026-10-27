@@ -34,6 +34,13 @@
       "red": "The previous hook used interlocutor as canonical actor and left the item waiting_context before its reply episode.",
       "green": "Directed real D1 scenario passed: an unknown Owner model attempt remains one uncertain receipt/reservation/private status while the interlocutor episode dispatches/completes once with original actor and no private gap; a later tick does not retry either model.",
       "state": "Private observations use assistant_owner_canonical_status. No second Flue item, actor elevation, source association, permission change or outgoing capability was added."
+    },
+    {
+      "phase": "context_temporal_and_recovery_adversarial",
+      "green": "12/12 directed real D1 cases passed in2.52s (8.88s total), including the prior boundaries and P1 regressions.",
+      "veto": "Withdrawal/correction of a support and semantic project rename during adapter suppress private publication, preserve the immutable pin, keep one provider attempt and settled spend.",
+      "recovery": "Lost publication ACK recovers the same complete receipt/batch with one reservation and one provider call.",
+      "remaining": "Independent follow-up code review, summary composition and integration regressions/CI/cloud remain gates."
     }
   ],
   "estimatedPaidTestsUsdThisTask": 0,
