@@ -50,6 +50,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  approvedSendAuthorization(expected: OwnerAffinity, input: {secret:string;approvalId:string;actionId:string;hash:string}): Promise<import('../src/approved-send-contract').ApprovedSendAuthorization>;
   installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
   retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   ownerOnce?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
@@ -172,6 +173,11 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   async telegramReview(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);
     return (await createTelegramReview(this.env, scope)).execute(command);
+  }
+  async approvedSendAuthorization(expected:OwnerAffinity,input:{secret:string;approvalId:string;actionId:string;hash:string}){
+    const scope=this.#affinity(expected);
+    const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+    return (await createTelegramApprovedSendReview(this.env,scope)).authorize(input);
   }
   async ownerOnce(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);

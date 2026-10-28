@@ -17,11 +17,12 @@ const services = [
   { binding: "CAPTURE_READER", service: INSTALLATION.archive, entrypoint: "CaptureReader" },
   { binding: "CAPTURE_MEDIA_READER", service: INSTALLATION.archive, entrypoint: "CaptureMediaReader" },
   { binding: "MEDIA_PDF_PARSER", service: INSTALLATION.pdf, entrypoint: "MediaPdfParser" },
+  { binding: "WHATSAPP_APPROVED_SEND", service: INSTALLATION.archive, entrypoint: "ApprovedSendActuator" },
 ] as const;
 export const INSTALLATION_SECRET_NAMES = Object.freeze({
   assistant: ["BRIDGE_SECRET", "BRIDGE_SOURCE_EPOCH", "BRIDGE_SOURCE_GENERATION", "OPENAI_API_KEY", "RETENTION_BOOTSTRAP_SEAL"],
   archive: ["ASSISTANT_READER_SECRET", "ASSISTANT_BRIDGE_SECRET"],
-  optional: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_BOT_INSTANCE", "GITHUB_READ_TOKEN", "GITHUB_READ_REPOSITORIES", "CALENDAR_READ_CALENDARS",
+  optional: ["WHATSAPP_APPROVED_SEND_SECRET", "ASSISTANT_APPROVED_SEND_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_BOT_INSTANCE", "GITHUB_READ_TOKEN", "GITHUB_READ_REPOSITORIES", "CALENDAR_READ_CALENDARS",
     "CALENDAR_OAUTH_CLIENT_ID", "CALENDAR_OAUTH_CLIENT_SECRET", "CALENDAR_OAUTH_REFRESH_TOKEN", "CALENDAR_OAUTH_ENCRYPTION_KEY", "CALENDAR_OAUTH_CONFIGURATION_VERSION", "CALENDAR_OAUTH_SECRET_EPOCH", "CALENDAR_OAUTH_CREDENTIAL_GENERATION"],
 });
 export function installationConfigs(input: unknown, repositoryRoot: string) {
@@ -54,7 +55,7 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
   const config = z.object({ name: z.literal(INSTALLATION.worker), account_id: z.literal(INSTALLATION.accountId), workers_dev: z.literal(false), preview_urls: z.literal(false),
     routes: z.array(z.never()).optional(), d1_databases: z.tuple([z.object({ binding: z.literal("DB"), database_name: z.literal(INSTALLATION.database), database_id: database,
       migrations_dir: z.string().min(1) }).strict()]), r2_buckets: z.tuple([z.object({ binding: z.literal("ARTIFACTS"), bucket_name: z.literal(INSTALLATION.artifacts) }).strict()]),
-    services: z.array(z.object({ binding: z.string(), service: z.string(), entrypoint: z.string() }).strict()).length(3),
+    services: z.array(z.object({ binding: z.string(), service: z.string(), entrypoint: z.string() }).strict()).length(4),
     durable_objects: z.object({ bindings: z.array(z.object({ name: z.string(), class_name: z.string() }).strict()).length(3) }).strict(),
     containers: z.tuple([z.object({ name: z.literal(`${INSTALLATION.worker}-cognee`), class_name: z.literal("CogneeContainer"), scheduling_policy: z.literal("durable_object"),
       images: z.object({ cognee: z.object({ image }).strict() }).strict(), observability: z.object({ enabled: z.literal(false), logs: z.object({ enabled: z.literal(false) }).strict() }).strict() }).strict()]),

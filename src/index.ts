@@ -464,5 +464,6 @@ export default {
 };
 
 export { CaptureReader } from "./assistant-source-reader";
+export { ApprovedSendActuator } from "./assistant-approved-send";
 export { CaptureMediaReader } from "./assistant-media-reader";
 export { OAuthCoordinator } from "./oauth-coordinator";

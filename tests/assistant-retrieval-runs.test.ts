@@ -5,6 +5,8 @@ import { SourceController, sourceTextHash } from "../assistant/sources";
 import { CaptureMaterializer } from "../assistant/materialize";
 import { OriginGuard } from "../assistant/origin-guard";
 import type { TrustedActor } from "../assistant/access";
+import { SourceAccess } from "../assistant/access";
+import { normalizeRetrievalInput, Retrieval } from "../assistant/retrieval";
 // @ts-expect-error Raw SQL.
 import sources from "../assistant/migrations/0001_sources.sql?raw";
 // @ts-expect-error Raw SQL.
@@ -45,6 +47,32 @@ async function finish(actor: TrustedActor, progress: Awaited<ReturnType<Retrieva
   for (let step = 0; step < 80 && progress.state !== "ready" && progress.state !== "waiting_context"; step++) progress = await search.step(actor, { runId: progress.runId, stepId: `step-${step}`, expectedCheckpoint: progress.checkpoint });
   return search.result(actor, progress.runId);
 }
+it('keeps an exact three-source restriction through lexical inventory, durable search and its persisted guard', async () => {
+  const rows = await seed(8);
+  const sourceRefs = [7, 1, 3].map(i => ({ id: rows[i].id, revision: 1, version: 1, hash: rows[i].hash }));
+  const normalized = normalizeRetrievalInput({ query: 'Órbita prazo', sourceRefs });
+  expect(normalized.sourceRefs?.map(ref => ref.id)).toEqual([rows[1].id, rows[3].id, rows[7].id]);
+  const inventory = new SourceAccess(env.DB, scope).inventory(owner, undefined, now, { sourceRefs });
+  expect((await env.DB.prepare(inventory.sql).bind(...inventory.values).all<{id:string}>()).results.map(row => row.id).sort()).toEqual(normalized.sourceRefs!.map(ref => ref.id));
+  const direct = await new Retrieval(env.DB, scope).search(owner, { query: 'Órbita prazo', sourceRefs });
+  expect(direct.sources.every(source => sourceRefs.some(ref => ref.id === source.id))).toBe(true);
+  const progress = await search.start(owner, 'scoped', { query: 'Órbita prazo', sourceRefs });
+  const result = await finish(owner, progress);
+  expect(result.state).toBe('ready');
+  expect(await sql('SELECT COUNT(*) n FROM assistant_retrieval_items WHERE installation_id=? AND generation=? AND run_id=?', progress.runId).first('n')).toBe(3);
+  expect(await search.check(owner, result.fence!)).toBe(true);
+  await sql("UPDATE assistant_source_versions SET original_text='Unrelated changed',content_hash=? WHERE installation_id=? AND generation=? AND source_id=?", 'b'.repeat(64), rows[0].id).run();
+  expect(await search.check(owner, result.fence!)).toBe(true);
+  await sql('UPDATE assistant_sources SET revision=revision+1 WHERE installation_id=? AND generation=? AND id=?', rows[1].id).run();
+  expect(await search.check(owner, result.fence!)).toBe(false);
+  await expect(search.start(owner, 'scoped', { query: 'Órbita prazo', sourceRefs: sourceRefs.slice(0, 1) })).rejects.toThrow('retrieval_run_conflict');
+});
+it('rejects oversized, duplicate, malformed and empty source restrictions instead of widening them', () => {
+  const ref = { id: 'source', revision: 1, version: 1, hash: 'a'.repeat(64) };
+  for (const sourceRefs of [[], [ref, ref], Array.from({length: 4}, (_,i) => ({...ref,id:'s'+i})), [{...ref,revision:0}], [{...ref,extra:true}]]) {
+    expect(() => normalizeRetrievalInput({query:'Question',sourceRefs})).toThrow();
+  }
+});
 it("finds a late target beyond 1000 canonical rows without private IDs or bodies entering the result", async () => {
   const rows = await seed(1105, 5);
   const progress = await search.start(guest, "late", { query: "Órbita prazo quinta Lara", limit: 2 });

@@ -12,6 +12,10 @@ export default {
         await tickOwnerDialogues(env);
       }
       await runScheduledAssistant(env);
+      if(env.WHATSAPP_APPROVED_SEND_ENABLED==='true'&&env.ROUTINES_PAUSED!=='true'){
+        const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+        await (await createTelegramApprovedSendReview(env,{installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!})).reconcile();
+      }
     })());
   },
   async fetch(request: Request, env: AssistantEnv): Promise<Response> {
@@ -23,7 +27,7 @@ export default {
       return Response.json(
         {
           mode: "shadow",
-          capabilities: { whatsappSend: false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
+          capabilities: { whatsappSend: env.WHATSAPP_APPROVED_SEND_ENABLED==='true'&&!!env.WHATSAPP_APPROVED_SEND&&env.ROUTINES_PAUSED!=='true',whatsappAutonomousSend:false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
         },
         { headers },
       );

@@ -28,6 +28,16 @@ beforeEach(async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("Reader must not use network"); });
 });
 afterEach(() => vi.restoreAllMocks());
+it('returns only the authenticated current Source stream head for a prospective pilot cutoff', async () => {
+  const input = { secret, sourceEpoch: 'reader-e', sourceGeneration: 'reader-g' };
+  const expected = await env.DB.prepare("SELECT COALESCE(MAX(sequence),0) n FROM assistant_capture_changes WHERE epoch='reader-e' AND generation='reader-g'").first<number>('n');
+  expect(await reader().streamHead(input)).toEqual({observation:'capture_stream_head',state:'available',sourceEpoch:'reader-e',sourceGeneration:'reader-g',sequence:expected});
+  await expect(reader().streamHead({...input,secret:'invalid'})).rejects.toThrow('reader_denied');
+  await expect(reader().streamHead({...input,sourceGeneration:'old'})).rejects.toThrow('reader_denied');
+  await expect(reader().streamHead({...input,sql:'SELECT *'})).rejects.toThrow('reader_invalid_input');
+  expect(await reader({...settings(),MAINTENANCE:'true'}).streamHead(input)).toMatchObject({state:'blocked'});
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
 
 it("authenticates a nominal read-only entrypoint and refuses arbitrary input", async () => {
   await expect(reader().readSnapshot({ ...request(), secret: "invalid" })).rejects.toThrow("reader_denied");

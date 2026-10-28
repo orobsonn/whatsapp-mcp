@@ -62,6 +62,15 @@ beforeEach(async()=>{
   search=new RetrievalRuns(env.DB,scope,{clock,semantic:{mode:"required",engine}});
 });
 async function create(text:string,audience:"public"|"owner"="public",projectId?:string){return controller.create({originKey:crypto.randomUUID(),text,audience,occurredAt:100,...(projectId?{projectId}:{})});}
+it('semantic required receives only immutable selected refs despite a larger authorized inventory',async()=>{
+ const first=await create('Breno cuida das faturas do projeto Íris.');selected=first.id;
+ for(let i=0;i<5;i++)await create('Unrelated source '+i);
+ const source=await new SourceAccess(env.DB,scope).read(owner,first.id);const sourceRefs=[{id:source!.id,revision:source!.fence.source.revision,version:source!.fence.source.version,hash:source!.fence.source.hash}];
+ let progress=await search.start(owner,'restricted-semantic',{query:'Quem responde pela cobrança?',sourceRefs});
+ while(progress.state==='pending')progress=await search.step(owner,{runId:progress.runId,stepId:'step'+progress.checkpoint,expectedCheckpoint:progress.checkpoint});
+ await search.advanceSemantic(owner,progress.runId);const result=await search.result(owner,progress.runId);
+ expect(lastInput!.allowedSources.map(ref=>ref.id)).toEqual([first.id]);expect(result.state).toBe('ready');expect(await search.check(owner,result.fence!)).toBe(true);
+});
 async function inventory(actor:TrustedActor=owner,query="Quem responde pela cobrança?",key=crypto.randomUUID()){
   let progress=await search.start(actor,key,{query});
   for(let i=0;progress.state==="pending"&&i<80;i++)progress=await search.step(actor,{runId:progress.runId,stepId:`step-${i}`,expectedCheckpoint:progress.checkpoint});

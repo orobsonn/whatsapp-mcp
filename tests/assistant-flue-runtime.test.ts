@@ -139,7 +139,7 @@ test("unknown profile and absent host namespace cannot allocate an instance", as
 test("production artifact preserves health and denies public agent/history/action routes", async () => {
   await restart(configAt(join(root, "dist/assistant")), "production");
   const health = await runtime!.dispatchFetch("https://runtime.test/health");
-  expect(await health.json()).toEqual({ mode: "shadow", capabilities: { whatsappSend: false, calendarWrite: false } });
+  expect(await health.json()).toEqual({ mode: "shadow", capabilities: { whatsappSend: false, whatsappAutonomousSend: false, calendarWrite: false } });
   for (const path of ["/__test/dispatch", "/agents/owner-runtime/job", "/agents/owner-runtime/job/history", "/agents/interlocutor-runtime/job/stream", "/send", "/calendar/write"]) {
     const response = await runtime!.dispatchFetch("https://runtime.test" + path, { method: "POST", body: "{}" });
     expect(response.status).toBe(403); expect(await response.json()).toEqual({ error: "shadow_only" });

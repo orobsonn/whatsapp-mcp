@@ -25,6 +25,9 @@ import type { AssistantEnv } from "../assistant/env";
 import type { ModelAdapter } from "../assistant/model-broker";
 import type { OriginScope,ReaderQuery } from "../assistant/origin-guard";
 import { OriginGuard } from "../assistant/origin-guard";
+import {runtimeHost} from '../assistant/agent-runtime/runtime';
+import {readProactivePilot,pilotAllowsSubject,pilotBindingCurrent} from '../assistant/proactive-pilot';
+import {CanonicalCandidateExtractor} from '../assistant/canonical-extraction';
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,author:string|null,fromMe:boolean;
 let snapshots:Map<string,unknown>,model:ModelAdapter,driver:EpisodeDriver;
 const keys=()=>[scope.installationId,scope.generation],query=(sql:string,...values:(string|number|null)[])=>env.DB.prepare(sql).bind(...values);
@@ -42,9 +45,47 @@ beforeEach(async()=>{
  }});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
-async function event(sequence=1,previousSequence=0,id="message",text="Synthetic request",kind:"private"|"group"="private"){
- snapshots.set("message:"+id,{observation:"capture_snapshot",state:"available",sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:"message",sourceId:id,chatId:"chat",sourceVersion:1,watermark:sequence,conversationKind:kind,access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:"text",text,authorId:author,authorName:"Synthetic author",fromMe,occurredAt:now,messageId:id,messageVersion:1}});
- const response=await receiveCapture(new Request("https://synthetic.invalid/internal/capture",{method:"POST",headers:{Authorization:`Bearer ${secret}`},body:JSON.stringify({protocol:1,...scope,sequence,previousSequence,chatId:"chat",sourceId:id,sourceKind:"message",operation:"upsert",recordedAt:now})}),settings);expect(response.status).toBe(200);
+it('admits only prospective received pilot messages and leaves old routines and unrelated owner context untouched', async () => {
+ const extraction=vi.spyOn(CanonicalCandidateExtractor.prototype,'extract');
+ settings.ROUTINES_PAUSED='true';await event(1,0,'old');await scheduler().tick();
+ const old=await query('SELECT id,binding_json FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first<{id:string;binding_json:string}>();
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'pilot',revision:1,startAfterSequence:1,chatIds:['chat']});
+ settings.ROUTINES_PAUSED='false';now+=60001;fromMe=true;await event(2,1,'outgoing');await scheduler().tick();
+ expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ expect(await query('SELECT state,binding_json FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id=?',...keys(),old!.id).first()).toEqual({state:'pending',binding_json:old!.binding_json});
+ fromMe=false;now+=60001;await event(3,2,'received','Synthetic received request');
+ for(const [key,value] of snapshots)snapshots.set(key,{...(value as object),watermark:3});
+ await scheduler().tick();
+ expect(dispatches).toBe(1);expect(modelCalls).toBe(1);
+ expect(extraction).not.toHaveBeenCalled();
+ const canonical=JSON.parse((await query('SELECT body_json FROM assistant_owner_canonical_status WHERE installation_id=? AND generation=?',...keys()).first<string>('body_json'))!);
+ expect(canonical).toMatchObject({state:'not_evaluated',gap:'pilot_context_only'});
+ const item=await query("SELECT binding_json FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id<>?",...keys(),old!.id).first<string>('binding_json');
+ const binding=JSON.parse(item!);expect(binding.pilot).toMatchObject({id:'pilot',revision:1,startAfterSequence:1,chatId:'chat'});
+ expect(binding.sourceRefs.length).toBeGreaterThan(0);expect(binding.sourceRefs.length).toBeLessThanOrEqual(3);
+ expect(await query('SELECT state FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id=?',...keys(),old!.id).first('state')).toBe('pending');
+ expect(await pilotBindingCurrent(settings,binding)).toBe(true);
+ const episodeId=await query('SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first<string>('id');
+ settings.ROUTINES_PAUSED='true';expect(await pilotBindingCurrent(settings,binding)).toBe(false);
+ await expect(runtimeHost(settings,'automation',{clock:()=>now,model}).model(episodeId!,{profile:'interlocutor',runtimeId:'stale',submissionId:'stale'},{messages:[]})).rejects.toThrow('proactive_pilot_ineligible');
+ settings.ROUTINES_PAUSED='false';
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'pilot',revision:2,startAfterSequence:1,chatIds:['chat']});
+ expect(await pilotBindingCurrent(settings,binding)).toBe(false);
+ await expect(runtimeHost(settings,'automation',{clock:()=>now,model}).model(episodeId!,{profile:'interlocutor',runtimeId:'stale',submissionId:'stale'},{messages:[]})).rejects.toThrow('proactive_pilot_ineligible');
+ expect(modelCalls).toBe(1);
+});
+it('fails closed for malformed pilot configuration and excludes a selected group until owner opt-in', async()=>{
+ settings.PROACTIVE_PILOT_JSON='{}';expect(await scheduler().tick()).toMatchObject({state:'blocked',gap:'proactive_pilot_configuration'});
+ expect(()=>readProactivePilot({PROACTIVE_PILOT_JSON:JSON.stringify({id:'p',revision:1,startAfterSequence:0,chatIds:['chat','chat']})})).toThrow('proactive_pilot_configuration');
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
+ expect(pilotAllowsSubject(settings,{kind:'capture_event',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:'other',sequence:1,metadataHash:'a'.repeat(64)})).toBe(false);
+ await event(1,0,'ignored','Synthetic group text','group');await scheduler().tick();expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ now+=60001;await event(2,1,'other-chat','Unselected private conversation','private','other');await scheduler().tick();expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ expect(await query('SELECT COUNT(*) n FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);
+});
+async function event(sequence=1,previousSequence=0,id="message",text="Synthetic request",kind:"private"|"group"="private",chatId="chat"){
+ snapshots.set("message:"+id,{observation:"capture_snapshot",state:"available",sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:"message",sourceId:id,chatId,sourceVersion:1,watermark:sequence,conversationKind:kind,access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:"text",text,authorId:author,authorName:"Synthetic author",fromMe,occurredAt:now,messageId:id,messageVersion:1}});
+ const response=await receiveCapture(new Request("https://synthetic.invalid/internal/capture",{method:"POST",headers:{Authorization:`Bearer ${secret}`},body:JSON.stringify({protocol:1,...scope,sequence,previousSequence,chatId,sourceId:id,sourceKind:"message",operation:"upsert",recordedAt:now})}),settings);expect(response.status).toBe(200);
 }
 it("restore hold stops the scheduler before capture processing, dispatch or inference while metadata ingress stays available",async()=>{
  await query("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,?)",scope.installationId,now).run(); await event();

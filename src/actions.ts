@@ -1,7 +1,7 @@
 import { assertChatConfirmation, type ChatConfirmation } from "./approval";
 import type { Env } from "./env";
 import { AppError, assertActive, currentFence, sha256, LIMITS } from "./core";
-import { getChat } from "./store";
+import { getChat, type ChatRow } from "./store";
 import type { ZapiSendEnvelope, ZapiSendIds } from "./zapi";
 import { ZapiError, ProviderUncertainError } from "./zapi";
 import { ingestEvent, ingestStatus } from "./capture";
@@ -14,6 +14,10 @@ import {resolveMedia,resolveSendEnvelope,type MediaRow} from "./send-envelope-va
 export interface SendProvider {
   status(): Promise<{ connected: boolean; phone?: string }>;
   send(envelope: ZapiSendEnvelope): Promise<ZapiSendIds>;
+}
+/** Trusted host code only; never deserialize a guard from a tool/RPC argument. */
+export interface ActionExecutionGuard {
+  beforeClaim(snapshot: { chat: Readonly<ChatRow>; envelope: Readonly<SendEnvelope> }): Promise<{ sql: string; values: (string | number | null)[] }>;
 }
 export interface ApprovalProof {
   sub: string;
@@ -148,11 +152,15 @@ export async function executeAction(
   id: string,
   provider: SendProvider,
   confirmation?: ChatConfirmation,
+  hostGuard?: ActionExecutionGuard,
 ) {
   let a = await row(env, id);
+  // Telegram proposals cannot fall back to the MCP's client-attested confirmation.
+  if (!hostGuard && await env.DB.prepare("SELECT 1 FROM assistant_approved_sends WHERE action_id=?").bind(id).first())
+    throw new AppError("approved_send_actuator_required", 403);
   if (confirmation !== undefined)
     assertChatConfirmation(confirmation, a.hash, "chat");
-  if (a.status === "proposed" && confirmation !== undefined) {
+  if (a.status === "proposed" && confirmation !== undefined && !hostGuard) {
     if (a.expires_at <= Date.now()) throw new AppError("action_expired", 409);
     await env.DB.prepare(
       "UPDATE actions SET status='approved',approval_channel='chat_client',approved_at=? WHERE id=? AND epoch=? AND generation=? AND status='proposed' AND hash=? AND expires_at>?",
@@ -163,7 +171,7 @@ export async function executeAction(
   }
   if (!["proposed", "approved"].includes(a.status)) return getAction(env, id);
   if (a.expires_at <= Date.now()) throw new AppError("action_expired", 409);
-  if (a.status !== "approved") throw new AppError("action_not_approved", 403);
+  if (a.status !== "approved" && !hostGuard) throw new AppError("action_not_approved", 403);
   const envelope = sendEnvelopeSchema.parse(JSON.parse(a.envelope_json));
   const chat = await getChat(env, a.chat_id),
     media = await resolveMedia(env, envelope);
@@ -194,12 +202,19 @@ export async function executeAction(
   )
     throw new AppError("device_changed", 409);
   assertActive(env);
+  const extra = hostGuard ? await hostGuard.beforeClaim({ chat, envelope }) : { sql: "1", values: [] };
+  // The Telegram path records approval only together with its authorized attempt.
+  // A failed proof/guard leaves the proposed action's audit trail untouched.
+  const approvedFields = hostGuard ? ",approved_at=?,approval_channel='telegram_owner'" : "";
+  const approvedState = hostGuard ? "status IN ('proposed','approved')" : "status='approved'";
+  const attemptedAt = Date.now();
   // A single conditional write owns the sole external attempt. A crash after it is uncertain.
   const claimed = await env.DB.prepare(
-    "UPDATE actions SET status='attempting',attempted_at=? WHERE id=? AND epoch=? AND generation=? AND status='approved' AND expires_at>? AND hash=? AND (? IS NULL OR EXISTS (SELECT 1 FROM media WHERE id=? AND deleted_at IS NULL AND state='ready' AND sha256=?))",
+    `UPDATE actions SET status='attempting',attempted_at=?${approvedFields} WHERE id=? AND epoch=? AND generation=? AND ${approvedState} AND expires_at>? AND hash=? AND (? IS NULL OR EXISTS (SELECT 1 FROM media WHERE id=? AND deleted_at IS NULL AND state='ready' AND sha256=?)) AND (${extra.sql})`,
   )
     .bind(
-      Date.now(),
+      attemptedAt,
+      ...(hostGuard ? [attemptedAt] : []),
       id,
       a.epoch,
       a.generation,
@@ -208,6 +223,7 @@ export async function executeAction(
       media?.id ?? null,
       media?.id ?? null,
       media?.sha256 ?? null,
+      ...extra.values,
     )
     .run();
   if (claimed.meta.changes !== 1) return getAction(env, id);

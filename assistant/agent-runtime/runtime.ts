@@ -7,19 +7,21 @@ import { assertRestoredGeneration } from "../retention-runtime";
 import type { ModelAdapter } from "../model-broker";
 import {outgoingPort} from '../outgoing';
 import { onceScope, onceKey, readOncePlan, readOnceGrant, onceAuthority } from "../owner-once-guard";
-import { jobRequest } from "../agent/contracts";
+import { jobRequest,type BoundEpisode } from "../agent/contracts";
 import { bridgeHash } from "../ingress";
+import {assertProactiveEpisode} from '../proactive-pilot';
 /** No router or generic binding. Existing account limits must already be
  * configured; this factory neither configures a budget nor activates capture. */
 export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter } = {}) {
   if (env.FLUE_EPISODES_ENABLED !== "shadow" || !env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.OPENAI_API_KEY) throw new Error("episode_unconfigured");
   const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock);
   class PausedRestoreEpisode extends EpisodeController {
+    protected override async check(episode:BoundEpisode){try{await assertProactiveEpisode(env,episode.id);}catch{return false;}return super.check(episode);}
     override async prepare(...args: Parameters<EpisodeController["prepare"]>) { await assertRestoredGeneration(env); return super.prepare(...args); }
-    override async dispatch(...args: Parameters<EpisodeController["dispatch"]>) { await assertRestoredGeneration(env); return super.dispatch(...args); }
-    override async model(...args: Parameters<EpisodeController["model"]>) { await assertRestoredGeneration(env); return super.model(...args); }
-    override async publish(...args: Parameters<EpisodeController["publish"]>) { await assertRestoredGeneration(env); return super.publish(...args); }
-    override async read(...args: Parameters<EpisodeController["read"]>) { await assertRestoredGeneration(env); return super.read(...args); }
+    override async dispatch(...args: Parameters<EpisodeController["dispatch"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.dispatch(...args); }
+    override async model(...args: Parameters<EpisodeController["model"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.model(...args); }
+    override async publish(...args: Parameters<EpisodeController["publish"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.publish(...args); }
+    override async read(...args: Parameters<EpisodeController["read"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.read(...args); }
     override async reconcile(...args: Parameters<EpisodeController["reconcile"]>) { await assertRestoredGeneration(env); return super.reconcile(...args); }
   }
   const adapter = options.model ?? createOpenAIAdapter(env.OPENAI_API_KEY);

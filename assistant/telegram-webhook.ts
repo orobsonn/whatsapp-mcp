@@ -32,6 +32,12 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
       sourceEpoch: env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: env.BRIDGE_SOURCE_GENERATION! }, env.TELEGRAM_BOT_INSTANCE!, env.TELEGRAM_WEBHOOK_SECRET);
     const input = await read(request);
     if (input && typeof input === "object" && "callback_query" in input) {
+      const data=(input as {callback_query?:{data?:unknown}}).callback_query?.data;
+      if(typeof data==='string'&&data.startsWith('w_')){
+        const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+        const sender=await createTelegramApprovedSendReview(env,{installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!});
+        return reply(await sender.receiveCallback(input));
+      }
       const review = await createTelegramReview(env, { installationId: env.INSTALLATION_ID!, generation: env.OPERATIONAL_GENERATION!, sourceEpoch: env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: env.BRIDGE_SOURCE_GENERATION! });
       return reply(await review.receiveCallback(input));
     }

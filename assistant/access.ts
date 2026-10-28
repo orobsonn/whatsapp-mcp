@@ -22,6 +22,13 @@ export type AccessRow = {
   mandate_version?: number; mandate_expires_at?: number;
 };
 export type AccessGuard = { sql: string; values: (string | number | null)[] };
+/** A host-selected restriction, never an access grant. */
+export type SourceSelectionRef = { id: string; revision: number; version: number; hash: string };
+export function normalizeSourceRefs(refs: SourceSelectionRef[]): SourceSelectionRef[] {
+  if (!Array.isArray(refs) || refs.length < 1 || refs.length > 3 || refs.some(ref => !ref || Object.keys(ref).sort().join(',') !== 'hash,id,revision,version'
+    || typeof ref.id !== 'string' || !ref.id.length || ref.id.length > 256 || !Number.isSafeInteger(ref.revision) || ref.revision < 1 || !Number.isSafeInteger(ref.version) || ref.version < 1 || typeof ref.hash !== 'string' || !/^[a-f0-9]{64}$/.test(ref.hash)) || new Set(refs.map(ref => ref.id)).size !== refs.length) throw Error('retrieval_source_refs');
+  return refs.map(({id,revision,version,hash}) => ({id,revision,version,hash})).sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
 const actorKey = (actor: Exclude<TrustedActor, { kind: "extractor" }>) => actor.kind === "owner" ? "owner"
   : JSON.stringify([actor.provider, actor.address, actor.conversationId, actor.conversationKind, actor.action, actor.mandateId ?? null]);
 const sourceColumns = `s.id,s.revision,s.current_version AS version,s.audience,s.origin,s.conversation_id,s.project_id,
@@ -130,10 +137,11 @@ export class SourceAccess {
    * bodies remain outside the persistent search manifest. Origin bindings have
    * a UNIQUE canonical_id. Seventeen relation refs detect the scorer's overflow
    * (maximum sixteen batches), without copying an unbounded extraction list. */
-  inventory(actor: TrustedActor, projectId: string | undefined, now: number, control: { sourceEpoch?: string; sourceGeneration?: string; includePaused?: boolean } = {}): AccessGuard {
+  inventory(actor: TrustedActor, projectId: string | undefined, now: number, control: { sourceEpoch?: string; sourceGeneration?: string; includePaused?: boolean; sourceRefs?: SourceSelectionRef[] } = {}): AccessGuard {
     control=control.sourceEpoch&&control.sourceGeneration?control:{...control,...this.metadataOrigin};
-    const privateScope=!!control.sourceEpoch&&!!control.sourceGeneration;const query = this.current(actor, null, undefined, now),relations=relationAudience(privateScope?actor:{kind:'extractor'},'b',this.ownerRows(now));
+    const privateScope=!!control.sourceEpoch&&!!control.sourceGeneration;let query = this.current(actor, null, undefined, now);const relations=relationAudience(privateScope?actor:{kind:'extractor'},'b',this.ownerRows(now));
     if (!query) return { sql: "SELECT NULL AS id,NULL AS fingerprint WHERE 0", values: [] };
+    if (control.sourceRefs !== undefined) query = {sql:`SELECT selected.* FROM (${query.sql}) selected JOIN json_each(?) ref ON selected.id=json_extract(ref.value,'$.id') AND selected.revision=json_extract(ref.value,'$.revision') AND selected.version=json_extract(ref.value,'$.version') AND selected.content_hash=json_extract(ref.value,'$.hash')`,values:[...query.values,JSON.stringify(normalizeSourceRefs(control.sourceRefs))]};
     const authority = actor.kind === "owner" ? "'owner'" : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
     const keys = [this.scope.installationId, this.scope.generation],ownerMeta=actor.kind==='owner'&&privateScope?ownerContextStamp(this.scope,this.ownerRows(now),control):null;
     return { sql: `WITH visible AS (${query.sql}),${ownerMeta?`owner_context_stamp AS MATERIALIZED(${ownerMeta.sql}),`:""} facts AS (

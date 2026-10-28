@@ -2,7 +2,7 @@ import {readOwnerCanonical} from './owner-canonical-context';
 import {sourceRelationAudience} from './relation-visibility';
 import { z } from "zod";
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
-import { SourceAccess, type SourceRead, type TrustedActor } from "./access";
+import { SourceAccess, normalizeSourceRefs, type SourceSelectionRef, type SourceRead, type TrustedActor } from "./access";
 import type { SourceScope } from "./sources";
 import type { EntityRef } from "./relations";
 import type { OriginFence, OriginGuard } from "./origin-guard";
@@ -11,12 +11,12 @@ export type { Ref, EngineRequest };
 // Host39's typed EnginePort is structurally compatible; unknown deliberately
 // requires runtime validation of every candidate and missing reference here.
 export interface EnginePort { search(input: EngineRequest): Promise<unknown> }
-export type RetrievalInput = { query: string; projectId?: string; entities?: EntityRef[]; limit?: number };
+export type RetrievalInput = { query: string; projectId?: string; entities?: EntityRef[]; limit?: number; sourceRefs?: SourceSelectionRef[] };
 export type RetrievedSource = SourceRead & { origin?: OriginFence; mediaEvidence?: MediaEvidence };
 export type EngineReceipt = { state: "complete" | "blocked" | "uncertain"; operationId: string; indexRevision?: string; indexState?: "needs_checkpoint" | "checkpoint_confirmed" };
 export type RetrievalResult = { sources: RetrievedSource[]; engineReceipt?: EngineReceipt; coverage: { inventoryComplete: boolean; engine: string; gaps: string[] } };
 const label = z.string().min(1).max(256), entity = z.object({ kind: z.enum(["person", "project", "mission"]), id: label }).strict();
-const inputSchema = z.object({ query: z.string().min(1).max(2048), projectId: label.optional(), entities: z.array(entity).max(8).optional(), limit: z.number().int().min(1).max(10).default(10) });
+const inputSchema = z.object({ query: z.string().min(1).max(2048), projectId: label.optional(), entities: z.array(entity).max(8).optional(), limit: z.number().int().min(1).max(10).default(10), sourceRefs:z.array(z.object({id:label,revision:z.number().int().positive(),version:z.number().int().positive(),hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict()).min(1).max(3).optional() });
 const refSchema = z.object({ id: label, version: z.number().int().positive().max(2147483647), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const engineSchema = z.object({ state: z.literal("complete"), operationId: z.string().regex(/^[a-f0-9]{64}$/), indexRevision: z.union([z.literal("empty"), z.string().regex(/^[a-f0-9]{64}$/)]),
   indexState: z.enum(["needs_checkpoint", "checkpoint_confirmed"]), result: z.object({
@@ -63,6 +63,7 @@ export function normalizeRetrievalInput(input: RetrievalInput) {
   if (!input || typeof input.query !== "string" || input.query.length > 2048 || (input.entities && input.entities.length > 8) ||
     (input.projectId !== undefined && (typeof input.projectId !== "string" || input.projectId.length > 256))) throw new Error("retrieval_input");
   const request = inputSchema.parse(input);
+  if (request.sourceRefs !== undefined) request.sourceRefs = normalizeSourceRefs(request.sourceRefs);
   if (new TextEncoder().encode(request.query).length > 2048 || !request.query.trim() || tokens(request.query).length > 32) throw new Error("retrieval_input");
   return request;
 }
@@ -116,12 +117,13 @@ export class Retrieval {
     while (scanned < 256 && !finished) {
       const take = Math.min(32, 256 - scanned);
       const ids = await this.db.prepare(`SELECT id FROM assistant_sources WHERE installation_id=? AND generation=? AND status='active' AND origin<>'owner_request'
-        AND id>? AND (? IS NULL OR project_id=?) ORDER BY id LIMIT ?`)
-        .bind(this.scope.installationId, this.scope.generation, after, request.projectId ?? null, request.projectId ?? null, take).all<{ id: string }>();
+        AND id>? AND (? IS NULL OR project_id=?) AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(?) ref WHERE assistant_sources.id=json_extract(ref.value,'$.id') AND assistant_sources.revision=json_extract(ref.value,'$.revision') AND assistant_sources.current_version=json_extract(ref.value,'$.version'))) ORDER BY id LIMIT ?`)
+        .bind(this.scope.installationId, this.scope.generation, after, request.projectId ?? null, request.projectId ?? null, request.sourceRefs ? JSON.stringify(request.sourceRefs) : null, request.sourceRefs ? JSON.stringify(request.sourceRefs) : null, take).all<{ id: string }>();
       for (const row of ids.results) {
         scanned++; after = row.id;
         const source = await this.access.read(actor, row.id);
         if (!source) continue;
+        if(request.sourceRefs && !request.sourceRefs.some(ref=>ref.id===source.id && ref.revision===source.fence.source.revision && ref.version===source.fence.source.version && ref.hash===source.fence.source.hash)){gap('source_changed');continue;}
         if (request.projectId && source.fence.source.projectId !== request.projectId) { gap("source_changed"); continue; }
         if (source.text === null || source.text.length > 32768 || new TextEncoder().encode(source.text).length > 32768) { gap("source_text_limit"); continue; }
         let origin: OriginFence | undefined;

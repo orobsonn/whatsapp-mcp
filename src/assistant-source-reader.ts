@@ -151,8 +151,28 @@ export async function readInstallationAffinity(rawEnv: Env, input: unknown): Pro
   return { observation: "capture_installation_affinity", state: "available", fence };
 }
 
+/** Prospective cutoff on the Source stream, including changes not yet received by Own. */
+export async function readCaptureStreamHead(rawEnv: Env,input:unknown) {
+  const parsed=z.object({secret:z.string().max(256),sourceEpoch:id,sourceGeneration:id}).strict().safeParse(input);
+  if(!parsed.success)throw Error('reader_invalid_input');
+  const secret=rawEnv.ASSISTANT_READER_SECRET;
+  if(typeof secret!=='string'||secret.length<32||!await safeEqual(secret,parsed.data.secret))throw Error('reader_denied');
+  const env=await resolveRuntimeEnv(rawEnv),blocked=(reason:string)=>({observation:'capture_stream_head' as const,state:'blocked' as const,reason});
+  try{assertActive(env);}catch{return blocked('reader_unavailable');}
+  const fence=currentFence(env);
+  if(fence.epoch!==parsed.data.sourceEpoch||fence.generation!==parsed.data.sourceGeneration)throw Error('reader_denied');
+  const sequence=await env.DB.prepare('SELECT COALESCE(MAX(sequence),0) n FROM assistant_capture_changes WHERE epoch=? AND generation=?').bind(fence.epoch,fence.generation).first<number>('n');
+  const current=await resolveRuntimeEnv(rawEnv);try{assertActive(current);}catch{return blocked('reader_unavailable');}
+  if(rawEnv.ASSISTANT_READER_SECRET!==secret||!await safeEqual(secret,parsed.data.secret))throw Error('reader_denied');
+  const after=currentFence(current);
+  if(after.epoch!==fence.epoch||after.generation!==fence.generation)return blocked('reader_changed');
+  if(sequence===null||!Number.isSafeInteger(sequence)||sequence<0)return blocked('source_unavailable');
+  return {observation:'capture_stream_head' as const,state:'available' as const,sourceEpoch:fence.epoch,sourceGeneration:fence.generation,sequence:sequence!};
+}
+
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
+  streamHead(input:unknown){return readCaptureStreamHead(this.env,input);}
   searchConversations(input: unknown) { return readCaptureConversationSearch(this.env, input); }
   readRecipientEnvelope(input:unknown){return readRecipientEnvelope(this.env,input);}
   readSnapshot(input: unknown): Promise<CaptureSnapshot> { return readCaptureSnapshot(this.env, input); }

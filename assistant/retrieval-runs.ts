@@ -130,7 +130,7 @@ export class RetrievalRuns {
       || run.id !== await bridgeHash([this.keys(), JSON.stringify(actor), onceKey(id)])) throw new Error("retrieval_owner_admission");
     return { receipt, grant };
   }
-  private inventory(actor: TrustedActor, run: Run, now: number) { return this.access.inventory(actor, JSON.parse(run.request_json).input.projectId, now, { ...this.scope, includePaused: this.purpose === "owner_read" }); }
+  private inventory(actor: TrustedActor, run: Run, now: number) { const input=normalizeRetrievalInput(JSON.parse(run.request_json).input);return this.access.inventory(actor, input.projectId, now, { ...this.scope, includePaused: this.purpose === "owner_read",...(input.sourceRefs?{sourceRefs:input.sourceRefs}:{}) }); }
   private progress(run: Run): SearchProgress {
     return { runId: run.id, checkpoint: run.checkpoint, state: run.state, gaps: [...baseGaps, ...(run.state === "waiting_context" ? [run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : "origin_unavailable"] : [])] };
   }
@@ -410,7 +410,7 @@ export class RetrievalRuns {
     // Project narrowing belongs to the persisted request, not caller JSON.
     // Use the same inventory through a scalar project lookup bound to this run.
     const projected = this.access.inventory(actor, undefined, now, { ...this.scope, includePaused: this.purpose === "owner_read" });
-    const inventory = { sql: `SELECT * FROM (${projected.sql}) WHERE ((SELECT json_extract(request_json,'$.input.projectId') FROM assistant_retrieval_runs WHERE ${ns} AND id=?) IS NULL OR project_id=(SELECT json_extract(request_json,'$.input.projectId') FROM assistant_retrieval_runs WHERE ${ns} AND id=?))`, values: [...projected.values, ...this.keys(), run.id, ...this.keys(), run.id] };
+    const inventory = { sql: `SELECT p.* FROM (${projected.sql}) p JOIN assistant_retrieval_runs selection ON selection.installation_id=? AND selection.generation=? AND selection.id=? WHERE (json_extract(selection.request_json,'$.input.projectId') IS NULL OR p.project_id=json_extract(selection.request_json,'$.input.projectId')) AND (json_type(selection.request_json,'$.input.sourceRefs') IS NULL OR EXISTS(SELECT 1 FROM json_each(selection.request_json,'$.input.sourceRefs') ref WHERE p.id=json_extract(ref.value,'$.id') AND p.revision=json_extract(ref.value,'$.revision') AND p.version=json_extract(ref.value,'$.version') AND p.content_hash=json_extract(ref.value,'$.hash')))`, values: [...projected.values, ...this.keys(), run.id] };
     const coverage = this.coverage(actor, run, now, inventory);
     if (!!fence.ranking !== !!this.options.semantic) return {sql:"0",values:[]};
     return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);

@@ -4,6 +4,7 @@ import type { PdfAdmissionReader } from "./media-admission";
 import type { SnapshotReader } from "./origin-guard";
 import type { CalendarOAuth } from "./connectors/calendar-oauth";
 import type { RetentionAuthority } from "./retention-authority";
+import type { ApprovedSendActuatorRPC } from "../src/approved-send-contract";
 // Host-only owner Telegram notifications; never WhatsApp or Calendar write credentials.
 export interface AssistantEnv {
   DB?: D1Database;
@@ -20,6 +21,11 @@ export interface AssistantEnv {
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;
   TELEGRAM_SUMMARIES_ENABLED?: string;
+  TELEGRAM_SUGGESTIONS_ENABLED?: string;
+  PROACTIVE_PILOT_JSON?: string;
+  WHATSAPP_APPROVED_SEND_ENABLED?: string;
+  WHATSAPP_APPROVED_SEND_SECRET?: string;
+  WHATSAPP_APPROVED_SEND?: ApprovedSendActuatorRPC;
   TELEGRAM_OWNER_DIALOGUE_ENABLED?: string;
   MEDIA_CONTEXT_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;

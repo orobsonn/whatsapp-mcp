@@ -13,7 +13,7 @@ describe("assistant shadow boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       mode: "shadow",
-      capabilities: { whatsappSend: false, calendarWrite: false },
+      capabilities: { whatsappSend: false, whatsappAutonomousSend: false, calendarWrite: false },
     });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });

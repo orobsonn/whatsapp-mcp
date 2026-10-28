@@ -2,7 +2,8 @@ import type { AssistantEnv } from "./env";
 import { Routines,type RoutineCycle } from "./routines";
 import { CaptureMaterializer } from "./materialize";
 import { Conversations } from "./conversations";
-import { SourceAccess,type TrustedActor } from "./access";
+import { SourceAccess,type TrustedActor,type SourceSelectionRef } from "./access";
+import {readProactivePilot,pilotAllowsSubject,pilotSelection,pilotBindingCurrent,selectPilotSourceRefs,type PilotBinding} from './proactive-pilot';
 import { activeOrigin,originScopeSql,scopeKeys,type OriginScope } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { FollowUps } from "./followups";
@@ -23,12 +24,12 @@ import { createMediaModelPort } from "./media-model";
 import { createTelegramReview } from "./telegram";
 import { engineName } from "./container";
 import type { CogneeContainer, IndexPreflight } from "./container";
-type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string};
+type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string;pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[]};
 type Item={id:string;subject_json:string;binding_hash:string;binding_json:string;actor_json:string;profile:"owner"|"interlocutor";source_id:string;source_revision:number;state:string;phase:string;index_sources_json:string|null;run_id:string|null;search_checkpoint:number;search_state:string|null;job_id:string|null;episode_id:string|null;last_gap:string|null;created_at:number};
 type Event={sequence:number;chat_id:string;source_kind:string;metadata_hash:string;state:string;canonical_id:string|null;observed_revision:number|null;observed_version:number|null;observed_watermark:number|null;coalesced:number};
 /** Pure host configuration identity for explicit pre-admission recovery plans.
  * It does not reconstruct actors, alter items or authorize their execution. */
-export function schedulerConfiguration(scope:OriginScope,env:Pick<AssistantEnv,'SEMANTIC_SEARCH_MODE'|'COGNEE'>){return bridgeHash(["routines-v1",scope,DEFAULT_BROKER_CONFIG,CANONICAL_EXTRACTION_CONFIG,env.SEMANTIC_SEARCH_MODE??(env.COGNEE?"required":"lexical")]);}
+export function schedulerConfiguration(scope:OriginScope,env:Pick<AssistantEnv,'SEMANTIC_SEARCH_MODE'|'COGNEE'>&{PROACTIVE_PILOT_JSON?:string}){const pilot=readProactivePilot(env);return bridgeHash(["routines-v1",scope,DEFAULT_BROKER_CONFIG,CANONICAL_EXTRACTION_CONFIG,env.SEMANTIC_SEARCH_MODE??(env.COGNEE?"required":"lexical"),...(pilot?[pilot]:[])]);}
 /** One bounded host pipeline. Production uses the existing concrete controllers;
  * only model/Flue transports can be replaced by controlled test adapters. */
 export class AssistantScheduler {
@@ -45,32 +46,35 @@ export class AssistantScheduler {
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
  private configuration(){return schedulerConfiguration(this.scope,this.env);}
  async tick(){
-  if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";
+  if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";let pilot;try{pilot=readProactivePilot(this.env);}catch{return {state:'blocked',gap:'proactive_pilot_configuration'};}
   try{await assertRestoredGeneration(this.env);}catch(error){const known=["restore_runtime_paused","restore_generation_inactive","restore_generation_seal_required","canonical_writers_quiesced"];return {state:"blocked",gap:error instanceof Error&&known.includes(error.message)?error.message:"restore_runtime_unavailable"};}
   let cycle=await this.routines.begin(paused),reconcileOnly=false;
   if(!cycle){cycle=await this.routines.reconcileBegin(paused);reconcileOnly=!!cycle;}
-  if(!cycle){await this.routines.daily(paused);return {state:"busy_or_already_reviewed"};}
+  if(!cycle){if(!pilot)await this.routines.daily(paused);return {state:"busy_or_already_reviewed"};}
   let state="complete",gap:string|null=null;
   try{
    if(!reconcileOnly){
     await this.routines.phase(cycle,"capture");const materializer=new CaptureMaterializer(this.env.DB!,()=>this.scope,this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!,this.clock);
     await materializer.drain(10);if(!await this.routines.current(cycle))throw new Error("routine_stale");await materializer.retry(2);
-    gap=await this.discover(cycle);if(!paused)await this.due(cycle);
+    gap=await this.discover(cycle);if(!paused&&!pilot)await this.due(cycle);
    }
    if(!paused){
-    const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ORDER BY updated_at,id LIMIT 1`,...this.keys()).first<{id:string}>();
+    const selection=pilot?pilotSelection(pilot):null;
+    const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ${selection?`AND ${selection.sql}`:''} ORDER BY updated_at,id LIMIT 1`,...this.keys(),...(selection?.values??[])).first<{id:string}>();
+    if(reconcileOnly&&row?.id&&pilot){const item=await this.item(row.id);if(!item||!await pilotBindingCurrent(this.env,JSON.parse(item.binding_json))){await this.routines.finish(cycle,'pilot_backlog_held',true);return {state:'blocked',gap:'pilot_backlog_held',reconcileOnly};}}
     if(row?.id){const item=await this.item(row.id);if(item){await this.routines.phase(cycle,"work",item.id);state=await this.process(cycle,item,reconcileOnly);gap=(await this.item(item.id))?.last_gap??gap;}}
    }
-   const daily=await this.routines.daily(paused);
-   if(!paused&&state!=="uncertain"&&this.env.TELEGRAM_SUMMARIES_ENABLED==="true"&&await this.routines.current(cycle)){
+   const daily=pilot?null:await this.routines.daily(paused);
+   if(daily&&!paused&&state!=="uncertain"&&this.env.TELEGRAM_SUMMARIES_ENABLED==="true"&&await this.routines.current(cycle)){
     await this.routines.phase(cycle,"daily_review");try{await(await createTelegramReview(this.env,this.scope,()=>this.owned(cycle))).publishDailySummary(daily.id);}catch{gap=gap??"telegram_review_unavailable";}
    }
   }catch{state="uncertain";gap="routine_operation_uncertain";}
   await this.routines.finish(cycle,gap,state==="uncertain");return {state,gap,reconcileOnly};
  }
  private async discover(cycle:RoutineCycle){
+  const pilot=readProactivePilot(this.env);
   const cursor=await this.sql(`SELECT cursor_chat FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<string>("cursor_chat")??"";
-  const chats=await this.sql(`SELECT chat_id,kind FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id>? ORDER BY chat_id LIMIT 5`,...this.keys(),cursor).all<{chat_id:string;kind:"private"|"group"|null}>();
+  const chats=await this.sql(`SELECT chat_id,kind FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id>? ${pilot?'AND chat_id IN (SELECT value FROM json_each(?))':''} ORDER BY chat_id LIMIT 5`,...this.keys(),cursor,...(pilot?[JSON.stringify(pilot.chatIds)]:[])).all<{chat_id:string;kind:"private"|"group"|null}>();
   const conversations=new Conversations(this.env.DB!,()=>this.scope);
   for(const chat of chats.results){
    if(!await this.routines.current(cycle))throw new Error("routine_stale");
@@ -83,7 +87,7 @@ export class AssistantScheduler {
    const events=await this.sql(`SELECT i.sequence,i.chat_id,i.source_kind,i.metadata_hash,r.state,r.canonical_id,r.observed_revision,r.observed_version,r.observed_watermark,r.coalesced
     FROM assistant_capture_inbox i JOIN assistant_conversation_replay r USING(installation_id,generation,source_epoch,source_generation,chat_id,sequence)
     LEFT JOIN assistant_routine_event_items m ON m.installation_id=i.installation_id AND m.generation=i.generation AND m.source_epoch=i.source_epoch AND m.source_generation=i.source_generation AND m.chat_id=i.chat_id AND m.sequence=i.sequence
-    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.chat_id=? AND (m.sequence IS NULL OR (m.outcome='gap' AND r.state<>'gap')) ORDER BY i.sequence LIMIT 32`,...this.keys(),chat.chat_id).all<Event>();
+    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.chat_id=? AND (m.sequence IS NULL OR (m.outcome='gap' AND r.state<>'gap')) ${pilot?"AND i.sequence>? AND i.source_kind='message' AND i.operation='upsert' AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox old WHERE old.installation_id=i.installation_id AND old.generation=i.generation AND old.source_epoch=i.source_epoch AND old.source_generation=i.source_generation AND old.source_kind=i.source_kind AND old.source_id=i.source_id AND old.sequence<=?)":''} ORDER BY i.sequence LIMIT 32`,...this.keys(),chat.chat_id,...(pilot?[pilot.startAfterSequence,pilot.startAfterSequence]:[])).all<Event>();
    // Coalescence is an exact canonical observation, never a conversation-wide
    // substitution of one author/source for another, and never a gap.
    const groups=new Map<string,Event[]>(),unresolved:Event[]=[];
@@ -104,11 +108,12 @@ export class AssistantScheduler {
      const subject:DecisionSubject={kind:"capture_event",sourceEpoch:this.scope.sourceEpoch,sourceGeneration:this.scope.sourceGeneration,chatId:chat.chat_id,sequence:event.sequence,metadataHash:event.metadata_hash};
      const id=await bridgeHash(["routine-item-v1",...this.keys(),subject]),source=await this.access.read({kind:"owner"},event.canonical_id!,event.observed_revision!);
      const dependencies=source?await this.sql(`SELECT dependencies_json FROM assistant_origin_versions WHERE installation_id=? AND generation=? AND canonical_id=? AND version=?`,this.scope.installationId,this.scope.generation,source.id,source.fence.source.version).first<string>("dependencies_json"):null;
-     const metadata=dependencies?JSON.parse(dependencies) as {authorId?:string|null;fromMe?:boolean}:{};
+     const metadata=dependencies?JSON.parse(dependencies) as {authorId?:string|null;fromMe?:boolean;kind?:string}:{};
+     if(pilot&&(metadata.fromMe!==false||metadata.kind!=='text'||!pilotAllowsSubject(this.env,subject))){for(const skipped of group)await map(skipped,null,'pilot_ineligible',null);continue;}
      let actor:TrustedActor|null=frame.mode==="observe"?{kind:"owner"}:null;
      if(!actor&&source&&metadata.authorId===source.authorId&&typeof metadata.authorId==="string"&&/^[a-f0-9]{64}$/.test(metadata.authorId)&&metadata.fromMe!==true)actor={kind:"interlocutor",provider:"wa_archive:"+await bridgeHash([this.scope.sourceEpoch,this.scope.sourceGeneration]),address:metadata.authorId,conversationId:chat.chat_id,conversationKind:chat.kind,action:"reply_text"};
      if(source&&actor&&typeof source.text==="string"&&source.text.trim()&&new TextEncoder().encode(source.text).length<=2048){
-      const binding:Binding={subject,actor,profile:actor.kind==="owner"?"owner":"interlocutor",source:{...source.fence.source},query:source.text,...(source.fence.source.projectId?{projectId:source.fence.source.projectId}:{}),configuration:await this.configuration()},owner=this.owned(cycle);
+      const binding:Binding={subject,actor,profile:actor.kind==="owner"?"owner":"interlocutor",source:{...source.fence.source},query:source.text,...(source.fence.source.projectId?{projectId:source.fence.source.projectId}:{}),configuration:await this.configuration(),...(pilot?{pilot:{...pilot,chatId:chat.chat_id},sourceRefs:await selectPilotSourceRefs(this.env.DB!,this.scope,source,this.clock())}:{})},owner=this.owned(cycle);
       await this.sql(`INSERT INTO assistant_routine_items(installation_id,generation,source_epoch,source_generation,id,subject_json,binding_hash,binding_json,observation_key,actor_json,profile,source_id,source_revision,state,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,? WHERE ${owner.sql} ON CONFLICT DO NOTHING`,...this.keys(),id,JSON.stringify(subject),await bridgeHash(binding),JSON.stringify(binding),observation,JSON.stringify(actor),binding.profile,source.id,source.fence.source.revision,this.clock(),this.clock(),...owner.values).run();
       const admitted=await this.sql(`SELECT id,subject_json FROM assistant_routine_items WHERE ${originScopeSql} AND observation_key=?`,...this.keys(),observation).first<{id:string;subject_json:string}>();itemId=admitted?.id??null;if(admitted)representative=JSON.parse(admitted.subject_json).sequence as number;
      }
@@ -192,7 +197,7 @@ export class AssistantScheduler {
   await this.update(cycle,item.id,"state='pending',last_gap='indexing_pending'");return 'pending';
  }
  private async index(cycle:RoutineCycle,item:Item,binding:Binding,reconcileOnly:boolean):Promise<string>{
-  if(!this.env.COGNEE)return "ready";const inventory=this.access.inventory(binding.actor,binding.projectId,this.clock(),this.scope);
+  if(!this.env.COGNEE)return "ready";const inventory=this.access.inventory(binding.actor,binding.projectId,this.clock(),{...this.scope,...(binding.sourceRefs?{sourceRefs:binding.sourceRefs}:{})});
   const rows=await this.sql(`SELECT id,revision,version,content_hash FROM (${inventory.sql}) ORDER BY id LIMIT 65`,...inventory.values).all<{id:string;revision:number;version:number;content_hash:string}>();
   if(rows.results.length>64)return "ready"; // #112 explicitly reports semantic capacity; never ingest a prefix.
   const refs=JSON.stringify(rows.results.map(row=>({id:row.id,revision:row.revision,version:row.version,hash:row.content_hash})));
@@ -248,7 +253,21 @@ export class AssistantScheduler {
   return result.state==="shadow_completed"?this.complete(cycle,item,host,episode.id):this.gap(cycle,item.id,result.state==="uncertain"?"model_uncertain":"publication_rejected",result.state==="uncertain");
  }
  private async complete(cycle:RoutineCycle,item:Item,host:EpisodeController,episodeId:string){
+  const binding=JSON.parse(item.binding_json) as Binding;if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
   await this.update(cycle,item.id,"state='complete',phase='review',last_gap=NULL");
+  if(binding.pilot){
+   if(this.env.TELEGRAM_SUGGESTIONS_ENABLED!=="true"||this.env.WHATSAPP_APPROVED_SEND_ENABLED!=="true")return 'complete';
+   const decision=await this.sql(`SELECT id FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND episode_id=? AND proposal_json IS NOT NULL`,this.scope.installationId,this.scope.generation,episodeId).first<{id:string}>();
+   if(!decision)return 'complete';
+   try{
+    const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+    const review=await createTelegramApprovedSendReview(this.env,this.scope,()=>this.owned(cycle));
+    const result=await review.dispatchDecision(decision.id,'routine-send:'+item.id);
+    if(['sent','uncertain','cancelled','not_applicable'].includes(result.state))await this.update(cycle,item.id,"phase='done',last_gap=NULL");
+    else await this.update(cycle,item.id,"last_gap=?",['telegram_'+result.state]);
+   }catch{await this.update(cycle,item.id,"last_gap='telegram_approved_send_unavailable'");}
+   return 'complete';
+  }
   if(this.env.TELEGRAM_SUMMARIES_ENABLED==="true"&&await this.routines.current(cycle)){
    const row=await this.sql(`SELECT id,recorded_at FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND episode_id=? AND proposal_json IS NOT NULL`,this.scope.installationId,this.scope.generation,episodeId).first<{id:string;recorded_at:number}>();
    if(row){try{const review=await createTelegramReview(this.env,this.scope,()=>this.owned(cycle)),notice=await review.execute({kind:"notification.prepare",operationId:"routine-review:"+item.id,topic:item.subject_json.includes('"fup_occurrence"')?"missions":"pending",decisionId:row.id,expiresAt:row.recorded_at+3600000}) as {id:string};if(!await this.routines.current(cycle))throw new Error("routine_stale");const delivery=await review.execute({kind:"notification.dispatch",id:notice.id}) as {state:string};if(["sent","uncertain","failed","cancelled"].includes(delivery.state))await this.update(cycle,item.id,"phase='done'");}catch{await this.update(cycle,item.id,"phase='done',last_gap='telegram_review_unavailable'");}}
@@ -257,6 +276,7 @@ export class AssistantScheduler {
  }
  private async process(cycle:RoutineCycle,item:Item,reconcileOnly:boolean):Promise<string>{
   const binding=JSON.parse(item.binding_json) as Binding;if(await bridgeHash(binding)!==item.binding_hash||binding.configuration!==await this.configuration()){await this.update(cycle,item.id,"state='blocked',last_gap='configuration_or_binding_changed'");return "blocked";}
+  if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
   if(!this.env.OPENAI_API_KEY||this.env.FLUE_EPISODES_ENABLED!=="shadow")return this.gap(cycle,item.id,"episode_unconfigured");
   const configured=hostConfiguredSearch(this.env,"automation",this.clock),host=runtimeHost(this.env,"automation",{clock:this.clock,model:this.options.model});
   // Lookup existing job/episode before considering a new source fence or lease.
@@ -278,19 +298,21 @@ export class AssistantScheduler {
    }
   }
   if(binding.actor.kind==='owner')await this.routines.phase(cycle,'canonical_extraction',item.id);
+  const canonicalAdapter=this.options.model??createOpenAIAdapter(this.env.OPENAI_API_KEY);
   const extractor=new CanonicalCandidateExtractor(this.env.DB!,this.scope,{clock:this.clock,origin:configured.origin,
-   adapter:this.options.model??createOpenAIAdapter(this.env.OPENAI_API_KEY),runtime:()=>assertRestoredGeneration(this.env),guard:()=>this.owned(cycle),
+   adapter:async request=>{if(!await pilotBindingCurrent(this.env,binding))throw Error('proactive_pilot_ineligible');return canonicalAdapter(request);},runtime:()=>assertRestoredGeneration(this.env),guard:()=>this.owned(cycle),
    enabled:()=>this.env.ROUTINES_ENABLED==='shadow'&&this.env.ROUTINES_PAUSED!=='true'&&this.env.FLUE_EPISODES_ENABLED==='shadow'&&this.env.INSTALLATION_ID===this.scope.installationId&&this.env.OPERATIONAL_GENERATION===this.scope.generation&&this.env.BRIDGE_SOURCE_EPOCH===this.scope.sourceEpoch&&this.env.BRIDGE_SOURCE_GENERATION===this.scope.sourceGeneration});
   // Discovery is private Owner work. It never elevates the reply actor or
   // turns a private catalog/model gap into interlocutor coverage/phase/output.
-  let extraction:Awaited<ReturnType<CanonicalCandidateExtractor['extract']>>;
-  try{extraction=await extractor.extract({kind:'owner'},source.id,binding.source.revision,{replayOnly:reconcileOnly});}catch{extraction={state:'uncertain',gap:'canonical_operation_uncertain'};}
+  let extraction:Awaited<ReturnType<CanonicalCandidateExtractor['extract']>>|{state:'not_evaluated';gap:'pilot_context_only'};
+  if(binding.pilot)extraction={state:'not_evaluated',gap:'pilot_context_only'};
+  else try{extraction=await extractor.extract({kind:'owner'},source.id,binding.source.revision,{replayOnly:reconcileOnly});}catch{extraction={state:'uncertain',gap:'canonical_operation_uncertain'};}
   if(!await this.routines.current(cycle))throw Error('routine_stale');
   const observation={schema:'owner-canonical-status-v1',state:extraction.state,...(extraction.gap?{gap:extraction.gap}:{}),source:{id:source.id,revision:source.fence.source.revision,version:source.fence.source.version,hash:source.fence.source.hash},observedAt:this.clock()},owned=this.owned(cycle);
   await this.sql(`INSERT INTO assistant_owner_canonical_status SELECT ?,?,?,?,?,?,?,? WHERE ${owned.sql} ON CONFLICT(installation_id,generation,source_epoch,source_generation,item_id) DO UPDATE SET body_json=excluded.body_json`,...this.keys(),item.id,source.id,binding.source.revision,JSON.stringify(observation),...owned.values).run();
-  if(binding.actor.kind==='owner'&&extraction.state!=='published'&&extraction.state!=='empty_catalog')return this.gap(cycle,item.id,extraction.gap??'canonical_extraction_unavailable',extraction.state==='uncertain');
+  if(!binding.pilot&&binding.actor.kind==='owner'&&extraction.state!=='published'&&extraction.state!=='empty_catalog')return this.gap(cycle,item.id,extraction.gap??'canonical_extraction_unavailable',extraction.state==='uncertain');
   const indexed=await this.index(cycle,item,binding,reconcileOnly);if(indexed!=="ready")return indexed;if(reconcileOnly){await this.update(cycle,item.id,"state='pending',last_gap=NULL");return "pending";}
-  let progress=await configured.search.start(binding.actor,"routine-search:"+item.id,{query:binding.query,limit:10,...(binding.projectId?{projectId:binding.projectId}:{})});
+  let progress=await configured.search.start(binding.actor,"routine-search:"+item.id,{query:binding.query,limit:10,...(binding.projectId?{projectId:binding.projectId}:{}),...(binding.sourceRefs?{sourceRefs:binding.sourceRefs}:{})});
   if(item.run_id&&item.run_id!==progress.runId)throw new Error("routine_run_conflict");await this.update(cycle,item.id,"run_id=?,search_checkpoint=?,search_state=?,phase='search'",[progress.runId,progress.checkpoint,progress.state]);
   if(progress.state==="pending"){
    await this.routines.phase(cycle,"search_inventory",item.id);progress=await configured.search.step(binding.actor,{runId:progress.runId,stepId:`routine-step:${item.id}:${progress.checkpoint}`,expectedCheckpoint:progress.checkpoint});
