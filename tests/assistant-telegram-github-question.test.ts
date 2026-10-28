@@ -86,3 +86,17 @@ it("pins citation IDs to each question without leaking another document set into
   const wrong = { choices: [{ message: { content: JSON.stringify({ claims: [{ text: "Synthetic claim", basis: "observed", citations: [{ id: "made-up", quote: one[0].text }] }], missing: null }) } }] };
   expect(() => renderGroundedAnswer(wrong, one)).toThrow("literal");
 });
+
+it("omits an entire unsupported claim while retaining independently grounded points and their references", () => {
+  const docs = [{ id: "a", label: "Fonte A", text: "Confirmar 3 dias depois." }, { id: "b", label: "Fonte B", text: "Não enviei a proposta." }, { id: "c", label: "Fonte C", text: "Reunião na quinta-feira." }];
+  const claims = [{ text: "A confirmação será três dias depois.", basis: "observed", citations: [{ id: "a", quote: docs[0].text }] },
+    { text: "A proposta foi enviada.", basis: "observed", citations: [{ id: "b", quote: "Enviei a proposta." }] },
+    { text: "A reunião está marcada para quinta-feira.", basis: "observed", citations: [{ id: "c", quote: docs[2].text }] }];
+  const body = (selected: typeof claims, missing: string | null = null) => ({ choices: [{ message: { content: JSON.stringify({ claims: selected, missing }) } }] });
+  const rendered = renderGroundedAnswer(body(claims), docs);
+  expect(rendered).toContain("Resposta parcial"); expect(rendered).toContain(claims[0].text); expect(rendered).toContain(claims[2].text);
+  expect(rendered).not.toContain(claims[1].text); expect(rendered).not.toContain("Fonte B");
+  expect(rendered).toContain("Fonte A"); expect(rendered).toContain("Fonte C"); expect(rendered.length).toBeLessThanOrEqual(4000);
+  expect(() => renderGroundedAnswer(body([claims[1]]), docs)).toThrow("literal");
+  expect(renderGroundedAnswer(body([], "Falta evidência para responder."), docs)).toContain("Falta evidência");
+});
