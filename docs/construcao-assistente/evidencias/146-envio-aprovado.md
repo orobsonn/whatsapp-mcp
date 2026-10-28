@@ -14,6 +14,21 @@ A correção visual traduz a assinatura WhatsApp inicial em negrito/itálico esc
 
 CI de `44d410b`: [40763919056](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40763919056),1782gerais,13OAuth,70nativos e verificações Node/tipos/builds/auditoria aprovadas. `cd145c4` também tem CI aprovada. Ajustes posteriores têm verificações dirigidas; o resultado de cada CI deve ser consultado no commit exato antes do fechamento do marco.
 
+Auditoria de cobertura às22:41UTC: oito conversas privadas capturadas tinham entradas recebidas após o corte. As cinco últimas entradas textuais estavam mapeadas: duas superadas por resposta do dono, uma já concluída/cancelada no ensaio anterior e duas tentativas preservadas após falha. Três entradas estavam marcadas indisponíveis no Source e continuam explicitamente não avaliadas. Não foram convertidas em `no_reply`. Não havia proposta atual pendente de aprovação nesse recorte.
+
+Censo dos seis ledgers conhecidos do projeto às22:41:34UTC: **94.519microUSD (US$0,094519) comprometidos**, incluindo40.000incertos históricos. RestamUS$9,905481 diante do teto global deUS$10; recibos e reservas permanecem preservados. O censo não é fatura nem reconciliação de infraestrutura.
+
+| Requisito do marco | Evidência atual | Situação |
+|---|---|---|
+| Captura real → análise automática → Telegram com original/resumo/resposta | Prévia100 e confirmação do dono | Observado; utilidade ainda em avaliação |
+| Decidir silêncio quando responder não ajuda | Feedback real de encerramento, orientação ajustada | Acompanhar novos casos reais |
+| Aprovação real do texto/destinatário atuais | Só há descarte100 e ação antiga cancelada | Pendente |
+| Uma tentativa WhatsApp e consequência do provedor | As ações observadas não foram tentadas | Pendente |
+| Descarte, alteração e revogação impedem envio | Descarte real sem tentativa + guards/testes | Evidência negativa disponível |
+| Repetição da aprovação conserva a mesma tentativa | Testes dirigidos; sem aprovação real nova | Validação real pendente |
+| Resposta autônoma desligada, configuração/custos preservados | Readbacks de publicação, cron e censo | Verificado no recorte observado |
+| Release/tag/encerramento da issue | Última release pública0.51.0; issue146 e PR147 abertos | Aguardar aceite |
+
 Ainda falta sugestão atual útil → aprovação real do dono → tentativa única e consequência do provedor. A issue146 e a release0.52 continuam pendentes desse aceite. Resposta autônoma permanece desligada.
 
 ## Sugestão real e defeito de identidade —18:14UTC

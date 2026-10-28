@@ -75,5 +75,6 @@
 - [x] Revisão adversarial do recorte privado, sequência nova, modo de contexto congelado e prévia única; manter política/ACL/retensão e orçamento.
 - [x] Incluir mensagem recebida, resumo opcional na mesma inferência e resposta integral; contexto não integra o envelope de envio.
 - [x] Validar integração manifesto → episódio → Journal → prévia com loader real; casos de frases curtas, mensagem posterior e opt-out. Integração dirigida e 307 regressões agrupadas passaram; tipos/builds aprovados.
-- [ ] Aplicar Source0018 e publicar ambos os componentes preservando runtime; ativar `captured_private/conversation_manifest` com cutoff3683.
-- [ ] Observar sugestão automática atual, incluindo o contexto recebido, e homologar aprovação/envio real.
+- [x] Aplicar Source0018 e publicar ambos os componentes preservando runtime; ativar `captured_private/conversation_manifest` com cutoff3683. Readbacks de versão, bindings e health confirmados.
+- [x] Observar prévia automática real com contexto: Telegram100 trouxe original, resumo e resposta, com descarte autenticado e nenhuma tentativa Source.
+- [ ] Homologar sugestão atual útil com aprovação/envio real; descarte e avaliação do texto não substituem autorização.
