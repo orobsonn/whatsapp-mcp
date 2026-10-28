@@ -1,6 +1,12 @@
 # Construção da assistente — atualização28/10/2026
 
-## Estado atual — marco técnico integrado0.51.0
+## Estado atual — envio aprovado implantado; homologação pendente
+
+Robson autorizou analisar conversas e enviar a sugestão após sua aprovação no Telegram. O código0.52.0 foi implantado com CI aprovada em um piloto de oito conversas privadas, limitado a novos textos recebidos e até três fontes/8KiB da mesma conversa. Responder sem aprovação continua desabilitado. O cron do piloto está ativo; as219 pendências antigas, FUP e diário não são executados por essa ativação.
+
+Ainda falta comprovar mensagem privada nova→análise automática→sugestão Telegram→aprovação real→envio WhatsApp. Até16:31UTC chegaram apenas eventos de grupos fora do recorte; não há aprovação nem envio deste circuito. A issue146 e o PR147 seguem abertos, com release final pendente. [Aceite, evidências e custos atuais](evidencias/146-envio-aprovado.md).
+
+## Marco reativo0.51.0 — anterior à ativação do piloto
 
 **Escopo humano vigente:** títulos e criar/editar/excluir eventos únicos da agenda principal própria; GitHub somente leitura em todos os repositórios próprios, sem expiração configurada. WhatsApp automático desabilitado e rotinas contínuas pausadas. Restrições anteriores diferentes no histórico foram substituídas pelas retificações do dono.
 

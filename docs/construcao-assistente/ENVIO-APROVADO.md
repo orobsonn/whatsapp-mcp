@@ -31,4 +31,4 @@ Issue [146](https://github.com/orobsonn/whatsapp-mcp/issues/146). A revisão exi
 
 O piloto inicial não executa extração automática de missões fora das três fontes. Registra `not_evaluated/pilot_context_only`; controles reativos existentes permanecem disponíveis. FUP e diário não fazem parte da primeira ativação. Ampliar essas rotinas exige validar seu recorte, sem tratar o circuito de respostas como prova delas.
 
-Status: implementação em verificação; publicação e homologação real ainda pendentes. Nenhum envio de teste foi autorizado por um clique fabricado pelo agente.
+Status em28/10/2026: código implantado com CI aprovada e piloto de novas mensagens textuais ativo em oito conversas privadas. A homologação real ainda depende de entrada elegível, sugestão e aprovação do dono; a release final e o encerramento da issue aguardam essa prova. Nenhum envio de teste foi autorizado por um clique fabricado pelo agente. [Critérios, readbacks, custos e pendências](evidencias/146-envio-aprovado.md).
