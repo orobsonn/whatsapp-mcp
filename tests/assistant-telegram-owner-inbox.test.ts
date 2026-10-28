@@ -5,6 +5,8 @@ import { TelegramOwnerInbox } from "../assistant/telegram-owner-inbox";
 import { AssistantExport } from "../assistant/retention";
 import { RetentionPurge } from "../assistant/retention-purge";
 import { SourceController } from "../assistant/sources";
+import { SourceAccess } from "../assistant/access";
+import { TelegramOwnerRequests } from "../assistant/telegram-owner-requests";
 
 let scope: { installationId: string; generation: string; sourceEpoch: string; sourceGeneration: string };
 let inbox: TelegramOwnerInbox, link: TelegramLink;
@@ -62,6 +64,109 @@ it("admits exactly one concurrent claimant and completes original plus sidecar t
   expect(await q("SELECT state FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first("state")).toBe("completed");
   expect(await admitted(guard)).toBe(false);
   expect(await inbox.claim(3)).toBeNull();
+});
+
+it("resumes only the same admitted input in a new host instance without renewing or reclaiming it", async () => {
+  await open(); await receive(); const turn = (await inbox.claim(3))!;
+  const checkpoint = await inbox.checkpoint(turn);
+  const before = await q("SELECT * FROM assistant_telegram_owner_turns WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first();
+  expect(checkpoint).toEqual({ updateId: 3, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  const other = new TelegramOwnerInbox(env.DB, { generation: scope.generation, sourceGeneration: scope.sourceGeneration, installationId: scope.installationId, sourceEpoch: scope.sourceEpoch }, bot), resumed = await other.resume(checkpoint);
+  expect(resumed).toEqual(turn);
+  expect(await admitted(other.guard(resumed!))).toBe(true);
+  expect(await q("SELECT * FROM assistant_telegram_owner_turns WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first()).toEqual(before);
+  expect(await other.claim(3)).toBeNull();
+  expect(await other.resume({ ...checkpoint, fingerprint: "0".repeat(64) })).toBeNull();
+  expect(await other.resume({ ...checkpoint, updateId: 4 })).toBeNull();
+  expect(await other.complete(resumed!)).toBe(true);
+  expect(await inbox.resume(checkpoint)).toBeNull();
+});
+
+it.each(["revoked", "relinked", "edited", "retention", "expired", "uncertain"])("does not resume a %s admission", async reason => {
+  await open(); await receive(); const turn = (await inbox.claim(3, reason === "expired" ? Date.now() + 250 : undefined))!;
+  const checkpoint = await inbox.checkpoint(turn), other = new TelegramOwnerInbox(env.DB, scope, bot);
+  if (reason === "revoked" || reason === "relinked") await link.execute({ kind: "telegram_link.revoke", operationId: "resume-revoke", expectedRevision: 1 });
+  if (reason === "relinked") await q("UPDATE assistant_telegram_links SET state='active',revision=3,user_id='101',chat_id='101',activation_cut=1 WHERE installation_id=? AND generation=? AND bot_instance=?").run();
+  if (reason === "edited") await q("UPDATE assistant_telegram_updates SET text='outro pedido' WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").run();
+  if (reason === "retention") await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','g2',1,?)").bind(scope.installationId, Date.now()).run();
+  if (reason === "uncertain") await q("UPDATE assistant_telegram_owner_turns SET state='uncertain' WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").run();
+  if (reason === "expired") await wait(300);
+  expect(await other.resume(checkpoint)).toBeNull();
+  expect(await other.claim(3)).toBeNull();
+});
+
+it("never transfers an admitted turn to another bot, installation or generation", async () => {
+  await open(); await receive(); const checkpoint = await inbox.checkpoint((await inbox.claim(3))!);
+  for (const [otherScope, otherBot] of [[scope, "another_bot"], [{ ...scope, installationId: "other-installation" }, bot], [{ ...scope, generation: "g2" }, bot]] as const)
+    expect(await new TelegramOwnerInbox(env.DB, otherScope, otherBot).resume(checkpoint)).toBeNull();
+});
+
+it("rechecks the live guard after reading a checkpoint and never exposes text changed across that await", async () => {
+  await open(); await receive(); const checkpoint = await inbox.checkpoint((await inbox.claim(3))!);
+  const prepare = env.DB.prepare.bind(env.DB);
+  const wrap = (statement: D1PreparedStatement, sql: string): D1PreparedStatement => new Proxy(statement, {
+    get(target, key) {
+      if (key === "bind") return (...args: unknown[]) => wrap(target.bind(...args), sql);
+      if (key === "first" && sql.startsWith("SELECT t.*,u.text AS input_text")) return async () => {
+        const row = await target.first();
+        await prepare("UPDATE assistant_telegram_updates SET text='alterado durante leitura' WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3")
+          .bind(scope.installationId, scope.generation, bot).run();
+        return row;
+      };
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const db = { prepare: (sql: string) => wrap(prepare(sql), sql), batch: env.DB.batch.bind(env.DB) } as D1Database;
+  expect(await new TelegramOwnerInbox(db, scope, bot).resume(checkpoint)).toBeNull();
+});
+
+it("captures one genuine owner request as immutable audit input rather than factual memory", async () => {
+  await open(); await receive(3, "Será que devo criar uma missão?"); const turn = (await inbox.claim(3))!;
+  const retirement = { allow: vi.fn(async () => {}), withdraw: vi.fn(async () => {}) };
+  const requests = new TelegramOwnerRequests(env.DB, inbox, retirement);
+  const [a, b] = await Promise.all([requests.capture(turn), requests.capture(turn)]);
+  expect(a).toEqual(b); expect(a).toMatchObject({ revision: 1, version: 1 });
+  const read = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, a!.id))!;
+  expect(read.text).toBe(turn.text); expect(read.fence.source).toMatchObject({ origin: "owner_request", audience: "owner", projectId: null, conversationId: null });
+  const counts = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM assistant_sources WHERE installation_id=?) sources,(SELECT COUNT(*) FROM assistant_source_versions WHERE installation_id=?) versions,(SELECT COUNT(*) FROM assistant_source_admissions WHERE installation_id=?) admissions,(SELECT COUNT(*) FROM assistant_source_changes WHERE installation_id=?) changes")
+    .bind(scope.installationId, scope.installationId, scope.installationId, scope.installationId).first();
+  expect(counts).toEqual({ sources: 1, versions: 1, admissions: 1, changes: 1 });
+  expect(retirement.allow).toHaveBeenCalledWith("owner_request", JSON.stringify(["telegram-owner-request-v1", bot, 3]), a!.id);
+  await inbox.complete(turn); expect(await requests.capture(turn)).toBeNull();
+});
+
+it("does not capture a request if its link is revoked during retirement verification", async () => {
+  await open(); await receive(); const turn = (await inbox.claim(3))!;
+  const retirement = { allow: async () => { await link.execute({ kind: "telegram_link.revoke", operationId: "capture-revoke", expectedRevision: 1 }); }, withdraw: async () => {} };
+  expect(await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn)).toBeNull();
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_sources WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+});
+
+it("settles the whole admitted capture packet when time advances before its final trace, without returning fresh authority", async () => {
+  await open(); await receive(); const turn = (await inbox.claim(3))!;
+  // Fault injection: the last child and return SELECT see a later SQL clock.
+  // All real D1 writes still execute in one batch; no result is mocked.
+  const prepare = env.DB.prepare.bind(env.DB);
+  const db = { prepare: (sql: string) => prepare(sql.startsWith("INSERT INTO assistant_source_changes") || sql.startsWith("SELECT s.id,s.revision")
+    ? sql.replaceAll("CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)", String(turn.deadlineAt + 1)) : sql), batch: env.DB.batch.bind(env.DB) } as D1Database;
+  const requests = new TelegramOwnerRequests(db, inbox, { allow: async () => {}, withdraw: async () => {} });
+  expect(await requests.capture(turn)).toBeNull();
+  expect(await env.DB.prepare("SELECT (SELECT COUNT(*) FROM assistant_sources WHERE installation_id=?) sources,(SELECT COUNT(*) FROM assistant_source_versions WHERE installation_id=?) versions,(SELECT COUNT(*) FROM assistant_source_admissions WHERE installation_id=?) admissions,(SELECT COUNT(*) FROM assistant_source_changes WHERE installation_id=?) changes")
+    .bind(scope.installationId, scope.installationId, scope.installationId, scope.installationId).first()).toEqual({ sources: 1, versions: 1, admissions: 1, changes: 1 });
+});
+
+it("purges the original Telegram copy when its canonical request is withdrawn, preserving attempt metadata", async () => {
+  await open(); await receive(); const turn = (await inbox.claim(3))!;
+  const retirement = { allow: async () => {}, withdraw: async () => {} };
+  const source = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
+  await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).withdraw(source.id, 1);
+  const purge = new RetentionPurge(env.DB, scope, { kind: "owner" }, Date.now, retirement);
+  let state: { state: string } = { state: "pending" };
+  for (let i = 0; i < 20 && state.state !== "complete"; i++) state = await purge.advance({ kind: "source.purge", operationId: "purge-request", sourceId: source.id });
+  expect(state.state).toBe("complete");
+  expect(await q("SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first()).toEqual({ text: null, state: "cancelled" });
+  expect(await inbox.inspect(3)).toMatchObject({ state: "claimed", deadlineAt: turn.deadlineAt });
+  expect(await admitted(inbox.guard(turn))).toBe(false);
 });
 
 it("admits dependent publication in the same completion batch and rejects a failed downstream guard", async () => {

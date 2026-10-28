@@ -180,7 +180,7 @@ export class SourceController {
     }
     private updatePlan(s: Statement, id: string, expected: number, kind: string, assignment: string, values: string[], now: number) {
         return [s(`UPDATE assistant_sources SET revision=revision+1,${assignment} WHERE installation_id=? AND generation=? AND id=?
-      AND revision=? AND status='active' AND $gate RETURNING id,revision,current_version AS version`, ...values, ...this.keys(), id, expected), this.change(s, id, expected, kind, now)];
+      AND revision=? AND status='active' AND origin<>'owner_request' AND $gate RETURNING id,revision,current_version AS version`, ...values, ...this.keys(), id, expected), this.change(s, id, expected, kind, now)];
     }
     async changeAudience(id: string, expected: number, visibility: Audience) { this.direct(); audience(visibility); return this.update(id, expected, "access_changed", "audience=?", [visibility]); }
     async withdraw(id: string, expected: number) { this.direct(); integer(expected, 1); const now = this.clock(); integer(now); return new WithdrawalBarrier(this.db, this.scope, this.retirement).direct(id, expected, now); }
@@ -240,7 +240,7 @@ export class SourceController {
             const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' ? 1 : 0), shadow: true };
             // A future expectedRevision must not make a previously read version
             // valid after somebody else's correction wins before this batch.
-            batch = [admit(result, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' ? "AND origin='owner_note'" : ""})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
+            batch = [admit(result, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' ? "AND origin='owner_note'" : "AND origin<>'owner_request'"})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
             if (item.kind === 'source.correct')
                 batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now));
             else

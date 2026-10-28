@@ -65,7 +65,7 @@ export interface OwnerJournalReader {
 }
 const ns = "installation_id=? AND generation=?";
 const listings = {
-  sources: { table: "assistant_sources", key: "id", columns: "id,origin,audience,status,revision,current_version AS version,conversation_id,project_id", extra: "" },
+  sources: { table: "assistant_sources", key: "id", columns: "id,origin,audience,status,revision,current_version AS version,conversation_id,project_id", extra: "AND origin<>'owner_request'" },
   projects: { table: "assistant_projects", key: "id", columns: "id,name", extra: "" },
   missions: { table: "assistant_missions", key: "id", columns: "id,revision,objective,source_id,source_revision,project_id,state,next_evaluation_at", extra: "" },
   policies: { table: "assistant_conversation_policies", key: "conversation_id", columns: "conversation_id AS id,revision,kind,excluded,group_mode", extra: "" },

@@ -120,6 +120,13 @@ export class RetentionPurge {
        WHERE ${namespace("r")} AND r.state IN ('reserved','uncertain') AND EXISTS(SELECT 1 FROM (${paid}) p WHERE p.operation_key=r.operation_key AND p.request_hash=r.request_hash AND p.actual_units IS NOT NULL) AND ${gate}`),
       sql(`UPDATE assistant_budget_reservations AS r SET state='uncertain' WHERE ${namespace("r")} AND r.state='reserved' AND (r.operation_key IN (${refs("model")}) OR r.operation_key IN (SELECT operation_key FROM assistant_media_receipts t WHERE ${namespace("t")} AND t.source_id=?4)) AND ${gate}`),
       sql(`UPDATE assistant_budget_accounts AS a SET blocked=1 WHERE ${namespace("a")} AND EXISTS(SELECT 1 FROM assistant_budget_reservations r WHERE ${namespace("r")} AND r.period=a.period AND r.state='settled' AND r.actual_units>r.ceiling_units) AND ${gate}`),
+      ...(catalog.some(row => row.name === "assistant_telegram_updates") ? [
+        // Canonical request withdrawal must also erase the original input.
+        // Match the exact host reference without parsing untrusted JSON keys.
+        sql(`UPDATE assistant_telegram_updates AS t SET text=NULL,state=CASE WHEN t.state='pending' THEN 'cancelled' ELSE t.state END
+          WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM assistant_sources s WHERE ${namespace("s")} AND s.id=?4 AND s.origin='owner_request'
+          AND s.origin_key=json_array('telegram-owner-request-v1',t.bot_instance,t.update_id)) AND ${gate}`),
+      ] : []),
       ...(catalog.some(row => row.name === "assistant_telegram_owner_replies") ? [
         // Select corresponding input bodies BEFORE clearing dependency keys.
         // Both writes share the same purge grant and transaction.

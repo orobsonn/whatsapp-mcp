@@ -115,7 +115,7 @@ export class Retrieval {
     let scanned = 0, after = "", finished = false;
     while (scanned < 256 && !finished) {
       const take = Math.min(32, 256 - scanned);
-      const ids = await this.db.prepare(`SELECT id FROM assistant_sources WHERE installation_id=? AND generation=? AND status='active'
+      const ids = await this.db.prepare(`SELECT id FROM assistant_sources WHERE installation_id=? AND generation=? AND status='active' AND origin<>'owner_request'
         AND id>? AND (? IS NULL OR project_id=?) ORDER BY id LIMIT ?`)
         .bind(this.scope.installationId, this.scope.generation, after, request.projectId ?? null, request.projectId ?? null, take).all<{ id: string }>();
       for (const row of ids.results) {

@@ -3,13 +3,16 @@ import type { AccessGuard } from "./access";
 import { telegramLinkGuard, type TelegramLinkFence } from "./telegram-auth";
 import { retentionExecutionGuard } from "./retention-execution";
 import { compactStatement, jsonStatement } from "./d1-statement";
+import { bridgeHash } from "./ingress";
+import { sourceTextHash } from "./sources";
 
 // SQL time, not a captured JavaScript timestamp: a guard must expire even when
 // its caller holds it across an await and no cleanup worker has run.
 const liveMillis = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
 const ns = "installation_id=? AND generation=? AND bot_instance=?";
 type Activation = Readonly<{ linkRevision: number; cutoffAt: number; cutoffSecond: number }>;
-export type TelegramOwnerTurn = Readonly<{ updateId: number; messageId: number; threadId: number | null; text: string; deadlineAt: number }>;
+export type TelegramOwnerTurn = Readonly<{ updateId: number; messageId: number; threadId: number | null; text: string; occurredAt: number; deadlineAt: number }>;
+export type TelegramOwnerCheckpoint = Readonly<{ updateId: number; fingerprint: string }>;
 export type TelegramOwnerReplyFence = Readonly<TelegramLinkFence & { updateId: number; messageId: number; threadId: number | null; deadlineAt: number }>;
 type CompletionExtension = { guard: AccessGuard; build: (witness: AccessGuard) => D1PreparedStatement[] };
 type TurnRow = {
@@ -69,7 +72,7 @@ export class TelegramOwnerInbox {
     // RETURNING observes the input in the SAME admission statement. A later
     // edit must invalidate the guard rather than become newly trusted input.
     if (typeof row.input_text !== "string") throw Error("telegram_owner_input_unavailable");
-    const turn = Object.freeze({ updateId, messageId: row.message_id, threadId: row.thread_id, text: row.input_text, deadlineAt: row.deadline_at });
+    const turn = Object.freeze({ updateId, messageId: row.message_id, threadId: row.thread_id, text: row.input_text, occurredAt: row.message_date * 1000, deadlineAt: row.deadline_at });
     this.turns.set(turn, Object.freeze(row));
     return turn;
   }
@@ -94,6 +97,40 @@ export class TelegramOwnerInbox {
       AND (${link.sql}) AND (${retention.sql})`,
       values: [...this.keys(), row.update_id, row.token, row.payload_hash, row.source_epoch, row.source_generation, row.link_revision, row.user_id, row.chat_id,
         row.message_id, row.message_date, row.thread_id, row.received_at, row.deadline_at, turn.text, ...link.values, ...retention.values] };
+  }
+  private async fingerprint(row: TurnRow, text: string): Promise<string> {
+    return bridgeHash(["telegram-owner-checkpoint-v1", this.scope.installationId, this.scope.generation,
+      this.scope.sourceEpoch, this.scope.sourceGeneration, this.bot, row.update_id, row.token,
+      row.update_token, row.payload_hash, await sourceTextHash(text)]);
+  }
+  /** Identity for an immutable HOST binding, not a grant or executor lock.
+   * The native resolver must authenticate its submission before calling resume.
+   * Nothing here admits a model, command or reply on its own. */
+  async checkpoint(turn: TelegramOwnerTurn): Promise<TelegramOwnerCheckpoint> {
+    const row = this.turns.get(turn); if (!row) throw Error("telegram_owner_turn_invalid");
+    return Object.freeze({ updateId: row.update_id, fingerprint: await this.fingerprint(row, turn.text) });
+  }
+  /** Rehydrate the SAME still-live admission in another isolate. No writes,
+   * lease extension or claim retry. Concurrent readers still need per-phase
+   * slots and command idempotency; a checkpoint never serializes execution. */
+  async resume(checkpoint: TelegramOwnerCheckpoint): Promise<TelegramOwnerTurn | null> {
+    if (!checkpoint || !Number.isSafeInteger(checkpoint.updateId) || checkpoint.updateId < 0
+      || typeof checkpoint.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.fingerprint)) return null;
+    const { updateId, fingerprint } = checkpoint;
+    const row = await this.db.prepare(`SELECT t.*,u.text AS input_text FROM assistant_telegram_owner_turns t
+      JOIN assistant_telegram_updates u ON u.installation_id=t.installation_id AND u.generation=t.generation
+      AND u.bot_instance=t.bot_instance AND u.update_id=t.update_id
+      WHERE t.installation_id=? AND t.generation=? AND t.bot_instance=? AND t.update_id=?
+      AND t.state='claimed' AND t.deadline_at>${liveMillis} AND u.text IS NOT NULL`)
+      .bind(...this.keys(), updateId).first<TurnRow & { input_text: string }>();
+    if (!row || await this.fingerprint(row, row.input_text) !== fingerprint) return null;
+    const turn = Object.freeze({ updateId, messageId: row.message_id, threadId: row.thread_id, text: row.input_text, occurredAt: row.message_date * 1000, deadlineAt: row.deadline_at });
+    this.turns.set(turn, Object.freeze(row));
+    const guard = this.guard(turn);
+    if (!await compactStatement(this.db, `SELECT 1 WHERE (${guard.sql})`, guard.values).first()) {
+      this.turns.delete(turn); return null;
+    }
+    return turn;
   }
   replyFence(turn: TelegramOwnerTurn): TelegramOwnerReplyFence {
     const row = this.turns.get(turn); if (!row) throw Error("telegram_owner_turn_invalid");

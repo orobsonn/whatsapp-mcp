@@ -49,7 +49,9 @@ export class SourceAccess {
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_installation_gate g WHERE g.installation_id=s.installation_id AND g.state='quiescing')`;
 
     if (actor.kind === "owner") {
-      return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}`, values: keys };
+      // Operational requests remain available only by exact ID to trusted
+      // owner audit/model admission. They are never factual context inventory.
+      return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}${id === null ? " AND s.origin<>'owner_request'" : ""}`, values: keys };
     } else {
       // Select the latest mandate before testing its state, dates or permissions.
       return { sql: `SELECT ${sourceColumns},COALESCE(p.revision,0) AS policy_revision,
@@ -66,7 +68,7 @@ export class SourceAccess {
         LEFT JOIN assistant_mandates m ON m.installation_id=s.installation_id AND m.generation=s.generation AND m.id=?
           AND m.version=(SELECT MAX(latest.version) FROM assistant_mandates latest WHERE latest.installation_id=m.installation_id
             AND latest.generation=m.generation AND latest.id=m.id)
-        WHERE ${current} AND COALESCE(p.kind,?)=?
+        WHERE ${current} AND s.origin<>'owner_request' AND COALESCE(p.kind,?)=?
         AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=s.installation_id AND q.generation=s.generation AND q.kind='source_authorization' AND q.source_id=s.id AND q.active=1)
         AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=p.installation_id AND q.generation=p.generation AND q.kind='policy' AND q.conversation_id=p.conversation_id AND q.version=p.revision AND q.active=1)
         AND NOT EXISTS(SELECT 1 FROM assistant_retention_quarantines q WHERE q.installation_id=m.installation_id AND q.generation=m.generation AND q.kind='mandate' AND q.mandate_id=m.id AND q.version=m.version AND q.active=1)

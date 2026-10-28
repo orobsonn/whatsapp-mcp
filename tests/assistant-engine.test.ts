@@ -35,6 +35,11 @@ beforeEach(async () => {
   engine = new CogneeEngine(scope, store, port, guard, () => now);
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+it("never ingests an operational owner request into factual context", async () => {
+  ingest.source.fence.source.origin = "owner_request";
+  expect(await engine.ingest(ingest)).toEqual({ state: "blocked", reason: "invalid_source" });
+  expect(port.start).not.toHaveBeenCalled(); expect(port.request).not.toHaveBeenCalled();
+});
 it("uses a restricted immutable wire and an ephemeral receipt without leaking host permits", async () => {
   const result = await engine.ingest(ingest) as Record<string, unknown>;
   expect(result).toMatchObject({ state: "complete", indexState: "needs_checkpoint" });

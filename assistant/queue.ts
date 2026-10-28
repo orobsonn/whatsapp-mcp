@@ -64,6 +64,7 @@ export class JobQueue {
     }
     const source = await this.access.read(this.actor, input.sourceId, input.sourceRevision, now);
     if (!source) throw new Error("source_access_denied");
+    if (source.fence.source.origin === "owner_request") throw new Error("operational_source_requires_owner_dialogue");
     const chatId = this.actor.kind === "interlocutor" ? this.actor.conversationId : source.fence.source.conversationId;
     const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
     if (chatId && !conversation) throw new Error("conversation_not_ready");
@@ -151,6 +152,7 @@ export class JobQueue {
       const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null; runtime?: string };
       if (request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision
         || request.fence.source.id !== lease.source_id || request.fence.source.revision !== lease.source_revision) return null;
+      if (request.fence.source.origin === "owner_request") return null;
       const chatId = request.actor.kind === "interlocutor" ? request.actor.conversationId : request.fence.source.conversationId;
       const guard = this.access.guard(request.actor, request.fence, now);
       const statements: D1PreparedStatement[] = [];
