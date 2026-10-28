@@ -182,4 +182,11 @@ export async function tickOwnerDialogues(env: AssistantEnv) {
   const host = new TelegramDialogueHost(env), rows = await env.DB!.prepare("SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND json_extract(binding_json,'$.kind')='telegram_owner_dialogue' AND state IN ('dispatching','accepted','running') ORDER BY deadline LIMIT 2")
     .bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION).all<{ id: string }>();
   for (const row of rows.results) { const episode = await new Episodes(env.DB!, host.scope).get(row.id); if (episode) try { await host.reconcile(episode); } catch { /* A read timeout is not an execution retry. */ } }
+  const pending = await env.DB!.prepare(`SELECT u.update_id FROM assistant_telegram_updates u JOIN assistant_telegram_owner_activations a
+    ON a.installation_id=u.installation_id AND a.generation=u.generation AND a.bot_instance=u.bot_instance AND a.link_revision=u.link_revision
+    WHERE u.installation_id=? AND u.generation=? AND u.bot_instance=? AND u.state='pending' AND u.outcome='pending' AND u.pairing_id IS NULL
+    AND u.text IS NOT NULL AND u.message_date>a.cutoff_second AND u.received_at>=a.cutoff_at
+    AND NOT EXISTS(SELECT 1 FROM assistant_telegram_owner_turns t WHERE t.installation_id=u.installation_id AND t.generation=u.generation AND t.bot_instance=u.bot_instance AND t.update_id=u.update_id)
+    ORDER BY u.received_at,u.update_id LIMIT 1`).bind(host.scope.installationId, host.scope.generation, env.TELEGRAM_BOT_INSTANCE).first<{ update_id: number }>();
+  if (pending) await host.start(pending.update_id);
 }
