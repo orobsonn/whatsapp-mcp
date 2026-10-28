@@ -13,11 +13,13 @@ let api: TelegramApi, actuator: ApprovedSendActuatorRPC, current: boolean;
 let journal:Pick<DecisionJournal,'get'|'admitReview'>;
 let ownerReplySequence:number,activityRevision:number,activityMembers:string[];
 const bot='synthetic_bot', secret='approved-send-synthetic-secret-at-least-32', actionId='641ad152-63df-42c0-a921-0f13cae7e9bd';
-const proposal={decision:'proposed',text:'Podemos conversar amanhã às 10h?'};
+const proposal={decision:'proposed',contextSummary:null as string|null,text:'Podemos conversar amanhã às 10h?'};
 const envelope={kind:'text' as const,chatId:'synthetic-conversation',text:proposal.text};
+let reviewContext:{sourceId:string;revision:number;version:number;hash:string;text:string}|null;
 const q=(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(...args);
 beforeEach(async()=>{
- proposal.decision='proposed';proposal.text=envelope.text;
+ proposal.decision='proposed';proposal.text=envelope.text;proposal.contextSummary=null;
+ reviewContext={sourceId:'synthetic-incoming',revision:1,version:1,hash:'c'.repeat(64),text:'Você pode <confirmar> nossa reunião?'};
  now=2000000;current=true;ownerReplySequence=0;activityRevision=1;activityMembers=[envelope.chatId,'opaque-lid-chat'];scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'c1'};
  await q(`INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',0)`,scope.installationId,scope.generation,bot,scope.sourceEpoch,scope.sourceGeneration).run();
  const fence={...scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
@@ -25,9 +27,9 @@ beforeEach(async()=>{
  api={inspect:vi.fn(async()=>true),createTopic:vi.fn(async()=>42),send:vi.fn(async()=>200),answer:vi.fn(async()=>{})};
  const hash=await actionDigest(envelope);
  actuator={prepare:vi.fn(async input=>({actionId,hash,envelope,target:{chatId:envelope.chatId,name:'Pessoa sintética',address:'5511000000000',kind:'individual' as const},activity:input.activity,expiresAt:now+600000})),execute:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000})),status:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000}))};
- config={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:{readSnapshot:async()=>{throw Error('no cross-chat content');},readConversationActivity:async()=>({observation:'capture_conversation_activity',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,relationshipRevision:activityRevision,relationshipProof:'a'.repeat(64),members:activityMembers.map(chatId=>({chatId,captureEnabled:true,watermark:Math.max(11,ownerReplySequence)})),watermark:Math.max(11,ownerReplySequence),lastOwnerOriginalSequence:ownerReplySequence})},FLUE_EPISODES_ENABLED:'shadow',WHATSAPP_APPROVED_SEND_ENABLED:'true',WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:actuator,PROACTIVE_PILOT_JSON:JSON.stringify({id:'synthetic-pilot',revision:1,startAfterSequence:10,chatIds:[envelope.chatId]})};
+ config={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:{readSnapshot:async()=>{throw Error('no cross-chat content');},readConversationActivity:async()=>({observation:'capture_conversation_activity',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,relationshipRevision:activityRevision,relationshipProof:'a'.repeat(64),members:activityMembers.map(chatId=>({chatId,captureEnabled:true,watermark:Math.max(11,ownerReplySequence)})),watermark:Math.max(11,ownerReplySequence),lastOwnerOriginalSequence:ownerReplySequence,latestIncomingOriginalSequence:11})},FLUE_EPISODES_ENABLED:'shadow',WHATSAPP_APPROVED_SEND_ENABLED:'true',WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:actuator,PROACTIVE_PILOT_JSON:JSON.stringify({id:'synthetic-pilot',revision:1,startAfterSequence:10,chatIds:[envelope.chatId]})};
  journal={get:vi.fn(async()=>({freshness:current?'current':'stale',subject:{kind:'capture_event',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,sequence:11,metadataHash:'a'.repeat(64)},proposal})),admitReview:vi.fn(async(_id:string,hash:string,build:Parameters<DecisionJournal['admitReview']>[2])=>current&&hash===await bridgeHash(proposal)?env.DB.batch(build({sql:'1',values:[]})):null)} as unknown as Pick<DecisionJournal,'get'|'admitReview'>;
- host=new TelegramApprovedSendReview(config,scope,bot,'synthetic-callback-hmac-secret',api,journal,()=>now);
+ host=new TelegramApprovedSendReview(config,scope,bot,'synthetic-callback-hmac-secret',api,journal,()=>now,undefined,async()=>reviewContext);
 });
 function callback(index=0){const call=vi.mocked(api.send).mock.calls[0];return {update_id:100,callback_query:{id:'query-100',from:{id:101,is_bot:false},chat_instance:'synthetic',data:call[3][0][index].callback_data,message:{message_id:200,date:2000,message_thread_id:42,chat:{id:101,type:'private'}}}};}
 it('does not prepare or publish a response after a proven related owner reply',async()=>{
@@ -60,7 +62,7 @@ it.each(['reply','relationship','excluded','paused'] as const)('vetoes an approv
 it('keeps a related opt-out in the final local authorization query after the remote activity check',async()=>{
  await host.dispatchDecision('d1','routine:one');await host.receiveCallback(callback());
  const row=await q('SELECT id,target_json FROM assistant_telegram_send_reviews WHERE installation_id=?',scope.installationId).first<{id:string;target_json:string}>();
- expect(JSON.parse(row!.target_json).activity).toEqual({triggerSequence:11,relationshipRevision:1,relationshipProof:'a'.repeat(64),members:[...activityMembers].sort()});
+ expect(JSON.parse(row!.target_json).activity).toEqual({triggerSequence:11,watermark:11,relationshipRevision:1,relationshipProof:'a'.repeat(64),members:[...activityMembers].sort()});
  const admit=vi.mocked(journal.admitReview).getMockImplementation()!;
  vi.mocked(journal.admitReview).mockImplementationOnce(async(...args)=>{
   await q("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'private',1,'ignore',1)",scope.installationId,scope.generation,'opaque-lid-chat').run();
@@ -136,4 +138,30 @@ it('records uncertainty without repeating a send or the preview on retry',async(
  expect(actuator.status).toHaveBeenCalledTimes(1);
  const receipt=await q(`SELECT receipt_json FROM assistant_telegram_send_reviews WHERE installation_id=?`,scope.installationId).first<string>('receipt_json');expect(JSON.parse(receipt!).status).toBe('accepted');
  expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'sent'});expect(vi.mocked(api.send).mock.calls.filter(call=>call[3].length)).toHaveLength(1);
+});
+
+it('shows the received message and a labelled context summary, but sends only the suggested reply',async()=>{
+ proposal.contextSummary='A pessoa pediu <confirmação> da reunião.';
+ expect(await host.dispatchDecision('d1','routine:context')).toMatchObject({state:'sent'});
+ const body=vi.mocked(api.send).mock.calls[0][2];
+ expect(body).toContain('Mensagem recebida');expect(body).toContain('Você pode &lt;confirmar&gt; nossa reunião?');
+ expect(body).toContain('Resumo da IA');expect(body).toContain('A pessoa pediu &lt;confirmação&gt; da reunião.');expect(body).toContain('Resposta sugerida');
+ expect(vi.mocked(actuator.prepare).mock.calls[0][0].envelope).toEqual(envelope);
+ await host.receiveCallback(callback());expect(actuator.execute).toHaveBeenCalledTimes(1);
+});
+it('requires current received-message context before preparing or publishing',async()=>{
+ reviewContext=null;expect(await host.dispatchDecision('d1','routine:no-context')).toMatchObject({state:'context_unavailable'});
+ expect(actuator.prepare).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
+});
+it('does not show an unnecessary summary and denies approval if the shown original changes',async()=>{
+ await host.dispatchDecision('d1','routine:context');expect(vi.mocked(api.send).mock.calls[0][2]).not.toContain('Resumo da IA');
+ reviewContext={...reviewContext!,text:'Mensagem alterada'};
+ expect(await host.receiveCallback(callback())).toBe('denied');expect(actuator.execute).not.toHaveBeenCalled();
+});
+it('labels a long original as an excerpt and preserves the entire escaped outgoing reply within one Telegram message',async()=>{
+ reviewContext!.text='Texto recebido <longo> '.repeat(700);proposal.text='Resposta & pronta '.repeat(120);
+ const hash=await actionDigest({...envelope,text:proposal.text});
+ vi.mocked(actuator.prepare).mockImplementationOnce(async input=>({actionId,hash,envelope:input.envelope,target:{chatId:envelope.chatId,name:'Pessoa sintética',address:'5511000000000',kind:'individual'},activity:input.activity,expiresAt:now+600000}));
+ expect(await host.dispatchDecision('d1','routine:long-context')).toMatchObject({state:'sent'});
+ const body=vi.mocked(api.send).mock.calls[0][2];expect(body.length).toBeLessThanOrEqual(4096);expect(body).toContain('Mensagem recebida (trecho)');expect(body).toContain(proposal.text.replaceAll('&','&amp;'));expect(body).not.toContain('<longo>');
 });

@@ -7,11 +7,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ## [0.52.0] - 2026-10-28
 
 ### Added
+- Prévia no Telegram inclui mensagem recebida, resumo breve opcional da IA e resposta integral em blocos separados; apenas a resposta vai ao WhatsApp.
+- Descoberta de conversas privadas capturadas, com o corte inicial preservado e caminho direto dos originais do manifesto para análise e revisão.
 - Revisão de sugestões do WhatsApp no Telegram com destino e texto integral, aprovação explícita para enviar e descarte sem envio. Botões antigos de simulação mantêm seu significado.
 - Actuator privado reutiliza ações Source, com preparo idempotente, tentativa única e reconciliação por recibo. Credenciais WhatsApp permanecem no Source.
 - Piloto proativo por conversas e watermark Source, com contexto imutável de até três fontes/8KiB e revalidação nos callbacks Flue. Não drena backlog nem FUP anterior.
 
 ### Fixed
+- Mensagem posterior invalida sugestões anteriores, inclusive áudio ou texto acima do limite; o claim confere o watermark observado.
+- Callback privado autenticado pode registrar a relação telefone/LID, criando somente metadados ausentes. Contradição bloqueia a automação também no novo telefone sem desativar captura nem envios manuais.
 - Claim final confere o destino efetivamente usado, inclusive mudança A→B→A durante consultas assíncronas, além de conexão, envelope e expiração.
 - Callback aceita metadados reais do Telegram e usa apenas os campos canônicos para autenticação/deduplicação. Perda da resposta do Source consulta a mesma ação, sem repetir envio.
 - Retenção redige cópias de conteúdo/destinatário preservando tombstones de idempotência.

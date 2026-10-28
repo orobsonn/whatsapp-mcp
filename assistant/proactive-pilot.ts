@@ -8,18 +8,25 @@ import {bridgeHash} from './ingress';
 import {captureConversationActivity,approvedSendActivityFence,type ApprovedSendActivityFence} from '../src/approved-send-contract';
 
 const label=z.string().min(1).max(256);
-const pilotSchema=z.object({id:label,revision:z.number().int().positive().max(2147483647),startAfterSequence:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),chatIds:z.array(label).min(1).max(8)}).strict();
+const pilotBase={id:label,revision:z.number().int().positive().max(2147483647),startAfterSequence:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)};
+const pilotSchema=z.union([z.object({...pilotBase,chatIds:z.array(label).min(1).max(8)}).strict(),z.object({...pilotBase,selection:z.literal('captured_private'),contextMode:z.literal('conversation_manifest')}).strict()]);
 export type ProactivePilot=z.infer<typeof pilotSchema>;
 export type PilotBinding=ProactivePilot & {chatId:string};
 type PilotEnv={PROACTIVE_PILOT_JSON?:string};
 export function readProactivePilot(env:PilotEnv):ProactivePilot|null{
  if(env.PROACTIVE_PILOT_JSON===undefined)return null;
- try{const pilot=pilotSchema.parse(JSON.parse(env.PROACTIVE_PILOT_JSON));if(new Set(pilot.chatIds).size!==pilot.chatIds.length)throw Error();return {...pilot,chatIds:[...pilot.chatIds].sort()};}catch{throw Error('proactive_pilot_configuration');}
+ try{const pilot=pilotSchema.parse(JSON.parse(env.PROACTIVE_PILOT_JSON));if('chatIds'in pilot){if(new Set(pilot.chatIds).size!==pilot.chatIds.length)throw Error();return {...pilot,chatIds:[...pilot.chatIds].sort()};}return pilot;}catch{throw Error('proactive_pilot_configuration');}
 }
 export function pilotAllowsSubject(env:PilotEnv,subject:DecisionSubject):boolean{
- const pilot=readProactivePilot(env);return !!pilot&&subject.kind==='capture_event'&&subject.sequence>pilot.startAfterSequence&&pilot.chatIds.includes(subject.chatId);
+ const pilot=readProactivePilot(env);return !!pilot&&subject.kind==='capture_event'&&subject.sequence>pilot.startAfterSequence&&(!('chatIds'in pilot)||pilot.chatIds.includes(subject.chatId));
 }
-export function pilotSelection(pilot:ProactivePilot){return {sql:`json_extract(binding_json,'$.pilot.id')=? AND json_extract(binding_json,'$.pilot.revision')=? AND json_extract(binding_json,'$.pilot.startAfterSequence')=? AND json_extract(binding_json,'$.pilot.chatIds')=? AND json_extract(subject_json,'$.kind')='capture_event' AND json_extract(subject_json,'$.sequence')>? AND json_extract(subject_json,'$.chatId') IN (SELECT value FROM json_each(?))`,values:[pilot.id,pilot.revision,pilot.startAfterSequence,JSON.stringify(pilot.chatIds),pilot.startAfterSequence,JSON.stringify(pilot.chatIds)]};}
+/** New general selection requires observed private metadata, not a guessed ID/name. */
+export async function pilotAllowsConversation(env:AssistantEnv,subject:DecisionSubject):Promise<boolean>{
+ const pilot=readProactivePilot(env);if(!pilot||!pilotAllowsSubject(env,subject)||subject.kind!=='capture_event')return false;if('chatIds'in pilot)return true;
+ if(!env.DB||subject.sourceEpoch!==env.BRIDGE_SOURCE_EPOCH||subject.sourceGeneration!==env.BRIDGE_SOURCE_GENERATION)return false;
+ return !!await env.DB.prepare(`SELECT 1 FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id=? AND kind='private' AND access_state='available'`).bind(env.INSTALLATION_ID!,env.OPERATIONAL_GENERATION!,env.BRIDGE_SOURCE_EPOCH!,env.BRIDGE_SOURCE_GENERATION!,subject.chatId).first();
+}
+export function pilotSelection(pilot:ProactivePilot){return 'chatIds'in pilot?{sql:`json_extract(binding_json,'$.pilot.id')=? AND json_extract(binding_json,'$.pilot.revision')=? AND json_extract(binding_json,'$.pilot.startAfterSequence')=? AND json_extract(binding_json,'$.pilot.chatIds')=? AND json_extract(subject_json,'$.kind')='capture_event' AND json_extract(subject_json,'$.sequence')>? AND json_extract(subject_json,'$.chatId') IN (SELECT value FROM json_each(?))`,values:[pilot.id,pilot.revision,pilot.startAfterSequence,JSON.stringify(pilot.chatIds),pilot.startAfterSequence,JSON.stringify(pilot.chatIds)]}:{sql:`json_extract(binding_json,'$.pilot.id')=? AND json_extract(binding_json,'$.pilot.revision')=? AND json_extract(binding_json,'$.pilot.startAfterSequence')=? AND json_extract(binding_json,'$.pilot.selection')='captured_private' AND json_extract(binding_json,'$.contextMode')='conversation_manifest' AND json_extract(subject_json,'$.kind')='capture_event' AND json_extract(subject_json,'$.sequence')>?`,values:[pilot.id,pilot.revision,pilot.startAfterSequence,pilot.startAfterSequence]};}
 
 /** A relationship is only an activity veto. It grants no source or conversation access. */
 export function activityPolicyGuard(scope:OriginScope,members:string[]):AccessGuard{
@@ -27,7 +34,7 @@ export function activityPolicyGuard(scope:OriginScope,members:string[]):AccessGu
  const kind="COALESCE(o.kind,'private')",permitted=members.length===2?`${kind}='private' AND COALESCE(p.kind,'private')='private' AND COALESCE(p.effective_mode,'attend')='attend'`:`COALESCE(p.kind,'private')=${kind} AND COALESCE(p.effective_mode,'attend')=CASE WHEN ${kind}='group' THEN 'respond' ELSE 'attend' END`;
  return {sql:`NOT EXISTS(SELECT 1 FROM json_each(?) member LEFT JOIN assistant_conversation_modes p ON p.installation_id=? AND p.generation=? AND p.conversation_id=member.value LEFT JOIN assistant_origin_conversations o ON o.installation_id=? AND o.generation=? AND o.source_epoch=? AND o.source_generation=? AND o.chat_id=member.value WHERE NOT (${permitted})) AND NOT EXISTS(SELECT 1 FROM assistant_conversations c WHERE c.installation_id=? AND c.generation=? AND c.source_epoch=? AND c.source_generation=? AND c.chat_id IN(SELECT value FROM json_each(?)) AND c.paused=1)`,values:[JSON.stringify(members),scope.installationId,scope.generation,...scopeKeys(scope),...scopeKeys(scope),JSON.stringify(members)]};
 }
-export async function readPilotConversationActivity(env:AssistantEnv,subject:DecisionSubject):Promise<{state:'current';activity:ApprovedSendActivityFence}|{state:'blocked';reason:string}|{state:'superseded_owner_reply'}>{
+export async function readPilotConversationActivity(env:AssistantEnv,subject:DecisionSubject):Promise<{state:'current';activity:ApprovedSendActivityFence}|{state:'blocked';reason:string}|{state:'superseded_owner_reply'|'superseded_new_message'}>{
  if(subject.kind!=='capture_event'||!env.DB||!env.CAPTURE_READER?.readConversationActivity||!env.BRIDGE_SECRET)return {state:'blocked',reason:'conversation_activity_unavailable'};
  let timer:ReturnType<typeof setTimeout>|undefined;
  try{
@@ -38,8 +45,10 @@ export async function readPilotConversationActivity(env:AssistantEnv,subject:Dec
   const observation=parsed.data,members=observation.members.map(member=>member.chatId).sort();
   if(observation.sourceEpoch!==scope.sourceEpoch||observation.sourceGeneration!==scope.sourceGeneration||observation.chatId!==subject.chatId||!members.includes(subject.chatId)||new Set(members).size!==members.length||observation.members.some(member=>!member.captureEnabled||member.watermark>observation.watermark)||observation.lastOwnerOriginalSequence>observation.watermark)return {state:'blocked',reason:'conversation_activity_scope'};
   if(observation.lastOwnerOriginalSequence>subject.sequence)return {state:'superseded_owner_reply'};
+  if(observation.latestIncomingOriginalSequence>subject.sequence)return {state:'superseded_new_message'};
+  if(observation.latestIncomingOriginalSequence!==subject.sequence)return {state:'blocked',reason:'conversation_activity_mismatch'};
   const guard=activityPolicyGuard(scope,members);if(!await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first())return {state:'blocked',reason:'conversation_activity_policy'};
-  return {state:'current',activity:approvedSendActivityFence.parse({triggerSequence:subject.sequence,relationshipRevision:observation.relationshipRevision,relationshipProof:observation.relationshipProof,members})};
+  return {state:'current',activity:approvedSendActivityFence.parse({triggerSequence:subject.sequence,watermark:observation.watermark,relationshipRevision:observation.relationshipRevision,relationshipProof:observation.relationshipProof,members})};
  }catch{return {state:'blocked',reason:'conversation_activity_unavailable'};}finally{if(timer!==undefined)clearTimeout(timer);}
 }
 
@@ -53,13 +62,15 @@ export async function selectPilotSourceRefs(db:D1Database,scope:OriginScope,trig
  return normalizeSourceRefs(refs);
 }
 
-export async function pilotBindingCurrent(env:AssistantEnv,binding:{subject:DecisionSubject;source:{id:string;revision:number;version:number;hash:string};pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[]}):Promise<boolean>{
+export async function pilotBindingCurrent(env:AssistantEnv,binding:{subject:DecisionSubject;source:{id:string;revision:number;version:number;hash:string};pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[];contextMode?:'conversation_manifest'}):Promise<boolean>{
  let pilot:ProactivePilot|null;try{pilot=readProactivePilot(env);}catch{return false;}
  if(!pilot)return !binding.pilot;
  if(env.ROUTINES_ENABLED!=='shadow'||env.ROUTINES_PAUSED==='true'||env.FLUE_EPISODES_ENABLED!=='shadow')return false;
  if(!binding.pilot||binding.subject.kind!=='capture_event'||!pilotAllowsSubject(env,binding.subject)||JSON.stringify(binding.pilot)!==JSON.stringify({...pilot,chatId:binding.subject.chatId})||!binding.sourceRefs)return false;
+ if(binding.contextMode!==('chatIds'in pilot?undefined:pilot.contextMode))return false;
  const scope=activeOrigin(()=>({installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!}));
  if(binding.subject.sourceEpoch!==scope.sourceEpoch||binding.subject.sourceGeneration!==scope.sourceGeneration||!env.DB)return false;
+ if(!await pilotAllowsConversation(env,binding.subject))return false;
  if((await readPilotConversationActivity(env,binding.subject)).state!=='current')return false;
  let refs:SourceSelectionRef[];try{refs=normalizeSourceRefs(binding.sourceRefs);}catch{return false;}
  if(!refs.some(ref=>ref.id===binding.source.id&&ref.revision===binding.source.revision&&ref.version===binding.source.version&&ref.hash===binding.source.hash))return false;

@@ -113,13 +113,13 @@ async function webhook(
     throw new AppError("device_changed", 403);
   try {
     const event=normalizeZapiEvent(body);
-    await observeAuthenticatedRelationshipCallback(env,body);
     const result = await ingestEvent(
       env,
       currentFence(env),
       event,
       true,
     );
+    await observeAuthenticatedRelationshipCallback(env,body);
     return json({ accepted: true, captured: result.captured });
   } catch (error) {
     // No payload, names, addresses or exception messages in metrics. DB outages may also prevent this counter.

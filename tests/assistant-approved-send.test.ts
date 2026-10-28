@@ -9,7 +9,7 @@ import { executeAction, type SendProvider } from "../src/actions";
 const scope={installationId:"own",generation:"own-g1",sourceEpoch:"e1",sourceGeneration:"g1"};
 const secret="s".repeat(48);
 let authorized=true,checks=0,authorizationHook:(()=>Promise<void>)|undefined;
-let activity:{triggerSequence:number;relationshipRevision:number;relationshipProof:string;members:string[]};
+let activity:{triggerSequence:number;watermark:number;relationshipRevision:number;relationshipProof:string;members:string[]};
 const e:Env={...env,OWNER_SUB:"owner",INSTALLATION_EPOCH:"e1",CONNECTION_GENERATION:"g1",CONNECTED_PHONE:"device",ZAPI_INSTANCE_ID:"instance",MAINTENANCE:"false",PUBLIC_ORIGIN:"http://localhost:8787",RUNTIME_CONFIG:"static",DEVELOPMENT:"true",ASSISTANT_INSTALLATION_ID:"own",ASSISTANT_GENERATION:"own-g1",ASSISTANT_APPROVED_SEND_SECRET:secret,
  ASSISTANT_OWNER:{approvedSendAuthorization:async (_scope:unknown,q:{actionId:string;hash:string;approvalId:string})=>{checks++;await authorizationHook?.();return authorized?{authorized:true,actionId:q.actionId,hash:q.hash,approvalId:q.approvalId,expiresAt:Date.now()+5000}:{authorized:false};}} as unknown as Env["ASSISTANT_OWNER"]};
 let chatId:string;
@@ -19,7 +19,7 @@ beforeEach(async()=>{
  await env.DB.exec("DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;");
  const {items}=await upsertDirectoryPage(e,{epoch:"e1",generation:"g1"},{items:[{externalId:"5585999999999",kind:"individual",name:"Pessoa selecionada"}],complete:true});chatId=items[0]!.id;
  const incoming=await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"5585999999999",chatKind:"individual",externalId:"incoming",fromMe:false,kind:"text",text:"Pedido de teste",timestamp:Date.now()});
- const sequence=(await env.DB.prepare("SELECT MIN(sequence) n FROM assistant_capture_changes WHERE source_id=? AND operation='upsert'").bind(incoming.messageId).first<number>("n"))!;activity={triggerSequence:sequence,relationshipRevision:0,relationshipProof:"0".repeat(64),members:[chatId]};
+ const sequence=(await env.DB.prepare("SELECT MIN(sequence) n FROM assistant_capture_changes WHERE source_id=? AND operation='upsert'").bind(incoming.messageId).first<number>("n"))!;activity={triggerSequence:sequence,watermark:sequence,relationshipRevision:0,relationshipProof:"0".repeat(64),members:[chatId]};
 });
 function provider(hook?:()=>Promise<void>,fail=false){let sends=0;const port:SendProvider={status:async()=>{await hook?.();return {connected:true,phone:"device"};},send:async()=>{sends++;if(fail)throw Error("lost ack");return {messageId:"provider-1",zaapId:"zaap-1"};}};return {port,count:()=>sends};}
 describe("private Source approved send",()=>{
@@ -79,7 +79,7 @@ describe("private Source approved send",()=>{
   const {items}=await upsertDirectoryPage(e,{epoch:"e1",generation:"g1"},{items:[{externalId:"777777777777777@lid",kind:"individual",name:"Outro nome"}],complete:true});const lid=items[0]!.id;
   await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"777777777777777@lid",chatKind:"individual",externalId:"owner-reply",fromMe:true,kind:"text",text:"Resposta do dono de teste",timestamp:Date.now()});
   await registerProviderRelationship(e,{sourceEpoch:"e1",sourceGeneration:"g1",instanceId:"instance",phoneChatId:chatId,lidChatId:lid,phone:"5585999999999",lid:"777777777777777@lid",proofHash:"a".repeat(64),observedAt:Date.now()});
-  const current=await conversationActivity(e,chatId);if(current.state!=="available")throw Error("blocked");activity={...activity,relationshipRevision:current.relationshipRevision,relationshipProof:current.relationshipProof,members:current.members.map(m=>m.chatId)};
+  const current=await conversationActivity(e,chatId);if(current.state!=="available")throw Error("blocked");activity={...activity,watermark:current.watermark,relationshipRevision:current.relationshipRevision,relationshipProof:current.relationshipProof,members:current.members.map(m=>m.chatId)};
   await expect(prepareApprovedSend(e,input())).rejects.toThrow("conversation_activity_changed");
  });
  it("registers one direct relation atomically, cancelling only pending unattempted sends",async()=>{
@@ -91,6 +91,21 @@ describe("private Source approved send",()=>{
   await registerProviderRelationship(e,q);expect(await env.DB.prepare("SELECT status FROM actions WHERE id=?").bind(a.actionId).first<string>("status")).toBe("cancelled");expect(await env.DB.prepare("SELECT status FROM actions WHERE id=?").bind(attempted.actionId).first<string>("status")).toBe("attempting");
   expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_capture_changes").first<number>("n")).toBe(before+2);
   await registerProviderRelationship(e,q);expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_capture_changes").first<number>("n")).toBe(before+2);
+ });
+ it("rejects greeting suggestions superseded by a newer incoming question even with a refreshed watermark",async()=>{
+  await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"5585999999999",chatKind:"individual",externalId:"new-question",fromMe:false,kind:"text",text:"Qual é o próximo passo do projeto?",timestamp:Date.now()});
+  const latest=await conversationActivity(e,chatId);if(latest.state!=="available")throw Error("blocked");activity={...activity,watermark:latest.watermark};
+  await expect(prepareApprovedSend(e,input())).rejects.toThrow("conversation_activity_changed");
+ });
+ it("does not attempt when a new incoming arrives between Own authorization and Source claim",async()=>{
+  const a=await prepareApprovedSend(e,input()),p=provider();authorizationHook=async()=>{authorizationHook=undefined;await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"5585999999999",chatKind:"individual",externalId:"burst-after-authorization",fromMe:false,kind:"text",text:"Mais uma pergunta antes de responder",timestamp:Date.now()});};
+  const result=await executeApprovedSend(e,{secret,scope,actionId:a.actionId,approvalId:"human-1"},p.port);expect(result.status).toBe("proposed");expect(p.count()).toBe(0);
+ });
+ it("freezes the full member watermark even when an edit does not create a new original incoming",async()=>{
+  const a=await prepareApprovedSend(e,input()),p=provider();authorizationHook=async()=>{authorizationHook=undefined;await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"5585999999999",chatKind:"individual",externalId:"incoming",fromMe:false,kind:"text",text:"Pergunta corrigida no mesmo turno",timestamp:Date.now(),revision:2});};
+  const result=await executeApprovedSend(e,{secret,scope,actionId:a.actionId,approvalId:"human-1"},p.port);expect(result.status).toBe("proposed");expect(p.count()).toBe(0);
+  const current=await conversationActivity(e,chatId);if(current.state!=="available")throw Error("blocked");expect(current.latestIncomingOriginalSequence).toBe(activity.triggerSequence);expect(current.watermark).toBeGreaterThan(activity.watermark);
+  await expect(prepareApprovedSend(e,input())).rejects.toThrow("conversation_activity_changed");
  });
  it("rechecks Source owner replies after Own authorization in the same final claim",async()=>{
   const a=await prepareApprovedSend(e,input()),p=provider();authorizationHook=async()=>{authorizationHook=undefined;await ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:"5585999999999",chatKind:"individual",externalId:"new-owner",fromMe:true,kind:"text",text:"Já respondi em teste",timestamp:Date.now()});};

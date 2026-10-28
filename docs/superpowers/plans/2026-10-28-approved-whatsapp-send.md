@@ -66,5 +66,14 @@
 
 - [x] Confirmar por consulta autenticada do provedor o vínculo telefone/LID, sem nomes ou variantes numéricas como prova. Preservar avaliação humana do texto separada da autorização de envio.
 - [x] Reproduzir e corrigir veto por atividade, inclusive depois da autorização, com políticas restritivas dos dois membros e bloqueio de prova contraditória. IDs, roteamento, histórico, recibos e custos permanecem preservados.
-- [ ] Aplicar migração Source0017, implantar ambos os componentes e registrar uma vez a relação comprovada; conferir veto do gatilho real já respondido sem nova inferência/envio.
+- [x] Aplicar migração Source0017, implantar ambos os componentes e registrar uma vez a relação comprovada; conferir veto do gatilho real já respondido sem nova inferência/envio. `04f0be8`, CI40747302873, atividade vinculada e guard do gatilho3697 retorna veto.
 - [ ] Observar nova mensagem ainda não respondida até aprovação e consequência WhatsApp; não substituir essa prova por consulta SQL ou botão simulado.
+
+
+### Task 6: Conversas privadas e contexto útil na revisão
+
+- [x] Revisão adversarial do recorte privado, sequência nova, modo de contexto congelado e prévia única; manter política/ACL/retensão e orçamento.
+- [x] Incluir mensagem recebida, resumo opcional na mesma inferência e resposta integral; contexto não integra o envelope de envio.
+- [x] Validar integração manifesto → episódio → Journal → prévia com loader real; casos de frases curtas, mensagem posterior e opt-out. Integração dirigida e 307 regressões agrupadas passaram; tipos/builds aprovados.
+- [ ] Aplicar Source0018 e publicar ambos os componentes preservando runtime; ativar `captured_private/conversation_manifest` com cutoff3683.
+- [ ] Observar sugestão automática atual, incluindo o contexto recebido, e homologar aprovação/envio real.

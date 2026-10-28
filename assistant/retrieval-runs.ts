@@ -33,7 +33,7 @@ type InventoryRow = AccessRow & { fingerprint: string; inboxes: string };
 type Item = { id: string; fingerprint: string; score: number; linked: number; state: string; origin: OriginFence | null; conversation: ConversationFence | ReadCoverageFence | null };
 export type CoverageProof = { scope: SearchScope; runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; purpose: "automation" | "owner_read"; configuration: {version:string;mode:"required"|"lexical_fallback"}; inputHash:string; manifestHash: string };
 type SemanticRow = { proof_json:string; ticket_json:string|null;outcome_json:string|null };
-type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read"; ownerOncePlan?: OncePlanReader };
+type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read"; ownerOncePlan?: OncePlanReader;contextMode?:'conversation_manifest' };
 export type OwnerSearchAdmission = { ownerOnceId: string; guard: AccessGuard };
 const ns = "installation_id=? AND generation=?";
 const baseGaps = ["index_capacity", "index_missing"];
@@ -67,6 +67,7 @@ export class RetrievalRuns {
     this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation, ...(scope.sourceEpoch ? { sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration } : {}) }); this.options = Object.freeze({ ...options, ...(options.semantic ? {semantic:Object.freeze({...options.semantic})} : {}) }); this.clock = options.clock ?? Date.now;
     if (options.semantic && !["required","lexical_fallback"].includes(options.semantic.mode)) throw new Error("retrieval_run_configuration");
     this.purpose = options.purpose ?? "automation"; if (!["automation","owner_read"].includes(this.purpose)) throw new Error("retrieval_run_purpose");
+    if(options.contextMode!==undefined&&(options.contextMode!=='conversation_manifest'||this.purpose!=='automation'||options.semantic))throw Error('retrieval_run_configuration');
     this.access = new SourceAccess(db, this.scope, this.clock); this.scorer = new Retrieval(db, this.scope,undefined,options.origin,this.clock);
     this.limits = { pageSize: options.pageSize ?? 64, maxEvaluations: options.maxEvaluations ?? 4096, maxSteps: options.maxSteps ?? 80 };
     for (const [key, maximum] of [["pageSize", 64], ["maxEvaluations", 4096], ["maxSteps", 80]] as const) if (!Number.isSafeInteger(this.limits[key]) || this.limits[key] < 1 || this.limits[key] > maximum) throw new Error("retrieval_run_limits");
@@ -105,6 +106,7 @@ export class RetrievalRuns {
     const query=this.readCoverageQuery(value.chatId); return {sql:`EXISTS(SELECT 1 FROM (${query.sql}) WHERE snapshot=?)`,values:[...query.values,value.snapshot]};
   }
   private semanticConfiguration() { return {version:"rrf-60-v1",mode:this.options.semantic!.mode}; }
+  private gaps(){return this.options.contextMode?['conversation_manifest_only']:baseGaps;}
   private keys() { return [this.scope.installationId, this.scope.generation]; }
   private statement(sql: string, ...values: (string | number | null)[]) { return this.db.prepare(sql).bind(...values); }
   private async load(actor: TrustedActor, id: string): Promise<Run> {
@@ -112,6 +114,7 @@ export class RetrievalRuns {
     const row = await this.statement(`SELECT * FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND actor_json=?`, ...this.keys(), id, JSON.stringify(actor)).first<Run>();
     if (!row || (JSON.stringify(JSON.parse(row.request_json).scope) !== JSON.stringify(this.scope) || JSON.parse(row.request_json).purpose !== this.purpose)) throw new Error("retrieval_run_denied");
     if (JSON.stringify(JSON.parse(row.request_json).semantic) !== JSON.stringify(this.options.semantic ? this.semanticConfiguration() : undefined)) throw new Error("retrieval_run_configuration");
+    if(JSON.parse(row.request_json).contextMode!==this.options.contextMode)throw Error('retrieval_run_configuration');
     await this.ownerPlan(actor, row); return row;
   }
   private async ownerPlan(actor: TrustedActor, run: Pick<Run, "id" | "request_json">) {
@@ -132,13 +135,15 @@ export class RetrievalRuns {
   }
   private inventory(actor: TrustedActor, run: Run, now: number) { const input=normalizeRetrievalInput(JSON.parse(run.request_json).input);return this.access.inventory(actor, input.projectId, now, { ...this.scope, includePaused: this.purpose === "owner_read",...(input.sourceRefs?{sourceRefs:input.sourceRefs}:{}) }); }
   private progress(run: Run): SearchProgress {
-    return { runId: run.id, checkpoint: run.checkpoint, state: run.state, gaps: [...baseGaps, ...(run.state === "waiting_context" ? [run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : "origin_unavailable"] : [])] };
+    return { runId: run.id, checkpoint: run.checkpoint, state: run.state, gaps: [...this.gaps(), ...(run.state === "waiting_context" ? [run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : "origin_unavailable"] : [])] };
   }
   async start(actor: TrustedActor, key: string, input: RetrievalInput, admission?: OwnerSearchAdmission): Promise<SearchProgress> {
     actor = ownActor(actor); if (actor.kind === "extractor" || (this.purpose === "owner_read" && actor.kind !== "owner") || !identifier(key)) throw new Error("retrieval_run_denied");
     if (key.startsWith("owner-once-v1:") !== !!admission || admission && key !== onceKey(admission.ownerOnceId)) throw new Error("retrieval_owner_admission");
     if (admission && Object.keys(input).some(key => !["query", "projectId", "limit"].includes(key))) throw new Error("retrieval_owner_admission");
-    const request = { input: normalizeRetrievalInput(input), scope: this.scope, purpose: this.purpose, limits: this.limits,
+    const normalized=normalizeRetrievalInput(input);
+    if(this.options.contextMode){if(actor.kind!=='interlocutor'||actor.conversationKind!=='private'||!normalized.sourceRefs)throw Error('context_mode_denied');let bytes=0;for(const ref of normalized.sourceRefs){const source=await this.access.read(actor,ref.id,ref.revision);if(!source||source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==actor.conversationId||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash||!source.text?.trim())throw Error('context_mode_denied');bytes+=new TextEncoder().encode(source.text).length;}if(bytes>8192)throw Error('context_mode_denied');}
+    const request = { input: normalized, scope: this.scope, purpose: this.purpose, limits: this.limits,...(this.options.contextMode?{contextMode:this.options.contextMode}:{}),
       ...(admission ? { ownerOnceId: admission.ownerOnceId } : {}), ...(this.options.semantic ? {semantic:this.semanticConfiguration()} : {}) }, actorJson = JSON.stringify(actor);
     const id = await bridgeHash([this.keys(), actorJson, key]), requestHash = await bridgeHash(request);
     if (admission) await this.ownerPlan(actor, { id, request_json: JSON.stringify(request) });
@@ -158,7 +163,7 @@ export class RetrievalRuns {
     if (step && step.request_hash !== requestHash) throw new Error("retrieval_step_conflict");
     if (step?.state === "complete") return JSON.parse(step.result_json!);
     if (run.checkpoint !== input.expectedCheckpoint) throw new Error("retrieval_step_conflict");
-    if (run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations) return { ...this.progress(run), state: "waiting_context", gaps: [...baseGaps, "search_limit"] };
+    if (run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations) return { ...this.progress(run), state: "waiting_context", gaps: [...this.gaps(), "search_limit"] };
     const now = this.clock(), until = now + (this.options.leaseMs ?? 180000);
     if (!step) {
       const inventory = this.inventory(actor, run, now), take = Math.min(run.page_size, run.max_evaluations - run.evaluations);
@@ -362,7 +367,7 @@ export class RetrievalRuns {
   }
   async result(actor: TrustedActor, runId: string): Promise<SearchResult> {
     actor = ownActor(actor); const run = await this.load(actor, runId), coverage = this.coverage(actor, run, this.clock());
-    const unavailable = (gap: string, complete = false): SearchResult => ({ state: run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations || run.state === "waiting_context" || complete ? "waiting_context" : "pending", sources: [] as RetrievedSource[], coverage: { inventoryComplete: complete, engine: "not_run_capacity", gaps: [...baseGaps, gap] } });
+    const unavailable = (gap: string, complete = false): SearchResult => ({ state: run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations || run.state === "waiting_context" || complete ? "waiting_context" : "pending", sources: [] as RetrievedSource[], coverage: { inventoryComplete: complete, engine: this.options.contextMode??"not_run_capacity", gaps: [...this.gaps(), gap] } });
     if (!await this.statement(`SELECT 1 WHERE ${coverage.sql}`, ...coverage.values).first()) return unavailable(run.steps_used >= run.max_steps || run.evaluations >= run.max_evaluations ? "search_limit" : run.state === "waiting_context" ? "origin_unavailable" : "inventory_changed");
     const current = this.inventory(actor, run, this.clock());
     // OCR is not in the semantic projection, including when its parent loses
@@ -372,8 +377,8 @@ export class RetrievalRuns {
     const semantic=this.options.semantic ? await this.semanticOutcome(actor,run) : null;
     if (!await this.statement(`SELECT 1 WHERE ${coverage.sql}`, ...coverage.values).first()) return unavailable("inventory_changed");
     if(semantic?.pending) return {state:"pending",sources:[],coverage:{inventoryComplete:true,engine:semantic.engine,gaps:[...new Set([...semantic.gaps,...hostGaps])]}};
-    const rows = await this.statement(`WITH current AS (${current.sql}) SELECT c.*,i.origin_json,i.conversation_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint WHERE i.state='ready' AND i.linked=1 AND (i.score>0 OR c.id IN (SELECT value FROM json_each(?))) ORDER BY i.score DESC,c.id LIMIT 74`, ...current.values, ...this.keys(), run.id, JSON.stringify(semantic?.candidates ?? [])).all<InventoryRow & { origin_json: string | null; conversation_json: string | null }>();
-    if (!rows.results.length) return {state:"waiting_context",sources:[],coverage:{inventoryComplete:true,engine:semantic?.engine ?? "not_run_capacity",gaps:[...new Set([...(semantic?.gaps ?? baseGaps),...hostGaps,"no_matches"])]}};
+    const rows = await this.statement(`WITH current AS (${current.sql}) SELECT c.*,i.origin_json,i.conversation_json FROM current c JOIN assistant_retrieval_items i ON i.installation_id=? AND i.generation=? AND i.run_id=? AND i.source_id=c.id AND i.fingerprint=c.fingerprint WHERE i.state='ready' AND (?=1 OR (i.linked=1 AND (i.score>0 OR c.id IN (SELECT value FROM json_each(?)))) ) ORDER BY i.score DESC,c.id LIMIT 74`, ...current.values, ...this.keys(), run.id,this.options.contextMode==='conversation_manifest'?1:0, JSON.stringify(semantic?.candidates ?? [])).all<InventoryRow & { origin_json: string | null; conversation_json: string | null }>();
+    if (!rows.results.length) return {state:"waiting_context",sources:[],coverage:{inventoryComplete:true,engine:semantic?.engine ?? this.options.contextMode ?? "not_run_capacity",gaps:[...new Set([...(semantic?.gaps ?? this.gaps()),...hostGaps,"no_matches"])]}};
     if(semantic){
       const lexical=rows.results; // SQL order is the lexical lane; score-zero rows receive no lexical rank.
       const scores=await this.statement(`SELECT source_id,score FROM assistant_retrieval_items WHERE ${ns} AND run_id=?`,...this.keys(),run.id).all<{source_id:string;score:number}>();
@@ -401,7 +406,7 @@ export class RetrievalRuns {
     const saved = ranking ? (await this.db.batch([this.statement(`UPDATE assistant_retrieval_semantic SET ranking_json=? WHERE ${ns} AND run_id=? AND ${fresh.sql}`,JSON.stringify(ranking),...this.keys(),run.id,...fresh.values),savePack])).at(-1)! : await savePack.all();
     if (!saved.results.length) return unavailable("inventory_changed");
     const fence: SearchFence = Object.freeze({ ...this.scope, runId: run.id, runToken: run.run_token, requestHash: run.request_hash, checkpoint: run.checkpoint, actor: run.actor_json, selected, allowedPackHash: packHash, purpose: this.purpose, ...(ranking ? {ranking} : {}) });
-    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? "not_run_capacity", gaps: [...new Set([...(semantic?.gaps ?? baseGaps), ...hostGaps, ...(sources.some(row => row.mediaEvidence?.pages.some(page => page.state === "unreadable")) ? ["media_unreadable_pages"] : [])])] } };
+    return { state: "ready", sources, fence, coverage: { inventoryComplete: true, engine: semantic?.engine ?? this.options.contextMode ?? "not_run_capacity", gaps: [...new Set([...(semantic?.gaps ?? this.gaps()), ...hostGaps, ...(sources.some(row => row.mediaEvidence?.pages.some(page => page.state === "unreadable")) ? ["media_unreadable_pages"] : [])])] } };
   }
   guard(actor: TrustedActor, fence: SearchFence, now = this.clock()): AccessGuard {
     actor = ownActor(actor);
@@ -413,7 +418,7 @@ export class RetrievalRuns {
     const inventory = { sql: `SELECT p.* FROM (${projected.sql}) p JOIN assistant_retrieval_runs selection ON selection.installation_id=? AND selection.generation=? AND selection.id=? WHERE (json_extract(selection.request_json,'$.input.projectId') IS NULL OR p.project_id=json_extract(selection.request_json,'$.input.projectId')) AND (json_type(selection.request_json,'$.input.sourceRefs') IS NULL OR EXISTS(SELECT 1 FROM json_each(selection.request_json,'$.input.sourceRefs') ref WHERE p.id=json_extract(ref.value,'$.id') AND p.revision=json_extract(ref.value,'$.revision') AND p.version=json_extract(ref.value,'$.version') AND p.content_hash=json_extract(ref.value,'$.hash')))`, values: [...projected.values, ...this.keys(), run.id] };
     const coverage = this.coverage(actor, run, now, inventory);
     if (!!fence.ranking !== !!this.options.semantic) return {sql:"0",values:[]};
-    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);
+    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ? AND json_extract(request_json,'$.contextMode') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,this.options.contextMode??null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);
   }
   async check(actor: TrustedActor, fence: SearchFence): Promise<boolean> {
     actor = ownActor(actor);

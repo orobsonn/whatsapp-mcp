@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { beforeEach,afterEach,expect,it,vi } from "vitest";
 import { TelegramLink } from "../assistant/telegram-auth";
 import { TelegramReview,type TelegramApi } from "../assistant/telegram";
-import type { DecisionJournal } from "../assistant/decisions";
+import { DecisionJournal } from "../assistant/decisions";
 import { Routines } from "../assistant/routines";
 import { AssistantScheduler } from "../assistant/scheduler";
 import { Conversations } from "../assistant/conversations";
@@ -29,25 +29,74 @@ import {runtimeHost} from '../assistant/agent-runtime/runtime';
 import {readProactivePilot,pilotAllowsSubject,pilotBindingCurrent} from '../assistant/proactive-pilot';
 import {CanonicalCandidateExtractor} from '../assistant/canonical-extraction';
 import {OwnerRuntime,InterlocutorRuntime} from '../assistant/agent-runtime/profiles';
+import {TelegramApprovedSendReview} from '../assistant/telegram-approved-send';
+import {actionDigest} from '../src/send-envelope';
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,author:string|null,fromMe:boolean;
 let snapshots:Map<string,unknown>,model:ModelAdapter,driver:EpisodeDriver;
 const keys=()=>[scope.installationId,scope.generation],query=(sql:string,...values:(string|number|null)[])=>env.DB.prepare(sql).bind(...values);
 const scheduler=()=>new AssistantScheduler(settings,{clock:()=>now,driver,model});
-let activityOwnerSequence:number,activityMembers:string[];
+let activityOwnerSequence:number,activityMembers:string[],activityLatestIncomingSequence:number|null;
 beforeEach(async()=>{
  scope={installationId:crypto.randomUUID(),generation:"g1",sourceEpoch:"capture-epoch",sourceGeneration:"capture-generation"};now=Date.parse("2026-10-26T12:00:00Z");modelCalls=0;dispatches=0;modelFailure=false;author="a".repeat(64);fromMe=false;snapshots=new Map();
- activityOwnerSequence=0;activityMembers=[];
- const reader={async readConversationActivity(input:{secret:string;sourceEpoch:string;sourceGeneration:string;chatId:string}){if(input.secret!==secret)throw Error('reader_denied');const watermark=Math.max(1,activityOwnerSequence,...[...snapshots.values()].map(v=>(v as {watermark:number}).watermark));return {observation:'capture_conversation_activity',state:'available',sourceEpoch:input.sourceEpoch,sourceGeneration:input.sourceGeneration,chatId:input.chatId,relationshipRevision:activityMembers.length?1:0,relationshipProof:'a'.repeat(64),members:(activityMembers.length?activityMembers:[input.chatId]).map(chatId=>({chatId,captureEnabled:true,watermark})),watermark,lastOwnerOriginalSequence:activityOwnerSequence};},async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw new Error("synthetic secret mismatch");const found=snapshots.get(input.sourceKind+":"+input.sourceId);if(!found)throw new Error("synthetic offline");return found;}};
+ activityOwnerSequence=0;activityMembers=[];activityLatestIncomingSequence=null;
+ const reader={async readConversationActivity(input:{secret:string;sourceEpoch:string;sourceGeneration:string;chatId:string}){if(input.secret!==secret)throw Error('reader_denied');const latestIncomingOriginalSequence=activityLatestIncomingSequence??Math.max(0,...[...snapshots.values()].filter(v=>(v as any).chatId===input.chatId&&(v as any).content?.fromMe===false).map(v=>(v as {watermark:number}).watermark)),watermark=Math.max(1,activityOwnerSequence,latestIncomingOriginalSequence,...[...snapshots.values()].map(v=>(v as {watermark:number}).watermark));return {observation:'capture_conversation_activity',state:'available',sourceEpoch:input.sourceEpoch,sourceGeneration:input.sourceGeneration,chatId:input.chatId,relationshipRevision:activityMembers.length?1:0,relationshipProof:'a'.repeat(64),members:(activityMembers.length?activityMembers:[input.chatId]).map(chatId=>({chatId,captureEnabled:true,watermark})),watermark,lastOwnerOriginalSequence:activityOwnerSequence,latestIncomingOriginalSequence};},async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw new Error("synthetic secret mismatch");const found=snapshots.get(input.sourceKind+":"+input.sourceId);if(!found)throw new Error("synthetic offline");return found;}};
  settings={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:reader,OPENAI_API_KEY:"synthetic-not-a-provider-key",FLUE_EPISODES_ENABLED:"shadow",ROUTINES_ENABLED:"shadow"};
  await new InferenceBudget(env.DB,{...scope,period:"2026-10-26"}).configure(1000000);
  model=async request=>{modelCalls++;if(modelFailure)throw new Error("synthetic accepted but ACK lost");const payload=JSON.parse(request.body),prompt=JSON.parse(payload.messages.at(-1).content),source=prompt.sources[0];return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:"proposed",text:"Synthetic shadow proposal",citations:[{id:source.id,revision:source.revision,version:source.version,hash:source.hash,quote:source.text}]})}}]})};};
  driver=(profile,runtimeId)=>({dispatch:async()=>{dispatches++;return {submissionId:"submission-"+runtimeId.slice(-12),uid:"uid-"+runtimeId.slice(-12),acceptedAt:new Date(now).toISOString()};},read:async receipt=>{
-  const {search}=hostConfiguredSearch(settings,"automation",()=>now),host=new EpisodeController(env.DB,{...scope,period:new Date(now).toISOString().slice(0,10)},search,model,DEFAULT_BROKER_CONFIG,{purpose:"automation",clock:()=>now});
-  const found=await query("SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?",...keys(),runtimeId).first<{id:string}>();if(!found)throw new Error("missing synthetic episode");const episode=boundEpisode((await host.episodes.get(found.id))!);
+  const found=await query("SELECT id,binding_json FROM assistant_episodes WHERE installation_id=? AND generation=? AND runtime_id=?",...keys(),runtimeId).first<{id:string;binding_json:string}>();if(!found)throw new Error("missing synthetic episode");
+  const {search}=hostConfiguredSearch(settings,"automation",()=>now,JSON.parse(found.binding_json).contextMode),host=new EpisodeController(env.DB,{...scope,period:new Date(now).toISOString().slice(0,10)},search,model,DEFAULT_BROKER_CONFIG,{purpose:"automation",clock:()=>now}),episode=boundEpisode((await host.episodes.get(found.id))!);
   const text=await host.model(episode.id,{profile,runtimeId,submissionId:receipt.submissionId},{messages:[{role:"user",content:host.message(episode)}]});return {...receipt,text,data:{}};
  }});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
+it('answers a newly captured private outside the legacy eight with one manifest inference and remains current through an owner-read semantic journal',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'all-private',revision:1,startAfterSequence:0,selection:'captured_private',contextMode:'conversation_manifest'});
+ await query("INSERT INTO assistant_origin_conversations(installation_id,generation,source_epoch,source_generation,chat_id,watermark,kind,access_state) SELECT ?,?,?,?,value,0,'private','available' FROM json_each(?)",...keys(),scope.sourceEpoch,scope.sourceGeneration,JSON.stringify(Array.from({length:20},(_,i)=>'a-idle-'+String(i).padStart(2,'0')))).run();
+ const engine={search:vi.fn(async()=>{throw Error('must not use Cognee');})};settings.COGNEE={idFromName:()=>({}),get:()=>engine} as unknown as NonNullable<AssistantEnv['COGNEE']>;settings.SEMANTIC_SEARCH_MODE='required';
+ await event(1,0,'outside','Synthetic text from another captured private','private','outside-eight');
+ expect(await scheduler().tick()).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);expect(dispatches).toBe(1);expect(engine.search).not.toHaveBeenCalled();
+ const episode=await query('SELECT binding_json FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first<string>('binding_json');expect(JSON.parse(episode!).contextMode).toBe('conversation_manifest');expect(JSON.parse(episode!).context.sources).toHaveLength(1);
+ const configured=hostConfiguredSearch(settings,'owner_read',()=>now),journal=new DecisionJournal(env.DB,scope,{kind:'owner'},{origin:configured.origin,semantic:configured.semantic,clock:()=>now});
+ const decision=await query('SELECT id FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND proposal_json IS NOT NULL',...keys()).first<string>('id');
+ const detail=await journal.get(decision!);expect(detail).toMatchObject({freshness:'current',proposal:{decision:'proposed'}});
+ expect(await journal.admitReview(decision!,await bridgeHash((detail as any).proposal),guard=>[query(`SELECT 1 WHERE ${guard.sql}`,...guard.values)])).not.toBeNull();expect(engine.search).not.toHaveBeenCalled();
+ const bot='manifest_review_bot',link={...scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+ await query("INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',0)",...keys(),bot,scope.sourceEpoch,scope.sourceGeneration).run();
+ await query("INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)",...keys(),bot,JSON.stringify(link)).run();
+ const api:TelegramApi={inspect:vi.fn(async()=>true),createTopic:vi.fn(async()=>42),send:vi.fn(async()=>200),answer:vi.fn(async()=>{})},actionId=crypto.randomUUID();
+ settings.WHATSAPP_APPROVED_SEND_ENABLED='true';settings.WHATSAPP_APPROVED_SEND_SECRET=secret;
+ settings.WHATSAPP_APPROVED_SEND={prepare:vi.fn(async input=>({actionId,hash:await actionDigest(input.envelope),envelope:input.envelope,activity:input.activity,target:{chatId:input.envelope.chatId,name:'Synthetic private outside eight',address:'5511000000000',kind:'individual' as const},expiresAt:now+600000})),execute:vi.fn(async()=>{throw Error('preview never sends');}),status:vi.fn(async()=>{throw Error('preview never sends');})};
+ const review=new TelegramApprovedSendReview(settings,scope,bot,'synthetic-manifest-callback-key',api,journal,()=>now);
+ expect(await review.dispatchDecision(decision!,'manifest-default-context')).toMatchObject({state:'sent'});
+ expect(vi.mocked(api.send).mock.calls[0][2]).toContain('Synthetic text from another captured private');expect(vi.mocked(api.send).mock.calls[0][2]).toContain((detail as any).proposal.text);expect(settings.WHATSAPP_APPROVED_SEND.execute).not.toHaveBeenCalled();expect(modelCalls).toBe(1);expect(engine.search).not.toHaveBeenCalled();
+ const frozen=JSON.parse(episode!),queue=new JobQueue(env.DB,scope,frozen.actor),withoutRefs={kind:'reasoning' as const,dedupeKey:'manifest-missing-refs',sourceId:frozen.lease.source_id,sourceRevision:frozen.lease.source_revision,request:frozen.query,runtime:'flue' as const,subject:frozen.subject,contextMode:'conversation_manifest' as const};
+ await expect(queue.enqueue(withoutRefs,now)).rejects.toThrow('retrieval_source_refs');expect(await query('SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(1);
+ expect(()=>hostConfiguredSearch(settings,'automation',()=>now,'other' as never)).toThrow('context_mode_denied');
+ expect(()=>hostConfiguredSearch(settings,'owner_read',()=>now,'conversation_manifest')).toThrow('context_mode_denied');
+ await query("UPDATE assistant_retrieval_runs SET request_json=json_remove(request_json,'$.contextMode') WHERE installation_id=? AND generation=?",...keys()).run();
+ expect((await journal.get(decision!)) as any).not.toHaveProperty('proposal');expect(await journal.admitReview(decision!,await bridgeHash((detail as any).proposal),guard=>[query(`SELECT 1 WHERE ${guard.sql}`,...guard.values)])).toBeNull();expect(modelCalls).toBe(1);
+});
+it('keeps the entire frozen conversation manifest when its short messages have no lexical matches',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'all-private',revision:1,startAfterSequence:0,selection:'captured_private',contextMode:'conversation_manifest'});
+ await event(1,0,'short-first','a','private','outside-eight');await event(2,1,'short-latest','e','private','outside-eight');for(const [key,value]of snapshots)snapshots.set(key,{...(value as object),watermark:2});
+ await scheduler().tick();now+=60001;expect(await scheduler().tick()).toMatchObject({state:'complete'});expect(modelCalls).toBe(1);
+ const binding=JSON.parse((await query('SELECT binding_json FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first<string>('binding_json'))!);expect(binding.context.sources.map((source:{text:string})=>source.text).sort()).toEqual(['a','e']);
+});
+it.each(['excluded','paused','before_cutoff','from_me'] as const)('captured_private does not infer for %s',async reason=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'all-private',revision:1,startAfterSequence:reason==='before_cutoff'?1:0,selection:'captured_private',contextMode:'conversation_manifest'});
+ if(reason==='excluded')await query("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'private',1,'ignore',1)",...keys(),'outside-eight').run();
+ if(reason==='from_me')fromMe=true;
+ if(reason==='paused')settings.ROUTINES_PAUSED='true';await event(1,0,'unavailable','Synthetic new private','private','outside-eight');await scheduler().tick();
+ if(reason==='paused'){const conversation=new Conversations(env.DB,()=>scope),state=await conversation.state('outside-eight');await conversation.setPaused('outside-eight',state.revision,true);settings.ROUTINES_PAUSED='false';now+=60001;await scheduler().tick();}
+ expect(modelCalls).toBe(0);expect(dispatches).toBe(0);expect(await query('SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);
+});
+it.each(['private','group'] as const)('does not infer a superseded %s trigger even when a later unsupported message supersedes it',async kind=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'all-private',revision:1,startAfterSequence:0,selection:'captured_private',contextMode:'conversation_manifest'});activityLatestIncomingSequence=2;
+ await event(1,0,'old','Synthetic old text',kind,'outside-eight');await scheduler().tick();expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ if(kind==='private')expect(await query('SELECT state,phase,last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'blocked',phase:'done',last_gap:'superseded_new_message'});
+ else expect(await query('SELECT COUNT(*) n FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);
+});
 it('suppresses a phone trigger already answered through its proven LID without reading the other conversation or paying a model',async()=>{
  settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'activity-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
  activityMembers=['chat','opaque-lid-chat'];activityOwnerSequence=2;await event();

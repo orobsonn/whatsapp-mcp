@@ -5,11 +5,11 @@ Autorização de Robson em 28/10/2026: a assistente analisa conversas e sugere r
 ## Contrato de produto
 
 - Uma nova mensagem recebida em conversa habilitada pode produzir uma sugestão, silêncio ou pedido de esclarecimento. Conteúdo recebido nunca autoriza envio.
-- A revisão mostra destino inequívoco e texto integral. “✅ Aprovar e enviar” autoriza somente essa versão; “❌ Descartar” encerra sem enviar. Botões antigos de simulação continuam apenas simulando.
+- A revisão mostra destino inequívoco, mensagem recebida original (identificada como trecho quando abreviada), resumo curto da IA quando útil e resposta sugerida integral. Contexto e resumo nunca compõem o texto enviado. “✅ Aprovar e enviar” autoriza somente essa versão; “❌ Descartar” encerra sem enviar. Botões antigos de simulação continuam apenas simulando.
 - Aprovação vencida, proposta alterada, vínculo revogado, fonte retirada ou conversa desatualizada impedem nova tentativa. Clique repetido consulta o mesmo envio, sem duplicar.
 - Telegram distingue aceito, enviado, entregue e resultado incerto. Incerteza conserva a ação para reconciliação, sem criar outra tentativa.
-- O piloto começa após o watermark atual do Source, em conversas explicitamente selecionadas. Backlog e FUPs anteriores permanecem preservados. Resumo diário e resposta autônoma permanecem desligados nesta ativação inicial.
-- Contexto inicial: até três fontes textuais e 8 KiB da mesma conversa, em manifesto imutável. A restrição limita inventário, indexação, busca e validação; não concede acesso nem promete histórico completo. Políticas e retenção existentes continuam valendo.
+- O piloto preserva o corte Source original 3683 e passa a descobrir conversas privadas capturadas, respeitando exclusões e pausas. Não exige lista manual de contatos. Backlog e FUPs anteriores permanecem preservados. Resumo diário e resposta autônoma permanecem desligados nesta ativação inicial.
+- Contexto inicial: até três fontes textuais e 8 KiB da mesma conversa, em manifesto imutável. O modo `conversation_manifest` entrega os originais do manifesto diretamente ao runtime e reconstrói a mesma seleção na revisão, sem aquecimento/indexação/busca Cognee no caminho dessa resposta curta. A restrição limita seleção e validação; não concede acesso nem promete histórico completo. Políticas e retenção existentes continuam valendo.
 
 ## Arquitetura proposta
 
@@ -31,7 +31,7 @@ Issue [146](https://github.com/orobsonn/whatsapp-mcp/issues/146). A revisão exi
 
 O piloto inicial não executa extração automática de missões fora das três fontes. Registra `not_evaluated/pilot_context_only`; controles reativos existentes permanecem disponíveis. FUP e diário não fazem parte da primeira ativação. Ampliar essas rotinas exige validar seu recorte, sem tratar o circuito de respostas como prova delas.
 
-Status em28/10/2026, 18:14UTC: o ajuste `dfa622b` está ativo com CI completa aprovada; a tentativa vencida foi preservada e a segunda concluiu, com sugestão real no Telegram. O dono gostou do texto, mas já havia respondido. A resposta foi capturada em registro LID separado do telefone usado pela sugestão; o provedor confirmou que são a mesma conversa. A ação antiga foi cancelada sem tentativa. A correção da atividade entre os dois registros está em andamento. Ainda não há aprovação/envio WhatsApp comprovados deste circuito; release e encerramento da issue aguardam essa prova. Nenhum clique de aprovação foi fabricado pelo agente. [Critérios, readbacks, custos e pendências](evidencias/146-envio-aprovado.md).
+Status em 28/10/2026: `04f0be8` foi publicado nos dois Workers com migração Source0017 e CI aprovada (1761 testes gerais, 13 OAuth, 70 nativos e verificações Node). O vínculo comprovado telefone/LID foi registrado; a proposta antiga continua cancelada e o gatilho respondido é vetado. Não houve envio aprovado real. A próxima alteração inclui conversas privadas novas, evita gatilhos superados, reduz o caminho da resposta e apresenta o contexto ao dono. Seu deploy e sua homologação permanecem pendentes até readback em produção. [Critérios, readbacks, custos e pendências](evidencias/146-envio-aprovado.md).
 
 ## Revisão operacional da arquitetura
 
@@ -39,8 +39,8 @@ Revisão adversarial do código `dfa622b`, solicitada pelo dono após o silênci
 
 - **Falha reproduzida:** uma análise real paga terminou sem proposta publicada e reteve a próxima. O ajuste amplia somente prazos futuros e destaca o item vencido da coordenação, sem renovar episódios, repetir inferência ou apagar custos/recibos. A liberação do primeiro item foi observada; falta concluir o segundo percurso.
 - **Fragilidade constatada no código:** o coordenador global mantém um único item ativo e pula materialização/descoberta ao reconciliá-lo. O destaque novo cobre episódio incerto expirado; não resolve toda incerteza de ingestão/índice.
-- **Fragilidade constatada no código:** três textos já selecionados ainda dependem de aquecimento/restauração, ingestão, verificações, checkpoint e busca semântica antes do Flue. Cognee está no caminho obrigatório da resposta curta; medir latência real e avaliar um caminho menor com os mesmos limites de acesso/origem/atualidade é uma recomendação, ainda não implementada.
-- **Risco identificado, não reproduzido:** textos distintos em sequência geram trabalhos separados; o contexto congela fontes anteriores ao gatilho. Uma correção posterior pode já existir quando uma sugestão baseada no texto anterior for gerada. Reconhecer gatilhos superados deve conservar recibos pagos e distinguir nova mensagem recebida de resposta do dono.
+- **Correção em validação:** o modo `conversation_manifest` usa os originais já selecionados e dispensa o caminho Cognee nessa resposta curta. O modo fica congelado no trabalho, episódio e recibo de busca e é reconstituído na revisão; a busca geral do dono preserva seu funcionamento.
+- **Correção em validação:** nova entrada recebida supera gatilhos anteriores da conversa, mesmo se a entrada for áudio ou exceder o limite textual. O veto usa a sequência original e o watermark Source, distingue resposta do dono e conserva tentativas/custos anteriores.
 - **Lacuna de produto constatada:** falha técnica pode continuar parecendo silêncio deliberado. `no_reply` é decisão do modelo; falha sem decisão é ausência de avaliação. O ajuste publica perguntas `waiting_context` sem botão de envio, mas resposta livre ainda não retoma a análise automaticamente; a mensagem informa esse limite.
 
 Esses pontos não são novos resultados de homologação nem autorização para resposta autônoma. O aceite deve observar sugestão atual e útil, latência, falha visível, independência entre conversas e o envio aprovado real. Três fontes/8KiB não comprovam compreensão de todo o histórico, preferências pessoais ou compromissos antigos.

@@ -2,7 +2,7 @@ import { decisionSubject, type DecisionSubject } from "./agent/contracts";
 import { seedDecisionJob } from "./decisions";
 import { dueFollowUpGuard } from "./followups";
 import {outgoingProof,outgoingGuard} from './outgoing';
-import { SourceAccess, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
+import { SourceAccess,normalizeSourceRefs,type SourceSelectionRef, type AccessGuard, type SourceFence, type TrustedActor } from "./access";
 import { conversationGuard, jobConversationFence, type ConversationFence } from "./conversations";
 export type JobScope = Readonly<{ installationId: string; generation: string; sourceEpoch?: string; sourceGeneration?: string }>;
 export type JobKind = "extraction" | "reasoning" | "follow_up" | "review" | "maintenance";
@@ -16,7 +16,7 @@ export type Ledger = {
   request_hash: string; request_json: string; admitted_lease_generation: number | null; state: "prepared" | "attempting" | "uncertain" | "complete";
 };
 export type NewJob = {
-  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue" | "flue_owner_dialogue"; subject?: DecisionSubject;
+  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue" | "flue_owner_dialogue"; subject?: DecisionSubject;contextMode?:'conversation_manifest';sourceRefs?:SourceSelectionRef[];
 };
 /** Trusted coordinator's atomic admission, never decoded from NewJob or text. */
 export type JobAdmission = { id: string; guard: AccessGuard; statements: D1PreparedStatement[] };
@@ -69,6 +69,13 @@ export class JobQueue {
     }
     const source = await this.access.read(this.actor, input.sourceId, input.sourceRevision, now);
     if (!source) throw new Error("source_access_denied");
+    let manifest:SourceSelectionRef[]|undefined;
+    if(input.contextMode!==undefined||input.sourceRefs!==undefined){
+      if(input.contextMode!=='conversation_manifest'||input.runtime!=='flue'||input.kind!=='reasoning'||input.subject?.kind!=='capture_event'||this.actor.kind!=='interlocutor'||this.actor.conversationKind!=='private'||input.subject.chatId!==this.actor.conversationId||source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==input.subject.chatId)throw Error('context_mode_denied');
+      manifest=normalizeSourceRefs(input.sourceRefs??[]);let bytes=0;
+      if(!manifest.some(ref=>ref.id===source.id&&ref.revision===source.fence.source.revision&&ref.version===source.fence.source.version&&ref.hash===source.fence.source.hash))throw Error('context_mode_denied');
+      for(const ref of manifest){const row=await this.access.read(this.actor,ref.id,ref.revision,now);if(!row||row.fence.source.origin!=='whatsapp'||row.fence.source.conversationId!==input.subject.chatId||row.fence.source.version!==ref.version||row.fence.source.hash!==ref.hash||!row.text?.trim())throw Error('context_mode_denied');bytes+=new TextEncoder().encode(row.text).length;}if(bytes>8192)throw Error('context_mode_denied');
+    }
     if (dialogue && source.fence.source.origin !== "owner_request") throw new Error("owner_dialogue_source_required");
     if (!dialogue && source.fence.source.origin === "owner_request") throw new Error("operational_source_requires_owner_dialogue");
     const chatId = this.actor.kind === "interlocutor" ? this.actor.conversationId : source.fence.source.conversationId;
@@ -78,7 +85,7 @@ export class JobQueue {
     const storedOutgoing=fup?await this.statement(`SELECT json_extract(body_json,'$.outgoing') outgoing FROM assistant_fup_provenance WHERE installation_id=? AND generation=? AND fup_id=? AND version=?`,fup.followUpId,fup.followUpVersion).first<string>('outgoing'):null;
     const outgoing=storedOutgoing?outgoingProof.parse(JSON.parse(storedOutgoing)):undefined;
     const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,...(outgoing?{outgoing}:{}),
-      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}), ...(dialogue ? { dialogueKey: input.dedupeKey } : {}) });
+      input: input.request, actor: this.actor, fence: source.fence, conversation,...(manifest?{contextMode:input.contextMode,sourceRefs:manifest}:{}), ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}), ...(dialogue ? { dialogueKey: input.dedupeKey } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;

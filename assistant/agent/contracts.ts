@@ -36,10 +36,10 @@ export const decisionSubject = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fup_occurrence"), occurrenceId: label, followUpId: label, followUpVersion: version }).strict(),
 ]);
 export type DecisionSubject = z.infer<typeof decisionSubject>;
-export const jobRequest = z.object({ kind: label, sourceId: label, sourceRevision: version, input: z.string().max(32768), actor,outgoing:outgoingProof.optional(),
-  fence: sourceFence, conversation: conversationFence.nullable(), runtime: z.literal("flue"), subject: decisionSubject }).strict();
+export const jobRequest = z.object({ kind: label, sourceId: label, sourceRevision: version, input: z.string().max(32768), actor,outgoing:outgoingProof.optional(),contextMode:z.literal('conversation_manifest').optional(),sourceRefs:z.array(sourceRef).min(1).max(3).optional(),
+  fence: sourceFence, conversation: conversationFence.nullable(), runtime: z.literal("flue"), subject: decisionSubject }).strict().superRefine((value,ctx)=>{if(value.contextMode?(!value.sourceRefs||value.actor.kind!=='interlocutor'||value.actor.conversationKind!=='private'||value.subject.kind!=='capture_event'||value.fence.source.origin!=='whatsapp'):value.sourceRefs!==undefined)ctx.addIssue({code:'custom',message:'context_mode_denied'});});
 export const modelPayload = z.object({ messages: z.array(z.object({ role: z.enum(["system", "user", "assistant"]), content: z.string().max(60000) }).strict()).min(1).max(64) }).strict();
-const binding = z.object({ lease, actor, purpose, search, subject: decisionSubject, runId: hash, query: z.string().min(1).max(2048), config,outgoing:outgoingProof.optional(),
+const binding = z.object({ lease, actor, purpose, search, subject: decisionSubject, runId: hash, query: z.string().min(1).max(2048), config,outgoing:outgoingProof.optional(),contextMode:z.literal('conversation_manifest').optional(),sourceRefs:z.array(sourceRef).min(1).max(3).optional(),
   coverage: z.object({ inventoryComplete: z.boolean(), engine: label, gaps: z.array(label).max(32) }).strict(),
   context: z.object({ state: z.literal("ready"), mode: z.enum(["model", "fallback", "originals"]), sources: z.array(source).min(1).max(10),
     focus: z.array(z.object({ id: label, spans: z.array(z.object({ start: time, end: time, quote: z.string().max(4096) }).strict()).max(4) }).strict()).max(10),
@@ -49,7 +49,7 @@ const binding = z.object({ lease, actor, purpose, search, subject: decisionSubje
 export const nativeReceipt = z.object({ submissionId: label, uid: label, acceptedAt: z.string().min(1).max(64), deduplicated: z.literal(true).optional() }).strict();
 const receipt = z.object({ profile: z.enum(["owner", "interlocutor"]), runtimeId: label, bindingHash: hash, envelopeHash: hash, receipt: nativeReceipt }).strict();
 const envelope = z.object({ message: z.string().max(60000), initialData: z.object({ bindingId: hash }).strict(), idempotencyKey: label }).strict();
-export const proposal = z.object({ decision: z.enum(["proposed", "no_reply", "waiting_context"]), text: z.string().max(8192),
+export const proposal = z.object({ decision: z.enum(["proposed", "no_reply", "waiting_context"]), text: z.string().max(8192), contextSummary: z.string().max(600).nullable().optional(),
   citations: z.array(sourceRef.extend({ quote: z.string().min(1).max(4096), media: z.object({ id: hash, hash, configHash: hash }).strict().nullable().optional(), attribution: z.literal("model_extraction").optional() }).strict().refine(row => !row.attribution || !!row.media)).max(10) }).strict();
 export type Binding = z.infer<typeof binding>;
 export const parseBinding = (value: unknown): Binding => binding.parse(value);
