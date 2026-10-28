@@ -30,6 +30,15 @@ function explicitRepositories(text: string, path: string | null) {
   for (const match of remainder.matchAll(/\b([A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100})\b/g)) names.add(match[1].toLowerCase());
   return { names: [...names], otherURL, ref };
 }
+function literalRepository(text: string, names: (string | null)[]) {
+  const allowed = new Set(names.filter((name): name is string => name !== null).map(name => name.toLowerCase()));
+  const generic = new Set(["github", "readme", "readme.md", "repo", "repositorio"]);
+  for (const token of text.matchAll(/[A-Za-z0-9_./-]+/g)) {
+    const value = token[0].replace(/\.+$/, "").toLowerCase();
+    if (allowed.has(value) && (!generic.has(value) || /(?:reposit[oó]rio|repo)\s+["“`']?$/iu.test(text.slice(0, token.index)))) return true;
+  }
+  return false;
+}
 
 export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, selected: Selection, ownerText: string, boundary: OwnerReadBoundary): Promise<Result> {
   // Do not replace an explicitly requested ref with a different default ref.
@@ -37,8 +46,10 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
   let stage: "admission" | "resolve" | "contents" | "presentation" = "admission";
   try {
     await boundary.check(); if (!env.DB) return unavailable();
-    const repositories = configuredGitHubRepositories(env), explicit = explicitRepositories(ownerText, selected.path);
+    const explicit = explicitRepositories(ownerText, selected.path);
     if (explicit.otherURL || explicit.ref || explicit.names.length > 1) return { state: "clarify", text: "📦 <b>Confirma o repositório?</b>\n\nPreciso de um único repositório autorizado, sem referência a outra branch ou tag." };
+    if (env.GITHUB_READ_OWNER && selected.repository === null && !explicit.names.length) return { state: "clarify", text: "📦 <b>Qual repositório?</b>\n\nDiga o nome do seu repositório que você quer consultar." };
+    const repositories = configuredGitHubRepositories(env, selected.repository ?? explicit.names[0]);
     let matches = selected.repository === null ? repositories : repositories.filter(r => [r.id, r.repo, r.owner + "/" + r.repo].some(value => value.toLowerCase() === selected.repository!.toLowerCase()));
     if (explicit.names.length) {
       const authoritative = repositories.filter(r => (r.owner + "/" + r.repo).toLowerCase() === explicit.names[0]);
@@ -48,13 +59,15 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
     }
     if (!matches.length) return unavailable();
     if (matches.length !== 1) return { state: "clarify", text: "📦 <b>Qual repositório?</b>\n\nDiga o nome ou o identificador dono/repositório que você quer consultar." };
+    if (env.GITHUB_READ_OWNER && !explicit.names.length && !literalRepository(ownerText, [selected.repository, matches[0].repo, matches[0].id]))
+      return { state: "clarify", text: "📦 <b>Qual repositório?</b>\n\nPreciso que você diga o nome do repositório na sua mensagem para consultar esse arquivo." };
     if (!selected.action) return { state: "clarify", text: "📄 <b>O que você quer ler?</b>\n\nVocê pode pedir um arquivo, como o README, ou listar os arquivos do repositório." };
     const repository = matches[0], query = githubQuery.parse({ kind: selected.action === "list" ? "github.list" : "github.read", repository: repository.id, commit: "0".repeat(40), path: selected.path ?? "", ...(selected.action === "list" ? { limit: 10 } : {}) });
     const access = new ConnectorAccess(env.DB!, scope), source = await access.admit({ kind: "owner" }, repository);
     if (!source) return unavailable();
     const configured = configuredGitHub(env, scope, { ...boundary, check: async () => {
       await boundary.check(); if (!await access.current({ kind: "owner" }, source)) throw Error("github_authorization_changed");
-    } });
+    } }, repository.id);
     if (configured.state !== "ready") return unavailable();
     stage = "resolve";
     const commit = await configured.resolveDefault(repository.id); await configured.check();

@@ -28,6 +28,7 @@ export interface AssistantEnv {
   CAPTURE_MEDIA_READER?: MediaReader;
   MEDIA_PDF_PARSER?: PdfAdmissionReader;
   GITHUB_READ_REPOSITORIES?: string;
+  GITHUB_READ_OWNER?: string;
   GITHUB_READ_TOKEN?: string;
   CALENDAR_READ_CALENDARS?: string;
   CALENDAR_OAUTH?: DurableObjectNamespace<CalendarOAuth>;

@@ -94,3 +94,38 @@ it("records only static stage/status diagnostics when the provider refuses a rea
     expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private-provider-body");
   } finally { warn.mockRestore(); }
 });
+
+async function ownerWideFixture(ownerId = 101) {
+  const f = await fixture(), authorization = await f.sources.create({ originKey: "owner-wide-authorization", text: "Synthetic owner authorization for all own repositories, read only", projectId: "project", occurredAt: Date.now() });
+  const settings = { ...f.settings, GITHUB_READ_OWNER: JSON.stringify({ owner: "synthetic-owner", ownerId: 101, version: 1, projectId: "project", authorization: { sourceId: authorization.id, revision: 1 } }) } as AssistantEnv;
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async input => {
+    const url = new URL(input.url);
+    if (/^\/repos\/synthetic-owner\/[^/]+$/.test(url.pathname)) return Response.json({ name: url.pathname.split("/").at(-1), owner: { id: ownerId, login: "synthetic-owner" }, default_branch: "main", private: true });
+    return original(input);
+  });
+  return { ...f, settings, authorization };
+}
+it("reads an explicitly named private repository under the configured owner's canonical authority", async () => {
+  const f = await ownerWideFixture(), result = await readTelegramGitHub(f.settings, f.scope, { ...selection, repository: "private-repo" }, "Leia o README do repositório private-repo", f.boundary);
+  expect(result).toMatchObject({ state: "available", observation: { result: { repository: "synthetic-owner/private-repo", commit } }, dependencies: [{ source: { source: { id: f.authorization.id } } }] });
+  expect(f.request.mock.calls.every(([r]) => r.method === "GET" && new URL(r.url).pathname.startsWith("/repos/synthetic-owner/private-repo"))).toBe(true);
+});
+it("requires an explicit repository in owner-wide mode and refuses another owner before HTTP", async () => {
+  const f = await ownerWideFixture();
+  expect((await readTelegramGitHub(f.settings, f.scope, selection, "Leia um README no GitHub", f.boundary)).state).toBe("clarify");
+  for (const repository of ["private-repo", "GitHub", "README"])
+    expect((await readTelegramGitHub(f.settings, f.scope, { ...selection, repository }, "Leia um README no GitHub", f.boundary)).state).toBe("clarify");
+  expect((await readTelegramGitHub(f.settings, f.scope, { ...selection, repository: "outside/private-repo" }, "Leia README outside/private-repo", f.boundary)).state).toBe("unavailable");
+  expect(f.request).not.toHaveBeenCalled();
+});
+it("validates the numeric owner identity before resolving a commit or reading private contents", async () => {
+  const f = await ownerWideFixture(999);
+  expect((await readTelegramGitHub(f.settings, f.scope, { ...selection, repository: "private-repo" }, "Leia README do private-repo", f.boundary)).state).toBe("unavailable");
+  expect(f.request).toHaveBeenCalledTimes(1);
+});
+it("does not fall back to an old public-only authorization when owner-wide access is revoked", async () => {
+  const f = await ownerWideFixture(); await f.sources.withdraw(f.authorization.id, 1);
+  expect((await readTelegramGitHub(f.settings, f.scope, { ...selection, repository: "repo" }, "Leia README do synthetic-repo", f.boundary)).state).toBe("unavailable");
+  expect(f.request).not.toHaveBeenCalled();
+});

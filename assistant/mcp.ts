@@ -209,8 +209,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       const { kind: _, ...input } = query; return evaluation.sample(input);
     }
     if (query.kind === "github.list" || query.kind === "github.read") {
-      const configured = configuredGitHub(this.env, scope);
-      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, query) : configured;
+      const configured = configuredGitHub(this.env, scope, undefined, query.repository);
+      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, { ...query, repository: configured.canonicalRepository ?? query.repository }) : configured;
     }
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") {
       const configured = configuredCalendar(this.env, scope);
