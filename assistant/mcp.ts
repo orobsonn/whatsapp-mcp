@@ -14,8 +14,8 @@ import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 import { createTelegramReview } from "./telegram";
 import { FollowUps } from "./followups";
 import { githubQuery, GitHubReader } from "./connectors/github";
-import { calendarQuery, CalendarReader } from "./connectors/calendar";
-import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
+import { calendarQuery } from "./connectors/calendar";
+import { configuredCalendar } from "./connectors/configured-calendar";
 import { Evaluation, evaluationQuery } from "./evaluation";
 import { assistantHealth } from "./health";
 import { configuredRetirementGuard, retirementBootstrapPlan, bootstrapRetirementAuthority } from "./retention-authority";
@@ -212,13 +212,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       return new GitHubReader(this.env.DB!, scope, JSON.parse(this.env.GITHUB_READ_REPOSITORIES), this.env.GITHUB_READ_TOKEN).execute({ kind: "owner" }, query);
     }
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") {
-      if (!this.env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" };
-      if (!this.env.CALENDAR_OAUTH) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
-      const expected = oauthAffinity.safeParse({ installationId: scope.installationId, generation: scope.generation,
-        configurationVersion: Number(this.env.CALENDAR_OAUTH_CONFIGURATION_VERSION), secretEpoch: this.env.CALENDAR_OAUTH_SECRET_EPOCH });
-      if (!expected.success) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
-      const token = () => this.env.CALENDAR_OAUTH!.get(this.env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(expected.data))).token(expected.data);
-      return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), token).execute({ kind: "owner" }, query);
+      const configured = configuredCalendar(this.env, scope);
+      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, query) : configured;
     }
     const { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read");
     const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic, ownerOncePlan,outgoing:outgoingPort(this.env) });

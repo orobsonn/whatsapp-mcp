@@ -74,7 +74,8 @@ export class RetentionPurge {
       ] : []),
       collect("mission", `SELECT id FROM assistant_missions t WHERE ${namespace("t")} AND t.source_id=?4`),
       ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
-        collect("job", `SELECT e.job_id AS id FROM assistant_episodes e WHERE ${namespace("e")} AND ${dialogueSupports("CASE WHEN json_valid(e.result_json) THEN COALESCE(json_extract(e.result_json,'$.witnesses'),'[]') ELSE '[]' END")}`),
+        collect("job", `SELECT e.job_id AS id FROM assistant_episodes e WHERE ${namespace("e")} AND (${dialogueSupports("CASE WHEN json_valid(e.result_json) THEN COALESCE(json_extract(e.result_json,'$.witnesses'),'[]') ELSE '[]' END")}
+          OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(e.result_json) THEN COALESCE(json_extract(e.result_json,'$.dependencies'),'[]') ELSE '[]' END) d WHERE json_extract(d.value,'$.source.source.id')=?4))`),
       ] : []),
       ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
         collect("job", `SELECT e.job_id AS id FROM assistant_telegram_dialogue_phases p JOIN assistant_episodes e

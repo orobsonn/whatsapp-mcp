@@ -3,7 +3,7 @@ import type { AssistantEnv } from "./env";
 import type { OwnerAffinity } from "./mcp";
 import { TelegramOwnerInbox } from "./telegram-owner-inbox";
 import { TelegramOwnerRequests } from "./telegram-owner-requests";
-import { TelegramOwnerReplies } from "./telegram-owner-replies";
+import { TelegramOwnerReplies, type ReplyDependency } from "./telegram-owner-replies";
 import { TelegramBotApi } from "./telegram";
 import { DialogueState, dialogueWitnesses, type DialogueWitness } from "./telegram-dialogue-state";
 import { OwnerDialoguePhases } from "./telegram-dialogue-phases";
@@ -21,6 +21,7 @@ import { ownerDialogueDriver } from "./agent-runtime/driver";
 import { OWNER_DIALOGUE_COMPLETION, type EpisodePayload } from "./agent-runtime/provider";
 import type { RuntimeIdentity } from "./agent/controller";
 import { nativeReceipt } from "./agent/contracts";
+import { readTelegramCalendar, type CalendarObservation } from "./telegram-calendar";
 
 const message = "Execute the admitted private dialogue.";
 // Escape content separately from the host's small set of formatting tags.
@@ -35,16 +36,16 @@ function display(value: unknown, maximum = 3000) {
   return result;
 }
 const stateSymbols: Record<string, string> = { active: "⏳", draft: "📝", paused: "⏸️", resolved: "✅", cancelled: "❌", scheduled: "🗓️", awaiting_approval: "👀", uncertain: "❓" };
-const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "clarify", "unsupported"]),
+const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "calendar", "clarify", "unsupported"]),
   entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable() }).strict();
 const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId"], properties: {
-  kind: { type: "string", enum: ["greet", "list", "note", "mission", "observe", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
+  kind: { type: "string", enum: ["greet", "list", "note", "mission", "observe", "calendar", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
   text: { type: ["string", "null"] }, title: { type: ["string", "null"] }, conversationId: { type: ["string", "null"] },
 } };
 const merge = (...guards: AccessGuard[]): AccessGuard => ({ sql: guards.map(g => `(${g.sql})`).join(" AND "), values: guards.flatMap(g => g.values) });
 const sqlNow = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
 type Plan = { kind: "telegram_owner_reply_plan"; updateId: number; text: string; witnesses: DialogueWitness[];
-  outboxRequestHash: string; intentOperationKey: string; intentRequestHash: string; intentResultHash: string };
+  dependencies: ReplyDependency[]; observation?: CalendarObservation; outboxRequestHash: string; intentOperationKey: string; intentRequestHash: string; intentResultHash: string };
 /** Owner-only canary coordinator. The model interprets the authenticated
  * request; host readers/controllers produce facts and canonical receipts. */
 export class TelegramDialogueHost {
@@ -101,7 +102,7 @@ export class TelegramDialogueHost {
     const scope = { ...this.scope, period: b.period }, phases = new OwnerDialoguePhases(this.db, scope, { lease: b.lease, episodeId: id, bindingHash: episode.binding_hash, deadlineAt: episode.deadline,
       source: b.source, identity, config: b.config }, this.inbox, turn, createOpenAIAdapter(this.env.OPENAI_API_KEY!), { signal });
     const result = await phases.run("intent", { model: b.config.chatModel, max_completion_tokens: 900, response_format: { type: "json_schema", json_schema: { name: "owner_intent_v1", strict: true, schema: intentSchema } }, messages: [
-      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Se pedir leitura de WhatsApp, Calendar, GitHub ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
+      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Use calendar para consultar disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Se pedir leitura de WhatsApp, GitHub ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
       { role: "user", content: turn.text },
     ] });
     if (result.state !== "complete" || signal?.aborted) throw Error("dialogue_model_incomplete");
@@ -109,11 +110,12 @@ export class TelegramDialogueHost {
       .bind(this.scope.installationId, this.scope.generation, b.source.source.id).first<{ request_hash: string; result_hash: string }>();
     if (!receipt) throw Error("dialogue_model_incomplete");
     const proofs: DialogueWitness[] = [{ kind: "owner_model", source: b.source, operationKey: result.operationKey, requestHash: receipt.request_hash, resultHash: receipt.result_hash, bindingHash: episode.binding_hash, submissionId: identity.submissionId }];
-    const actionGuard = () => signal?.aborted ? { sql: "0", values: [] } : merge(this.inbox.guard(turn), this.state.guard(proofs), { sql: `EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND submission_id=? AND deadline>${sqlNow} AND state IN ('dispatching','accepted','running'))`, values: [this.scope.installationId, this.scope.generation, id, episode.binding_hash, identity.submissionId] });
+    const dependencies: ReplyDependency[] = []; let observation: CalendarObservation | undefined;
+    const actionGuard = () => signal?.aborted ? { sql: "0", values: [] } : merge(this.inbox.guard(turn), this.state.guard(proofs.filter(p => p.kind !== "calendar_observation")), ...dependencies.map(d => new SourceAccess(this.db, this.scope).guard({ kind: "owner" }, d.source, Date.now())), { sql: `EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND submission_id=? AND deadline>${sqlNow} AND state IN ('dispatching','accepted','running'))`, values: [this.scope.installationId, this.scope.generation, id, episode.binding_hash, identity.submissionId] });
     let choice: z.infer<typeof intent>;
     try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null }; }
     let text = "💬 <b>Me explica um pouco melhor?</b>\n\nNão consegui identificar o que você quer fazer com esse pedido.";
-    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências";
+    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar a agenda";
     else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.";
     else if (choice.kind === "list" && choice.entity) {
       const listing = await this.state.list(choice.entity); proofs.push(listing.witness);
@@ -146,14 +148,23 @@ export class TelegramDialogueHost {
       text = choice.kind === "note" ? "✅ <b>Anotação guardada</b>\n\n" + display(literal) + "\n\n🗂 <i>Você pode me pedir para listar suas notas.</i>"
         : "🎯 <b>Missão criada</b>\n\n⏳ " + display(literal) + "\n\n<i>Em modo sombra, sem envio de mensagens.</i>";
       }
+    } else if (choice.kind === "calendar") {
+      const calendar = await readTelegramCalendar(this.env, this.scope, turn.text, turn.occurredAt, { signal, deadlineAt: episode.deadline, check: async () => {
+        const guard = actionGuard(); if (!await jsonStatement(this.db, `SELECT 1 WHERE ${guard.sql}`, guard.values).first()) throw Error("dialogue_calendar_denied");
+      } });
+      text = calendar.text;
+      if (calendar.state === "available") {
+        dependencies.push(...calendar.dependencies); observation = calendar.observation;
+        proofs.push({ kind: "calendar_observation", episodeId: episode.id, bindingHash: episode.binding_hash, submissionId: identity.submissionId, observationJSON: JSON.stringify(observation) });
+      }
     } else if (choice.kind === "observe") text = "🔧 <b>Seleção de conversas em preparação</b>\n\nEssa opção ainda está sendo conectada no Telegram. As configurações atuais continuam ativas.";
     const answer = text, witnesses = dialogueWitnesses.parse(proofs);
-    const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answer, witnesses,
-      outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answer, [], witnesses]), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
+    const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answer, witnesses, dependencies, ...(observation ? { observation } : {}),
+      outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answer, dependencies, witnesses]), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
     const guard = actionGuard(), saved = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS NULL AND (${guard.sql}) RETURNING id`,
       [JSON.stringify(plan), this.scope.installationId, this.scope.generation, id, episode.binding_hash, ...guard.values]).first();
     if (!saved) throw Error("dialogue_result_blocked");
-    const outbox = this.replies(signal), prepared = await outbox.prepare(turn, plan.text, [], plan.witnesses);
+    const outbox = this.replies(signal), prepared = await outbox.prepare(turn, plan.text, dependencies, plan.witnesses);
     if (prepared.state !== "prepared") throw Error("dialogue_reply_blocked");
     const sent = await outbox.dispatch(turn.updateId);
     await this.db.prepare("UPDATE assistant_episodes SET reason=? WHERE installation_id=? AND generation=? AND id=? AND result_json=?")

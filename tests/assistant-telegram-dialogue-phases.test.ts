@@ -11,6 +11,8 @@ import type { BrokerConfig, ModelAdapter } from "../assistant/model-broker";
 import { SourceController } from "../assistant/sources";
 import { RetentionPurge } from "../assistant/retention-purge";
 import { OwnerDialoguePhases } from "../assistant/telegram-dialogue-phases";
+import { TelegramOwnerReplies } from "../assistant/telegram-owner-replies";
+import type { DialogueWitness } from "../assistant/telegram-dialogue-state";
 
 const bot = "synthetic_phase_bot", secret = "synthetic-phase-webhook-secret-for-tests";
 const config: BrokerConfig = { extractionConfig: "telegram-owner-dialogue-v1", priceVersion: "synthetic", chatModel: "gpt-6-luna", embeddingModel: "text-embedding-3-small", maxOutputTokens: 100, chatCeiling: 5, embeddingCeiling: 2 };
@@ -33,7 +35,7 @@ async function episode(key = "primary") {
 beforeEach(async () => {
   scope = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "epoch", sourceGeneration: "capture", period: "2026-10-28" };
   await env.DB.prepare("INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',?)").bind(scope.installationId, scope.generation, bot, scope.sourceEpoch, scope.sourceGeneration, Math.floor(Date.now() / 1000) - 10).run();
-  link = new TelegramLink(env.DB, scope, bot, secret); inbox = new TelegramOwnerInbox(env.DB, scope, bot);
+  link = new TelegramLink(env.DB, scope, bot, secret); inbox = new TelegramOwnerInbox(env.DB, { installationId: scope.installationId, generation: scope.generation, sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration }, bot);
   const activation = await inbox.activate(); await wait(Math.max(1, (activation.cutoffSecond + 1) * 1000 - Date.now() + 10));
   expect(await link.receive({ update_id: 3, message: { message_id: 103, date: Math.floor(Date.now() / 1000), from: { id: 101, is_bot: false }, chat: { id: 101, type: "private" }, text: "O que ficou pendente?" } })).toBe("pending");
   turn = (await inbox.claim(3))!; const captured = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
@@ -43,6 +45,31 @@ beforeEach(async () => {
   phases = new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter);
 });
 afterEach(() => vi.restoreAllMocks());
+
+it("pins a Calendar reply to the native observation and purges it when its authorization support is removed", async () => {
+  const result = await phases.run("intent", payload()); expect(result.state).toBe("complete");
+  if (result.state !== "complete") return;
+  const phase = await env.DB.prepare("SELECT request_hash,result_hash FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND request_id=?").bind(scope.installationId, source.source.id).first<{ request_hash: string; result_hash: string }>();
+  const support = await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).create({ originKey: "calendar-authority", text: "Synthetic private calendar authorization", occurredAt: Date.now() });
+  const dependency = { source: (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, support.id))!.fence };
+  const observation = { kind: "calendar", query: { kind: "calendar.availability", start: "2026-10-28T03:00:00Z", end: "2026-10-29T03:00:00Z", timeZone: "America/Fortaleza" }, result: { state: "available", origin: "calendar", privateMarker: "synthetic calendar intervals" } };
+  const witnesses: DialogueWitness[] = [{ kind: "owner_model", source, operationKey: result.operationKey, requestHash: phase!.request_hash, resultHash: phase!.result_hash, bindingHash: context.bindingHash, submissionId: context.identity.submissionId },
+    { kind: "calendar_observation", episodeId: context.episodeId, bindingHash: context.bindingHash, submissionId: context.identity.submissionId, observationJSON: JSON.stringify(observation) }];
+  const plan = { kind: "telegram_owner_reply_plan", observation, dependencies: [dependency], witnesses };
+  const save = (value: unknown) => env.DB.prepare("UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND id=?").bind(JSON.stringify(value), scope.installationId, context.episodeId).run();
+  await save(plan); const send = vi.fn(async () => 203), replies = new TelegramOwnerReplies(env.DB, scope, bot, inbox, check => ({ send: async () => { await check(); return send(); } }));
+  expect(await replies.prepare(turn, "Synthetic Calendar answer", [dependency], witnesses)).toMatchObject({ state: "prepared" });
+  await save({ ...plan, observation: { ...observation, result: { state: "changed" } } });
+  expect(await replies.dispatch(turn.updateId)).toMatchObject({ state: "blocked", attempts: 0 }); expect(send).not.toHaveBeenCalled();
+  await save(plan);
+  await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).withdraw(support.id, 1);
+  const purge = new RetentionPurge(env.DB, scope, { kind: "owner" }, Date.now, retirement);
+  let state = "pending"; for (let i = 0; i < 20 && state === "pending"; i++) state = (await purge.advance({ kind: "source.purge", operationId: "calendar-support-purge", sourceId: support.id })).state;
+  expect(state).toBe("complete"); expect(await new Episodes(env.DB, scope).get(context.episodeId)).toBeNull();
+  const outbox = await env.DB.prepare("SELECT text,deps_json,witnesses_json,purged FROM assistant_telegram_owner_replies WHERE installation_id=? AND update_id=?").bind(scope.installationId, turn.updateId).first();
+  expect(outbox).toEqual({ text: null, deps_json: "[]", witnesses_json: "[]", purged: 1 });
+  expect((await new InferenceBudget(env.DB, scope).status()).committed).toBe(1); expect(send).not.toHaveBeenCalled();
+});
 
 it("executes a frozen phase once, recovers its exact receipt and refuses rekeying before a second reservation", async () => {
   expect(await phases.run("intent", payload())).toMatchObject({ state: "complete", body: { choices: [{ message: { content: "synthetic private intent" } }] } });
