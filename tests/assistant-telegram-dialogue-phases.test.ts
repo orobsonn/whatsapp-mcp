@@ -184,9 +184,9 @@ it("completes repository research through both real model phases and the persist
   const row = (await new Episodes(env.DB, scope).get(c.episodeId))!;
   await env.DB.prepare("INSERT INTO assistant_projects VALUES(?,?,?,?)").bind(scope.installationId, scope.generation, "github-project", "Synthetic repository").run();
   const grant = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "github-complete-grant", text: "Synthetic read-only repository authority", projectId: "github-project", occurredAt: Date.now() });
-  const text = "OAuth checks the owner before access.";
+  const evidence = "OAuth checks the owner before access.", text = evidence + "\n" + "x".repeat(28000);
   let calls = 0;
-  const model: ModelAdapter = async () => { calls++; const content = calls === 1 ? { paths: ["src/auth.ts"] } : { claims: [{ text: "O projeto verifica o dono via OAuth antes de liberar o acesso.", basis: "observed", citations: [{ id: "src/auth.ts", quote: text }] }], missing: null }; return { status: 200, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), actualUnits: 1 }; };
+  const model: ModelAdapter = async () => { calls++; const content = calls === 1 ? { paths: ["src/auth.ts"] } : { claims: [{ text: "O projeto verifica o dono via OAuth antes de liberar o acesso.", basis: "observed", citations: [{ id: "src/auth.ts", quote: evidence }] }], missing: null }; return { status: 200, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), actualUnits: 1 }; };
   vi.spyOn(transport, "createOpenAIAdapter").mockReturnValue(model);
   vi.stubGlobal("fetch", async (request: Request) => {
     const path = new URL(request.url).pathname;
@@ -199,6 +199,8 @@ it("completes repository research through both real model phases and the persist
     const settings = { DB: env.DB, OPENAI_API_KEY: "synthetic", GITHUB_READ_REPOSITORIES: JSON.stringify([{ id: "app", owner: "owner", repo: "app", ownerId: 123, version: 1, projectId: "github-project", authorization: { sourceId: grant.id, revision: 1 } }]) } as AssistantEnv;
     const result = await answerGitHubQuestion({ env: settings, scope, episode: row, identity: c.identity, turn, inbox, repository: "app" });
     expect(result.text).toContain("verifica o dono via OAuth"); expect(result.research.documents).toBe(1); expect(calls).toBe(2);
-    expect(JSON.parse(result.checkpointJSON).documents[0].text).toBe(text);
+    expect(JSON.parse(result.checkpointJSON).documents).toBeUndefined();
+    const frozen = await env.DB.prepare("SELECT body_json FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND request_id=? AND phase='answer'").bind(scope.installationId, source.source.id).first<{ body_json: string }>();
+    expect(JSON.parse(JSON.parse(frozen!.body_json).messages[1].content).documents[0].text).toBe(text);
   } finally { vi.unstubAllGlobals(); }
 });
