@@ -14,7 +14,7 @@ async function fixture(body = "# Example\n\nLiteral repository content.") {
   const urls: string[] = [], beforeContents: (() => Promise<void>)[] = [], beforeMetadata: (() => Promise<void>)[] = [];
   const request = vi.fn(async (input: Request) => {
     const url = new URL(input.url); urls.push(input.url); expect(url.origin).toBe("https://api.github.com"); expect(input.method).toBe("GET");
-    if (url.pathname.endsWith("/commits/main")) { await beforeContents[0]?.(); return Response.json({ sha: commit }); }
+    if (url.pathname.endsWith("/git/ref/heads/main")) { await beforeContents[0]?.(); return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: commit } }); }
     if (url.pathname.includes("/contents/")) {
       expect(url.searchParams.get("ref")).toBe(commit);
       const bytes = new TextEncoder().encode(body);
@@ -128,4 +128,15 @@ it("does not fall back to an old public-only authorization when owner-wide acces
   const f = await ownerWideFixture(); await f.sources.withdraw(f.authorization.id, 1);
   expect((await readTelegramGitHub(f.settings, f.scope, { ...selection, repository: "repo" }, "Leia README do synthetic-repo", f.boundary)).state).toBe("unavailable");
   expect(f.request).not.toHaveBeenCalled();
+});
+it("resolves the default commit without downloading a potentially large commit patch", async () => {
+  const f = await fixture(), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async input => {
+    const path = new URL(input.url).pathname;
+    if (path.includes("/commits/")) return Response.json({ sha: commit, files: [{ patch: "x".repeat(90000) }] });
+    if (path.endsWith("/git/ref/heads/main")) return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: commit } });
+    return original(input);
+  });
+  expect(await readTelegramGitHub(f.settings, f.scope, selection, "Leia README", f.boundary)).toMatchObject({ state: "available", observation: { query: { commit } } });
+  expect(f.request.mock.calls.some(([r]) => new URL(r.url).pathname.includes("/commits/"))).toBe(false);
 });

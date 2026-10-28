@@ -56,8 +56,13 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     const base = `https://api.github.com/repos/${repository.owner}/${repository.repo}`, headers = githubReadHeaders(env.GITHUB_READ_TOKEN);
     await check(); const raw = await readJson(new URL(base), headers, request, 65536); verifyGitHubOwner(repository, raw);
     const metadata = z.object({ default_branch: z.string().min(1).max(256) }).parse(raw);
-    await check(); const commit = z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/) }).parse(await readJson(new URL(base + "/commits/" + encodeURIComponent(metadata.default_branch)), headers, request, 65536));
-    await check(); return commit.sha;
+    const parts = metadata.default_branch.split("/");
+    if (parts.some(part => !part || part === "." || part === "..")) throw Error("github_ref_unsupported");
+    // Only the immutable pointer is needed. The commit endpoint also includes
+    // patches, whose size can exceed the bounded connector response.
+    await check(); const commit = z.object({ ref: z.literal("refs/heads/" + metadata.default_branch), object: z.object({ type: z.literal("commit"), sha: z.string().regex(/^[0-9a-f]{40}$/) }) })
+      .parse(await readJson(new URL(base + "/git/ref/heads/" + parts.map(encodeURIComponent).join("/")), headers, request, 16384));
+    await check(); return commit.object.sha;
   };
   const canonical = requested === undefined ? [] : repositories.filter(r => [r.id, r.repo, r.owner + "/" + r.repo].some(value => value.toLowerCase() === requested.toLowerCase()));
   return { state: "ready", repositories, canonicalRepository: canonical.length === 1 ? canonical[0].id : undefined, check, resolveDefault, reader: new GitHubReader(env.DB, scope, repositories, env.GITHUB_READ_TOKEN, request) } as const;
