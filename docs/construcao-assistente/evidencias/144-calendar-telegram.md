@@ -1,5 +1,7 @@
 # Calendar no diálogo Telegram — atualização 28/10/2026
 
+A apresentação atual foi simplificada em `ec81551`: cabeçalho `SUA AGENDA - DD/MM/AAAA`, seguido de horário e título. Rodapés de fuso, quantidade de agendas, consulta readonly e possível mudança foram retirados por pedido do dono. Isso altera a apresentação; o fuso continua sendo usado para interpretar o dia e os horários.
+
 ## Títulos comprovados em produção
 
 `b5b31d4` foi publicado na versão `da2f3eee-f998-43b8-a37a-88de3c5011e5`, conservando42bindings/runtime/imagem/cron/pausa. Uma pergunta real no bot sobre hoje retornou três compromissos, todos com título, cobertura de eventos completa e uma agenda autorizada. Update12319753, resposta51 `sent`/uma tentativa, episódio Flue `61a1e063…` `settled`. Títulos e horários pessoais permanecem privados; não se afirma leitura humana dessa resposta.

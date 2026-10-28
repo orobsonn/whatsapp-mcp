@@ -97,6 +97,9 @@ it("omits an entire unsupported claim while retaining independently grounded poi
   expect(rendered).toContain("Resposta parcial"); expect(rendered).toContain(claims[0].text); expect(rendered).toContain(claims[2].text);
   expect(rendered).not.toContain(claims[1].text); expect(rendered).not.toContain("Fonte B");
   expect(rendered).toContain("Fonte A"); expect(rendered).toContain("Fonte C"); expect(rendered.length).toBeLessThanOrEqual(4000);
+  const short = { ...claims[1], citations: [{ id: "b", quote: "sim" }] };
+  expect(renderGroundedAnswer(body([claims[0], short, claims[2]]), docs)).toContain("Resposta parcial");
+  expect(() => renderGroundedAnswer(body([short]), docs)).toThrow("literal");
   expect(() => renderGroundedAnswer(body([claims[1]]), docs)).toThrow("literal");
   expect(renderGroundedAnswer(body([], "Falta evidência para responder."), docs)).toContain("Falta evidência");
 });

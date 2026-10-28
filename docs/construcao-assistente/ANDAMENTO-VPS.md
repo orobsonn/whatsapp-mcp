@@ -1,16 +1,24 @@
-# Construção na VPS — atualização27/10/2026
+# Construção da assistente — atualização28/10/2026
 
-## Estado atual — interação do dono no Telegram, #144
+## Estado atual — marco técnico integrado0.51.0
 
-**Escopo humano atual:** títulos e CRUD na agenda principal própria; GitHub somente leitura em todos os repositórios próprios, sem expiração configurada. WhatsApp automático continua desabilitado; rotinas em sombra/pausadas. Restrições Calendar e limites GitHub antigos abaixo são históricos.
+**Escopo humano vigente:** títulos e criar/editar/excluir eventos únicos da agenda principal própria; GitHub somente leitura em todos os repositórios próprios, sem expiração configurada. WhatsApp automático desabilitado e rotinas contínuas pausadas. Restrições anteriores diferentes no histórico foram substituídas pelas retificações do dono.
 
-GitHub privado homologado no bot: arquivo existente, SHA/hash/suporte do owner conferidos, resposta49 sent1 e episódio Flue settled. Credencial própria instalada e owner/ID numérico verificados; nenhum segredo ou nome privado no Git. CI8b59b50 aprovada1635/13/70. Falhas anteriores de quota e canário README ausente preservadas; resolver por Git refs corrigiu resposta excessiva. [Provas GitHub](evidencias/144-github-telegram.md).
+O diálogo do dono está integrado: mensagem autenticada → Flue → leitor/controlador → resposta no mesmo tópico. As provas reais cobrem notas ensinadas, pergunta sobre conteúdo, correção com consulta posterior da versão nova, retirada, missão concluída e política observe→ignore. Todas as respostas desses ensaios tiveram uma tentativa e conclusão nativa. O grupo comum usado na prova de política retornou aignore, com exclusão0. [Memória e controles](evidencias/144-memory-controls-telegram.md).
 
-Títulos Calendar homologados: três compromissos com título/cobertura completa, resposta51 sent1 e Flue settled. CIb5b31d4 aprovada. Consentimento de gestão próprio concluído e conferido contra a mesma agenda; CRUDba7d89d publicado em3a83ad3c/44bindings: criou, renomeou e excluiu o mesmo evento técnico por Telegram, com readbacks Google. Três respostas sent1/Flue settled, readbacks Google e renderização visível no Chrome confirmados. CIba7d89d aprovada1650/13/70. [Provas e limites Calendar](evidencias/144-calendar-telegram.md).
+GitHub respondeu sobre autenticação do repositório público e finalidade/partes de um privado próprio: cinco arquivos no recorte, síntese com citações literais e conclusão Flue. WhatsApp respondeu sobre conversa privada e grupo a partir de até três fontes textuais atuais. Transcrições já existentes são identificadas como derivados; remetente não comprova quem fala. Não se declara busca semântica global ou compreensão de todo o histórico. [GitHub](evidencias/144-github-telegram.md) e [WhatsApp](evidencias/144-whatsapp-telegram.md).
 
-Missão técnica marcada concluída pelo controlador: revisão2, resposta43 sent1/Flue settled; consulta seguinte confirmou ✅, resposta45 sent1/Flue settled. É alteração administrativa do estado, não prova de trabalho executado pela missão.
+Calendar mostrou três compromissos com títulos, depois criou, editou e excluiu o mesmo evento técnico pelo Telegram, com GETs independentes no Google. Layout atual: SUA AGENDA/data, horário e título, sem os rodapés removidos pelo dono. Séries/convites não fazem parte do primeiro caminho. [Agenda](evidencias/144-calendar-telegram.md).
 
-Último censo global confirmado às11:09:10UTC:64449microUSD (US$0,064449), incluindo40000incertos históricos e3000reservados preservados. Infraestrutura/fatura separadas. #144/PR145 draft seguem abertas para WhatsApp/busca, controles naturais restantes, corpus/qualidade e validação integrada.
+As falhas intermediárias foram conservadas e corrigidas: contexto duplicado excedendo32KB, profundidade SQL com seis fontes, hash sem canonicalização, janela nativa incompatível e geração sem conteúdo/ID de citação válido. Nenhum fallback foi contado como resposta útil. A revisão preserva payloads pagos congelados, custos e ausência de repetição de efeitos.
+
+Snapshot dos ensaios: Source81aa2f63/30bindings e Own44867212/44bindings, código funcional30e0ead; runtime/container/imagem/cron/exposição/pausa preservados e Elo intacto. CIa8ab1cb aprovada1694/13/70, ajustes posteriores com casos dirigidos/tipos/build; o SHA/CI final, readbacks e situação da #144 são vinculados à [release0.51.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.51.0), sem reutilizar CI anterior como prova de um SHA novo.
+
+O aceite é técnico para uso reativo e ensaios delimitados em sombra. Avaliação longitudinal permanece desconhecida; corpus representativo deve ser ampliado/medido antes de ativar observação contínua. Google permaneceExternal/Testing; continuidade longa requer renovação de consentimento ou publicação apropriada. Custos e limites atuais na [matriz dos16requisitos](evidencias/piloto-canais-proprios-20261027.md).
+
+## Histórico — checkpoints anteriores
+
+Os estados seguintes conservam a cronologia. 'Sem consumidor', Calendar readonly, GitHub público único, pendências e custos antigos não descrevem a composição atual acima.
 
 Canário real instalado e conferido na conversa: consulta → resposta, anotação → consulta posterior e missão → consulta posterior passaram no bot próprio com Flue nativo e controladores canônicos. Novas respostas têm espaçamento, emojis, negrito/itálico e status em português, confirmados visualmente após deploy. Sete entradas/758microUSD liquidados, respostas com uma tentativa e episódiossettled. CI0857aa3 aprovada1608/13/70; CI do ajuste visual99db45c posteriormente confirmada aprovada. Pausa global, imagem e40bindings preservados; #144 segue aberta para o restante. [Provas e limites atuais](evidencias/144-telegram-dialogue-canary.md). Os checkpoints seguintes são históricos.
 

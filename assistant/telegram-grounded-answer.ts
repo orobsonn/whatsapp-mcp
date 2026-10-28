@@ -6,7 +6,8 @@ export const groundedAnswerSchema = { type: "object", additionalProperties: fals
     text: { type: "string" }, basis: { type: "string", enum: ["observed", "inference"] }, citations: { type: "array", minItems: 1, maxItems: 3, items: { type: "object", additionalProperties: false, required: ["id", "quote"], properties: { id: { type: "string" }, quote: { type: "string" } } } },
   } } }, missing: { type: ["string", "null"] },
 } };
-const answer = z.object({ claims: z.array(z.object({ text: z.string().min(1).max(1200), basis: z.enum(["observed", "inference"]), citations: z.array(z.object({ id: z.string().min(1).max(1024), quote: z.string().min(8).max(800) }).strict()).min(1).max(3) }).strict()).max(6), missing: z.string().max(600).nullable() }).strict();
+const claim = z.object({ text: z.string().min(1).max(1200), basis: z.enum(["observed", "inference"]), citations: z.array(z.object({ id: z.string().min(1).max(1024), quote: z.string().min(8).max(800) }).strict()).min(1).max(3) }).strict();
+const answer = z.object({ claims: z.array(z.unknown()).max(6), missing: z.string().max(600).nullable() }).strict();
 export function groundedAnswerPayload(model: string, question: string, documents: AnswerDocument[], coverage: unknown) {
   const schema = structuredClone(groundedAnswerSchema);
   Object.assign(schema.properties.claims.items.properties.citations.items.properties.id, { enum: [...new Set(documents.map(document => document.id))] });
@@ -19,10 +20,14 @@ export function renderGroundedAnswer(body: unknown, documents: AnswerDocument[])
   const content = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string() }) })).length(1) }).parse(body).choices[0].message.content;
   const parsed = answer.parse(JSON.parse(content)), known = new Map(documents.map(d => [d.id, d]));
   const equivalent = (value: string) => value.normalize("NFC").replace(/\s+/gu, " ").trim();
-  const supported = parsed.claims.filter(claim => claim.citations.every(citation => {
-    const document = known.get(citation.id), quote = equivalent(citation.quote);
-    return !!document && quote.length >= 8 && (document.text.includes(citation.quote) || equivalent(document.text).includes(quote));
-  }));
+  const supported = parsed.claims.flatMap(input => {
+    const parsedClaim = claim.safeParse(input);
+    if (!parsedClaim.success) return [];
+    return parsedClaim.data.citations.every(citation => {
+      const document = known.get(citation.id), quote = equivalent(citation.quote);
+      return !!document && quote.length >= 8 && (document.text.includes(citation.quote) || equivalent(document.text).includes(quote));
+    }) ? [parsedClaim.data] : [];
+  });
   if (parsed.claims.length && !supported.length) throw Error("answer_citation_not_literal");
   const references = new Map<string, string>();
   for (const claim of supported) for (const citation of claim.citations) references.set(citation.id, known.get(citation.id)!.label);
