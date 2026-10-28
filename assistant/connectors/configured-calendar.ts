@@ -3,9 +3,9 @@ import type { AssistantEnv } from "../env";
 import type { SourceScope } from "../sources";
 import { CalendarReader, calendarConfiguration } from "./calendar";
 import { calendarOAuthName, oauthAffinity } from "./calendar-oauth";
-import type { ReadFetch } from "./read-only";
+import type { ReadFetch, OwnerReadBoundary } from "./read-only";
 
-export type CalendarReadBoundary = { signal?: AbortSignal; deadlineAt: number; check: () => Promise<void>; request?: ReadFetch };
+export type CalendarReadBoundary = OwnerReadBoundary;
 /** Shared MCP/Telegram configuration. No credential or transport goes to a model. */
 export function configuredCalendar(env: AssistantEnv, scope: SourceScope, boundary?: CalendarReadBoundary) {
   if (!env.DB || !env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" } as const;

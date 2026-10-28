@@ -46,15 +46,15 @@ beforeEach(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-it("pins a Calendar reply to the native observation and purges it when its authorization support is removed", async () => {
+it.each(["calendar", "github"] as const)("pins a %s reply to the native observation and purges it when its authorization support is removed", async kind => {
   const result = await phases.run("intent", payload()); expect(result.state).toBe("complete");
   if (result.state !== "complete") return;
   const phase = await env.DB.prepare("SELECT request_hash,result_hash FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND request_id=?").bind(scope.installationId, source.source.id).first<{ request_hash: string; result_hash: string }>();
   const support = await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).create({ originKey: "calendar-authority", text: "Synthetic private calendar authorization", occurredAt: Date.now() });
   const dependency = { source: (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, support.id))!.fence };
-  const observation = { kind: "calendar", query: { kind: "calendar.availability", start: "2026-10-28T03:00:00Z", end: "2026-10-29T03:00:00Z", timeZone: "America/Fortaleza" }, result: { state: "available", origin: "calendar", privateMarker: "synthetic calendar intervals" } };
+  const observation = kind === "calendar" ? { kind, query: { kind: "calendar.availability", start: "2026-10-28T03:00:00Z", end: "2026-10-29T03:00:00Z", timeZone: "America/Fortaleza" }, result: { state: "available", origin: kind, privateMarker: "synthetic calendar intervals" } } : { kind, query: { kind: "github.read", repository: "repo", commit: "a".repeat(40), path: "README.md" }, result: { state: "available", origin: kind, privateMarker: "synthetic repository excerpt" } };
   const witnesses: DialogueWitness[] = [{ kind: "owner_model", source, operationKey: result.operationKey, requestHash: phase!.request_hash, resultHash: phase!.result_hash, bindingHash: context.bindingHash, submissionId: context.identity.submissionId },
-    { kind: "calendar_observation", episodeId: context.episodeId, bindingHash: context.bindingHash, submissionId: context.identity.submissionId, observationJSON: JSON.stringify(observation) }];
+    { kind: kind === "calendar" ? "calendar_observation" : "github_observation", episodeId: context.episodeId, bindingHash: context.bindingHash, submissionId: context.identity.submissionId, observationJSON: JSON.stringify(observation) }];
   const plan = { kind: "telegram_owner_reply_plan", observation, dependencies: [dependency], witnesses };
   const save = (value: unknown) => env.DB.prepare("UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND id=?").bind(JSON.stringify(value), scope.installationId, context.episodeId).run();
   await save(plan); const send = vi.fn(async () => 203), replies = new TelegramOwnerReplies(env.DB, scope, bot, inbox, check => ({ send: async () => { await check(); return send(); } }));

@@ -3,6 +3,7 @@ import { SourceAccess, type AccessGuard } from "./access";
 import { sourceFence } from "./agent/contracts";
 import type { SourceScope } from "./sources";
 import { calendarQuery } from "./connectors/calendar";
+import { githubQuery } from "./connectors/github";
 const label = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const entity = z.enum(["notes", "missions", "follow_ups", "policies"]);
 export const dialogueWitnesses = z.array(z.discriminatedUnion("kind", [
@@ -10,6 +11,7 @@ export const dialogueWitnesses = z.array(z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("owner_listing"), entity, rowsJSON: z.string().max(20000) }).strict(),
   z.object({ kind: z.literal("owner_command"), operationId: label, resultJSON: z.string().max(16384) }).strict(),
   z.object({ kind: z.literal("calendar_observation"), episodeId: hash, bindingHash: hash, submissionId: label, observationJSON: z.string().max(20000) }).strict(),
+  z.object({ kind: z.literal("github_observation"), episodeId: hash, bindingHash: hash, submissionId: label, observationJSON: z.string().max(20000) }).strict(),
 ])).max(4);
 export type DialogueWitness = z.infer<typeof dialogueWitnesses>[number];
 const views = {
@@ -47,11 +49,12 @@ export class DialogueState {
         if (!Array.isArray(JSON.parse(proof.rowsJSON)) || new TextEncoder().encode(proof.rowsJSON).length > 20000) throw Error("dialogue_witness_rows");
         const query = this.listing(proof.entity); guards.push({ sql: `(${query.sql})=?`, values: [...query.values, proof.rowsJSON] });
       } else if (proof.kind === "owner_command") guards.push({ sql: `EXISTS(SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=? AND result_json=?)`, values: [this.scope.installationId, this.scope.generation, proof.operationId, proof.resultJSON] });
-      else if (proof.kind === "calendar_observation") {
+      else if (proof.kind === "calendar_observation" || proof.kind === "github_observation") {
         if (new TextEncoder().encode(proof.observationJSON).length > 20000) throw Error("dialogue_observation_size");
-        const observation = JSON.parse(proof.observationJSON), query = calendarQuery.parse(observation.query);
+        const observation = JSON.parse(proof.observationJSON), kind = proof.kind === "calendar_observation" ? "calendar" : "github";
+        const query = kind === "calendar" ? calendarQuery.parse(observation.query) : githubQuery.parse(observation.query);
         const admission = proofs.find(p => p.kind === "owner_model" && p.bindingHash === proof.bindingHash && p.submissionId === proof.submissionId);
-        if (!admission || admission.kind !== "owner_model" || observation.kind !== "calendar" || query.kind !== "calendar.availability" || observation.result?.state !== "available" || observation.result?.origin !== "calendar") throw Error("dialogue_observation_input");
+        if (!admission || admission.kind !== "owner_model" || observation.kind !== kind || (kind === "calendar" && query.kind !== "calendar.availability") || observation.result?.state !== "available" || observation.result?.origin !== kind) throw Error("dialogue_observation_input");
         guards.push({ sql: `EXISTS(SELECT 1 FROM assistant_episodes e WHERE e.installation_id=? AND e.generation=? AND e.id=? AND e.binding_hash=? AND e.submission_id=?
           AND e.profile='owner' AND e.state IN ('dispatching','accepted','running') AND e.deadline>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)
           AND json_extract(e.binding_json,'$.kind')='telegram_owner_dialogue' AND json_extract(e.binding_json,'$.source.source.id')=?

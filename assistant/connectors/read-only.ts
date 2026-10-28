@@ -6,6 +6,7 @@ export const connectorAuthority = z.object({ projectId: z.string().min(1).max(25
   authorization: z.object({ sourceId: z.string().min(1).max(256), revision: z.number().int().positive() }).strict() });
 export type ConnectorAuthority = z.infer<typeof connectorAuthority>;
 export type ReadFetch = (request: Request) => Promise<Response>;
+export type OwnerReadBoundary = { signal?: AbortSignal; deadlineAt: number; check: () => Promise<void>; request?: ReadFetch };
 
 /** No model receives this transport or its credentials. All callers build fixed GET endpoints. */
 export async function readJson(url: URL, headers: HeadersInit, request: ReadFetch, maximum = 262144, timeoutMs = 8000): Promise<unknown> {

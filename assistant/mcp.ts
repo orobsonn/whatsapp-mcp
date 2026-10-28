@@ -13,7 +13,8 @@ import { hostConfiguredSearch } from "./configured-search";
 import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 import { createTelegramReview } from "./telegram";
 import { FollowUps } from "./followups";
-import { githubQuery, GitHubReader } from "./connectors/github";
+import { githubQuery } from "./connectors/github";
+import { configuredGitHub } from "./connectors/configured-github";
 import { calendarQuery } from "./connectors/calendar";
 import { configuredCalendar } from "./connectors/configured-calendar";
 import { Evaluation, evaluationQuery } from "./evaluation";
@@ -208,8 +209,8 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       const { kind: _, ...input } = query; return evaluation.sample(input);
     }
     if (query.kind === "github.list" || query.kind === "github.read") {
-      if (!this.env.GITHUB_READ_REPOSITORIES) return { state: "pending_configuration", dependency: "github_read" };
-      return new GitHubReader(this.env.DB!, scope, JSON.parse(this.env.GITHUB_READ_REPOSITORIES), this.env.GITHUB_READ_TOKEN).execute({ kind: "owner" }, query);
+      const configured = configuredGitHub(this.env, scope);
+      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, query) : configured;
     }
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") {
       const configured = configuredCalendar(this.env, scope);

@@ -22,30 +22,21 @@ import { OWNER_DIALOGUE_COMPLETION, type EpisodePayload } from "./agent-runtime/
 import type { RuntimeIdentity } from "./agent/controller";
 import { nativeReceipt } from "./agent/contracts";
 import { readTelegramCalendar, type CalendarObservation } from "./telegram-calendar";
+import { readTelegramGitHub, type GitHubObservation } from "./telegram-github";
+import { telegramText as display } from "./telegram-format";
 
 const message = "Execute the admitted private dialogue.";
-// Escape content separately from the host's small set of formatting tags.
-// Bound complete characters/entities so a long item cannot cut an HTML tag.
-function display(value: unknown, maximum = 3000) {
-  let result = "";
-  for (const char of String(value ?? "")) {
-    const escaped = char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : char;
-    if (result.length + escaped.length > maximum) return result + "…";
-    result += escaped;
-  }
-  return result;
-}
 const stateSymbols: Record<string, string> = { active: "⏳", draft: "📝", paused: "⏸️", resolved: "✅", cancelled: "❌", scheduled: "🗓️", awaiting_approval: "👀", uncertain: "❓" };
-const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "calendar", "clarify", "unsupported"]),
-  entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable() }).strict();
-const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId"], properties: {
-  kind: { type: "string", enum: ["greet", "list", "note", "mission", "observe", "calendar", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
-  text: { type: ["string", "null"] }, title: { type: ["string", "null"] }, conversationId: { type: ["string", "null"] },
+const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "calendar", "github", "clarify", "unsupported"]),
+  entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable(), githubAction: z.enum(["read", "list"]).nullable(), repository: z.string().max(256).nullable(), path: z.string().max(1024).nullable() }).strict();
+const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId", "githubAction", "repository", "path"], properties: {
+  kind: { type: "string", enum: ["greet", "list", "note", "mission", "observe", "calendar", "github", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
+  text: { type: ["string", "null"] }, title: { type: ["string", "null"] }, conversationId: { type: ["string", "null"] }, githubAction: { type: ["string", "null"], enum: ["read", "list", null] }, repository: { type: ["string", "null"] }, path: { type: ["string", "null"] },
 } };
 const merge = (...guards: AccessGuard[]): AccessGuard => ({ sql: guards.map(g => `(${g.sql})`).join(" AND "), values: guards.flatMap(g => g.values) });
 const sqlNow = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
 type Plan = { kind: "telegram_owner_reply_plan"; updateId: number; text: string; witnesses: DialogueWitness[];
-  dependencies: ReplyDependency[]; observation?: CalendarObservation; outboxRequestHash: string; intentOperationKey: string; intentRequestHash: string; intentResultHash: string };
+  dependencies: ReplyDependency[]; observation?: CalendarObservation | GitHubObservation; outboxRequestHash: string; intentOperationKey: string; intentRequestHash: string; intentResultHash: string };
 /** Owner-only canary coordinator. The model interprets the authenticated
  * request; host readers/controllers produce facts and canonical receipts. */
 export class TelegramDialogueHost {
@@ -102,7 +93,7 @@ export class TelegramDialogueHost {
     const scope = { ...this.scope, period: b.period }, phases = new OwnerDialoguePhases(this.db, scope, { lease: b.lease, episodeId: id, bindingHash: episode.binding_hash, deadlineAt: episode.deadline,
       source: b.source, identity, config: b.config }, this.inbox, turn, createOpenAIAdapter(this.env.OPENAI_API_KEY!), { signal });
     const result = await phases.run("intent", { model: b.config.chatModel, max_completion_tokens: 900, response_format: { type: "json_schema", json_schema: { name: "owner_intent_v1", strict: true, schema: intentSchema } }, messages: [
-      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Use calendar para consultar disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Se pedir leitura de WhatsApp, GitHub ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
+      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Use calendar para consultar disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Use github para ler ou listar arquivos no GitHub: githubAction read/list, path é o caminho solicitado (README significa README.md). repository copia o nome ou dono/repositório citado pelo dono; null se omitido. Não invente repositório, caminho ou ref. Se pedir leitura de WhatsApp ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
       { role: "user", content: turn.text },
     ] });
     if (result.state !== "complete" || signal?.aborted) throw Error("dialogue_model_incomplete");
@@ -110,12 +101,15 @@ export class TelegramDialogueHost {
       .bind(this.scope.installationId, this.scope.generation, b.source.source.id).first<{ request_hash: string; result_hash: string }>();
     if (!receipt) throw Error("dialogue_model_incomplete");
     const proofs: DialogueWitness[] = [{ kind: "owner_model", source: b.source, operationKey: result.operationKey, requestHash: receipt.request_hash, resultHash: receipt.result_hash, bindingHash: episode.binding_hash, submissionId: identity.submissionId }];
-    const dependencies: ReplyDependency[] = []; let observation: CalendarObservation | undefined;
-    const actionGuard = () => signal?.aborted ? { sql: "0", values: [] } : merge(this.inbox.guard(turn), this.state.guard(proofs.filter(p => p.kind !== "calendar_observation")), ...dependencies.map(d => new SourceAccess(this.db, this.scope).guard({ kind: "owner" }, d.source, Date.now())), { sql: `EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND submission_id=? AND deadline>${sqlNow} AND state IN ('dispatching','accepted','running'))`, values: [this.scope.installationId, this.scope.generation, id, episode.binding_hash, identity.submissionId] });
+    const dependencies: ReplyDependency[] = []; let observation: CalendarObservation | GitHubObservation | undefined;
+    const actionGuard = () => signal?.aborted ? { sql: "0", values: [] } : merge(this.inbox.guard(turn), this.state.guard(proofs.filter(p => p.kind !== "calendar_observation" && p.kind !== "github_observation")), ...dependencies.map(d => new SourceAccess(this.db, this.scope).guard({ kind: "owner" }, d.source, Date.now())), { sql: `EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND submission_id=? AND deadline>${sqlNow} AND state IN ('dispatching','accepted','running'))`, values: [this.scope.installationId, this.scope.generation, id, episode.binding_hash, identity.submissionId] });
+    const readBoundary = { signal, deadlineAt: episode.deadline, check: async () => {
+      const guard = actionGuard(); if (!await jsonStatement(this.db, `SELECT 1 WHERE ${guard.sql}`, guard.values).first()) throw Error("dialogue_read_denied");
+    } };
     let choice: z.infer<typeof intent>;
-    try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null }; }
+    try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null, githubAction: null, repository: null, path: null }; }
     let text = "💬 <b>Me explica um pouco melhor?</b>\n\nNão consegui identificar o que você quer fazer com esse pedido.";
-    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar a agenda";
+    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar a agenda\n📦 Ler arquivos no GitHub";
     else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.";
     else if (choice.kind === "list" && choice.entity) {
       const listing = await this.state.list(choice.entity); proofs.push(listing.witness);
@@ -149,13 +143,18 @@ export class TelegramDialogueHost {
         : "🎯 <b>Missão criada</b>\n\n⏳ " + display(literal) + "\n\n<i>Em modo sombra, sem envio de mensagens.</i>";
       }
     } else if (choice.kind === "calendar") {
-      const calendar = await readTelegramCalendar(this.env, this.scope, turn.text, turn.occurredAt, { signal, deadlineAt: episode.deadline, check: async () => {
-        const guard = actionGuard(); if (!await jsonStatement(this.db, `SELECT 1 WHERE ${guard.sql}`, guard.values).first()) throw Error("dialogue_calendar_denied");
-      } });
+      const calendar = await readTelegramCalendar(this.env, this.scope, turn.text, turn.occurredAt, readBoundary);
       text = calendar.text;
       if (calendar.state === "available") {
         dependencies.push(...calendar.dependencies); observation = calendar.observation;
         proofs.push({ kind: "calendar_observation", episodeId: episode.id, bindingHash: episode.binding_hash, submissionId: identity.submissionId, observationJSON: JSON.stringify(observation) });
+      }
+    } else if (choice.kind === "github") {
+      const github = await readTelegramGitHub(this.env, this.scope, { action: choice.githubAction, repository: choice.repository, path: choice.path }, turn.text, readBoundary);
+      text = github.text;
+      if (github.state === "available") {
+        dependencies.push(...github.dependencies); observation = github.observation;
+        proofs.push({ kind: "github_observation", episodeId: episode.id, bindingHash: episode.binding_hash, submissionId: identity.submissionId, observationJSON: JSON.stringify(observation) });
       }
     } else if (choice.kind === "observe") text = "🔧 <b>Seleção de conversas em preparação</b>\n\nEssa opção ainda está sendo conectada no Telegram. As configurações atuais continuam ativas.";
     const answer = text, witnesses = dialogueWitnesses.parse(proofs);

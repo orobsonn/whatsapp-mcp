@@ -12,6 +12,7 @@ export const githubQuery = z.discriminatedUnion("kind", [
 ]);
 export const githubRepository = connectorAuthority.extend({ id, owner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/), repo: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/).refine(value => value !== "." && value !== "..") }).strict();
 const entry = z.object({ name: z.string().min(1).max(512), path, sha, size: z.number().int().nonnegative(), type: z.enum(["file", "dir", "symlink", "submodule"]), submodule_git_url: z.string().nullable().optional() });
+export function githubReadHeaders(token?: string) { return { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "personal-assistant-shadow", ...(token ? { Authorization: `Bearer ${token}` } : {}) }; }
 
 /** Authenticated owner queries only; this does not publish/index external bodies as owner notes. */
 export class GitHubReader {
@@ -28,8 +29,7 @@ export class GitHubReader {
     if (!repository) return { state: "unavailable", reason: "repository_not_authorized" };
     const fence = await this.access.admit(actor, repository);
     if (!fence) return { state: "unavailable", reason: "source_denied" };
-    const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "personal-assistant-shadow",
-      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) };
+    const headers = githubReadHeaders(this.token);
     const url = new URL(`https://api.github.com/repos/${repository.owner}/${repository.repo}/contents/${query.path.split("/").map(encodeURIComponent).join("/")}`);
     url.searchParams.set("ref", query.commit);
     const observation = { origin: "github" as const, repository: repository.id, projectId: repository.projectId, configurationVersion: repository.version,
