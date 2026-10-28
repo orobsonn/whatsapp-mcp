@@ -5,15 +5,16 @@ import { readCaptureConversationSearch } from '../src/assistant-search-reader';
 import { receiveCapture } from '../assistant/ingress';
 import { CaptureMaterializer } from '../assistant/materialize';
 import type { AssistantEnv } from '../assistant/env';
+import { OriginGuard } from '../assistant/origin-guard';
 
 const secret = 'synthetic-whatsapp-reader-secret-exclusive';
 const selection = { query: null, conversationName: 'Ana', authorName: null, from: null, to: null };
-async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false) {
+async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private') {
   const scope = { installationId: crypto.randomUUID(), generation: 'telegram-wa', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g' };
   let active = true;
   const reader = {
     async searchConversations(q: { requestId: string }): Promise<{ observation: string; state: string; requestId: string; sourceEpoch: string; sourceGeneration: string; refs: { chatId: string; kind: string }[]; complete: boolean; nextCursor: string | null }> { return { observation: 'capture_conversation_search', state: 'available', requestId: q.requestId, sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', refs: [{ chatId: 'chat', kind: 'private' }], complete: true, nextCursor: null }; },
-    async readSnapshot() { return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind: 'message', sourceId: 'message', chatId: 'chat', sourceVersion: 1, watermark: 1, conversationKind: 'private', access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: 'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: 'message', messageVersion: 1 } } : {}) }; },
+    async readSnapshot() { return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind: 'message', sourceId: 'message', chatId: 'chat', sourceVersion: 1, watermark: 1, conversationKind, access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: 'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: 'message', messageVersion: 1 } } : {}) }; },
   };
   const settings = { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: 'wa-e', BRIDGE_SOURCE_GENERATION: 'wa-g', BRIDGE_SECRET: secret, CAPTURE_READER: reader } as AssistantEnv;
   const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence: 1, previousSequence: 0, chatId: 'chat', sourceId: 'message', sourceKind: 'message', operation: 'upsert', recordedAt: 100 }) }), settings);
@@ -63,6 +64,41 @@ it('never substitutes global evidence when a named conversation has no active ma
   f.reader.searchConversations = async q => ({ observation: 'capture_conversation_search', state: 'available', requestId: q.requestId, sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', refs: [], complete: true, nextCursor: null });
   const result = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse?', f.boundary);
   expect(result.state).toBe('clarify'); expect(JSON.stringify(result)).not.toContain(f.text);
+});
+it('allows an explicit owner read of ignored group evidence while automation remains denied', async () => {
+  const f = await fixture('Texto do grupo, somente se o contrato chegar.', false, 'group');
+  await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,'chat','group',0,'ignore',1)").bind(f.scope.installationId,f.scope.generation).run();
+  const read = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse no grupo?', f.boundary);
+  expect(read.state).toBe('available'); if (read.state !== 'available') return;
+  expect(read.observation.messages).toHaveLength(1);
+  const proof = read.dependencies[0].origin!;
+  expect(proof.policyMode).toBe('ignore');
+  const automation = new OriginGuard(env.DB, () => f.scope, f.reader, secret);
+  const ownerRead = new OriginGuard(env.DB, () => f.scope, f.reader, secret, 2000, 'owner_read');
+  expect(await ownerRead.check(proof)).toBe(true);
+  expect(await automation.fence(proof.canonicalId)).toBeNull();
+  expect(await automation.check(proof)).toBe(false);
+  const denied = automation.localGuard(proof);
+  expect(await env.DB.prepare('SELECT 1 WHERE '+denied.sql).bind(...denied.values).first()).toBeNull();
+  expect(await env.DB.prepare('SELECT 1 WHERE '+read.guard.sql).bind(...read.guard.values).first()).not.toBeNull();
+  await env.DB.prepare("UPDATE assistant_conversation_policies SET excluded=1,revision=2 WHERE installation_id=? AND generation=? AND conversation_id='chat'").bind(f.scope.installationId,f.scope.generation).run();
+  expect(await ownerRead.fence(proof.canonicalId)).toBeNull();
+  expect(await ownerRead.check(proof)).toBe(false);
+  expect(await env.DB.prepare('SELECT 1 WHERE '+read.guard.sql).bind(...read.guard.values).first()).toBeNull();
+});
+it('keeps current policy quarantine and capture withdrawal effective for explicit owner group reads', async () => {
+  const f = await fixture('Mensagem capturada do grupo.', false, 'group');
+  await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,'chat','group',0,'observe',1)").bind(f.scope.installationId,f.scope.generation).run();
+  const read = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse no grupo?', f.boundary);
+  expect(read.state).toBe('available'); if (read.state !== 'available') return;
+  const proof = read.dependencies[0].origin!;
+  const ownerRead = new OriginGuard(env.DB, () => f.scope, f.reader, secret, 2000, 'owner_read');
+  await env.DB.prepare("INSERT INTO assistant_retention_quarantines(installation_id,generation,kind,record_key,conversation_id,version,active,reason,snapshot_seal) VALUES(?,?,'policy','chat','chat',1,1,'synthetic','synthetic')").bind(f.scope.installationId,f.scope.generation).run();
+  expect(await ownerRead.fence(proof.canonicalId)).toBeNull();
+  expect(await env.DB.prepare('SELECT 1 WHERE '+read.guard.sql).bind(...read.guard.values).first()).toBeNull();
+  await env.DB.prepare("UPDATE assistant_retention_quarantines SET active=0 WHERE installation_id=? AND generation=? AND kind='policy'").bind(f.scope.installationId,f.scope.generation).run();
+  const current = await ownerRead.fence(proof.canonicalId); expect(current).not.toBeNull(); f.withdraw();
+  expect(await ownerRead.check(current!)).toBe(false);
 });
 it('bounds UTF-8 evidence and skips a whole oversized message without deleting its conditions', async () => {
   const f = await fixture('😀'.repeat(3000) + ' somente se aprovado'), result = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse?', f.boundary);

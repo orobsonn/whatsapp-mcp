@@ -43,7 +43,7 @@ export async function readTelegramWhatsApp(env: AssistantEnv, scope: OwnerAffini
   if ([query.conversationName, query.authorName].some(name => name !== null && !literalName(ownerText, name)))
     return { state: 'clarify', text: 'Diga o nome da pessoa ou do grupo que você quer consultar.' };
   if (!env.DB || !env.CAPTURE_READER || !env.BRIDGE_SECRET || env.BRIDGE_SECRET.length < 32) return unavailable();
-  const reader = env.CAPTURE_READER as DiscoveryReader, db = env.DB, access = new SourceAccess(db, scope), origin = new OriginGuard(db, () => scope, reader, env.BRIDGE_SECRET);
+  const reader = env.CAPTURE_READER as DiscoveryReader, db = env.DB, access = new SourceAccess(db, scope), origin = new OriginGuard(db, () => scope, reader, env.BRIDGE_SECRET, 2000, 'owner_read');
   const check = async () => { if (boundary.signal?.aborted || Date.now() >= boundary.deadlineAt) throw Error('whatsapp_read_expired'); await boundary.check(); if (boundary.signal?.aborted || Date.now() >= boundary.deadlineAt) throw Error('whatsapp_read_expired'); };
   try {
     await check(); let conversation: string | null = null;

@@ -67,3 +67,11 @@ it("redacts short quoted, JSON and unquoted known credentials while keeping envi
   const redacted = redactGitHubSecrets('password: abc12345\npassword = "abc12345"\n"client_secret": "short",\nconst api_key = process.env.API_KEY;');
   expect(redacted).not.toContain("abc12345"); expect(redacted).not.toContain('"short"'); expect(redacted).toContain("process.env.API_KEY");
 });
+
+it("accepts formatting-only quote differences while refusing changed negation and numbers", () => {
+ const docs = [{ id: "message-one", label: "Mensagem", text: "Não aprovei.\n  Confirmar 3 dias depois." }];
+ const body = (quote: string) => ({ choices: [{ message: { content: JSON.stringify({ claims: [{ text: "A aprovação ainda não foi dada; a confirmação foi adiada.", basis: "observed", citations: [{ id: "message-one", quote }] }], missing: null }) } }] });
+ expect(renderGroundedAnswer(body("Não aprovei. Confirmar 3 dias depois."), docs)).toContain("ainda não foi dada");
+ expect(() => renderGroundedAnswer(body("Aprovei. Confirmar 3 dias depois."), docs)).toThrow("literal");
+ expect(() => renderGroundedAnswer(body("Não aprovei. Confirmar 5 dias depois."), docs)).toThrow("literal");
+});

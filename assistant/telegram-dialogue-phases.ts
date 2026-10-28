@@ -40,7 +40,7 @@ export class OwnerDialoguePhases {
     const c = this.context, frame = inbox.replyFence(turn);
     if (["installationId", "generation", "sourceEpoch", "sourceGeneration"].some(key => frame[key as keyof OwnerAffinity] !== scope[key as keyof OwnerAffinity])
       || c.identity.profile !== "owner-dialogue" || !c.identity.runtimeId || !c.identity.submissionId || !/^[a-f0-9]{64}$/.test(c.episodeId) || !/^[a-f0-9]{64}$/.test(c.bindingHash)
-      || !Number.isSafeInteger(c.deadlineAt) || c.deadlineAt <= Date.now() || c.deadlineAt > Date.now() + 60000 || c.deadlineAt > turn.deadlineAt
+      || !Number.isSafeInteger(c.deadlineAt) || c.deadlineAt <= Date.now() || c.deadlineAt > Date.now() + 120000 || c.deadlineAt > turn.deadlineAt
       || c.source.actor !== "owner" || c.source.source.origin !== "owner_request" || c.lease.source_id !== c.source.source.id || c.lease.source_revision !== c.source.source.revision) throw Error("dialogue_phase_context");
     this.checkpoint = (async () => {
       const id = "request:" + await bridgeHash(["telegram-owner-request-v1", scope.installationId, scope.generation, JSON.stringify(["telegram-owner-request-v1", frame.botInstance, turn.updateId])]);

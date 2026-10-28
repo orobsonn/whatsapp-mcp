@@ -33,6 +33,7 @@ export async function answerGitHubQuestion(input: Input): Promise<ResearchAnswer
     const row = await jsonStatement(db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS ? AND (${g.sql}) RETURNING id`, [serialized, ...keys, checkpointJSON, ...g.values]).first();
     if (!row) throw Error("research_checkpoint_conflict"); checkpointJSON = serialized;
   };
+  try {
   let record: ResearchCheckpoint;
   if (checkpointJSON) {
     record = JSON.parse(checkpointJSON); if (record.kind !== "telegram_owner_research" || record.mode !== "github_question" || record.question !== turn.text) throw Error("research_checkpoint_input");
@@ -49,7 +50,7 @@ export async function answerGitHubQuestion(input: Input): Promise<ResearchAnswer
   const phases = new OwnerDialoguePhases(db, { ...scope, period: binding.period }, { lease: binding.lease, episodeId: episode.id, bindingHash: episode.binding_hash, deadlineAt: episode.deadline,
     source: binding.source, identity, config: binding.config }, inbox, turn, createOpenAIAdapter(env.OPENAI_API_KEY!), { signal, origin: input.origin, githubQuestion: true });
   const firstPayload = record.github ? githubSelectionPayload(binding.config.chatModel, record.github) : { model: binding.config.chatModel, max_completion_tokens: 30, messages: [{ role: "system", content: "A consulta GitHub falhou. Responda somente: indisponível." }, { role: "user", content: turn.text }] };
-  const selected = await phases.run("intent", firstPayload, dependencies); if (selected.state !== "complete") throw Error("research_selection_incomplete");
+  const selected = await phases.run("intent", firstPayload, dependencies); if (selected.state !== "complete") throw Error("research_selection_" + selected.state);
   const receipt = async (phase: "intent" | "answer") => {
     const row = await db.prepare("SELECT operation_key,request_hash,result_hash FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND generation=? AND request_id=? AND phase=? AND state='complete' AND purged=0")
       .bind(scope.installationId, scope.generation, binding.source.source.id, phase).first<{ operation_key: string; request_hash: string; result_hash: string }>();
@@ -66,7 +67,7 @@ export async function answerGitHubQuestion(input: Input): Promise<ResearchAnswer
   if (record.documents?.length && !record.error) {
     const payload = groundedAnswerPayload(binding.config.chatModel, turn.text, record.documents, record.coverage);
     const answered = await phases.run("answer", payload, dependencies);
-    if (answered.state !== "complete") throw Error("research_answer_incomplete");
+    if (answered.state !== "complete") throw Error("research_answer_" + answered.state);
     try { text = renderGroundedAnswer(answered.body, record.documents); }
     catch { text = "Li os arquivos, mas não consegui sustentar uma resposta à sua pergunta com as evidências encontradas. Preciso investigar mais arquivos para responder com segurança."; }
     const second = await receipt("answer"); proofs.push({ kind: "owner_answer", source: binding.source, operationKey: second.operation_key, requestHash: second.request_hash, resultHash: second.result_hash, bindingHash: episode.binding_hash, submissionId: identity.submissionId });
@@ -74,4 +75,9 @@ export async function answerGitHubQuestion(input: Input): Promise<ResearchAnswer
   await check();
   return { text, dependencies, witnesses: proofs, checkpointJSON: checkpointJSON!, intentOperationKey: first.operation_key, intentRequestHash: first.request_hash, intentResultHash: first.result_hash,
     research: { mode: "github_question", documents: record.documents?.length ?? 0, ...(record.github ? { commit: record.github.commit } : {}) } };
+  } catch (error) {
+    const code = error instanceof Error && /^research_(?:denied|checkpoint_conflict|selection_(?:blocked|uncertain|in_progress)|receipt_missing|answer_(?:blocked|uncertain|in_progress))$/.test(error.message) ? error.message : "research_storage_or_transport_error";
+    await db.prepare("UPDATE assistant_episodes SET reason=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=?").bind(code, ...keys).run().catch(() => {});
+    throw error;
+  }
 }

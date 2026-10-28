@@ -67,11 +67,12 @@ export async function readGitHubQuestionFiles(env: AssistantEnv, scope: SourceSc
   const { paths } = z.object({ paths: z.array(z.string()).min(1).max(5) }).strict().parse(JSON.parse(content));
   if (new Set(paths).size !== paths.length || paths.some(path => !snapshot.paths.includes(path) || !automaticGitHubPath(path))) throw Error("github_question_paths");
   const configured = configure(env, scope, snapshot.repository, snapshot.dependencies, boundary), documents: AnswerDocument[] = [], failures: string[] = [], read: { path: string; text: string; hash?: string; redacted: boolean }[] = [];
-  for (const path of paths) {
+  const results = await Promise.allSettled(paths.map(async path => {
     await configured.check(); const raw = await configured.reader.execute({ kind: "owner" }, { kind: "github.read", repository: snapshot.repository.id, commit: snapshot.commit, path }) as { state: string; text?: string; hash?: string };
-    if (raw.state !== "available" || typeof raw.text !== "string") { failures.push(path); continue; }
-    const clean = redactGitHubSecrets(raw.text); read.push({ path, text: clean, hash: raw.hash, redacted: clean !== raw.text });
-  }
+    if (raw.state !== "available" || typeof raw.text !== "string") throw Error("github_file_unavailable");
+    const clean = redactGitHubSecrets(raw.text); return { path, text: clean, hash: raw.hash, redacted: clean !== raw.text };
+  }));
+  for (let index = 0; index < results.length; index++) { const result = results[index]; if (result.status === "fulfilled") read.push(result.value); else failures.push(paths[index]); }
   let remaining = 32000;
   for (let index = 0; index < read.length; index++) {
     const file = read[index], maximum = Math.max(500, remaining - (read.length - index - 1) * 1400);

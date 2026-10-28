@@ -59,8 +59,10 @@ export async function checkOriginsWithin(fences:OriginFence[],check:(fence:Origi
 // in their admission/publication mutation; no cross-worker transaction exists.
 export class OriginGuard {
   constructor(private readonly db: D1Database, private readonly getScope: () => OriginScope,
-    private readonly reader: SnapshotReader, private readonly secret: string, private readonly timeoutMs = 2000) {
+    private readonly reader: SnapshotReader, private readonly secret: string, private readonly timeoutMs = 2000,
+    private readonly purpose: "automation" | "owner_read" = "automation") {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) throw new Error("origin_reader_deadline");
+    if (purpose !== "automation" && purpose !== "owner_read") throw new Error("origin_reader_purpose");
   }
   async observe(scope: OriginScope, ref: OriginRef): Promise<Observation> {
     const blocked = (reason: string): Observation => ({ state: "blocked", reason, watermark: null, kind: null, hash: null, sourceVersion: null, content: null });
@@ -91,6 +93,16 @@ export class OriginGuard {
     return { ...base, hash: await bridgeHash([parsed.sourceVersion ?? null, parsed.access, parsed.content]) };
   }
   private fenceQuery(scope: OriginScope, canonicalId: string):AccessGuard {
+    // The trusted Owner read adapter may inspect captured groups without
+    // enabling automation. Exclusions and restored policy quarantine remain
+    // separate denials: both are represented as "ignore" in the public view.
+    const ownerPolicy = this.purpose === "owner_read" ? `AND NOT EXISTS(
+      SELECT 1 FROM assistant_conversation_policies owner_policy
+      WHERE owner_policy.installation_id=o.installation_id AND owner_policy.generation=o.generation AND owner_policy.conversation_id=o.chat_id
+      AND (owner_policy.excluded=1 OR EXISTS(SELECT 1 FROM assistant_retention_quarantines owner_quarantine
+        WHERE owner_quarantine.installation_id=owner_policy.installation_id AND owner_quarantine.generation=owner_policy.generation
+        AND owner_quarantine.kind='policy' AND owner_quarantine.conversation_id=owner_policy.conversation_id
+        AND owner_quarantine.version=owner_policy.revision AND owner_quarantine.active=1)))` : "";
     return {sql:`SELECT o.source_kind,o.source_id,o.chat_id,o.watermark,o.observation_hash,s.revision,s.current_version,
       c.kind,c.watermark AS chat_watermark,c.access_state,p.kind AS policy_kind,COALESCE(p.revision,0) AS policy_revision,
       COALESCE(p.effective_mode,CASE WHEN c.kind='private' THEN 'attend' ELSE 'ignore' END) AS policy_mode
@@ -99,7 +111,7 @@ export class OriginGuard {
         AND c.source_epoch=o.source_epoch AND c.source_generation=o.source_generation AND c.chat_id=o.chat_id
       LEFT JOIN assistant_conversation_modes p ON p.installation_id=o.installation_id AND p.generation=o.generation AND p.conversation_id=o.chat_id
       WHERE o.installation_id=? AND o.generation=? AND o.source_epoch=? AND o.source_generation=? AND o.canonical_id=?
-      AND o.tombstoned=0 AND s.status='active'`,values:[...scopeKeys(scope),canonicalId]};
+      AND o.tombstoned=0 AND s.status='active' ${ownerPolicy}`,values:[...scopeKeys(scope),canonicalId]};
   }
   private fenceStatement(scope: OriginScope, canonicalId: string) {
     const query=this.fenceQuery(scope,canonicalId);return this.db.prepare(query.sql).bind(...query.values);
@@ -111,14 +123,16 @@ export class OriginGuard {
     if(!expected||JSON.stringify(scopeKeys(scope))!==JSON.stringify(scopeKeys(expected)))return {sql:'0',values:[]};
     const query=this.fenceQuery(scope,expected.canonicalId);
     return {sql:`EXISTS(SELECT 1 FROM (${query.sql}) observed WHERE observed.access_state='available'
-      AND (observed.policy_kind IS NULL OR observed.policy_kind=observed.kind) AND observed.policy_mode<>'ignore'
+      AND (observed.policy_kind IS NULL OR observed.policy_kind=observed.kind)
+      AND (observed.policy_mode<>'ignore'${this.purpose === "owner_read" ? " OR observed.kind='group'" : ""})
       AND observed.source_kind IS ? AND observed.source_id IS ? AND observed.chat_id IS ? AND observed.observation_hash IS ?
       AND observed.revision IS ? AND observed.current_version IS ? AND observed.chat_watermark IS ?
       AND observed.kind IS ? AND observed.policy_revision IS ? AND observed.policy_mode IS ?)`,
       values:[...query.values,expected.sourceKind,expected.sourceId,expected.chatId,expected.hash,expected.revision,expected.version,expected.watermark,expected.conversationKind,expected.policyRevision,expected.policyMode]};
   }
   private fenceRow(scope: OriginScope, canonicalId: string, row: OriginRow | null): OriginFence | null {
-    if (!row || row.access_state !== "available" || !row.kind || (row.policy_kind !== null && row.policy_kind !== row.kind) || row.policy_mode === "ignore") return null;
+    if (!row || row.access_state !== "available" || !row.kind || (row.policy_kind !== null && row.policy_kind !== row.kind)
+      || row.policy_mode === "ignore" && !(this.purpose === "owner_read" && row.kind === "group")) return null;
     return { ...scope, canonicalId, sourceKind: row.source_kind, sourceId: row.source_id, chatId: row.chat_id,
       revision: row.revision, version: row.current_version, watermark: row.chat_watermark, hash: row.observation_hash,
       conversationKind: row.kind, policyRevision: row.policy_revision, policyMode: row.policy_mode };

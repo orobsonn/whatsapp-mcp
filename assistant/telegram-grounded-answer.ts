@@ -16,7 +16,11 @@ export function groundedAnswerPayload(model: string, question: string, documents
 export function renderGroundedAnswer(body: unknown, documents: AnswerDocument[]) {
   const content = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string() }) })).length(1) }).parse(body).choices[0].message.content;
   const parsed = answer.parse(JSON.parse(content)), known = new Map(documents.map(d => [d.id, d]));
-  for (const claim of parsed.claims) for (const citation of claim.citations) if (!known.get(citation.id)?.text.includes(citation.quote)) throw Error("answer_citation_not_literal");
+  const equivalent = (value: string) => value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  for (const claim of parsed.claims) for (const citation of claim.citations) {
+    const document = known.get(citation.id), quote = equivalent(citation.quote);
+    if (!document || quote.length < 8 || !(document.text.includes(citation.quote) || equivalent(document.text).includes(quote))) throw Error("answer_citation_not_literal");
+  }
   let text = ""; const references = new Map<string, string>();
   for (const claim of parsed.claims) {
     const line = `${claim.basis === "inference" ? "<i>Inferência:</i> " : ""}${telegramText(claim.text, 1800)}\n\n`;

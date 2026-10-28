@@ -58,7 +58,7 @@ export class TelegramDialogueHost {
   constructor(private readonly env: AssistantEnv) {
     if (env.TELEGRAM_OWNER_DIALOGUE_ENABLED !== "shadow" || env.FLUE_EPISODES_ENABLED !== "shadow" || !env.DB || !env.OPENAI_API_KEY || !env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_BOT_INSTANCE || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.BRIDGE_SOURCE_EPOCH || !env.BRIDGE_SOURCE_GENERATION) throw Error("dialogue_unconfigured");
     this.db = env.DB; this.scope = Object.freeze({ installationId: env.INSTALLATION_ID, generation: env.OPERATIONAL_GENERATION, sourceEpoch: env.BRIDGE_SOURCE_EPOCH, sourceGeneration: env.BRIDGE_SOURCE_GENERATION });
-    this.origin = env.CAPTURE_READER && env.BRIDGE_SECRET ? new OriginGuard(this.db, () => this.scope, env.CAPTURE_READER, env.BRIDGE_SECRET) : undefined;
+    this.origin = env.CAPTURE_READER && env.BRIDGE_SECRET ? new OriginGuard(this.db, () => this.scope, env.CAPTURE_READER, env.BRIDGE_SECRET, 2000, "owner_read") : undefined;
     this.inbox = new TelegramOwnerInbox(this.db, this.scope, env.TELEGRAM_BOT_INSTANCE); this.episodes = new Episodes(this.db, this.scope); this.state = new DialogueState(this.db, this.scope);
   }
   private queue(turn: Parameters<TelegramOwnerInbox["guard"]>[0]) { return new JobQueue(this.db, this.scope, { kind: "owner" }, async () => this.inbox.guard(turn)); }
@@ -75,7 +75,7 @@ export class TelegramDialogueHost {
     const queue = this.queue(turn), period = new Date().toISOString().slice(0, 10), checkpoint = await this.inbox.checkpoint(turn);
     const job = await queue.enqueue({ kind: "reasoning", dedupeKey: "telegram-owner-v1:" + ref.id, sourceId: ref.id, sourceRevision: 1, request: "telegram-owner-dialogue-v1", maxAttempts: 1, runtime: "flue_owner_dialogue" }, Date.now(), { id: crypto.randomUUID(), guard: this.inbox.guard(turn), statements: [] });
     const lease = await queue.claimId(job.id, Date.now(), Math.max(1, turn.deadlineAt - Date.now()), this.inbox.guard(turn)); if (!lease) return { state: "blocked" };
-    const ledger = (await queue.ledger(job.id))!, deadlineAt = Math.min(Date.now() + 60000, turn.deadlineAt - 1);
+    const ledger = (await queue.ledger(job.id))!, deadlineAt = Math.min(Date.now() + 120000, turn.deadlineAt - 1, lease.lease_until - 1);
     const binding = { kind: "telegram_owner_dialogue", scope: this.scope, checkpoint, source, lease, config: DEFAULT_BROKER_CONFIG, period, deadlineAt, updateId };
     let episode = await this.episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding, deadline: deadlineAt, maxCalls: 2 });
     episode = await this.episodes.envelope(episode.id, { message, initialData: { bindingId: episode.id }, idempotencyKey: "dialogue:" + episode.id });

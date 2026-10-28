@@ -1,4 +1,6 @@
 import { env } from "cloudflare:test";
+import * as transport from "../assistant/model-transport";
+import { answerGitHubQuestion } from "../assistant/telegram-research";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TelegramOwnerInbox, type TelegramOwnerTurn } from "../assistant/telegram-owner-inbox";
 import { TelegramOwnerRequests } from "../assistant/telegram-owner-requests";
@@ -26,15 +28,15 @@ let inbox: TelegramOwnerInbox, turn: TelegramOwnerTurn, link: TelegramLink, sour
 let adapter: ReturnType<typeof vi.fn<ModelAdapter>>;
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const payload = (text = "Interpret only this authenticated owner request.") => ({ model: config.chatModel, messages: [{ role: "system", content: text }, { role: "user", content: turn.text }], max_completion_tokens: 100 });
-async function episode(key = "primary") {
+async function episode(key = "primary", selectedConfig = config) {
   const queue = new JobQueue(env.DB, scope, { kind: "owner" }, async () => inbox.guard(turn));
   const job = await queue.enqueue({ kind: "reasoning", dedupeKey: "telegram-owner-v1:" + key, sourceId: source.source.id, sourceRevision: 1, request: "telegram-owner-dialogue-v1", maxAttempts: 1, runtime: "flue_owner_dialogue" }, Date.now(), { id: crypto.randomUUID(), guard: inbox.guard(turn), statements: [] });
   const lease = (await queue.claimId(job.id, Date.now(), 90000, inbox.guard(turn)))!, ledger = (await queue.ledger(job.id))!, episodes = new Episodes(env.DB, scope);
   const checkpoint = await inbox.checkpoint(turn), deadlineAt = Math.min(Date.now() + 60000, turn.deadlineAt - 1);
-  const row = await episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding: { kind: "telegram_owner_dialogue", scope, source, checkpoint, config, period: scope.period }, deadline: deadlineAt, maxCalls: 2 });
+  const row = await episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding: { kind: "telegram_owner_dialogue", scope, source, checkpoint, lease, config: selectedConfig, period: scope.period }, deadline: deadlineAt, maxCalls: 2 });
   await episodes.envelope(row.id, { message: "Execute the admitted private dialogue.", initialData: { bindingId: row.id }, idempotencyKey: "dialogue:" + row.id });
   expect(await episodes.dispatch(row.id)).toBe(true); expect(await episodes.submission(row.id, "synthetic-native-submission")).toBe(true);
-  return { lease, episodeId: row.id, bindingHash: row.binding_hash, deadlineAt, source, identity: { profile: "owner-dialogue", runtimeId: row.runtime_id, submissionId: "synthetic-native-submission" }, config };
+  return { lease, episodeId: row.id, bindingHash: row.binding_hash, deadlineAt, source, identity: { profile: "owner-dialogue", runtimeId: row.runtime_id, submissionId: "synthetic-native-submission" }, config: selectedConfig };
 }
 beforeEach(async () => {
   scope = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "epoch", sourceGeneration: "capture", period: "2026-10-28" };
@@ -175,4 +177,28 @@ it("read-context intent is admitted only in a host-locked GitHub research episod
   expect((await new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter, { githubQuestion: true }).run("intent", payload(), [dep])).state).toBe("complete"); expect(adapter).toHaveBeenCalledTimes(1);
   await new SourceController(env.DB, scope, { kind: "owner" }).withdraw(support.id, 1);
   expect((await research.run("answer", payload("Explain the selected sources."), [dep])).state).toBe("blocked"); expect(adapter).toHaveBeenCalledTimes(1);
+});
+
+it("completes repository research through both real model phases and the persisted context", async () => {
+  const c = await episode("github-complete", { ...config, maxOutputTokens: 6000, chatCeiling: 20 });
+  const row = (await new Episodes(env.DB, scope).get(c.episodeId))!;
+  await env.DB.prepare("INSERT INTO assistant_projects VALUES(?,?,?,?)").bind(scope.installationId, scope.generation, "github-project", "Synthetic repository").run();
+  const grant = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "github-complete-grant", text: "Synthetic read-only repository authority", projectId: "github-project", occurredAt: Date.now() });
+  const text = "OAuth checks the owner before access.";
+  let calls = 0;
+  const model: ModelAdapter = async () => { calls++; const content = calls === 1 ? { paths: ["src/auth.ts"] } : { claims: [{ text: "O projeto verifica o dono via OAuth antes de liberar o acesso.", basis: "observed", citations: [{ id: "src/auth.ts", quote: text }] }], missing: null }; return { status: 200, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), actualUnits: 1 }; };
+  vi.spyOn(transport, "createOpenAIAdapter").mockReturnValue(model);
+  vi.stubGlobal("fetch", async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/git/ref/heads/main")) return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: "a".repeat(40) } });
+    if (path.includes("/git/trees/")) return Response.json({ sha: "b".repeat(40), truncated: false, tree: [{ path: "src/auth.ts", type: "blob", mode: "100644", size: text.length }] });
+    if (path.includes("/contents/")) return Response.json({ name: "auth.ts", path: "src/auth.ts", type: "file", size: text.length, sha: "c".repeat(40), encoding: "base64", content: btoa(text) });
+    return Response.json({ name: "app", owner: { id: 123, login: "owner" }, default_branch: "main" });
+  });
+  try {
+    const settings = { DB: env.DB, OPENAI_API_KEY: "synthetic", GITHUB_READ_REPOSITORIES: JSON.stringify([{ id: "app", owner: "owner", repo: "app", ownerId: 123, version: 1, projectId: "github-project", authorization: { sourceId: grant.id, revision: 1 } }]) } as AssistantEnv;
+    const result = await answerGitHubQuestion({ env: settings, scope, episode: row, identity: c.identity, turn, inbox, repository: "app" });
+    expect(result.text).toContain("verifica o dono via OAuth"); expect(result.research.documents).toBe(1); expect(calls).toBe(2);
+    expect(JSON.parse(result.checkpointJSON).documents[0].text).toBe(text);
+  } finally { vi.unstubAllGlobals(); }
 });
