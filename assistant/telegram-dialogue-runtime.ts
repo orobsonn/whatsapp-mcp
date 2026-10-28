@@ -24,14 +24,15 @@ import { nativeReceipt } from "./agent/contracts";
 import { readTelegramCalendar, type CalendarObservation } from "./telegram-calendar";
 import { readTelegramGitHub, type GitHubObservation } from "./telegram-github";
 import { telegramText as display } from "./telegram-format";
+import { changeTelegramCalendar } from "./telegram-calendar-action";
 import { setTelegramMissionState } from "./telegram-mission-command";
 
 const message = "Execute the admitted private dialogue.";
 const stateSymbols: Record<string, string> = { active: "⏳", draft: "📝", paused: "⏸️", resolved: "✅", cancelled: "❌", scheduled: "🗓️", awaiting_approval: "👀", uncertain: "❓" };
-const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "github", "clarify", "unsupported"]),
+const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "calendar_action", "github", "clarify", "unsupported"]),
   entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable(), githubAction: z.enum(["read", "list"]).nullable(), repository: z.string().max(256).nullable(), path: z.string().max(1024).nullable() }).strict();
 const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId", "githubAction", "repository", "path"], properties: {
-  kind: { type: "string", enum: ["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "github", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
+  kind: { type: "string", enum: ["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "calendar_action", "github", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
   text: { type: ["string", "null"] }, title: { type: ["string", "null"] }, conversationId: { type: ["string", "null"] }, githubAction: { type: ["string", "null"], enum: ["read", "list", null] }, repository: { type: ["string", "null"] }, path: { type: ["string", "null"] },
 } };
 const merge = (...guards: AccessGuard[]): AccessGuard => ({ sql: guards.map(g => `(${g.sql})`).join(" AND "), values: guards.flatMap(g => g.values) });
@@ -95,7 +96,7 @@ export class TelegramDialogueHost {
     const scope = { ...this.scope, period: b.period }, phases = new OwnerDialoguePhases(this.db, scope, { lease: b.lease, episodeId: id, bindingHash: episode.binding_hash, deadlineAt: episode.deadline,
       source: b.source, identity, config: b.config }, this.inbox, turn, createOpenAIAdapter(this.env.OPENAI_API_KEY!), { signal });
     const result = await phases.run("intent", { model: b.config.chatModel, max_completion_tokens: 900, response_format: { type: "json_schema", json_schema: { name: "owner_intent_v1", strict: true, schema: intentSchema } }, messages: [
-      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. Use mission_state quando o dono instruir concluir, cancelar ou pausar uma missão; o host resolve alvo e estado. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O WhatsApp automático está desativado. A gestão de eventos Calendar solicitada pelo dono ainda está em configuração. Use calendar para ler títulos, compromissos, horários e disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Use github para ler ou listar arquivos no GitHub: githubAction read/list, path é o caminho solicitado (README significa README.md). repository copia o nome ou dono/repositório citado pelo dono; null se omitido. Não invente repositório, caminho ou ref. Se pedir leitura de WhatsApp ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
+      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. Use mission_state quando o dono instruir concluir, cancelar ou pausar uma missão; o host resolve alvo e estado. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O WhatsApp automático está desativado. Use calendar para ler títulos, compromissos, horários e disponibilidade no Google Calendar/agenda. Use calendar_action para pedidos claros de criar, agendar, renomear, alterar horário, cancelar ou excluir eventos na agenda. O host valida todos os dados na mensagem autenticada; não execute nada. Use github para ler ou listar arquivos no GitHub: githubAction read/list, path é o caminho solicitado (README significa README.md). repository copia o nome ou dono/repositório citado pelo dono; null se omitido. Não invente repositório, caminho ou ref. Se pedir leitura de WhatsApp ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
       { role: "user", content: turn.text },
     ] });
     if (result.state !== "complete" || signal?.aborted) throw Error("dialogue_model_incomplete");
@@ -112,7 +113,7 @@ export class TelegramDialogueHost {
     try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null, githubAction: null, repository: null, path: null }; }
     let checkpointJSON: string | null = null;
     let text = "💬 <b>Me explica um pouco melhor?</b>\n\nNão consegui identificar o que você quer fazer com esse pedido.";
-    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar a agenda\n📦 Ler arquivos no GitHub";
+    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar e gerenciar a agenda\n📦 Ler arquivos no GitHub";
     else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.";
     else if (choice.kind === "list" && choice.entity) {
       const listing = await this.state.list(choice.entity); proofs.push(listing.witness);
@@ -150,6 +151,10 @@ export class TelegramDialogueHost {
         operationId: "tg:" + b.source.source.id + ":" + receipt.result_hash, text: turn.text, guard: actionGuard });
       text = changed.text;
       if (changed.state === "applied") { proofs.push(changed.witness); checkpointJSON = changed.checkpointJSON; }
+    } else if (choice.kind === "calendar_action") {
+      const changed = await changeTelegramCalendar(this.env, this.scope, { text: turn.text, occurredAt: turn.occurredAt, updateId: turn.updateId, requestId: b.source.source.id,
+        guard: actionGuard, deadlineAt: episode.deadline, signal, dependencies });
+      text = changed.text; if (changed.witness) proofs.push(changed.witness);
     } else if (choice.kind === "calendar") {
       const calendar = await readTelegramCalendar(this.env, this.scope, turn.text, turn.occurredAt, readBoundary);
       text = calendar.text;

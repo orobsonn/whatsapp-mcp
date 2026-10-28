@@ -10,6 +10,7 @@ export const dialogueWitnesses = z.array(z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("owner_model"), source: sourceFence, operationKey: label, requestHash: hash, resultHash: hash, bindingHash: hash, submissionId: label }).strict(),
   z.object({ kind: z.literal("owner_listing"), entity, rowsJSON: z.string().max(20000) }).strict(),
   z.object({ kind: z.literal("owner_command"), operationId: label, resultJSON: z.string().max(16384) }).strict(),
+  z.object({ kind: z.literal("calendar_action"), actionId: hash, resultJSON: z.string().max(4096) }).strict(),
   z.object({ kind: z.literal("calendar_observation"), episodeId: hash, bindingHash: hash, submissionId: label, observationJSON: z.string().max(20000) }).strict(),
   z.object({ kind: z.literal("github_observation"), episodeId: hash, bindingHash: hash, submissionId: label, observationJSON: z.string().max(20000) }).strict(),
 ])).max(4);
@@ -48,7 +49,12 @@ export class DialogueState {
       if (proof.kind === "owner_listing") {
         if (!Array.isArray(JSON.parse(proof.rowsJSON)) || new TextEncoder().encode(proof.rowsJSON).length > 20000) throw Error("dialogue_witness_rows");
         const query = this.listing(proof.entity); guards.push({ sql: `(${query.sql})=?`, values: [...query.values, proof.rowsJSON] });
-      } else if (proof.kind === "owner_command") guards.push({ sql: `EXISTS(SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=? AND result_json=?)`, values: [this.scope.installationId, this.scope.generation, proof.operationId, proof.resultJSON] });
+      } else if (proof.kind === "calendar_action") {
+        const admission = proofs.find(p => p.kind === "owner_model");
+        if (!admission || admission.kind !== "owner_model") throw Error("calendar_action_admission");
+        guards.push({ sql: `EXISTS(SELECT 1 FROM assistant_calendar_actions WHERE installation_id=? AND generation=? AND id=? AND request_id=? AND purged=0 AND result_json=? AND state IN ('applied','conflict','rejected','uncertain'))`, values: [this.scope.installationId, this.scope.generation, proof.actionId, admission.source.source.id, proof.resultJSON] });
+      }
+      else if (proof.kind === "owner_command") guards.push({ sql: `EXISTS(SELECT 1 FROM assistant_owner_commands WHERE installation_id=? AND generation=? AND operation_id=? AND result_json=?)`, values: [this.scope.installationId, this.scope.generation, proof.operationId, proof.resultJSON] });
       else if (proof.kind === "calendar_observation" || proof.kind === "github_observation") {
         if (new TextEncoder().encode(proof.observationJSON).length > 20000) throw Error("dialogue_observation_size");
         const observation = JSON.parse(proof.observationJSON), kind = proof.kind === "calendar_observation" ? "calendar" : "github";

@@ -6,12 +6,15 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
+export const CALENDAR_OWNED_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned";
+const validPermission = value => value === "read_only" || value === "write_owned";
 const redirect = "http://localhost:8977/callback";
 const safeSecret = value => typeof value === "string" && value.length > 0 && value.length <= 8192 && !/[\u0000-\u0020\u007f]/.test(value);
-export function authorization(clientId, state, verifier) {
+export function authorization(clientId, state, verifier, permission = "read_only") {
+  if (!validPermission(permission)) throw new Error("configuration");
   if (![clientId, state, verifier].every(safeSecret)) throw new Error("configuration");
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  url.search = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: "code", scope: CALENDAR_SCOPE,
+  url.search = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: "code", scope: permission === "write_owned" ? CALENDAR_OWNED_SCOPE : CALENDAR_SCOPE,
     access_type: "offline", prompt: "consent", include_granted_scopes: "false", state,
     code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" }).toString();
   return url.href;
@@ -21,13 +24,13 @@ export function callbackCode(input, state) {
   if (url.origin !== new URL(redirect).origin || url.pathname !== "/callback" || url.searchParams.getAll("state").length !== 1 || url.searchParams.get("state") !== state || url.searchParams.has("error") || url.searchParams.getAll("code").length !== 1 || !safeSecret(url.searchParams.get("code"))) throw new Error("callback");
   return url.searchParams.get("code");
 }
-export function credentialEnvironment(clientId, clientSecret, response, { encryptionKey = randomBytes(32).toString("base64"), secretEpoch = randomUUID(), credentialGeneration } = {}) {
+export function credentialEnvironment(clientId, clientSecret, response, { encryptionKey = randomBytes(32).toString("base64"), secretEpoch = randomUUID(), credentialGeneration, permission = "read_only", configurationVersion = permission === "write_owned" ? 2 : 1 } = {}) {
   const scopes = typeof response.scope === "string" ? response.scope.trim().split(/\s+/) : [];
-  if (![clientId, clientSecret, response.refresh_token, response.access_token, credentialGeneration].every(safeSecret) || credentialGeneration.length > 256 || response.token_type !== "Bearer" || !Number.isInteger(response.expires_in) || response.expires_in < 120 || !scopes.length || !scopes.every(scope => scope === CALENDAR_SCOPE || scope === "https://www.googleapis.com/auth/calendar.readonly")) throw new Error("token_response");
+  if (![clientId, clientSecret, response.refresh_token, response.access_token, credentialGeneration].every(safeSecret) || credentialGeneration.length > 256 || response.token_type !== "Bearer" || !Number.isInteger(response.expires_in) || response.expires_in < 120 || !validPermission(permission) || !Number.isInteger(configurationVersion) || configurationVersion < 1 || !scopes.length || (permission === "write_owned" && !scopes.includes(CALENDAR_OWNED_SCOPE)) || !scopes.every(scope => scope === CALENDAR_SCOPE || scope === "https://www.googleapis.com/auth/calendar.readonly" || (permission === "write_owned" && scope === CALENDAR_OWNED_SCOPE))) throw new Error("token_response");
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   return Object.entries({ CALENDAR_OAUTH_CLIENT_ID: clientId, CALENDAR_OAUTH_CLIENT_SECRET: clientSecret,
     CALENDAR_OAUTH_REFRESH_TOKEN: response.refresh_token, CALENDAR_OAUTH_ENCRYPTION_KEY: encryptionKey,
-    CALENDAR_OAUTH_CONFIGURATION_VERSION: "1", CALENDAR_OAUTH_SECRET_EPOCH: secretEpoch, CALENDAR_OAUTH_CREDENTIAL_GENERATION: credentialGeneration }).map(([name, value]) => `${name}=${quote(value)}`).join("\n") + "\n";
+    CALENDAR_OAUTH_CONFIGURATION_VERSION: String(configurationVersion), CALENDAR_OAUTH_PERMISSION: permission, CALENDAR_OAUTH_SECRET_EPOCH: secretEpoch, CALENDAR_OAUTH_CREDENTIAL_GENERATION: credentialGeneration }).map(([name, value]) => `${name}=${quote(value)}`).join("\n") + "\n";
 }
 export async function writePrivateEnvironment(destination, content) {
   const target = resolve(destination), folder = dirname(target), temporary = target + "." + randomUUID() + ".tmp";
@@ -52,7 +55,9 @@ async function exchange(clientId, clientSecret, code, verifier) {
   } finally { clearTimeout(timeout); controller.abort(); }
 }
 export async function main(args = process.argv.slice(2)) {
-  if (args.includes("--help")) { console.log("Provide CALENDAR_OAUTH_CLIENT_ID, CALENDAR_OAUTH_CLIENT_SECRET and OPERATIONAL_GENERATION through private environment. Run: node scripts/calendar-oauth.mjs [--out /private/calendar-oauth.env]. Callback: http://localhost:8977/callback. For VPS use SSH -L 8977:127.0.0.1:8977. Tokens are written once to a 0600 file and never printed."); return; }
+  if (args.includes("--help")) { console.log("Provide CALENDAR_OAUTH_CLIENT_ID, CALENDAR_OAUTH_CLIENT_SECRET and OPERATIONAL_GENERATION through private environment. Run: node scripts/calendar-oauth.mjs [--write-owned] [--out /private/calendar-oauth.env]. Callback: http://localhost:8977/callback. For VPS use SSH -L 8977:127.0.0.1:8977. Tokens are written once to a 0600 file and never printed."); return; }
+  const permission = args.includes("--write-owned") ? "write_owned" : "read_only";
+  args = args.filter(arg => arg !== "--write-owned");
   const clientId = process.env.CALENDAR_OAUTH_CLIENT_ID, clientSecret = process.env.CALENDAR_OAUTH_CLIENT_SECRET;
   const credentialGeneration = process.env.OPERATIONAL_GENERATION;
   if (!safeSecret(clientId) || !safeSecret(clientSecret) || !safeSecret(credentialGeneration) || credentialGeneration.length > 256) throw new Error("configuration");
@@ -73,10 +78,10 @@ export async function main(args = process.argv.slice(2)) {
       } catch { response.statusCode = 400; response.end("Authorization callback rejected."); }
     });
     server.on("error", error => { clearTimeout(timer); reject(error); });
-    server.listen(8977, "127.0.0.1", () => console.log("Open this URL in your own browser:\n" + authorization(clientId, state, verifier)));
+    server.listen(8977, "127.0.0.1", () => console.log("Open this URL in your own browser:\n" + authorization(clientId, state, verifier, permission)));
     timer = setTimeout(() => { server.close(); reject(new Error("callback_timeout")); }, 300000);
   });
-  try { await writePrivateEnvironment(output, credentialEnvironment(clientId, clientSecret, await exchange(clientId, clientSecret, code, verifier), { credentialGeneration })); console.log("Credentials saved privately with mode 0600; no tokens printed. Provision them as assistant Worker secrets."); }
+  try { await writePrivateEnvironment(output, credentialEnvironment(clientId, clientSecret, await exchange(clientId, clientSecret, code, verifier), { credentialGeneration, permission })); console.log("Credentials saved privately with mode 0600; no tokens printed. Provision them as assistant Worker secrets."); }
   finally { clearTimeout(timer); }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(() => { console.error("Calendar OAuth failed; no secrets printed. Check client configuration, registered callback, consent and private output permissions."); process.exitCode = 1; });

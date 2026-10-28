@@ -23,7 +23,7 @@ export default {
       return Response.json(
         {
           mode: "shadow",
-          capabilities: { whatsappSend: false, calendarWrite: false },
+          capabilities: { whatsappSend: false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
         },
         { headers },
       );

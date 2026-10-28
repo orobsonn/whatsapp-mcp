@@ -22,7 +22,7 @@ export function configuredCalendar(env: AssistantEnv, scope: SourceScope, bounda
   };
   const token = async () => {
     await check();
-    const call = env.CALENDAR_OAUTH!.get(env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(affinity.data))).token(affinity.data);
+    const call = env.CALENDAR_OAUTH!.get(env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(affinity.data, env.CALENDAR_OAUTH_PERMISSION))).token(affinity.data, env.CALENDAR_OAUTH_PERMISSION);
     let abort: (() => void) | undefined;
     try {
       const result = await (lifetime ? Promise.race([call, new Promise<never>((_, reject) => {

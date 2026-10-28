@@ -31,7 +31,9 @@ export interface AssistantEnv {
   GITHUB_READ_OWNER?: string;
   GITHUB_READ_TOKEN?: string;
   CALENDAR_READ_CALENDARS?: string;
+  CALENDAR_WRITE_CALENDAR?: string;
   CALENDAR_OAUTH?: DurableObjectNamespace<CalendarOAuth>;
+  CALENDAR_OAUTH_PERMISSION?: "read_only" | "write_owned";
   CALENDAR_OAUTH_CONFIGURATION_VERSION?: string;
   CALENDAR_OAUTH_SECRET_EPOCH?: string;
   CALENDAR_OAUTH_CREDENTIAL_GENERATION?: string;
