@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { readConversationActivity } from "./conversation-activity";
 import { z } from "zod";
 import type { Env } from "./env";
 import { assertActive, currentFence, safeEqual } from "./core";
@@ -172,6 +173,7 @@ export async function readCaptureStreamHead(rawEnv: Env,input:unknown) {
 
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
+  readConversationActivity(input:unknown){return readConversationActivity(this.env,input);}
   streamHead(input:unknown){return readCaptureStreamHead(this.env,input);}
   searchConversations(input: unknown) { return readCaptureConversationSearch(this.env, input); }
   readRecipientEnvelope(input:unknown){return readRecipientEnvelope(this.env,input);}

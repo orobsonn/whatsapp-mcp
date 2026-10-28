@@ -18,6 +18,7 @@ import {
   publicOrigin,
 } from "./auth";
 import { ingestEvent, ingestStatus, normalizeZapiEvent } from "./capture";
+import { observeAuthenticatedRelationshipCallback } from "./conversation-activity";
 import { getAction, approveAction, reconcileActions } from "./actions";
 import { mcpFetch } from "./mcp";
 import { getChat } from "./store";
@@ -111,10 +112,12 @@ async function webhook(
   if (body.connectedPhone !== env.CONNECTED_PHONE || !env.CONNECTED_PHONE)
     throw new AppError("device_changed", 403);
   try {
+    const event=normalizeZapiEvent(body);
+    await observeAuthenticatedRelationshipCallback(env,body);
     const result = await ingestEvent(
       env,
       currentFence(env),
-      normalizeZapiEvent(body),
+      event,
       true,
     );
     return json({ accepted: true, captured: result.captured });

@@ -57,7 +57,14 @@
 
 ### Task 4: Homologação e release
 
-- [ ] Criar issue e PR do marco, CI do código final e revisão independente.
-- [ ] Implantar preservando bindings/runtime/imagem, com piloto inicialmente pausado.
+- [x] Criar issue e PR do marco, CI do código entregue e revisão independente. `dfa622b`: CI40736247603; ensaio real ainda pendente.
+- [x] Implantar preservando bindings/runtime/imagem, com piloto inicialmente pausado. Ativado no recorte de novas mensagens, com resposta autônoma desabilitada.
 - [ ] Estabelecer cutoff na fronteira Source e testar conversa real selecionada até aprovação humana e consequência do provedor.
 - [ ] Registrar custo/latência/cobertura/limites; publicar release minor e encerrar issue somente com aceite atendido.
+
+### Task 5: Resposta do dono capturada por outro identificador
+
+- [x] Confirmar por consulta autenticada do provedor o vínculo telefone/LID, sem nomes ou variantes numéricas como prova. Preservar avaliação humana do texto separada da autorização de envio.
+- [x] Reproduzir e corrigir veto por atividade, inclusive depois da autorização, com políticas restritivas dos dois membros e bloqueio de prova contraditória. IDs, roteamento, histórico, recibos e custos permanecem preservados.
+- [ ] Aplicar migração Source0017, implantar ambos os componentes e registrar uma vez a relação comprovada; conferir veto do gatilho real já respondido sem nova inferência/envio.
+- [ ] Observar nova mensagem ainda não respondida até aprovação e consequência WhatsApp; não substituir essa prova por consulta SQL ou botão simulado.

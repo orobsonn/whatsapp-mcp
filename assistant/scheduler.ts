@@ -3,7 +3,7 @@ import { Routines,type RoutineCycle } from "./routines";
 import { CaptureMaterializer } from "./materialize";
 import { Conversations } from "./conversations";
 import { SourceAccess,type TrustedActor,type SourceSelectionRef } from "./access";
-import {readProactivePilot,pilotAllowsSubject,pilotSelection,pilotBindingCurrent,selectPilotSourceRefs,type PilotBinding} from './proactive-pilot';
+import {readProactivePilot,pilotAllowsSubject,pilotSelection,pilotBindingCurrent,selectPilotSourceRefs,readPilotConversationActivity,type PilotBinding} from './proactive-pilot';
 import { activeOrigin,originScopeSql,scopeKeys,type OriginScope } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { FollowUps } from "./followups";
@@ -45,6 +45,10 @@ export class AssistantScheduler {
  private async update(cycle:RoutineCycle,id:string,sql:string,values:(string|number|null)[]=[]){const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_items SET ${sql},updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql}`,...values,this.clock(),...this.keys(),id,...owner.values).run();}
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
  private configuration(){return schedulerConfiguration(this.scope,this.env);}
+ private async superseded(cycle:RoutineCycle,item:Item,binding:Binding){
+  if(!binding.pilot||(await readPilotConversationActivity(this.env,binding.subject)).state!=='superseded_owner_reply')return false;
+  const owner=this.owned(cycle);return !!await this.sql(`UPDATE assistant_routine_items SET state='blocked',phase='done',last_gap='superseded_owner_reply',updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql} RETURNING id`,this.clock(),...this.keys(),item.id,...owner.values).first();
+ }
  /** Detach an expired pilot attempt from coordination only. Its immutable
   * episode, job, receipts, uncertainty and costs remain available for audit. */
  private async holdExpiredModelAttempt(cycle:RoutineCycle,itemId:string){
@@ -79,6 +83,7 @@ export class AssistantScheduler {
     const selection=pilot?pilotSelection(pilot):null;
     const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND phase<>'held_expired' AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ${selection?`AND ${selection.sql}`:''} ORDER BY updated_at,id LIMIT 1`,...this.keys(),...(selection?.values??[])).first<{id:string}>();
     if(reconcileOnly&&row?.id&&await this.holdExpiredModelAttempt(cycle,row.id)){await this.routines.phase(cycle,'expired_model_attempt_held',null);await this.routines.finish(cycle,'expired_model_attempt_preserved',false);return {state:'held',gap:'expired_model_attempt_preserved',reconcileOnly};}
+    if(reconcileOnly&&row?.id){const item=await this.item(row.id);if(item&&await this.superseded(cycle,item,JSON.parse(item.binding_json))){await this.routines.finish(cycle,'superseded_owner_reply',false);return {state:'blocked',gap:'superseded_owner_reply',reconcileOnly};}}
     if(reconcileOnly&&row?.id&&pilot){const item=await this.item(row.id);if(!item||!await pilotBindingCurrent(this.env,JSON.parse(item.binding_json))){await this.routines.finish(cycle,'pilot_backlog_held',true);return {state:'blocked',gap:'pilot_backlog_held',reconcileOnly};}}
     if(row?.id){const item=await this.item(row.id);if(item){await this.routines.phase(cycle,"work",item.id);state=await this.process(cycle,item,reconcileOnly);gap=(await this.item(item.id))?.last_gap??gap;}}
    }
@@ -86,7 +91,7 @@ export class AssistantScheduler {
    if(daily&&!paused&&state!=="uncertain"&&this.env.TELEGRAM_SUMMARIES_ENABLED==="true"&&await this.routines.current(cycle)){
     await this.routines.phase(cycle,"daily_review");try{await(await createTelegramReview(this.env,this.scope,()=>this.owned(cycle))).publishDailySummary(daily.id);}catch{gap=gap??"telegram_review_unavailable";}
    }
-  }catch{state="uncertain";gap="routine_operation_uncertain";}
+  }catch{state="uncertain";gap="routine_operation_uncertain";const id=await this.sql(`SELECT active_item_id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<string>('active_item_id'),item=id?await this.item(id):null;if(item&&await this.superseded(cycle,item,JSON.parse(item.binding_json))){state='blocked';gap='superseded_owner_reply';}}
   await this.routines.finish(cycle,gap,state==="uncertain");return {state,gap,reconcileOnly};
  }
  private async discover(cycle:RoutineCycle){
@@ -271,7 +276,7 @@ export class AssistantScheduler {
   return result.state==="shadow_completed"?this.complete(cycle,item,host,episode.id):this.gap(cycle,item.id,result.state==="uncertain"?"model_uncertain":"publication_rejected",result.state==="uncertain");
  }
  private async complete(cycle:RoutineCycle,item:Item,host:EpisodeController,episodeId:string){
-  const binding=JSON.parse(item.binding_json) as Binding;if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
+  const binding=JSON.parse(item.binding_json) as Binding;if(await this.superseded(cycle,item,binding))return 'blocked';if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
   await this.update(cycle,item.id,"state='complete',phase='review',last_gap=NULL");
   if(binding.pilot){
    if(this.env.TELEGRAM_SUGGESTIONS_ENABLED!=="true"||this.env.WHATSAPP_APPROVED_SEND_ENABLED!=="true")return 'complete';
@@ -303,11 +308,12 @@ export class AssistantScheduler {
  }
  private async process(cycle:RoutineCycle,item:Item,reconcileOnly:boolean):Promise<string>{
   const binding=JSON.parse(item.binding_json) as Binding;if(await bridgeHash(binding)!==item.binding_hash||binding.configuration!==await this.configuration()){await this.update(cycle,item.id,"state='blocked',last_gap='configuration_or_binding_changed'");return "blocked";}
+  if(await this.superseded(cycle,item,binding))return 'blocked';
   if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
   if(!this.env.OPENAI_API_KEY||this.env.FLUE_EPISODES_ENABLED!=="shadow")return this.gap(cycle,item.id,"episode_unconfigured");
   const configured=hostConfiguredSearch(this.env,"automation",this.clock),host=runtimeHost(this.env,"automation",{clock:this.clock,model:this.options.model});
   // Lookup existing job/episode before considering a new source fence or lease.
-  if(item.job_id){const existing=await this.existingEpisode(cycle,item,host,reconcileOnly);if(existing)return existing;}
+  if(item.job_id){const existing=await this.existingEpisode(cycle,item,host,reconcileOnly);if(await this.superseded(cycle,item,binding))return 'blocked';if(existing)return existing;}
   if(reconcileOnly&&item.run_id){
    const recovered=await configured.search.result(binding.actor,item.run_id);
    if(recovered.state==="ready"){await this.update(cycle,item.id,"state='ready',last_gap=NULL");return "pending";}
@@ -351,7 +357,7 @@ export class AssistantScheduler {
   await this.update(cycle,item.id,"state='ready',last_gap=NULL");await this.routines.phase(cycle,"claim_episode",item.id);
   const lease=await host.queue.claimId(item.job_id,this.clock(),180000);if(!lease)return this.gap(cycle,item.id,"job_not_claimable");
   const episode=await host.prepare(lease,binding.profile,progress.runId);await this.update(cycle,item.id,"episode_id=?,state='processing',phase='episode'",[episode.id]);
-  return (await this.existingEpisode(cycle,{...item,episode_id:episode.id},host,false))??"uncertain";
+  const outcome=await this.existingEpisode(cycle,{...item,episode_id:episode.id},host,false);if(await this.superseded(cycle,item,binding))return 'blocked';return outcome??'uncertain';
  }
 }
 /** Cloudflare cron invokes the real product factory. Defaults remain inert. */

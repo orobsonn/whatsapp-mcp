@@ -33,9 +33,11 @@ const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,s
 let snapshots:Map<string,unknown>,model:ModelAdapter,driver:EpisodeDriver;
 const keys=()=>[scope.installationId,scope.generation],query=(sql:string,...values:(string|number|null)[])=>env.DB.prepare(sql).bind(...values);
 const scheduler=()=>new AssistantScheduler(settings,{clock:()=>now,driver,model});
+let activityOwnerSequence:number,activityMembers:string[];
 beforeEach(async()=>{
  scope={installationId:crypto.randomUUID(),generation:"g1",sourceEpoch:"capture-epoch",sourceGeneration:"capture-generation"};now=Date.parse("2026-10-26T12:00:00Z");modelCalls=0;dispatches=0;modelFailure=false;author="a".repeat(64);fromMe=false;snapshots=new Map();
- const reader={async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw new Error("synthetic secret mismatch");const found=snapshots.get(input.sourceKind+":"+input.sourceId);if(!found)throw new Error("synthetic offline");return found;}};
+ activityOwnerSequence=0;activityMembers=[];
+ const reader={async readConversationActivity(input:{secret:string;sourceEpoch:string;sourceGeneration:string;chatId:string}){if(input.secret!==secret)throw Error('reader_denied');const watermark=Math.max(1,activityOwnerSequence,...[...snapshots.values()].map(v=>(v as {watermark:number}).watermark));return {observation:'capture_conversation_activity',state:'available',sourceEpoch:input.sourceEpoch,sourceGeneration:input.sourceGeneration,chatId:input.chatId,relationshipRevision:activityMembers.length?1:0,relationshipProof:'a'.repeat(64),members:(activityMembers.length?activityMembers:[input.chatId]).map(chatId=>({chatId,captureEnabled:true,watermark})),watermark,lastOwnerOriginalSequence:activityOwnerSequence};},async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw new Error("synthetic secret mismatch");const found=snapshots.get(input.sourceKind+":"+input.sourceId);if(!found)throw new Error("synthetic offline");return found;}};
  settings={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:reader,OPENAI_API_KEY:"synthetic-not-a-provider-key",FLUE_EPISODES_ENABLED:"shadow",ROUTINES_ENABLED:"shadow"};
  await new InferenceBudget(env.DB,{...scope,period:"2026-10-26"}).configure(1000000);
  model=async request=>{modelCalls++;if(modelFailure)throw new Error("synthetic accepted but ACK lost");const payload=JSON.parse(request.body),prompt=JSON.parse(payload.messages.at(-1).content),source=prompt.sources[0];return {status:200,actualUnits:3,body:JSON.stringify({choices:[{message:{content:JSON.stringify({decision:"proposed",text:"Synthetic shadow proposal",citations:[{id:source.id,revision:source.revision,version:source.version,hash:source.hash,quote:source.text}]})}}]})};};
@@ -46,6 +48,30 @@ beforeEach(async()=>{
  }});
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
+it('suppresses a phone trigger already answered through its proven LID without reading the other conversation or paying a model',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'activity-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
+ activityMembers=['chat','opaque-lid-chat'];activityOwnerSequence=2;await event();
+ const snapshotsRead=vi.spyOn(settings.CAPTURE_READER!,'readSnapshot');
+ expect(await scheduler().tick()).toMatchObject({state:'blocked',gap:'superseded_owner_reply'});
+ expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ expect(await query('SELECT state,phase,last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'blocked',phase:'done',last_gap:'superseded_owner_reply'});
+ expect(await query('SELECT COUNT(*) n FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);
+ expect(snapshotsRead.mock.calls.every(([input])=>input.chatId==='chat')).toBe(true);
+});
+it('rejects publication when the owner answers through a related LID after the paid model response',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'activity-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});activityMembers=['chat','opaque-lid-chat'];
+ const native=driver;driver=(profile,id)=>{const port=native(profile,id);return {dispatch:port.dispatch,read:async(receipt,options)=>{const result=await port.read(receipt,options);activityOwnerSequence=2;return result;}};};
+ await event();expect(await scheduler().tick()).toMatchObject({state:'blocked',gap:'superseded_owner_reply'});
+ expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+ expect(await query('SELECT COUNT(*) n FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND proposal_json IS NOT NULL',...keys()).first('n')).toBe(0);
+ expect(await query('SELECT state,phase,last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'blocked',phase:'done',last_gap:'superseded_owner_reply'});
+});
+it('does not infer when a related activity member is excluded even though the trigger conversation is enabled',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'activity-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});activityMembers=['chat','opaque-lid-chat'];
+ await query("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'private',1,'ignore',1)",...keys(),'opaque-lid-chat').run();
+ await event();await scheduler().tick();expect(modelCalls).toBe(0);expect(dispatches).toBe(0);
+ expect(await query('SELECT COUNT(*) n FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first('n')).toBe(0);
+});
 it('admits only prospective received pilot messages and leaves old routines and unrelated owner context untouched', async () => {
  const extraction=vi.spyOn(CanonicalCandidateExtractor.prototype,'extract');
  settings.ROUTINES_PAUSED='true';await event(1,0,'old');await scheduler().tick();

@@ -10,24 +10,64 @@ import type { ApprovedSendActuatorRPC } from '../src/approved-send-contract';
 
 let host: TelegramApprovedSendReview, config: AssistantEnv, now: number, scope: {installationId:string;generation:string;sourceEpoch:string;sourceGeneration:string};
 let api: TelegramApi, actuator: ApprovedSendActuatorRPC, current: boolean;
+let journal:Pick<DecisionJournal,'get'|'admitReview'>;
+let ownerReplySequence:number,activityRevision:number,activityMembers:string[];
 const bot='synthetic_bot', secret='approved-send-synthetic-secret-at-least-32', actionId='641ad152-63df-42c0-a921-0f13cae7e9bd';
 const proposal={decision:'proposed',text:'Podemos conversar amanhã às 10h?'};
 const envelope={kind:'text' as const,chatId:'synthetic-conversation',text:proposal.text};
 const q=(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(...args);
 beforeEach(async()=>{
  proposal.decision='proposed';proposal.text=envelope.text;
- now=2000000;current=true;scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'c1'};
+ now=2000000;current=true;ownerReplySequence=0;activityRevision=1;activityMembers=[envelope.chatId,'opaque-lid-chat'];scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'c1'};
  await q(`INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',0)`,scope.installationId,scope.generation,bot,scope.sourceEpoch,scope.sourceGeneration).run();
  const fence={...scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
  await q(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`,scope.installationId,scope.generation,bot,JSON.stringify(fence)).run();
  api={inspect:vi.fn(async()=>true),createTopic:vi.fn(async()=>42),send:vi.fn(async()=>200),answer:vi.fn(async()=>{})};
  const hash=await actionDigest(envelope);
- actuator={prepare:vi.fn(async()=>({actionId,hash,envelope,target:{chatId:envelope.chatId,name:'Pessoa sintética',address:'5511000000000',kind:'individual' as const},expiresAt:now+600000})),execute:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000})),status:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000}))};
- config={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,FLUE_EPISODES_ENABLED:'shadow',WHATSAPP_APPROVED_SEND_ENABLED:'true',WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:actuator,PROACTIVE_PILOT_JSON:JSON.stringify({id:'synthetic-pilot',revision:1,startAfterSequence:10,chatIds:[envelope.chatId]})};
- const journal={get:vi.fn(async()=>({freshness:current?'current':'stale',subject:{kind:'capture_event',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,sequence:11,metadataHash:'a'.repeat(64)},proposal})),admitReview:vi.fn(async(_id:string,hash:string,build:Parameters<DecisionJournal['admitReview']>[2])=>current&&hash===await bridgeHash(proposal)?env.DB.batch(build({sql:'1',values:[]})):null)} as unknown as Pick<DecisionJournal,'get'|'admitReview'>;
+ actuator={prepare:vi.fn(async input=>({actionId,hash,envelope,target:{chatId:envelope.chatId,name:'Pessoa sintética',address:'5511000000000',kind:'individual' as const},activity:input.activity,expiresAt:now+600000})),execute:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000})),status:vi.fn(async()=>({actionId,hash,status:'accepted',providerMessageId:'synthetic-provider',providerZaapId:null,error:null,expiresAt:now+600000}))};
+ config={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:{readSnapshot:async()=>{throw Error('no cross-chat content');},readConversationActivity:async()=>({observation:'capture_conversation_activity',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,relationshipRevision:activityRevision,relationshipProof:'a'.repeat(64),members:activityMembers.map(chatId=>({chatId,captureEnabled:true,watermark:Math.max(11,ownerReplySequence)})),watermark:Math.max(11,ownerReplySequence),lastOwnerOriginalSequence:ownerReplySequence})},FLUE_EPISODES_ENABLED:'shadow',WHATSAPP_APPROVED_SEND_ENABLED:'true',WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:actuator,PROACTIVE_PILOT_JSON:JSON.stringify({id:'synthetic-pilot',revision:1,startAfterSequence:10,chatIds:[envelope.chatId]})};
+ journal={get:vi.fn(async()=>({freshness:current?'current':'stale',subject:{kind:'capture_event',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:envelope.chatId,sequence:11,metadataHash:'a'.repeat(64)},proposal})),admitReview:vi.fn(async(_id:string,hash:string,build:Parameters<DecisionJournal['admitReview']>[2])=>current&&hash===await bridgeHash(proposal)?env.DB.batch(build({sql:'1',values:[]})):null)} as unknown as Pick<DecisionJournal,'get'|'admitReview'>;
  host=new TelegramApprovedSendReview(config,scope,bot,'synthetic-callback-hmac-secret',api,journal,()=>now);
 });
 function callback(index=0){const call=vi.mocked(api.send).mock.calls[0];return {update_id:100,callback_query:{id:'query-100',from:{id:101,is_bot:false},chat_instance:'synthetic',data:call[3][0][index].callback_data,message:{message_id:200,date:2000,message_thread_id:42,chat:{id:101,type:'private'}}}};}
+it('does not prepare or publish a response after a proven related owner reply',async()=>{
+ ownerReplySequence=12;expect(await host.dispatchDecision('d1','routine:answered')).toMatchObject({state:'blocked'});
+ expect(actuator.prepare).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
+});
+it.each(['observe','respond'] as const)('rejects a private phone/LID activity pair whose related member has a group %s policy',async mode=>{
+ await q("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'group',0,?,1)",scope.installationId,scope.generation,'opaque-lid-chat',mode).run();
+ expect(await host.dispatchDecision('d1','routine:kind-mismatch')).toMatchObject({state:'blocked'});expect(actuator.prepare).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
+});
+it.each([['group','observe','blocked'],['group','respond','sent'],['private','respond','blocked']] as const)('a singleton %s with group %s policy has review state %s',async(kind,mode,state)=>{
+ activityMembers=[envelope.chatId];
+ await q('INSERT INTO assistant_origin_conversations(installation_id,generation,source_epoch,source_generation,chat_id,watermark,kind,access_state) VALUES(?,?,?,?,?,11,?,\'available\')',scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,envelope.chatId,kind).run();
+ await q("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'group',0,?,1)",scope.installationId,scope.generation,envelope.chatId,mode).run();
+ expect(await host.dispatchDecision('d1','routine:singleton')).toMatchObject({state});expect(actuator.prepare).toHaveBeenCalledTimes(state==='sent'?1:0);expect(actuator.execute).not.toHaveBeenCalled();
+});
+it.each(['reply','relationship','excluded','paused'] as const)('vetoes an approved send after related member %s changes',async change=>{
+ await host.dispatchDecision('d1','routine:one');const row=await q('SELECT id FROM assistant_telegram_send_reviews WHERE installation_id=?',scope.installationId).first<{id:string}>();
+ await host.receiveCallback(callback());vi.mocked(actuator.execute).mockClear();
+ if(change==='reply')ownerReplySequence=12;
+ if(change==='relationship')activityRevision++;
+ if(change==='excluded')await q("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'private',1,'ignore',1)",scope.installationId,scope.generation,'opaque-lid-chat').run();
+ if(change==='paused'){
+  await q("INSERT INTO assistant_origin_conversations(installation_id,generation,source_epoch,source_generation,chat_id,watermark,kind,access_state) VALUES(?,?,?,?,?,11,'private','available')",scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,'opaque-lid-chat').run();
+  await q('INSERT INTO assistant_conversations(installation_id,generation,source_epoch,source_generation,chat_id,paused,policy_revision,mode) VALUES(?,?,?,?,?,1,0,\'attend\')',scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,'opaque-lid-chat').run();
+ }
+ expect(await host.authorize({secret,approvalId:row!.id,actionId,hash:await actionDigest(envelope)})).toEqual({authorized:false});
+ const again=callback();again.update_id=101;again.callback_query.id='query-101';await host.receiveCallback(again);expect(actuator.execute).not.toHaveBeenCalled();
+});
+it('keeps a related opt-out in the final local authorization query after the remote activity check',async()=>{
+ await host.dispatchDecision('d1','routine:one');await host.receiveCallback(callback());
+ const row=await q('SELECT id,target_json FROM assistant_telegram_send_reviews WHERE installation_id=?',scope.installationId).first<{id:string;target_json:string}>();
+ expect(JSON.parse(row!.target_json).activity).toEqual({triggerSequence:11,relationshipRevision:1,relationshipProof:'a'.repeat(64),members:[...activityMembers].sort()});
+ const admit=vi.mocked(journal.admitReview).getMockImplementation()!;
+ vi.mocked(journal.admitReview).mockImplementationOnce(async(...args)=>{
+  await q("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded,group_mode,revision) VALUES(?,?,?,'private',1,'ignore',1)",scope.installationId,scope.generation,'opaque-lid-chat').run();
+  return admit(...args);
+ });
+ expect(await host.authorize({secret,approvalId:row!.id,actionId,hash:await actionDigest(envelope)})).toEqual({authorized:false});
+});
 it('shows exact destination and entire text, then sends only on the owner approval',async()=>{
  expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'sent'});
  expect(api.send).toHaveBeenCalledTimes(1);expect(vi.mocked(api.send).mock.calls[0][2]).toContain(proposal.text);expect(vi.mocked(api.send).mock.calls[0][2]).toContain('5511000000000');expect(actuator.execute).not.toHaveBeenCalled();

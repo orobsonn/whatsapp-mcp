@@ -15,9 +15,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Claim final confere o destino efetivamente usado, inclusive mudança A→B→A durante consultas assíncronas, além de conexão, envelope e expiração.
 - Callback aceita metadados reais do Telegram e usa apenas os campos canônicos para autenticação/deduplicação. Perda da resposta do Source consulta a mesma ação, sem repetir envio.
 - Retenção redige cópias de conteúdo/destinatário preservando tombstones de idempotência.
+- Resposta já capturada do dono impede nova sugestão ou envio, inclusive entre telefone e LID ligados por prova do provedor. A atividade é verificada antes da inferência, revisão e claim final; históricos, IDs e destinos não são mesclados.
+- Relações com prova contraditória são bloqueadas; captura ou política restritiva em qualquer membro impede a automação. A sequência original da resposta permanece como metadado após edição/exclusão.
+- Novas análises têm prazos compatíveis com preparação/runtime; tentativas vencidas são preservadas e deixam de reter a próxima mensagem, sem repetir chamada paga. Dúvidas agora publicam aviso no Telegram sem botão de envio; resposta livre ainda não retoma a análise automaticamente.
 
 ### Validation
-- Implementação em homologação; prova real, CI final e release pública vinculadas à issue146. Resposta autônoma, extração automática de missões, FUP e diário permanecem fora da primeira ativação do piloto.
+- Mensagem privada real produziu sugestão no Telegram e o dono gostou do texto, mas já havia respondido pelo LID; ação antiga cancelada sem tentativa. Prova do provedor confirmou o vínculo; a homologação do envio aprovado e a release pública continuam vinculadas à issue146. Resposta autônoma, extração automática de missões, FUP e diário permanecem fora da primeira ativação do piloto.
 
 ## [0.51.0] - 2026-10-28
 

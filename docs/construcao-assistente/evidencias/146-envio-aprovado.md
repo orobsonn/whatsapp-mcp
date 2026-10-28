@@ -1,6 +1,31 @@
 # Envio aprovado — implantação e aceite pendente
 
-Snapshot: 28/10/2026, 16:31 UTC. [Issue146](https://github.com/orobsonn/whatsapp-mcp/issues/146), [PR147](https://github.com/orobsonn/whatsapp-mcp/pull/147). Este registro distingue código implantado de comportamento homologado.
+Atualização mais recente: 28/10/2026, 18:14 UTC. Os snapshots anteriores permanecem abaixo como histórico. [Issue146](https://github.com/orobsonn/whatsapp-mcp/issues/146), [PR147](https://github.com/orobsonn/whatsapp-mcp/pull/147). Este registro distingue código implantado de comportamento homologado.
+
+## Sugestão real e defeito de identidade —18:14UTC
+
+O segundo episódio concluiu e a revisão real foi publicada no Telegram, mensagem99, com destino/texto integrais e aprovação pendente. Portanto, entrada real→análise automática→sugestão Telegram foi observado. O dono informou que gostou da sugestão e que **já havia respondido**; isso é avaliação do texto, não aprovação de novo envio. A ação Source foi cancelada via controlador existente, com `attempted_at=NULL` e sem ID do provedor. O envio aprovado até consequência WhatsApp continua sem homologação.
+
+A investigação encontrou a resposta do dono capturada às17:41:34 em um chat identificado por LID, separado do chat de telefone usado pelo episódio e pela sugestão, publicada aproximadamente às17:45:50. O diagnóstico inicial de falta de captura foi corrigido: o evento existia, mas a identidade fragmentada impediu reconhecer que a conversa já tinha sido respondida.
+
+Uma consulta de leitura ao provedor confirmou a instância, o callback desta instalação/geração e `receiveCallbackSentByMe=true`. O endpoint `phone-exists` recebeu o telefone **exato capturado**, sem variantes numéricas, e retornou aquele LID; não houve normalização diferente do telefone. Assim, o vínculo foi confirmado pelo provedor, não por nome ou semelhança de mensagens. Credenciais e resposta privada não entram neste registro. [Contrato oficial](https://developer.z-api.io/contacts/get-iswhatsapp) e [identificadores do provedor](https://developer.z-api.io/tips/lid).
+
+A revisão adversarial recomendou relação direta comprovada usada para segurança de atividade, preservando chats, IDs, roteamento e histórico. O bloqueio precisa considerar a sequência original da resposta do dono antes de inferência/publicação/revisão e no claim final Source. Apenas agregar watermark seria insuficiente: uma sugestão gerada depois da resposta poderia nascer com a marca nova e continuar indevida. Identidade não concede acesso; captura ou política restritiva de qualquer lado bloqueia a automação. A implementação dessa correção está em andamento; nenhuma relação de produção foi registrada neste snapshot.
+
+## Atualização real de17:42UTC
+
+- Duas mensagens privadas de texto chegaram naturalmente e foram admitidas no piloto. A seleção foi atualizada para revisão2 antes de haver trabalho admitido, conservando o cutoff Source original; nenhuma mensagem de entrada foi fabricada.
+- O primeiro episódio efetivamente chamou o modelo e tem recibo completo de235microUSD. O timestamp de criação do recibo marca admissão, não conclusão: restavam aproximadamente15segundos no prazo quando a chamada começou. O prazo venceu antes de publicar a proposta. O segundo trabalho ficou retido na coordenação global; ausência de Telegram não foi uma decisão `no_reply`.
+- Código `dfa622b2b38c2db0dbe2390cfb932ea3654f8df8`: novos leases180s e novos episódios/runtime até120s, sempre limitados por prazo/lease originais. Episódios antigos não receberam extensão nem nova chamada. O destaque do item incerto vencido altera somente metadados da coordenação e preserva job, episódio, recibos, custos e incerteza.
+- Perguntas `waiting_context` agora usam o aviso existente no Telegram, sem preparo Source nem botões de envio. Conteúdo vazio, desatualizado ou grande mantém lacuna explícita. Resposta livre ainda não retoma a análise automaticamente; o próprio aviso informa esse limite.
+- [CI40736247603](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40736247603) aprovada no mesmo código:1737gerais,13OAuth,70nativos, Node5/9/1/39, tipos, builds e auditoria. Foram executados116testes dirigidos antes da implantação; a suíte geral concluiu em paralelo, antes do fechamento de qualquer entrega.
+- Own ativo: `347e4647-6d86-4e93-8cb1-54686821c791`. Onze módulos do build exato,49bindings, piloto revisão2, imagem/runtime, cron e exposição anteriores preservados. Readback e health200 confirmaram envio com aprovação configurado e resposta autônoma desabilitada. O bundle Source foi comparado e não mudou; Source continua na versão `bbec4fe5-82f0-4b47-9c1e-12578208c6c2`.
+- Observação17:42UTC: primeiro item em `uncertain/held_expired`, com lacuna `expired_model_attempt_preserved`; o segundo avançou para `restore_checkpoint`. Ainda não há sugestão Telegram, aprovação humana ou envio WhatsApp observado deste circuito. Isso não conclui homologação nem justifica encerrar issue/publicar release final.
+- Censo17:30:45UTC:92.844microUSD (US$0,092844) comprometidos conhecidos, incluindo40.000incertos históricos e3.000reservados preservados; teto globalUS$10 mantido. Não é fatura nem reconciliação de infraestrutura.
+
+A [revisão operacional da arquitetura](../ENVIO-APROVADO.md#revisão-operacional-da-arquitetura) distingue falha reproduzida de fragilidades do código e hipóteses. A base permite ensaio acompanhado; fila global, dependência obrigatória de Cognee, textos em sequência e falha invisível ainda impedem declarar o assistente funcional em uso real.
+
+## Snapshot inicial de16:31UTC
 
 ## Código e implantação verificados
 

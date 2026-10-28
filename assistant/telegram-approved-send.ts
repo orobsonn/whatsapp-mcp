@@ -13,6 +13,8 @@ import { DecisionJournal as Journal } from './decisions';
 import { outgoingPort } from './outgoing';
 import { actionDigest, canonicalEnvelope } from '../src/send-envelope';
 import type { ApprovedSendPrepared, ApprovedSendReceipt, ApprovedSendAuthorization } from '../src/approved-send-contract';
+import {approvedSendActivityFence} from '../src/approved-send-contract';
+import {readPilotConversationActivity,activityPolicyGuard} from './proactive-pilot';
 
 const ns='installation_id=? AND generation=? AND bot_instance=?';
 type JournalPort=Pick<DecisionJournal,'get'|'admitReview'>;
@@ -34,7 +36,7 @@ export class TelegramApprovedSendReview {
  private async active(){if(!this.configured())throw Error('approved_send_disabled');const guard=this.guard();if(!await this.sql(`SELECT 1 WHERE ${guard.sql}`,...guard.values).first())throw Error('approved_send_paused');}
  private row(id:string){return this.sql(`SELECT * FROM assistant_telegram_send_reviews WHERE ${ns} AND id=?`,...this.keys(),id).first<Row>();}
  private async fence():Promise<TelegramLinkFence>{const row=await this.sql(`SELECT revision,user_id,chat_id FROM assistant_telegram_links WHERE ${ns} AND source_epoch=? AND source_generation=? AND state='active'`,...this.keys(),this.scope.sourceEpoch,this.scope.sourceGeneration).first<{revision:number;user_id:string;chat_id:string}>();if(!row)throw Error('telegram_unlinked');return {...this.scope,botInstance:this.bot,linkRevision:row.revision,userId:row.user_id,chatId:row.chat_id};}
- private gates(row:Row){const fence=JSON.parse(row.fence_json) as TelegramLinkFence,link=telegramLinkGuard(fence),effect=this.guard();return {sql:`(${link.sql}) AND (${effect.sql}) AND EXISTS(SELECT 1 FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='pending' AND state='ready' AND thread_id=? AND fence_json=?)`,values:[...link.values,...effect.values,...this.keys(),fence.linkRevision,row.thread_id,row.fence_json]};}
+ private gates(row:Row){const fence=JSON.parse(row.fence_json) as TelegramLinkFence,link=telegramLinkGuard(fence),effect=this.guard(),activity=approvedSendActivityFence.safeParse(JSON.parse(row.target_json).activity),policy=activity.success?activityPolicyGuard(this.scope,activity.data.members):{sql:'0',values:[]};return {sql:`(${link.sql}) AND (${effect.sql}) AND (${policy.sql}) AND EXISTS(SELECT 1 FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='pending' AND state='ready' AND thread_id=? AND fence_json=?)`,values:[...link.values,...effect.values,...policy.values,...this.keys(),fence.linkRevision,row.thread_id,row.fence_json]};}
  private async capability(row:Row,action:'approved'|'discarded'){
   const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(this.key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
   const bytes=new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(JSON.stringify(['telegram-approved-send-v1',row.id,row.fence_json,row.pilot_json,row.thread_id,row.decision_id,row.proposal_hash,row.action_id,row.action_hash,row.target_json,row.expires_at,action]))));
@@ -45,21 +47,24 @@ export class TelegramApprovedSendReview {
   const pilot=pilotSchema.safeParse(this.env.PROACTIVE_PILOT_JSON?JSON.parse(this.env.PROACTIVE_PILOT_JSON):null);if(!pilot.success)return false;
   const detail=await this.journal.get(row.decision_id);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||await bridgeHash(detail.proposal)!==row.proposal_hash||detail.proposal.decision!=='proposed')return false;
   const subject=detail.subject;if(subject?.kind!=='capture_event'||subject.sequence<=pilot.data.startAfterSequence||!pilot.data.chatIds.includes(subject.chatId)||subject.sourceEpoch!==this.scope.sourceEpoch||subject.sourceGeneration!==this.scope.sourceGeneration)return false;
+  const activity=await readPilotConversationActivity(this.env,subject),frozen=approvedSendActivityFence.safeParse(JSON.parse(row.target_json).activity);if(activity.state!=='current'||!frozen.success||JSON.stringify(activity.activity)!==JSON.stringify(frozen.data))return false;
   const envelope=JSON.parse(row.envelope_json);return envelope.chatId===subject.chatId&&envelope.text===detail.proposal.text&&await actionDigest(envelope)===row.action_hash;
  }
  async dispatchDecision(decisionId:string,operationId:string):Promise<{id:string;state:string}>{
   await this.active();const id=await bridgeHash(['telegram-approved-send-v1',this.scope,this.bot,operationId]);let row=await this.row(id);
   if(!row){
    const detail=await this.journal.get(decisionId);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||detail.subject?.kind!=='capture_event')return {id,state:'blocked'};
+   const activity=await readPilotConversationActivity(this.env,detail.subject);if(activity.state!=='current')return {id,state:'blocked'};
    if(detail.proposal.decision==='waiting_context')return {id,state:detail.proposal.text.trim()?'needs_clarification':'clarification_unavailable'};
    if(detail.proposal.decision!=='proposed')return {id,state:'not_applicable'};
    const fence=await this.fence(),topic=await this.sql(`SELECT thread_id,fence_json FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='pending' AND state='ready'`,...this.keys(),fence.linkRevision).first<{thread_id:number;fence_json:string}>();if(!topic||topic.fence_json!==JSON.stringify(fence))return {id,state:'blocked'};
    const envelope={kind:'text' as const,chatId:detail.subject.chatId,text:detail.proposal.text};
    // No truncation: the human must see the exact entire approved body.
    if(escape(envelope.text).length>3000)return {id,state:'preview_too_large'};
-   const prepared=await this.env.WHATSAPP_APPROVED_SEND!.prepare({secret:this.env.WHATSAPP_APPROVED_SEND_SECRET!,scope:this.scope,operationId:id,envelope});
-   if(canonicalEnvelope(prepared.envelope)!==canonicalEnvelope(envelope)||prepared.hash!==await actionDigest(envelope)||prepared.target.chatId!==envelope.chatId||!prepared.target.address||prepared.expiresAt<=this.clock()||prepared.expiresAt>this.clock()+600000)throw Error('approved_send_prepare_mismatch');
-   row={id,operation_id:operationId,decision_id:decisionId,proposal_hash:await bridgeHash(detail.proposal),fence_json:JSON.stringify(fence),pilot_json:this.env.PROACTIVE_PILOT_JSON??'',credential_hash:await bridgeHash(this.key),thread_id:topic.thread_id,action_id:prepared.actionId,action_hash:prepared.hash,envelope_json:canonicalEnvelope(envelope),target_json:JSON.stringify(prepared.target),expires_at:prepared.expiresAt,state:'prepared',message_id:null,approval_state:'pending',receipt_json:null,result_notice:'pending'};
+   const prepared=await this.env.WHATSAPP_APPROVED_SEND!.prepare({secret:this.env.WHATSAPP_APPROVED_SEND_SECRET!,scope:this.scope,operationId:id,envelope,activity:activity.activity});
+   const preparedActivity=approvedSendActivityFence.safeParse(prepared.activity);
+   if(!preparedActivity.success||JSON.stringify(preparedActivity.data)!==JSON.stringify(activity.activity)||canonicalEnvelope(prepared.envelope)!==canonicalEnvelope(envelope)||prepared.hash!==await actionDigest(envelope)||prepared.target.chatId!==envelope.chatId||!prepared.target.address||prepared.expiresAt<=this.clock()||prepared.expiresAt>this.clock()+600000)throw Error('approved_send_prepare_mismatch');
+   row={id,operation_id:operationId,decision_id:decisionId,proposal_hash:await bridgeHash(detail.proposal),fence_json:JSON.stringify(fence),pilot_json:this.env.PROACTIVE_PILOT_JSON??'',credential_hash:await bridgeHash(this.key),thread_id:topic.thread_id,action_id:prepared.actionId,action_hash:prepared.hash,envelope_json:canonicalEnvelope(envelope),target_json:JSON.stringify({...prepared.target,activity:preparedActivity.data}),expires_at:prepared.expiresAt,state:'prepared',message_id:null,approval_state:'pending',receipt_json:null,result_notice:'pending'};
    if(!await this.current(row))return {id,state:'blocked'};const gate=this.gates(row),value=row;
    const admission=await this.journal.admitReview(decisionId,row.proposal_hash,guard=>[this.sql(`INSERT INTO assistant_telegram_send_reviews(installation_id,generation,bot_instance,id,operation_id,decision_id,proposal_hash,fence_json,pilot_json,credential_hash,thread_id,action_id,action_hash,envelope_json,target_json,expires_at,state) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared' WHERE ${guard.sql} AND ${gate.sql} ON CONFLICT DO NOTHING RETURNING id`,...this.keys(),value.id,value.operation_id,value.decision_id,value.proposal_hash,value.fence_json,value.pilot_json,value.credential_hash,value.thread_id,value.action_id,value.action_hash,value.envelope_json,value.target_json,value.expires_at,...guard.values,...gate.values)]);
    row=await this.row(id);if(!row||!admission)return {id,state:'blocked'};
