@@ -13,6 +13,10 @@ import { RetentionPurge } from "../assistant/retention-purge";
 import { OwnerDialoguePhases } from "../assistant/telegram-dialogue-phases";
 import { TelegramOwnerReplies } from "../assistant/telegram-owner-replies";
 import type { DialogueWitness } from "../assistant/telegram-dialogue-state";
+import { TelegramDialogueHost } from "../assistant/telegram-dialogue-runtime";
+import { TelegramBotApi } from "../assistant/telegram";
+import { bridgeHash } from "../assistant/ingress";
+import type { AssistantEnv } from "../assistant/env";
 
 const bot = "synthetic_phase_bot", secret = "synthetic-phase-webhook-secret-for-tests";
 const config: BrokerConfig = { extractionConfig: "telegram-owner-dialogue-v1", priceVersion: "synthetic", chatModel: "gpt-6-luna", embeddingModel: "text-embedding-3-small", maxOutputTokens: 100, chatCeiling: 5, embeddingCeiling: 2 };
@@ -45,6 +49,25 @@ beforeEach(async () => {
   phases = new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter);
 });
 afterEach(() => vi.restoreAllMocks());
+
+it.each(["before_prepare", "after_prepare"] as const)("recovers a persisted reply %s without repeating its model or command", async point => {
+  const result = await phases.run("intent", payload()); expect(result.state).toBe("complete"); if (result.state !== "complete") return;
+  const phase = await env.DB.prepare("SELECT request_hash,result_hash FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND request_id=?").bind(scope.installationId, source.source.id).first<{ request_hash: string; result_hash: string }>();
+  const witnesses: DialogueWitness[] = [{ kind: "owner_model", source, operationKey: result.operationKey, requestHash: phase!.request_hash, resultHash: phase!.result_hash, bindingHash: context.bindingHash, submissionId: context.identity.submissionId }];
+  const plan = { kind: "telegram_owner_reply_plan" as const, updateId: turn.updateId, text: "✅ <b>Recibo técnico preservado</b>", dependencies: [], witnesses,
+    outboxRequestHash: await bridgeHash([inbox.replyFence(turn), "✅ <b>Recibo técnico preservado</b>", [], witnesses]), intentOperationKey: result.operationKey, intentRequestHash: phase!.request_hash, intentResultHash: phase!.result_hash };
+  await env.DB.prepare("UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND id=?").bind(JSON.stringify(plan), scope.installationId, context.episodeId).run();
+  const host = new TelegramDialogueHost({ DB: env.DB, TELEGRAM_OWNER_DIALOGUE_ENABLED: "shadow", FLUE_EPISODES_ENABLED: "shadow", OPENAI_API_KEY: "synthetic", TELEGRAM_BOT_TOKEN: "synthetic", TELEGRAM_BOT_INSTANCE: bot,
+    INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: scope.sourceEpoch, BRIDGE_SOURCE_GENERATION: scope.sourceGeneration } as AssistantEnv);
+  if (point === "after_prepare") {
+    expect(await new TelegramOwnerReplies(env.DB, scope, bot, inbox, () => ({ send: async () => 303 })).prepare(turn, plan.text, [], witnesses)).toMatchObject({ state: "prepared" });
+    vi.spyOn(host.inbox, "resume").mockImplementation(async () => { throw Error("consumed turn must not be resumed"); });
+  }
+  const send = vi.spyOn(TelegramBotApi.prototype, "send").mockResolvedValue(303), episode = (await new Episodes(env.DB, scope).get(context.episodeId))!;
+  await host["finishReply"](episode, plan); await host["finishReply"](episode, plan);
+  expect(send).toHaveBeenCalledTimes(1); expect(adapter).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare("SELECT state,attempts,message_id FROM assistant_telegram_owner_replies WHERE installation_id=? AND update_id=?").bind(scope.installationId, turn.updateId).first()).toEqual({ state: "sent", attempts: 1, message_id: 303 });
+});
 
 it.each(["calendar", "github"] as const)("pins a %s reply to the native observation and purges it when its authorization support is removed", async kind => {
   const result = await phases.run("intent", payload()); expect(result.state).toBe("complete");

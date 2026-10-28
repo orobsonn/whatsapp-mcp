@@ -24,13 +24,14 @@ import { nativeReceipt } from "./agent/contracts";
 import { readTelegramCalendar, type CalendarObservation } from "./telegram-calendar";
 import { readTelegramGitHub, type GitHubObservation } from "./telegram-github";
 import { telegramText as display } from "./telegram-format";
+import { setTelegramMissionState } from "./telegram-mission-command";
 
 const message = "Execute the admitted private dialogue.";
 const stateSymbols: Record<string, string> = { active: "⏳", draft: "📝", paused: "⏸️", resolved: "✅", cancelled: "❌", scheduled: "🗓️", awaiting_approval: "👀", uncertain: "❓" };
-const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "calendar", "github", "clarify", "unsupported"]),
+const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "github", "clarify", "unsupported"]),
   entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable(), githubAction: z.enum(["read", "list"]).nullable(), repository: z.string().max(256).nullable(), path: z.string().max(1024).nullable() }).strict();
 const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId", "githubAction", "repository", "path"], properties: {
-  kind: { type: "string", enum: ["greet", "list", "note", "mission", "observe", "calendar", "github", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
+  kind: { type: "string", enum: ["greet", "list", "note", "mission", "mission_state", "observe", "calendar", "github", "clarify", "unsupported"] }, entity: { type: ["string", "null"], enum: ["notes", "missions", "follow_ups", "policies", null] },
   text: { type: ["string", "null"] }, title: { type: ["string", "null"] }, conversationId: { type: ["string", "null"] }, githubAction: { type: ["string", "null"], enum: ["read", "list", null] }, repository: { type: ["string", "null"] }, path: { type: ["string", "null"] },
 } };
 const merge = (...guards: AccessGuard[]): AccessGuard => ({ sql: guards.map(g => `(${g.sql})`).join(" AND "), values: guards.flatMap(g => g.values) });
@@ -89,11 +90,12 @@ export class TelegramDialogueHost {
     const episode = await this.episodes.get(id), b = episode?.binding as any;
     if (!episode || b?.kind !== "telegram_owner_dialogue" || JSON.stringify(b.scope) !== JSON.stringify(this.scope) || identity.profile !== "owner-dialogue" || identity.runtimeId !== episode.runtime_id
       || !payload.messages.some(m => m.role === "user" && m.content === message) || !await this.episodes.submission(id, identity.submissionId)) throw Error("dialogue_denied");
+    if ((episode.result as Plan | null)?.kind === "telegram_owner_reply_plan") return this.finishReply(episode, episode.result as Plan, signal);
     const turn = await this.inbox.resume(b.checkpoint); if (!turn || signal?.aborted) throw Error("dialogue_denied");
     const scope = { ...this.scope, period: b.period }, phases = new OwnerDialoguePhases(this.db, scope, { lease: b.lease, episodeId: id, bindingHash: episode.binding_hash, deadlineAt: episode.deadline,
       source: b.source, identity, config: b.config }, this.inbox, turn, createOpenAIAdapter(this.env.OPENAI_API_KEY!), { signal });
     const result = await phases.run("intent", { model: b.config.chatModel, max_completion_tokens: 900, response_format: { type: "json_schema", json_schema: { name: "owner_intent_v1", strict: true, schema: intentSchema } }, messages: [
-      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Use calendar para consultar disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Use github para ler ou listar arquivos no GitHub: githubAction read/list, path é o caminho solicitado (README significa README.md). repository copia o nome ou dono/repositório citado pelo dono; null se omitido. Não invente repositório, caminho ou ref. Se pedir leitura de WhatsApp ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
+      { role: "system", content: "Interprete o pedido do dono em português. Não execute ações. Só classifique note/mission/observe quando houver instrução clara; perguntas exploratórias, negações e ordens citadas exigem clarify. Pedidos educados podem ser instruções. Use mission_state quando o dono instruir concluir, cancelar ou pausar uma missão; o host resolve alvo e estado. list deve escolher a entidade adequada; 'pendências' = follow_ups. Não invente destinatários ou IDs. observe só aceita ID de conversa explicitamente escrito. O piloto é sombra, sem envio WhatsApp/escrita Calendar. Use calendar para consultar disponibilidade no Google Calendar/agenda. Pedidos para criar, alterar ou excluir eventos são unsupported. Use github para ler ou listar arquivos no GitHub: githubAction read/list, path é o caminho solicitado (README significa README.md). repository copia o nome ou dono/repositório citado pelo dono; null se omitido. Não invente repositório, caminho ou ref. Se pedir leitura de WhatsApp ou busca semântica, use unsupported nesta etapa. text é o conteúdo exato solicitado para nota/objetivo, title é opcional. Data do pedido: " + new Date(turn.occurredAt).toISOString() + "; fuso America/Fortaleza." },
       { role: "user", content: turn.text },
     ] });
     if (result.state !== "complete" || signal?.aborted) throw Error("dialogue_model_incomplete");
@@ -108,6 +110,7 @@ export class TelegramDialogueHost {
     } };
     let choice: z.infer<typeof intent>;
     try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null, githubAction: null, repository: null, path: null }; }
+    let checkpointJSON: string | null = null;
     let text = "💬 <b>Me explica um pouco melhor?</b>\n\nNão consegui identificar o que você quer fazer com esse pedido.";
     if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n🗓️ Consultar a agenda\n📦 Ler arquivos no GitHub";
     else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.";
@@ -142,6 +145,11 @@ export class TelegramDialogueHost {
       text = choice.kind === "note" ? "✅ <b>Anotação guardada</b>\n\n" + display(literal) + "\n\n🗂 <i>Você pode me pedir para listar suas notas.</i>"
         : "🎯 <b>Missão criada</b>\n\n⏳ " + display(literal) + "\n\n<i>Em modo sombra, sem envio de mensagens.</i>";
       }
+    } else if (choice.kind === "mission_state") {
+      const changed = await setTelegramMissionState(this.db, this.scope, { episodeId: id, bindingHash: episode.binding_hash, updateId: turn.updateId,
+        operationId: "tg:" + b.source.source.id + ":" + receipt.result_hash, text: turn.text, guard: actionGuard });
+      text = changed.text;
+      if (changed.state === "applied") { proofs.push(changed.witness); checkpointJSON = changed.checkpointJSON; }
     } else if (choice.kind === "calendar") {
       const calendar = await readTelegramCalendar(this.env, this.scope, turn.text, turn.occurredAt, readBoundary);
       text = calendar.text;
@@ -160,19 +168,29 @@ export class TelegramDialogueHost {
     const answer = text, witnesses = dialogueWitnesses.parse(proofs);
     const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answer, witnesses, dependencies, ...(observation ? { observation } : {}),
       outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answer, dependencies, witnesses]), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
-    const guard = actionGuard(), saved = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS NULL AND (${guard.sql}) RETURNING id`,
-      [JSON.stringify(plan), this.scope.installationId, this.scope.generation, id, episode.binding_hash, ...guard.values]).first();
+    const guard = actionGuard(), saved = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS ? AND (${guard.sql}) RETURNING id`,
+      [JSON.stringify(plan), this.scope.installationId, this.scope.generation, id, episode.binding_hash, checkpointJSON, ...guard.values]).first();
     if (!saved) throw Error("dialogue_result_blocked");
-    const outbox = this.replies(signal), prepared = await outbox.prepare(turn, plan.text, dependencies, plan.witnesses);
-    if (prepared.state !== "prepared") throw Error("dialogue_reply_blocked");
-    const sent = await outbox.dispatch(turn.updateId);
+    return this.finishReply(episode, plan, signal);
+  }
+  /** Recover only this persisted response, never its model or command. */
+  private async finishReply(episode: Episode, plan: Plan, signal?: AbortSignal) {
+    const b = episode.binding as any;
+    if (plan.kind !== "telegram_owner_reply_plan" || plan.updateId !== b.checkpoint?.updateId) throw Error("dialogue_reply_plan");
+    const outbox = this.replies(signal), existing = await outbox.inspect(plan.updateId);
+    if (!existing) {
+      const turn = await this.inbox.resume(b.checkpoint); if (!turn || signal?.aborted) throw Error("dialogue_denied");
+      const prepared = await outbox.prepare(turn, plan.text, plan.dependencies, plan.witnesses);
+      if (prepared.state !== "prepared") throw Error("dialogue_reply_blocked");
+    }
+    const sent = await outbox.dispatch(plan.updateId);
     await this.db.prepare("UPDATE assistant_episodes SET reason=? WHERE installation_id=? AND generation=? AND id=? AND result_json=?")
-      .bind(sent?.state === "sent" ? "dialogue_reply_sent" : "dialogue_reply_uncertain", this.scope.installationId, this.scope.generation, id, JSON.stringify(plan)).run();
+      .bind(sent?.state === "sent" ? "dialogue_reply_sent" : "dialogue_reply_uncertain", this.scope.installationId, this.scope.generation, episode.id, JSON.stringify(plan)).run();
     return OWNER_DIALOGUE_COMPLETION;
   }
   async reconcile(episode: Episode) {
     const b = episode.binding as any, envelope = episode.receipt as any;
-    if (b?.kind !== "telegram_owner_dialogue" || !envelope?.receipt || !episode.result || !episode.submission_id) return { state: "pending" };
+    if (b?.kind !== "telegram_owner_dialogue" || !envelope?.receipt || (episode.result as Plan | null)?.kind !== "telegram_owner_reply_plan" || !episode.submission_id) return { state: "pending" };
     const reply = await ownerDialogueDriver(episode.runtime_id).read(envelope.receipt, { signal: AbortSignal.timeout(1000) });
     if (reply.text !== OWNER_DIALOGUE_COMPLETION || reply.uid !== envelope.receipt.uid || reply.submissionId !== episode.submission_id || reply.submissionId !== envelope.receipt.submissionId) throw Error("dialogue_native_result");
     const plan = episode.result as Plan, outbox = await this.replies().inspect(plan.updateId);
