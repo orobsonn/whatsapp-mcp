@@ -6,16 +6,17 @@ import type {DecisionSubject} from './agent/contracts';
 import {Conversations} from './conversations';
 import {bridgeHash} from './ingress';
 import {captureConversationActivity,approvedSendActivityFence,type ApprovedSendActivityFence} from '../src/approved-send-contract';
+import {groupScopeSchema,type GroupScope} from './group-scope';
 
 const label=z.string().min(1).max(256);
 const pilotBase={id:label,revision:z.number().int().positive().max(2147483647),startAfterSequence:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)};
-const pilotSchema=z.union([z.object({...pilotBase,chatIds:z.array(label).min(1).max(8)}).strict(),z.object({...pilotBase,selection:z.literal('captured_private'),contextMode:z.literal('conversation_manifest')}).strict()]);
+const pilotSchema=z.union([z.object({...pilotBase,chatIds:z.array(label).min(1).max(8)}).strict(),z.object({...pilotBase,selection:z.literal('captured_private'),contextMode:z.literal('conversation_manifest'),groups:z.array(groupScopeSchema).max(8).optional()}).strict()]);
 export type ProactivePilot=z.infer<typeof pilotSchema>;
 export type PilotBinding=ProactivePilot & {chatId:string};
 type PilotEnv={PROACTIVE_PILOT_JSON?:string};
 export function readProactivePilot(env:PilotEnv):ProactivePilot|null{
  if(env.PROACTIVE_PILOT_JSON===undefined)return null;
- try{const pilot=pilotSchema.parse(JSON.parse(env.PROACTIVE_PILOT_JSON));if('chatIds'in pilot){if(new Set(pilot.chatIds).size!==pilot.chatIds.length)throw Error();return {...pilot,chatIds:[...pilot.chatIds].sort()};}return pilot;}catch{throw Error('proactive_pilot_configuration');}
+ try{const pilot=pilotSchema.parse(JSON.parse(env.PROACTIVE_PILOT_JSON));if('chatIds'in pilot){if(new Set(pilot.chatIds).size!==pilot.chatIds.length)throw Error();return {...pilot,chatIds:[...pilot.chatIds].sort()};}if(pilot.groups&&(new Set(pilot.groups.map(group=>group.chatId)).size!==pilot.groups.length||pilot.groups.some(group=>group.startAfterSequence<pilot.startAfterSequence)))throw Error();return {...pilot,...(pilot.groups?{groups:[...pilot.groups].sort((a,b)=>a.chatId<b.chatId?-1:a.chatId>b.chatId?1:0)}:{})};}catch{throw Error('proactive_pilot_configuration');}
 }
 export function pilotAllowsSubject(env:PilotEnv,subject:DecisionSubject):boolean{
  const pilot=readProactivePilot(env);return !!pilot&&subject.kind==='capture_event'&&subject.sequence>pilot.startAfterSequence&&(!('chatIds'in pilot)||pilot.chatIds.includes(subject.chatId));
@@ -24,7 +25,9 @@ export function pilotAllowsSubject(env:PilotEnv,subject:DecisionSubject):boolean
 export async function pilotAllowsConversation(env:AssistantEnv,subject:DecisionSubject):Promise<boolean>{
  const pilot=readProactivePilot(env);if(!pilot||!pilotAllowsSubject(env,subject)||subject.kind!=='capture_event')return false;if('chatIds'in pilot)return true;
  if(!env.DB||subject.sourceEpoch!==env.BRIDGE_SOURCE_EPOCH||subject.sourceGeneration!==env.BRIDGE_SOURCE_GENERATION)return false;
- return !!await env.DB.prepare(`SELECT 1 FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id=? AND kind='private' AND access_state='available'`).bind(env.INSTALLATION_ID!,env.OPERATIONAL_GENERATION!,env.BRIDGE_SOURCE_EPOCH!,env.BRIDGE_SOURCE_GENERATION!,subject.chatId).first();
+ const metadata=await env.DB.prepare(`SELECT kind FROM assistant_origin_conversations WHERE ${originScopeSql} AND chat_id=? AND access_state='available'`).bind(env.INSTALLATION_ID!,env.OPERATIONAL_GENERATION!,env.BRIDGE_SOURCE_EPOCH!,env.BRIDGE_SOURCE_GENERATION!,subject.chatId).first<{kind:string}>();
+ if(metadata?.kind==='private')return true;const group=pilot.groups?.find(group=>group.chatId===subject.chatId);if(metadata?.kind!=='group'||!group||subject.sequence<=group.startAfterSequence)return false;
+ return !!await env.DB.prepare("SELECT 1 FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=? AND kind='group' AND effective_mode='respond'").bind(env.INSTALLATION_ID!,env.OPERATIONAL_GENERATION!,subject.chatId).first();
 }
 export function pilotSelection(pilot:ProactivePilot){return 'chatIds'in pilot?{sql:`json_extract(binding_json,'$.pilot.id')=? AND json_extract(binding_json,'$.pilot.revision')=? AND json_extract(binding_json,'$.pilot.startAfterSequence')=? AND json_extract(binding_json,'$.pilot.chatIds')=? AND json_extract(subject_json,'$.kind')='capture_event' AND json_extract(subject_json,'$.sequence')>? AND json_extract(subject_json,'$.chatId') IN (SELECT value FROM json_each(?))`,values:[pilot.id,pilot.revision,pilot.startAfterSequence,JSON.stringify(pilot.chatIds),pilot.startAfterSequence,JSON.stringify(pilot.chatIds)]}:{sql:`json_extract(binding_json,'$.pilot.id')=? AND json_extract(binding_json,'$.pilot.revision')=? AND json_extract(binding_json,'$.pilot.startAfterSequence')=? AND json_extract(binding_json,'$.pilot.selection')='captured_private' AND json_extract(binding_json,'$.contextMode')='conversation_manifest' AND json_extract(subject_json,'$.kind')='capture_event' AND json_extract(subject_json,'$.sequence')>?`,values:[pilot.id,pilot.revision,pilot.startAfterSequence,pilot.startAfterSequence]};}
 
@@ -62,7 +65,7 @@ export async function selectPilotSourceRefs(db:D1Database,scope:OriginScope,trig
  return normalizeSourceRefs(refs);
 }
 
-export async function pilotBindingCurrent(env:AssistantEnv,binding:{subject:DecisionSubject;source:{id:string;revision:number;version:number;hash:string};pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[];contextMode?:'conversation_manifest'}):Promise<boolean>{
+export async function pilotBindingCurrent(env:AssistantEnv,binding:{subject:DecisionSubject;source:{id:string;revision:number;version:number;hash:string};pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[];contextMode?:'conversation_manifest';groupScope?:GroupScope}):Promise<boolean>{
  let pilot:ProactivePilot|null;try{pilot=readProactivePilot(env);}catch{return false;}
  if(!pilot)return !binding.pilot;
  if(env.ROUTINES_ENABLED!=='shadow'||env.ROUTINES_PAUSED==='true'||env.FLUE_EPISODES_ENABLED!=='shadow')return false;
@@ -71,10 +74,12 @@ export async function pilotBindingCurrent(env:AssistantEnv,binding:{subject:Deci
  const scope=activeOrigin(()=>({installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!}));
  if(binding.subject.sourceEpoch!==scope.sourceEpoch||binding.subject.sourceGeneration!==scope.sourceGeneration||!env.DB)return false;
  if(!await pilotAllowsConversation(env,binding.subject))return false;
+ const subjectChat=binding.subject.chatId,selectedGroup='chatIds'in pilot?undefined:pilot.groups?.find(group=>group.chatId===subjectChat);
+ if(JSON.stringify(binding.groupScope)!==JSON.stringify(selectedGroup)||selectedGroup&&binding.subject.sequence<=selectedGroup.startAfterSequence)return false;
  if((await readPilotConversationActivity(env,binding.subject)).state!=='current')return false;
  let refs:SourceSelectionRef[];try{refs=normalizeSourceRefs(binding.sourceRefs);}catch{return false;}
  if(!refs.some(ref=>ref.id===binding.source.id&&ref.revision===binding.source.revision&&ref.version===binding.source.version&&ref.hash===binding.source.hash))return false;
- const trigger=await env.DB.prepare(`SELECT ov.dependencies_json FROM assistant_origin_versions ov JOIN assistant_capture_inbox i ON i.installation_id=ov.installation_id AND i.generation=ov.generation WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.sequence=? AND i.chat_id=? AND i.source_kind='message' AND i.operation='upsert' AND ov.canonical_id=? AND ov.version=? AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox old WHERE old.installation_id=i.installation_id AND old.generation=i.generation AND old.source_epoch=i.source_epoch AND old.source_generation=i.source_generation AND old.source_id=i.source_id AND old.source_kind=i.source_kind AND old.sequence<=?)`).bind(...scopeKeys(scope),binding.subject.sequence,binding.subject.chatId,binding.source.id,binding.source.version,pilot.startAfterSequence).first<string>('dependencies_json');
+ const trigger=await env.DB.prepare(`SELECT ov.dependencies_json FROM assistant_origin_versions ov JOIN assistant_capture_inbox i ON i.installation_id=ov.installation_id AND i.generation=ov.generation WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.sequence=? AND i.chat_id=? AND i.source_kind='message' AND i.operation='upsert' AND ov.canonical_id=? AND ov.version=? AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox old WHERE old.installation_id=i.installation_id AND old.generation=i.generation AND old.source_epoch=i.source_epoch AND old.source_generation=i.source_generation AND old.source_id=i.source_id AND old.source_kind=i.source_kind AND old.operation='upsert' AND old.sequence<=?)`).bind(...scopeKeys(scope),binding.subject.sequence,binding.subject.chatId,binding.source.id,binding.source.version,selectedGroup?.startAfterSequence??pilot.startAfterSequence).first<string>('dependencies_json');
  if(!trigger)return false;const metadata=JSON.parse(trigger);if(metadata.fromMe!==false||metadata.kind!=='text')return false;
  if(!await new Conversations(env.DB,()=>scope).fence(binding.subject.chatId))return false;
  const access=new SourceAccess(env.DB,scope);let bytes=0;

@@ -15,6 +15,7 @@ import type { EpisodePayload } from "../agent-runtime/provider";
 import { Episodes, type CallSlot } from "./episodes";
 import { boundEpisode, parseBinding, proposal, nativeReceipt, jobRequest, modelPayload, type BoundEpisode } from "./contracts";
 import {outgoingGuard,type OutgoingPort,type OutgoingProof} from '../outgoing';
+import {groupManifestAllowed} from '../group-scope';
 import type { AgentHandleDispatchRequest, AgentReply, DispatchReceipt } from "@flue/runtime";
 export type Purpose = "automation" | "owner_read";
 export type EpisodeScope = BudgetScope & { sourceEpoch?: string; sourceGeneration?: string };
@@ -147,10 +148,10 @@ export class EpisodeController {
     if (!ledger || ledger.state !== "prepared" || await bridgeHash(JSON.parse(ledger.request_json)) !== ledger.request_hash) throw new Error("episode_denied");
     const request = jobRequest.parse(JSON.parse(ledger.request_json)), actor = request.actor;
     if(request.contextMode!==undefined||request.sourceRefs!==undefined){
-      if(request.contextMode!=='conversation_manifest'||!request.sourceRefs?.length||request.sourceRefs.length>3||this.purpose!=='automation'||actor.kind!=='interlocutor'||actor.conversationKind!=='private'||request.subject.kind!=='capture_event'||request.subject.chatId!==actor.conversationId||request.fence.source.origin!=='whatsapp')throw Error('context_mode_denied');
+      if(request.contextMode!=='conversation_manifest'||!request.sourceRefs?.length||request.sourceRefs.length>3||this.purpose!=='automation'||actor.kind!=='interlocutor'||!(actor.conversationKind==='private'&&!request.groupScope||groupManifestAllowed(request.groupScope,actor,request.fence,request.subject))||request.subject.kind!=='capture_event'||request.subject.chatId!==actor.conversationId||request.fence.source.origin!=='whatsapp')throw Error('context_mode_denied');
       const stored=await this.db.prepare('SELECT request_json,request_hash FROM assistant_retrieval_runs WHERE installation_id=? AND generation=? AND id=?').bind(this.scope.installationId,this.scope.generation,runId).first<{request_json:string;request_hash:string}>();
       if(!stored||await bridgeHash(JSON.parse(stored.request_json))!==stored.request_hash)throw Error('context_mode_denied');const searchRequest=JSON.parse(stored.request_json);
-      if(searchRequest.contextMode!==request.contextMode||searchRequest.semantic!==undefined||JSON.stringify(searchRequest.input.sourceRefs)!==JSON.stringify(request.sourceRefs))throw Error('context_mode_denied');
+      if(searchRequest.contextMode!==request.contextMode||searchRequest.semantic!==undefined||JSON.stringify(searchRequest.input.sourceRefs)!==JSON.stringify(request.sourceRefs)||JSON.stringify(searchRequest.groupScope)!==JSON.stringify(request.groupScope))throw Error('context_mode_denied');
     }
     if (request.kind !== lease.kind || request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision) throw new Error("episode_denied");
     if (request.runtime !== "flue" || !["owner", "interlocutor"].includes(actor.kind) || profile !== actor.kind ||
@@ -190,7 +191,7 @@ export class EpisodeController {
       if (!row || !fence) throw new Error("episode_denied");
       target = { fence, policy: { kind: row.kind, revision: row.revision, mode: row.mode } };
     }
-    const binding = parseBinding({ lease, actor, subject: request.subject, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },...(request.contextMode?{contextMode:request.contextMode,sourceRefs:request.sourceRefs}:{}),...(request.outgoing?{outgoing:request.outgoing}:{}),
+    const binding = parseBinding({ lease, actor, subject: request.subject, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },...(request.contextMode?{contextMode:request.contextMode,sourceRefs:request.sourceRefs,...(request.groupScope?{groupScope:request.groupScope}:{})}:{}),...(request.outgoing?{outgoing:request.outgoing}:{}),
       work: work ? { kind: "follow_up", fence: work, target } : { kind: "not_follow_up" } });
     const episode = await this.episodes.prepare({ lease, requestHash: ledger.request_hash, profile, checkpoint: await bridgeHash([found.fence, context.sources.map(row => row.fence)]),
       binding, deadline: Math.min(this.clock() + 120000, lease.lease_until - 1, bounded.deadlineAt), maxCalls: 3 });
@@ -264,7 +265,7 @@ export class EpisodeController {
   private parse(text: string, episode: BoundEpisode) {
     if (typeof text !== "string" || new TextEncoder().encode(text).length > 24000) throw new Error("episode_denied");
     const value = proposal.parse(JSON.parse(text)), binding = episode.binding;
-    const hostManifest=binding.contextMode==='conversation_manifest'&&binding.purpose==='automation'&&binding.actor.kind==='interlocutor'&&binding.actor.conversationKind==='private'&&binding.subject.kind==='capture_event';
+    const anchor=binding.context.sources.find(source=>source.id===binding.lease.source_id),hostManifest=binding.contextMode==='conversation_manifest'&&binding.purpose==='automation'&&binding.actor.kind==='interlocutor'&&binding.subject.kind==='capture_event'&&(binding.actor.conversationKind==='private'&&!binding.groupScope||!!anchor&&groupManifestAllowed(binding.groupScope,binding.actor,anchor.fence,binding.subject));
     if (value.decision === "proposed" && (!value.text.trim() || !value.citations.length&&!hostManifest)) throw new Error("episode_denied");
     if(value.decision==='proposed'&&binding.outgoing?.envelope.kind==='text'&&value.text!==binding.outgoing.envelope.text)throw Error('episode_denied');
     for (const citation of value.citations) {

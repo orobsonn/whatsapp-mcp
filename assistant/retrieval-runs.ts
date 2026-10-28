@@ -7,6 +7,7 @@ import { z } from "zod";
 import { searchTicketSchema, parseSearchTicket, type EngineSearch, type SearchTicket, type SemanticEnginePort } from "./engine";
 import { bridgeHash } from "./ingress";
 import { onceReceipt, onceGrant, onceKey, type OncePlanReader } from "./owner-once-guard";
+import {groupManifestAllowed,groupScopeSchema,type GroupScope} from './group-scope';
 const semanticConfigurationSchema=z.object({version:z.literal("rrf-60-v1"),mode:z.enum(["required","lexical_fallback"])}).strict();
 const semanticRef=z.object({id:z.string().min(1).max(256),version:z.number().int().positive().max(2147483647),hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 const semanticBinding=z.discriminatedUnion("state",[
@@ -33,7 +34,7 @@ type InventoryRow = AccessRow & { fingerprint: string; inboxes: string };
 type Item = { id: string; fingerprint: string; score: number; linked: number; state: string; origin: OriginFence | null; conversation: ConversationFence | ReadCoverageFence | null };
 export type CoverageProof = { scope: SearchScope; runId: string; runToken: string; requestHash: string; checkpoint: number; actor: string; purpose: "automation" | "owner_read"; configuration: {version:string;mode:"required"|"lexical_fallback"}; inputHash:string; manifestHash: string };
 type SemanticRow = { proof_json:string; ticket_json:string|null;outcome_json:string|null };
-type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read"; ownerOncePlan?: OncePlanReader;contextMode?:'conversation_manifest' };
+type Options = { semantic?: {mode:"required"|"lexical_fallback";engine:SemanticEnginePort}; clock?: () => number; origin?: Pick<OriginGuard, "fence" | "check">; pageSize?: number; maxEvaluations?: number; maxSteps?: number; leaseMs?: number; purpose?: "automation" | "owner_read"; ownerOncePlan?: OncePlanReader;contextMode?:'conversation_manifest';groupScope?:GroupScope };
 export type OwnerSearchAdmission = { ownerOnceId: string; guard: AccessGuard };
 const ns = "installation_id=? AND generation=?";
 const baseGaps = ["index_capacity", "index_missing"];
@@ -68,6 +69,7 @@ export class RetrievalRuns {
     if (options.semantic && !["required","lexical_fallback"].includes(options.semantic.mode)) throw new Error("retrieval_run_configuration");
     this.purpose = options.purpose ?? "automation"; if (!["automation","owner_read"].includes(this.purpose)) throw new Error("retrieval_run_purpose");
     if(options.contextMode!==undefined&&(options.contextMode!=='conversation_manifest'||this.purpose!=='automation'||options.semantic))throw Error('retrieval_run_configuration');
+    if(options.groupScope&&(!options.contextMode||!groupScopeSchema.safeParse(options.groupScope).success))throw Error('retrieval_run_configuration');
     this.access = new SourceAccess(db, this.scope, this.clock); this.scorer = new Retrieval(db, this.scope,undefined,options.origin,this.clock);
     this.limits = { pageSize: options.pageSize ?? 64, maxEvaluations: options.maxEvaluations ?? 4096, maxSteps: options.maxSteps ?? 80 };
     for (const [key, maximum] of [["pageSize", 64], ["maxEvaluations", 4096], ["maxSteps", 80]] as const) if (!Number.isSafeInteger(this.limits[key]) || this.limits[key] < 1 || this.limits[key] > maximum) throw new Error("retrieval_run_limits");
@@ -115,6 +117,7 @@ export class RetrievalRuns {
     if (!row || (JSON.stringify(JSON.parse(row.request_json).scope) !== JSON.stringify(this.scope) || JSON.parse(row.request_json).purpose !== this.purpose)) throw new Error("retrieval_run_denied");
     if (JSON.stringify(JSON.parse(row.request_json).semantic) !== JSON.stringify(this.options.semantic ? this.semanticConfiguration() : undefined)) throw new Error("retrieval_run_configuration");
     if(JSON.parse(row.request_json).contextMode!==this.options.contextMode)throw Error('retrieval_run_configuration');
+    if(JSON.stringify(JSON.parse(row.request_json).groupScope)!==JSON.stringify(this.options.groupScope))throw Error('retrieval_run_configuration');
     await this.ownerPlan(actor, row); return row;
   }
   private async ownerPlan(actor: TrustedActor, run: Pick<Run, "id" | "request_json">) {
@@ -142,8 +145,8 @@ export class RetrievalRuns {
     if (key.startsWith("owner-once-v1:") !== !!admission || admission && key !== onceKey(admission.ownerOnceId)) throw new Error("retrieval_owner_admission");
     if (admission && Object.keys(input).some(key => !["query", "projectId", "limit"].includes(key))) throw new Error("retrieval_owner_admission");
     const normalized=normalizeRetrievalInput(input);
-    if(this.options.contextMode){if(actor.kind!=='interlocutor'||actor.conversationKind!=='private'||!normalized.sourceRefs)throw Error('context_mode_denied');let bytes=0;for(const ref of normalized.sourceRefs){const source=await this.access.read(actor,ref.id,ref.revision);if(!source||source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==actor.conversationId||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash||!source.text?.trim())throw Error('context_mode_denied');bytes+=new TextEncoder().encode(source.text).length;}if(bytes>8192)throw Error('context_mode_denied');}
-    const request = { input: normalized, scope: this.scope, purpose: this.purpose, limits: this.limits,...(this.options.contextMode?{contextMode:this.options.contextMode}:{}),
+    if(this.options.contextMode){if(actor.kind!=='interlocutor'||!normalized.sourceRefs||actor.conversationKind==='private'&&this.options.groupScope||actor.conversationKind==='group'&&(!this.options.groupScope||this.options.groupScope.chatId!==actor.conversationId))throw Error('context_mode_denied');let bytes=0;for(const ref of normalized.sourceRefs){const source=await this.access.read(actor,ref.id,ref.revision);if(!source||source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==actor.conversationId||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash||!source.text?.trim())throw Error('context_mode_denied');if(actor.conversationKind==='group'&&!groupManifestAllowed(this.options.groupScope,actor,source.fence))throw Error('context_mode_denied');bytes+=new TextEncoder().encode(source.text).length;}if(bytes>8192)throw Error('context_mode_denied');}
+    const request = { input: normalized, scope: this.scope, purpose: this.purpose, limits: this.limits,...(this.options.contextMode?{contextMode:this.options.contextMode,...(this.options.groupScope?{groupScope:this.options.groupScope}:{})}:{}),
       ...(admission ? { ownerOnceId: admission.ownerOnceId } : {}), ...(this.options.semantic ? {semantic:this.semanticConfiguration()} : {}) }, actorJson = JSON.stringify(actor);
     const id = await bridgeHash([this.keys(), actorJson, key]), requestHash = await bridgeHash(request);
     if (admission) await this.ownerPlan(actor, { id, request_json: JSON.stringify(request) });
@@ -418,7 +421,7 @@ export class RetrievalRuns {
     const inventory = { sql: `SELECT p.* FROM (${projected.sql}) p JOIN assistant_retrieval_runs selection ON selection.installation_id=? AND selection.generation=? AND selection.id=? WHERE (json_extract(selection.request_json,'$.input.projectId') IS NULL OR p.project_id=json_extract(selection.request_json,'$.input.projectId')) AND (json_type(selection.request_json,'$.input.sourceRefs') IS NULL OR EXISTS(SELECT 1 FROM json_each(selection.request_json,'$.input.sourceRefs') ref WHERE p.id=json_extract(ref.value,'$.id') AND p.revision=json_extract(ref.value,'$.revision') AND p.version=json_extract(ref.value,'$.version') AND p.content_hash=json_extract(ref.value,'$.hash')))`, values: [...projected.values, ...this.keys(), run.id] };
     const coverage = this.coverage(actor, run, now, inventory);
     if (!!fence.ranking !== !!this.options.semantic) return {sql:"0",values:[]};
-    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ? AND json_extract(request_json,'$.contextMode') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,this.options.contextMode??null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);
+    return compressed(`${coverage.sql} AND EXISTS(SELECT 1 FROM assistant_retrieval_runs WHERE ${ns} AND id=? AND pack_hash=? AND pack_json=? AND json_extract(request_json,'$.semantic') IS ? AND json_extract(request_json,'$.contextMode') IS ? AND json_extract(request_json,'$.groupScope') IS ?) ${fence.ranking ? `AND EXISTS(SELECT 1 FROM assistant_retrieval_semantic WHERE ${ns} AND run_id=? AND ranking_json=?)` : ""}`, [...coverage.values, ...this.keys(), run.id, fence.allowedPackHash, JSON.stringify(fence.selected), this.options.semantic ? JSON.stringify(this.semanticConfiguration()) : null,this.options.contextMode??null,this.options.groupScope?JSON.stringify(this.options.groupScope):null,...(fence.ranking ? [...this.keys(),run.id,JSON.stringify(fence.ranking)] : [])]);
   }
   async check(actor: TrustedActor, fence: SearchFence): Promise<boolean> {
     actor = ownActor(actor);

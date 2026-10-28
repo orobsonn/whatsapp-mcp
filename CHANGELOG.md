@@ -7,6 +7,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ## [0.52.0] - 2026-10-28
 
 ### Added
+- Grupos podem entrar no piloto de sugestões por seleção explícita, política `respond` e corte próprio de ativação, sem processar o histórico anterior. A revisão identifica o grupo e conserva aprovação humana para enviar.
 - Prévia no Telegram inclui mensagem recebida, resumo breve opcional da IA e resposta integral em blocos separados; apenas a resposta vai ao WhatsApp.
 - Descoberta de conversas privadas capturadas, com o corte inicial preservado e caminho direto dos originais do manifesto para análise e revisão.
 - Revisão de sugestões do WhatsApp no Telegram com destino e texto integral, aprovação explícita para enviar e descarte sem envio. Botões antigos de simulação mantêm seu significado.

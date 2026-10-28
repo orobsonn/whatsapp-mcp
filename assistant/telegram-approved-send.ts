@@ -14,7 +14,7 @@ import { outgoingPort } from './outgoing';
 import { actionDigest, canonicalEnvelope } from '../src/send-envelope';
 import type { ApprovedSendPrepared, ApprovedSendReceipt, ApprovedSendAuthorization } from '../src/approved-send-contract';
 import {approvedSendActivityFence} from '../src/approved-send-contract';
-import {readPilotConversationActivity,activityPolicyGuard,pilotAllowsConversation} from './proactive-pilot';
+import {readPilotConversationActivity,activityPolicyGuard,pilotAllowsConversation,readProactivePilot} from './proactive-pilot';
 import {Episodes} from './agent/episodes';
 import {boundEpisode} from './agent/contracts';
 import {SourceAccess} from './access';
@@ -76,10 +76,23 @@ export class TelegramApprovedSendReview {
   const body=prefix+label+(clipped?' (trecho)':'')+'</b>\n'+receivedHtml(excerpt)+(clipped?'…':'')+suffix;
   return body.length<=4096?body:null;
  }
+ private async groupScopeCurrent(detail:ReviewDetail){
+  try{
+   if(!('proposal'in detail)||!detail.proposal||detail.subject?.kind!=='capture_event')return false;
+   const pilot=readProactivePilot(this.env);if(!pilot)return false;if('chatIds'in pilot)return true;
+   const subjectChat=detail.subject.chatId,metadata=await this.sql(`SELECT kind FROM assistant_origin_conversations WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND chat_id=?`,this.scope.installationId,this.scope.generation,this.scope.sourceEpoch,this.scope.sourceGeneration,subjectChat).first<{kind:string}>();if(metadata?.kind==='private')return true;if(metadata?.kind!=='group')return false;
+   const raw=await new Episodes(this.env.DB!,this.scope,this.clock).get(detail.proposal.binding.episodeId);if(!raw)return false;const binding=boundEpisode(raw).binding;
+   if(binding.actor.kind!=='interlocutor'||binding.actor.conversationKind!=='group')return false;
+   const selected=pilot.groups?.find(group=>group.chatId===subjectChat);if(!selected||JSON.stringify(binding.groupScope)!==JSON.stringify(selected)||detail.subject.sequence<=selected.startAfterSequence)return false;
+   const stored=await this.sql('SELECT binding_json,binding_hash FROM assistant_routine_items WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND job_id=?',this.scope.installationId,this.scope.generation,this.scope.sourceEpoch,this.scope.sourceGeneration,raw.job_id).first<{binding_json:string;binding_hash:string}>();if(!stored)return false;const routine=JSON.parse(stored.binding_json);if(await bridgeHash(routine)!==stored.binding_hash||!routine.pilot)return false;const {chatId,...frozen}=routine.pilot;
+   return chatId===detail.subject.chatId&&JSON.stringify(frozen)===JSON.stringify(pilot)&&JSON.stringify(routine.groupScope)===JSON.stringify(binding.groupScope);
+  }catch{return false;}
+ }
  private async current(row:Row){
   if(!this.configured()||row.pilot_json!==this.env.PROACTIVE_PILOT_JSON||row.credential_hash!==await bridgeHash(this.key)||row.expires_at<=this.clock())return false;
   const detail=await this.journal.get(row.decision_id);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||await bridgeHash(detail.proposal)!==row.proposal_hash||detail.proposal.decision!=='proposed')return false;
   const subject=detail.subject;if(subject?.kind!=='capture_event'||!await pilotAllowsConversation(this.env,subject)||subject.sourceEpoch!==this.scope.sourceEpoch||subject.sourceGeneration!==this.scope.sourceGeneration)return false;
+  if(!await this.groupScopeCurrent(detail))return false;
   const activity=await readPilotConversationActivity(this.env,subject),frozen=approvedSendActivityFence.safeParse(JSON.parse(row.target_json).activity);if(activity.state!=='current'||!frozen.success||JSON.stringify(activity.activity)!==JSON.stringify(frozen.data))return false;
   const context=await this.received(detail),review=JSON.parse(row.target_json).review;
   if(!context||JSON.stringify(review)!==JSON.stringify({received:context,summary:detail.proposal.contextSummary?.trim()||null}))return false;
@@ -90,6 +103,7 @@ export class TelegramApprovedSendReview {
   if(!row){
    const detail=await this.journal.get(decisionId);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||detail.subject?.kind!=='capture_event')return {id,state:'blocked'};
    if(!await pilotAllowsConversation(this.env,detail.subject))return {id,state:'blocked'};
+   if(!await this.groupScopeCurrent(detail))return {id,state:'blocked'};
    const activity=await readPilotConversationActivity(this.env,detail.subject);if(activity.state!=='current')return {id,state:'blocked'};
    if(detail.proposal.decision==='waiting_context')return {id,state:detail.proposal.text.trim()?'needs_clarification':'clarification_unavailable'};
    if(detail.proposal.decision!=='proposed')return {id,state:'not_applicable'};

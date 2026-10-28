@@ -10,11 +10,12 @@ import { onceScope, onceKey, readOncePlan, readOnceGrant, onceAuthority } from "
 import { jobRequest,parseBinding,type BoundEpisode } from "../agent/contracts";
 import { bridgeHash } from "../ingress";
 import {assertProactiveEpisode} from '../proactive-pilot';
+import type {GroupScope} from '../group-scope';
 /** No router or generic binding. Existing account limits must already be
  * configured; this factory neither configures a budget nor activates capture. */
-export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter;contextMode?:'conversation_manifest' } = {}) {
+export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter;contextMode?:'conversation_manifest';groupScope?:GroupScope } = {}) {
   if (env.FLUE_EPISODES_ENABLED !== "shadow" || !env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.OPENAI_API_KEY) throw new Error("episode_unconfigured");
-  const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock,options.contextMode);
+  const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock,options.contextMode,options.groupScope);
   class PausedRestoreEpisode extends EpisodeController {
     protected override async check(episode:BoundEpisode){const started=clock();try{await assertProactiveEpisode(env,episode.id);}catch{console.warn('episode_check_denied',{stage:'pilot',episodeId:episode.id,elapsedMs:clock()-started});return false;}return super.check(episode);}
     override async prepare(...args: Parameters<EpisodeController["prepare"]>) { await assertRestoredGeneration(env); return super.prepare(...args); }
@@ -61,8 +62,8 @@ export async function resolveRuntimeEpisode(raw: Record<string, unknown>, identi
   const binding=parseBinding(JSON.parse(row.binding_json));
   const ledger=await env.DB.prepare('SELECT request_json,request_hash FROM assistant_job_ledger WHERE installation_id=? AND generation=? AND job_id=?').bind(env.INSTALLATION_ID,env.OPERATIONAL_GENERATION,binding.lease.id).first<{request_json:string;request_hash:string}>();
   if(!ledger||await bridgeHash(JSON.parse(ledger.request_json))!==ledger.request_hash)throw Error('episode_denied');const request=jobRequest.parse(JSON.parse(ledger.request_json));
-  if(request.contextMode!==binding.contextMode||JSON.stringify(request.sourceRefs)!==JSON.stringify(binding.sourceRefs))throw Error('context_mode_denied');
-  return { host: runtimeHost(env, binding.purpose,{...(binding.contextMode?{contextMode:binding.contextMode}:{})}), episodeId: row.id };
+  if(request.contextMode!==binding.contextMode||JSON.stringify(request.sourceRefs)!==JSON.stringify(binding.sourceRefs)||JSON.stringify(request.groupScope)!==JSON.stringify(binding.groupScope))throw Error('context_mode_denied');
+  return { host: runtimeHost(env, binding.purpose,{...(binding.contextMode?{contextMode:binding.contextMode,...(binding.groupScope?{groupScope:binding.groupScope}:{})}:{})}), episodeId: row.id };
 }
 /** Installed dispatcher keeps the legacy shadow-controller contract separate. */
 export async function resolveInstalledRuntime(raw: Record<string, unknown>, identity: RuntimeIdentity) {

@@ -12,6 +12,7 @@ import type { EpisodeSearch, ValidatedProposal } from "./agent/controller";
 import { bridgeHash } from "./ingress";
 import type { SourceScope } from "./sources";
 import {outgoingGuard,type OutgoingPort} from './outgoing';
+import {groupManifestAllowed} from './group-scope';
 export { decisionSubject, type DecisionSubject };
 export const journalPhase = z.enum(["not_evaluated", "pending", "uncertain", "failed", "cancelled", "proposed", "silence", "waiting_context"]);
 export const journalReason = z.enum(["budget_blocked", "waiting_context", "source_changed", "publication_rejected", "dispatch_uncertain", "model_uncertain", "cancelled", "invariant_failure"]);
@@ -223,16 +224,17 @@ export class DecisionJournal {
       const actual = binding.context.sources.map(row => row.fence.source).map(({id,revision,version,hash}) => ({id,revision,version,hash}));
       if (JSON.stringify(actual) !== JSON.stringify(refs) || JSON.stringify(value) !== JSON.stringify(episode.result) || value.binding.bindingHash !== episode.binding_hash || JSON.stringify(metadata.subject) !== JSON.stringify(request.subject) || JSON.stringify(request.subject) !== JSON.stringify(binding.subject)) throw 0;
       if(JSON.stringify(request.outgoing)!==JSON.stringify(binding.outgoing)||JSON.stringify(value.outgoing)!==JSON.stringify(binding.outgoing))throw 0;
-      if(request.contextMode!==binding.contextMode||JSON.stringify(request.sourceRefs)!==JSON.stringify(binding.sourceRefs))throw 0;
+      if(request.contextMode!==binding.contextMode||JSON.stringify(request.sourceRefs)!==JSON.stringify(binding.sourceRefs)||JSON.stringify(request.groupScope)!==JSON.stringify(binding.groupScope))throw 0;
       if(binding.contextMode){
         const manifestChat=request.subject.kind==='capture_event'?request.subject.chatId:null;
-        if(binding.contextMode!=='conversation_manifest'||binding.purpose!=='automation'||binding.actor.kind!=='interlocutor'||binding.actor.conversationKind!=='private'||request.subject.kind!=='capture_event'||request.subject.chatId!==binding.actor.conversationId||!request.sourceRefs?.length||request.sourceRefs.length>3||request.fence.source.origin!=='whatsapp'||binding.context.sources.some(source=>source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==manifestChat||source.origin?.conversationKind!=='private'||!request.sourceRefs!.some(ref=>ref.id===source.id&&ref.revision===source.fence.source.revision&&ref.version===source.fence.source.version&&ref.hash===source.fence.source.hash))||binding.context.sources.reduce((sum,source)=>sum+new TextEncoder().encode(source.text??'').length,0)>8192)throw 0;
+        const manifestKind=binding.actor.kind==='interlocutor'?binding.actor.conversationKind:null;
+        if(binding.contextMode!=='conversation_manifest'||binding.purpose!=='automation'||binding.actor.kind!=='interlocutor'||!(binding.actor.conversationKind==='private'&&!binding.groupScope||groupManifestAllowed(binding.groupScope,binding.actor,request.fence,request.subject))||request.subject.kind!=='capture_event'||request.subject.chatId!==binding.actor.conversationId||!request.sourceRefs?.length||request.sourceRefs.length>3||request.fence.source.origin!=='whatsapp'||binding.context.sources.some(source=>source.fence.source.origin!=='whatsapp'||source.fence.source.conversationId!==manifestChat||source.origin?.conversationKind!==manifestKind||!request.sourceRefs!.some(ref=>ref.id===source.id&&ref.revision===source.fence.source.revision&&ref.version===source.fence.source.version&&ref.hash===source.fence.source.hash))||binding.context.sources.reduce((sum,source)=>sum+new TextEncoder().encode(source.text??'').length,0)>8192)throw 0;
         const run=await this.sql('SELECT request_json,request_hash FROM assistant_retrieval_runs WHERE installation_id=? AND generation=? AND id=?',...keys(this.scope),binding.runId).first<{request_json:string;request_hash:string}>();
         if(!run||await bridgeHash(JSON.parse(run.request_json))!==run.request_hash||run.request_hash!==binding.search.requestHash)throw 0;const saved=JSON.parse(run.request_json);
-        if(saved.contextMode!==binding.contextMode||saved.semantic!==undefined||saved.purpose!=='automation'||JSON.stringify(saved.input.sourceRefs)!==JSON.stringify(request.sourceRefs))throw 0;
+        if(saved.contextMode!==binding.contextMode||saved.semantic!==undefined||saved.purpose!=='automation'||JSON.stringify(saved.input.sourceRefs)!==JSON.stringify(request.sourceRefs)||JSON.stringify(saved.groupScope)!==JSON.stringify(binding.groupScope))throw 0;
       }else if(request.sourceRefs)throw 0;
       const access = new SourceAccess(this.db, this.scope), now = this.clock(), ownerFences: SourceFence[] = [];
-      const search = binding.contextMode?new RetrievalRuns(this.db,this.scope,{purpose:'automation',origin:this.options.origin,clock:this.clock,contextMode:binding.contextMode}):this.options.search ?? new RetrievalRuns(this.db, this.scope, { purpose: binding.purpose, origin: this.options.origin, clock: this.clock, semantic: this.options.semantic, ownerOncePlan: this.options.ownerOncePlan });
+      const search = binding.contextMode?new RetrievalRuns(this.db,this.scope,{purpose:'automation',origin:this.options.origin,clock:this.clock,contextMode:binding.contextMode,...(binding.groupScope?{groupScope:binding.groupScope}:{})}):this.options.search ?? new RetrievalRuns(this.db, this.scope, { purpose: binding.purpose, origin: this.options.origin, clock: this.clock, semantic: this.options.semantic, ownerOncePlan: this.options.ownerOncePlan });
       for (const source of binding.context.sources) {
         const current = await access.read({ kind: "owner" }, source.id, source.fence.source.revision, now);
         if (!current) return { ...metadata, freshness: "stale" };

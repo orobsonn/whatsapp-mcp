@@ -4,6 +4,7 @@ import { CaptureMaterializer } from "./materialize";
 import { Conversations } from "./conversations";
 import { SourceAccess,type TrustedActor,type SourceSelectionRef } from "./access";
 import {readProactivePilot,pilotAllowsSubject,pilotSelection,pilotBindingCurrent,selectPilotSourceRefs,readPilotConversationActivity,type PilotBinding} from './proactive-pilot';
+import type {GroupScope} from './group-scope';
 import { activeOrigin,originScopeSql,scopeKeys,type OriginScope } from "./origin-guard";
 import { bridgeHash } from "./ingress";
 import { FollowUps } from "./followups";
@@ -24,7 +25,7 @@ import { createMediaModelPort } from "./media-model";
 import { createTelegramReview } from "./telegram";
 import { engineName } from "./container";
 import type { CogneeContainer, IndexPreflight } from "./container";
-type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string;pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[];contextMode?:'conversation_manifest'};
+type Binding={subject:DecisionSubject;actor:TrustedActor;profile:"owner"|"interlocutor";source:{id:string;revision:number;version:number;hash:string};query:string;projectId?:string;configuration:string;pilot?:PilotBinding;sourceRefs?:SourceSelectionRef[];contextMode?:'conversation_manifest';groupScope?:GroupScope};
 type Item={id:string;subject_json:string;binding_hash:string;binding_json:string;actor_json:string;profile:"owner"|"interlocutor";source_id:string;source_revision:number;state:string;phase:string;index_sources_json:string|null;run_id:string|null;search_checkpoint:number;search_state:string|null;job_id:string|null;episode_id:string|null;last_gap:string|null;created_at:number};
 type Event={sequence:number;chat_id:string;source_kind:string;metadata_hash:string;state:string;canonical_id:string|null;observed_revision:number|null;observed_version:number|null;observed_watermark:number|null;coalesced:number};
 /** Pure host configuration identity for explicit pre-admission recovery plans.
@@ -97,7 +98,7 @@ export class AssistantScheduler {
  private async discover(cycle:RoutineCycle){
   const pilot=readProactivePilot(this.env);
   const cursor=await this.sql(`SELECT cursor_chat FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<string>("cursor_chat")??"";
-  const chats=await this.sql(`SELECT o.chat_id,o.kind FROM assistant_origin_conversations o WHERE ${originScopeSql} AND chat_id>? ${pilot?'chatIds'in pilot?'AND chat_id IN (SELECT value FROM json_each(?))':"AND kind='private' AND access_state='available' AND EXISTS(SELECT 1 FROM assistant_capture_inbox fresh LEFT JOIN assistant_routine_event_items mapped USING(installation_id,generation,source_epoch,source_generation,chat_id,sequence) WHERE fresh.installation_id=o.installation_id AND fresh.generation=o.generation AND fresh.source_epoch=o.source_epoch AND fresh.source_generation=o.source_generation AND fresh.chat_id=o.chat_id AND fresh.sequence>? AND fresh.operation='upsert' AND fresh.source_kind='message' AND (mapped.sequence IS NULL OR mapped.outcome='gap'))":''} ORDER BY o.chat_id LIMIT 5`,...this.keys(),cursor,...(pilot?'chatIds'in pilot?[JSON.stringify(pilot.chatIds)]:[pilot.startAfterSequence]:[])).all<{chat_id:string;kind:"private"|"group"|null}>();
+  const chats=await this.sql(`SELECT o.chat_id,o.kind FROM assistant_origin_conversations o WHERE ${originScopeSql} AND chat_id>? ${pilot?'chatIds'in pilot?'AND chat_id IN (SELECT value FROM json_each(?))':"AND (kind='private' OR (kind='group' AND chat_id IN(SELECT json_extract(value,'$.chatId') FROM json_each(?)))) AND access_state='available' AND EXISTS(SELECT 1 FROM assistant_capture_inbox fresh LEFT JOIN assistant_routine_event_items mapped USING(installation_id,generation,source_epoch,source_generation,chat_id,sequence) WHERE fresh.installation_id=o.installation_id AND fresh.generation=o.generation AND fresh.source_epoch=o.source_epoch AND fresh.source_generation=o.source_generation AND fresh.chat_id=o.chat_id AND fresh.sequence>CASE WHEN o.kind='group' THEN (SELECT json_extract(value,'$.startAfterSequence') FROM json_each(?) WHERE json_extract(value,'$.chatId')=o.chat_id) ELSE ? END AND fresh.operation='upsert' AND fresh.source_kind='message' AND (mapped.sequence IS NULL OR mapped.outcome='gap'))":''} ORDER BY o.chat_id LIMIT 5`,...this.keys(),cursor,...(pilot?'chatIds'in pilot?[JSON.stringify(pilot.chatIds)]:[JSON.stringify(pilot.groups??[]),JSON.stringify(pilot.groups??[]),pilot.startAfterSequence]:[])).all<{chat_id:string;kind:"private"|"group"|null}>();
   const conversations=new Conversations(this.env.DB!,()=>this.scope);
   for(const chat of chats.results){
    if(!await this.routines.current(cycle))throw new Error("routine_stale");
@@ -107,10 +108,12 @@ export class AssistantScheduler {
    if(!await conversations.ensure(chat.chat_id)||chat.kind===null)continue;
    await conversations.replay(chat.chat_id,32);await conversations.retryGaps(chat.chat_id,4);
    const frame=await conversations.state(chat.chat_id);if(frame.state==="paused"||frame.state==="ignored")continue;
+   const groupScope=pilot&&!('chatIds'in pilot)&&chat.kind==='group'?pilot.groups?.find(group=>group.chatId===chat.chat_id):undefined;if(pilot&&!('chatIds'in pilot)&&chat.kind==='group'&&(!groupScope||frame.mode!=='respond'))continue;
+   const cutoff=groupScope?.startAfterSequence??pilot?.startAfterSequence;
    const events=await this.sql(`SELECT i.sequence,i.chat_id,i.source_kind,i.metadata_hash,r.state,r.canonical_id,r.observed_revision,r.observed_version,r.observed_watermark,r.coalesced
     FROM assistant_capture_inbox i JOIN assistant_conversation_replay r USING(installation_id,generation,source_epoch,source_generation,chat_id,sequence)
     LEFT JOIN assistant_routine_event_items m ON m.installation_id=i.installation_id AND m.generation=i.generation AND m.source_epoch=i.source_epoch AND m.source_generation=i.source_generation AND m.chat_id=i.chat_id AND m.sequence=i.sequence
-    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.chat_id=? AND (m.sequence IS NULL OR (m.outcome='gap' AND r.state<>'gap')) ${pilot?"AND i.sequence>? AND i.source_kind='message' AND i.operation='upsert' AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox old WHERE old.installation_id=i.installation_id AND old.generation=i.generation AND old.source_epoch=i.source_epoch AND old.source_generation=i.source_generation AND old.source_kind=i.source_kind AND old.source_id=i.source_id AND old.sequence<=?)":''} ORDER BY i.sequence LIMIT 32`,...this.keys(),chat.chat_id,...(pilot?[pilot.startAfterSequence,pilot.startAfterSequence]:[])).all<Event>();
+    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.chat_id=? AND (m.sequence IS NULL OR (m.outcome='gap' AND r.state<>'gap')) ${pilot?"AND i.sequence>? AND i.source_kind='message' AND i.operation='upsert' AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox old WHERE old.installation_id=i.installation_id AND old.generation=i.generation AND old.source_epoch=i.source_epoch AND old.source_generation=i.source_generation AND old.source_kind=i.source_kind AND old.source_id=i.source_id AND old.sequence<=?)":''} ORDER BY i.sequence LIMIT 32`,...this.keys(),chat.chat_id,...(pilot?[cutoff!,cutoff!]:[])).all<Event>();
    // Coalescence is an exact canonical observation, never a conversation-wide
    // substitution of one author/source for another, and never a gap.
    const groups=new Map<string,Event[]>(),unresolved:Event[]=[];
@@ -136,7 +139,7 @@ export class AssistantScheduler {
      let actor:TrustedActor|null=frame.mode==="observe"?{kind:"owner"}:null;
      if(!actor&&source&&metadata.authorId===source.authorId&&typeof metadata.authorId==="string"&&/^[a-f0-9]{64}$/.test(metadata.authorId)&&metadata.fromMe!==true)actor={kind:"interlocutor",provider:"wa_archive:"+await bridgeHash([this.scope.sourceEpoch,this.scope.sourceGeneration]),address:metadata.authorId,conversationId:chat.chat_id,conversationKind:chat.kind,action:"reply_text"};
      if(source&&actor&&typeof source.text==="string"&&source.text.trim()&&new TextEncoder().encode(source.text).length<=2048){
-      const binding:Binding={subject,actor,profile:actor.kind==="owner"?"owner":"interlocutor",source:{...source.fence.source},query:source.text,...(source.fence.source.projectId?{projectId:source.fence.source.projectId}:{}),configuration:await this.configuration(),...(pilot?{pilot:{...pilot,chatId:chat.chat_id},sourceRefs:await selectPilotSourceRefs(this.env.DB!,this.scope,source,this.clock()),...(!('chatIds'in pilot)?{contextMode:pilot.contextMode}:{})}:{})},owner=this.owned(cycle);
+      const binding:Binding={subject,actor,profile:actor.kind==="owner"?"owner":"interlocutor",source:{...source.fence.source},query:source.text,...(source.fence.source.projectId?{projectId:source.fence.source.projectId}:{}),configuration:await this.configuration(),...(pilot?{pilot:{...pilot,chatId:chat.chat_id},sourceRefs:await selectPilotSourceRefs(this.env.DB!,this.scope,source,this.clock()),...(!('chatIds'in pilot)?{contextMode:pilot.contextMode}:{}),...(groupScope?{groupScope}:{})}:{})},owner=this.owned(cycle);
       await this.sql(`INSERT INTO assistant_routine_items(installation_id,generation,source_epoch,source_generation,id,subject_json,binding_hash,binding_json,observation_key,actor_json,profile,source_id,source_revision,state,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,? WHERE ${owner.sql} ON CONFLICT DO NOTHING`,...this.keys(),id,JSON.stringify(subject),await bridgeHash(binding),JSON.stringify(binding),observation,JSON.stringify(actor),binding.profile,source.id,source.fence.source.revision,this.clock(),this.clock(),...owner.values).run();
       const admitted=await this.sql(`SELECT id,subject_json FROM assistant_routine_items WHERE ${originScopeSql} AND observation_key=?`,...this.keys(),observation).first<{id:string;subject_json:string}>();itemId=admitted?.id??null;if(admitted)representative=JSON.parse(admitted.subject_json).sequence as number;
      }
@@ -166,7 +169,7 @@ export class AssistantScheduler {
   const prior=await this.sql(`SELECT j.id,l.request_json,l.request_hash FROM assistant_jobs j JOIN assistant_job_ledger l ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id WHERE j.installation_id=? AND j.generation=? AND (j.id=? OR j.dedupe_key=?) LIMIT 1`,this.scope.installationId,this.scope.generation,item.job_id,dedupe).first<{id:string;request_json:string;request_hash:string}>();
   if(prior){const request=jobRequest.parse(JSON.parse(prior.request_json));if(await bridgeHash(request)!==prior.request_hash||JSON.stringify(request.subject)!==item.subject_json||JSON.stringify(request.actor)!==item.actor_json||request.sourceId!==item.source_id||request.sourceRevision!==item.source_revision)throw new Error("routine_request_conflict");await this.update(cycle,item.id,"job_id=?",[prior.id]);return prior.id;}
   if(!await this.routines.current(cycle))throw new Error("routine_stale");
-  const job=await queue.enqueue({kind:"reasoning",dedupeKey:dedupe,sourceId:item.source_id,sourceRevision:item.source_revision,request:binding.query,runtime:"flue",subject:binding.subject,...(binding.contextMode?{contextMode:binding.contextMode,sourceRefs:binding.sourceRefs}:{})},this.clock());
+  const job=await queue.enqueue({kind:"reasoning",dedupeKey:dedupe,sourceId:item.source_id,sourceRevision:item.source_revision,request:binding.query,runtime:"flue",subject:binding.subject,...(binding.contextMode?{contextMode:binding.contextMode,sourceRefs:binding.sourceRefs,...(binding.groupScope?{groupScope:binding.groupScope}:{})}:{})},this.clock());
   await this.update(cycle,item.id,"job_id=?",[job.id]);return job.id;
  }
  private async warm(cycle:RoutineCycle,item:Item){
@@ -311,7 +314,7 @@ export class AssistantScheduler {
   if(await this.superseded(cycle,item,binding))return 'blocked';
   if(!await pilotBindingCurrent(this.env,binding))return this.gap(cycle,item.id,'proactive_pilot_ineligible');
   if(!this.env.OPENAI_API_KEY||this.env.FLUE_EPISODES_ENABLED!=="shadow")return this.gap(cycle,item.id,"episode_unconfigured");
-  const configured=hostConfiguredSearch(this.env,"automation",this.clock,binding.contextMode),host=runtimeHost(this.env,"automation",{clock:this.clock,model:this.options.model,...(binding.contextMode?{contextMode:binding.contextMode}:{})});
+  const configured=hostConfiguredSearch(this.env,"automation",this.clock,binding.contextMode,binding.groupScope),host=runtimeHost(this.env,"automation",{clock:this.clock,model:this.options.model,...(binding.contextMode?{contextMode:binding.contextMode,...(binding.groupScope?{groupScope:binding.groupScope}:{})}:{})});
   // Lookup existing job/episode before considering a new source fence or lease.
   if(item.job_id){const existing=await this.existingEpisode(cycle,item,host,reconcileOnly);if(await this.superseded(cycle,item,binding))return 'blocked';if(existing)return existing;}
   if(reconcileOnly&&item.run_id){

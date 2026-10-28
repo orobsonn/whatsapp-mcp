@@ -53,6 +53,24 @@ describe("private Source approved send",()=>{
   expect(await approvedSendStatus(e,{secret,scope,actionId:a.actionId})).toMatchObject({providerMessageId:"provider-1",providerZaapId:"zaap-1"});
   authorized=false;await executeApprovedSend(e,req,p.port);expect(p.count()).toBe(1);
  });
+ it("sends one reviewed group response to the exact group, never its participant, and vetoes a later owner reply",async()=>{
+  const groupAddress="120363999999999999-group",participant="5585777777777";
+  const {items}=await upsertDirectoryPage(e,{epoch:"e1",generation:"g1"},{items:[{externalId:groupAddress,kind:"group",name:"Grupo sintético"}],complete:true});const groupId=items[0]!.id;
+  const groupMessage=(externalId:string,fromMe:boolean)=>ingestEvent(e,{epoch:"e1",generation:"g1"},{chatExternalId:groupAddress,chatKind:"group",externalId,authorExternalId:fromMe?e.CONNECTED_PHONE:participant,authorName:fromMe?"Dono":"Participante",fromMe,kind:"text",text:"Mensagem sintética do grupo",timestamp:Date.now()});
+  const prepareGroup=async(operationId:string)=>{const current=await conversationActivity(e,groupId);if(current.state!=="available")throw Error("group blocked");return prepareApprovedSend(e,{secret,scope,operationId,envelope:{kind:"text",chatId:groupId,text:"Resposta integral aprovada para o grupo"},activity:{triggerSequence:current.latestIncomingOriginalSequence,watermark:current.watermark,relationshipRevision:current.relationshipRevision,relationshipProof:current.relationshipProof,members:current.members.map(member=>member.chatId)}});};
+  const incoming=await groupMessage("group-incoming",false),a=await prepareGroup("group-review-1");
+  expect(a.target).toEqual({chatId:groupId,name:"Grupo sintético",address:groupAddress,kind:"group"});expect(a.activity.members).toEqual([groupId]);
+  expect(await env.DB.prepare("SELECT p.external_id FROM messages m JOIN participants p ON p.id=m.author_id WHERE m.id=?").bind(incoming.messageId).first<string>("external_id")).toBe(participant);
+  const sent:Parameters<SendProvider["send"]>[0][]=[];const port:SendProvider={status:async()=>({connected:true,phone:e.CONNECTED_PHONE}),send:async envelope=>{sent.push(envelope);return {messageId:"provider-group-1",zaapId:"provider-group-ack"};}};
+  const request={secret,scope,actionId:a.actionId,approvalId:"owner-group-exact-approval"};
+  authorized=false;await expect(executeApprovedSend(e,request,port)).rejects.toThrow("approved_send_denied");expect(sent).toHaveLength(0);
+  authorized=true;expect((await executeApprovedSend(e,request,port)).status).toBe("accepted");await executeApprovedSend(e,request,port);
+  expect(sent).toHaveLength(1);expect(sent[0]).toMatchObject({destination:groupAddress,kind:"text",text:"Resposta integral aprovada para o grupo"});expect(sent[0]!.destination).not.toBe(participant);
+  expect(await env.DB.prepare("SELECT approval_channel FROM actions WHERE id=?").bind(a.actionId).first<string>("approval_channel")).toBe("telegram_owner");
+  await groupMessage("group-next-incoming",false);const next=await prepareGroup("group-review-2");await groupMessage("group-owner-already-replied",true);
+  expect((await executeApprovedSend(e,{secret,scope,actionId:next.actionId,approvalId:"owner-group-next-approval"},port)).status).toBe("proposed");expect(sent).toHaveLength(1);
+  expect(await env.DB.prepare("SELECT attempted_at FROM actions WHERE id=?").bind(next.actionId).first("attempted_at")).toBeNull();
+ });
  it("blocks changed destination after provider status without sending",async()=>{
   const a=await prepareApprovedSend(e,input()),p=provider(async()=>{await env.DB.prepare("UPDATE chats SET external_id='5585888888888' WHERE id=?").bind(chatId).run();});
   const result=await executeApprovedSend(e,{secret,scope,actionId:a.actionId,approvalId:"human-1"},p.port);expect(result.status).not.toBe("accepted");expect(p.count()).toBe(0);

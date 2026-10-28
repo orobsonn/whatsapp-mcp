@@ -11,6 +11,16 @@ Autorização de Robson em 28/10/2026: a assistente analisa conversas e sugere r
 - O piloto preserva o corte Source original 3683 e passa a descobrir conversas privadas capturadas, respeitando exclusões e pausas. Não exige lista manual de contatos. Backlog e FUPs anteriores permanecem preservados. Resumo diário e resposta autônoma permanecem desligados nesta ativação inicial.
 - Contexto inicial: até três fontes textuais e 8 KiB da mesma conversa, em manifesto imutável. O modo `conversation_manifest` entrega os originais do manifesto diretamente ao runtime e reconstrói a mesma seleção na revisão, sem aquecimento/indexação/busca Cognee no caminho dessa resposta curta. A restrição limita seleção e validação; não concede acesso nem promete histórico completo. Políticas e retenção existentes continuam valendo.
 
+## Acompanhamento de grupos
+
+Captura e acompanhamento para responder são controles distintos. A instalação pessoal usa captura ligada por padrão, com exceções persistentes; isso não habilita sugestões em todos os grupos. Grupo sem política própria permanece `ignore` para a assistente.
+
+O piloto aceita `groups: [{chatId, startAfterSequence}]` como seleção adicional às conversas privadas capturadas. Cada grupo precisa estar explicitamente listado, com metadado observado de grupo, política atual `respond`, sem exclusão ou pausa. O corte próprio começa na ativação e preserva o corte original dos privados. Não drena o histórico do grupo nem transforma edição antiga em nova entrada.
+
+O escopo selecionado acompanha trabalho, episódio, manifesto, runtime e revisão. As fontes continuam restritas ao mesmo grupo e preservam autoria. A prévia identifica o destino como grupo; o envio usa seu endereço exato, nunca o participante que escreveu. Aprovação, veto por resposta posterior do dono, validade do contexto e tentativa única permanecem iguais.
+
+Em grupo movimentado, uma mensagem mais recente pode superar o gatilho anterior, mesmo quando o assunto é diferente. O piloto não mantém raciocínios paralelos por assunto. Habilitar um grupo também não liga respostas autônomas ou pesquisa automática em notas, agenda, GitHub e Cognee.
+
 ## Arquitetura proposta
 
 Own mantém inferência e revisão autenticada; Source mantém credenciais WhatsApp e a única tentativa externa. Um RPC nominal privado prepara ações de texto idempotentes e executa somente após conferir recibo humano atual em Own. O claim final Source inclui destino, conexão, envelope e mapeamento congelados. Não há ferramenta genérica de envio para o modelo.
