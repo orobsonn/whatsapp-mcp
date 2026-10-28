@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { SourceController, sourceTextHash } from "../assistant/sources";
 import type { AssistantEnv } from "../assistant/env";
 import { readTelegramGitHub } from "../assistant/telegram-github";
+import { githubReadFailure } from "../assistant/connectors/github";
 
 const commit = "a".repeat(40), blob = "b".repeat(40), retirement = { allow: async () => {}, withdraw: async () => {} };
 async function fixture(body = "# Example\n\nLiteral repository content.") {
@@ -77,4 +78,18 @@ it("refuses traversal paths and native cancellation before any network request",
   const stop = new AbortController(); stop.abort();
   expect((await readTelegramGitHub(f.settings, f.scope, selection, "Leia README", { ...f.boundary, signal: stop.signal })).state).toBe("unavailable");
   expect(f.request).not.toHaveBeenCalled();
+});
+it("records only static stage/status diagnostics when the provider refuses a read", async () => {
+  const f = await fixture(), warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    f.request.mockResolvedValue(new Response("synthetic-private-provider-body", { status: 403 }));
+    expect((await readTelegramGitHub(f.settings, f.scope, selection, "Leia README", f.boundary)).state).toBe("unavailable");
+    githubReadFailure("contents", Error("synthetic-private-provider-body"));
+    expect(warn.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([
+      { event: "github_read_failure", stage: "http", code: "status", status: 403 },
+      { event: "github_read_failure", stage: "resolve", code: "connector_unavailable" },
+      { event: "github_read_failure", stage: "contents", code: "unclassified" },
+    ]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private-provider-body");
+  } finally { warn.mockRestore(); }
 });

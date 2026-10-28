@@ -1,7 +1,7 @@
 import type { AssistantEnv } from "./env";
 import { sourceTextHash, type SourceScope } from "./sources";
 import { configuredGitHub, configuredGitHubRepositories } from "./connectors/configured-github";
-import { githubQuery } from "./connectors/github";
+import { githubQuery, githubReadFailure } from "./connectors/github";
 import { ConnectorAccess, type OwnerReadBoundary } from "./connectors/read-only";
 import type { ReplyDependency } from "./telegram-owner-replies";
 import { telegramExcerpt, telegramText } from "./telegram-format";
@@ -33,6 +33,7 @@ function explicitRepositories(text: string, path: string | null) {
 export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, selected: Selection, ownerText: string, boundary: OwnerReadBoundary): Promise<Result> {
   // Do not replace an explicitly requested ref with a different default ref.
   if (/\b(?:commit|branch|tag|sha|vers[aã]o)\b/i.test(ownerText)) return { state: "clarify", text: "📦 <b>Qual referência você quer consultar?</b>\n\nNeste diálogo consulto a branch padrão do repositório. Ainda preciso esclarecer pedidos com commit, tag ou outra branch." };
+  let stage: "admission" | "resolve" | "contents" | "presentation" = "admission";
   try {
     await boundary.check(); if (!env.DB) return unavailable();
     const repositories = configuredGitHubRepositories(env), explicit = explicitRepositories(ownerText, selected.path);
@@ -54,10 +55,13 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
       await boundary.check(); if (!await access.current({ kind: "owner" }, source)) throw Error("github_authorization_changed");
     } });
     if (configured.state !== "ready") return unavailable();
+    stage = "resolve";
     const commit = await configured.resolveDefault(repository.id); await configured.check();
     if (!await access.current({ kind: "owner" }, source)) return unavailable();
+    stage = "contents";
     const pinned = { ...query, commit }, raw = await configured.reader.execute({ kind: "owner" }, pinned) as Record<string, any>;
     await configured.check(); if (raw.state !== "available" || !await access.current({ kind: "owner" }, source)) return unavailable();
+    stage = "presentation";
     const label = telegramText(repository.owner + "/" + repository.repo, 200), footer = `\n\n📦 ${label}\n🔎 <i>commit consultado: <code>${commit.slice(0, 12)}</code></i>`;
     let text: string, result: FileResult | DirectoryResult;
     if (pinned.kind === "github.read") {
@@ -76,5 +80,5 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
     const observation: GitHubObservation = { kind: "github", query: pinned, result };
     if (new TextEncoder().encode(JSON.stringify(observation)).length > 20000 || text.length > 3900) return unavailable();
     return { state: "available", text, dependencies: [{ source }], observation };
-  } catch { return unavailable(); }
+  } catch (error) { githubReadFailure(stage, error); return unavailable(); }
 }

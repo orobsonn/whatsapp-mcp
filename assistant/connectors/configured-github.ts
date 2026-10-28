@@ -19,7 +19,10 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     if (signal!.aborted || Date.now() >= boundary.deadlineAt) throw Error("github_dialogue_expired");
   };
   const request: ReadFetch = async input => {
-    await check(); return (boundary?.request ?? fetch)(signal ? new Request(input, { signal: AbortSignal.any([input.signal, signal]) }) : input);
+    await check();
+    const response = await (boundary?.request ?? fetch)(signal ? new Request(input, { signal: AbortSignal.any([input.signal, signal]) }) : input);
+    if (response.status !== 200) console.warn(JSON.stringify({ event: "github_read_failure", stage: "http", code: "status", status: response.status }));
+    return response;
   };
   const resolveDefault = async (id: string) => {
     const repository = repositories.find(r => r.id === id); if (!repository) throw Error("repository_not_authorized");
