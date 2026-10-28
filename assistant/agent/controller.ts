@@ -203,8 +203,11 @@ export class EpisodeController {
   }
   protected async check(episode: BoundEpisode) {
     const binding = episode.binding;
-    if (!await this.search.check(binding.actor, binding.search)) return false;
-    return this.queue.isAuthorized(binding.lease, this.clock());
+    const started=this.clock();
+    if (!await this.search.check(binding.actor, binding.search)){console.warn('episode_check_denied',{stage:'search',episodeId:episode.id,elapsedMs:this.clock()-started});return false;}
+    const authorized=await this.queue.isAuthorized(binding.lease,this.clock());
+    if(!authorized)console.warn('episode_check_denied',{stage:'job',episodeId:episode.id,elapsedMs:this.clock()-started});
+    return authorized;
   }
   private admission(episode: BoundEpisode, slot: CallSlot): ModelAdmission {
     return { uncertain: () => this.episodes.uncertain(episode.id, "admission_ack"), prepare: async ({ key, hash, recovered }) => {

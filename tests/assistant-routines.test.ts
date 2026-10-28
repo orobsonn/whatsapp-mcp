@@ -272,6 +272,22 @@ it('gives new scheduler episodes time for native preparation without renewing an
  expect(timeout).toHaveBeenCalledWith(120000);
  expect(OwnerRuntime.durability).toEqual({maxAttempts:1,timeoutMs:120000});expect(InterlocutorRuntime.durability).toEqual({maxAttempts:1,timeoutMs:120000});
 });
+it('holds an expired prepared pilot episode without dispatching or changing its immutable episode, job or costs',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'expired-prepared-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
+ const denied=vi.spyOn(EpisodeController.prototype,'dispatch').mockResolvedValue({state:'blocked'});
+ await event();expect(await scheduler().tick()).toMatchObject({state:'uncertain'});expect(dispatches).toBe(0);expect(modelCalls).toBe(0);
+ const item=await query('SELECT id,job_id,episode_id FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first<{id:string;job_id:string;episode_id:string}>();
+ const temporal=await query('SELECT e.state,e.deadline,j.lease_until FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id WHERE e.installation_id=? AND e.generation=? AND e.id=?',...keys(),item!.episode_id).first<{state:string;deadline:number;lease_until:number}>();expect(temporal!.state).toBe('prepared');
+ const tables=['assistant_jobs','assistant_job_ledger','assistant_episodes','assistant_episode_calls','assistant_model_receipts','assistant_budget_accounts','assistant_budget_reservations','assistant_shadow_decisions'];
+ const preserved=async()=>Promise.all(tables.map(async table=>({table,rows:(await query(`SELECT * FROM ${table} WHERE installation_id=? AND generation=? ORDER BY rowid`,...keys()).all()).results})));
+ const before=await preserved();now=temporal!.deadline+1;
+ expect((await scheduler().tick()).state).not.toBe('held');expect(await query('SELECT active_item_id FROM assistant_routine_state WHERE installation_id=? AND generation=?',...keys()).first('active_item_id')).toBe(item!.id);
+ now=temporal!.lease_until+1;
+ expect(await scheduler().tick()).toMatchObject({state:'held',gap:'expired_model_attempt_preserved',reconcileOnly:true});
+ expect(await preserved()).toEqual(before);expect(modelCalls).toBe(0);expect(dispatches).toBe(0);expect(denied).toHaveBeenCalledTimes(1);
+ expect(await query('SELECT state,phase,last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.id).first()).toEqual({state:'uncertain',phase:'held_expired',last_gap:'expired_model_attempt_preserved'});
+ expect(await query('SELECT state,active_item_id FROM assistant_routine_state WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'idle',active_item_id:null});
+});
 it('holds an expired uncertain pilot attempt as metadata only and lets one new message advance',async()=>{
  settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'expired-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
  const nativeDriver=driver;driver=(profile,runtimeId)=>{const port=nativeDriver(profile,runtimeId);return {dispatch:port.dispatch,read:async(receipt,options)=>{await port.read(receipt,options);throw Error('synthetic native ACK lost after a completed paid model response');}};};

@@ -16,7 +16,7 @@ export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { cloc
   if (env.FLUE_EPISODES_ENABLED !== "shadow" || !env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.OPENAI_API_KEY) throw new Error("episode_unconfigured");
   const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock,options.contextMode);
   class PausedRestoreEpisode extends EpisodeController {
-    protected override async check(episode:BoundEpisode){try{await assertProactiveEpisode(env,episode.id);}catch{return false;}return super.check(episode);}
+    protected override async check(episode:BoundEpisode){const started=clock();try{await assertProactiveEpisode(env,episode.id);}catch{console.warn('episode_check_denied',{stage:'pilot',episodeId:episode.id,elapsedMs:clock()-started});return false;}return super.check(episode);}
     override async prepare(...args: Parameters<EpisodeController["prepare"]>) { await assertRestoredGeneration(env); return super.prepare(...args); }
     override async dispatch(...args: Parameters<EpisodeController["dispatch"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.dispatch(...args); }
     override async model(...args: Parameters<EpisodeController["model"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.model(...args); }

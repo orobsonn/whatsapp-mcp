@@ -59,7 +59,7 @@ export class AssistantScheduler {
    AND EXISTS(SELECT 1 FROM assistant_routine_state r WHERE r.installation_id=assistant_routine_items.installation_id AND r.generation=assistant_routine_items.generation AND r.source_epoch=assistant_routine_items.source_epoch AND r.source_generation=assistant_routine_items.source_generation AND r.active_item_id=assistant_routine_items.id)
    AND EXISTS(SELECT 1 FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id
     WHERE e.installation_id=assistant_routine_items.installation_id AND e.generation=assistant_routine_items.generation AND e.id=assistant_routine_items.episode_id AND e.job_id=assistant_routine_items.job_id
-    AND e.state='uncertain' AND e.deadline<=? AND j.state='processing' AND j.lease_until<=?
+    AND e.state IN ('prepared','dispatching','accepted','running','uncertain') AND e.deadline<=? AND j.state='processing' AND j.lease_until<=?
     AND json_extract(e.binding_json,'$.lease.id')=j.id AND json_extract(e.binding_json,'$.lease.lease_generation')=j.lease_generation
     AND json_extract(e.binding_json,'$.subject.sourceEpoch')=assistant_routine_items.source_epoch AND json_extract(e.binding_json,'$.subject.sourceGeneration')=assistant_routine_items.source_generation
     AND NOT EXISTS(SELECT 1 FROM assistant_shadow_decisions d WHERE d.installation_id=j.installation_id AND d.generation=j.generation AND d.job_id=j.id AND d.proposal_json IS NOT NULL))
