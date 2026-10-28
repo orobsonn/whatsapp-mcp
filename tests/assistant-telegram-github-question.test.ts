@@ -75,3 +75,14 @@ it("accepts formatting-only quote differences while refusing changed negation an
  expect(() => renderGroundedAnswer(body("Aprovei. Confirmar 3 dias depois."), docs)).toThrow("literal");
  expect(() => renderGroundedAnswer(body("Não aprovei. Confirmar 5 dias depois."), docs)).toThrow("literal");
 });
+
+it("pins citation IDs to each question without leaking another document set into its schema", () => {
+  const one = [{ id: "message-one", label: "One", text: "Synthetic first evidence." }], two = [{ id: "message-two", label: "Two", text: "Synthetic other evidence." }];
+  const first = groundedAnswerPayload("gpt-6-luna", "Question one", one, {});
+  const second = groundedAnswerPayload("gpt-6-luna", "Question two", two, {});
+  const ids = (value: typeof first) => (value.response_format.json_schema.schema.properties.claims.items.properties.citations.items.properties.id as { enum?: string[] }).enum;
+  expect(ids(first)).toEqual(["message-one"]); expect(ids(second)).toEqual(["message-two"]);
+  expect(ids(first)).toEqual(["message-one"]);
+  const wrong = { choices: [{ message: { content: JSON.stringify({ claims: [{ text: "Synthetic claim", basis: "observed", citations: [{ id: "made-up", quote: one[0].text }] }], missing: null }) } }] };
+  expect(() => renderGroundedAnswer(wrong, one)).toThrow("literal");
+});
