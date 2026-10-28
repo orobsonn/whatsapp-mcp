@@ -31,6 +31,27 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const permit = () => broker.issuePermit(sourceId, 1, 200);
+it("describes the exact canonical model operation before any reservation, receipt or external attempt", async () => {
+  const token = await permit(), input = payload();
+  const frozen = await broker.describe(token, path, input);
+  input.messages[0].content = "changed after description";
+  expect(frozen).toMatchObject({ operationKey: expect.stringMatching(/^cognee:[a-f0-9]{64}$/), requestHash: expect.stringMatching(/^[a-f0-9]{64}$/), configHash: expect.stringMatching(/^[a-f0-9]{64}$/), path });
+  expect(JSON.parse(frozen.body)).toMatchObject({ messages: [{ role: "user", content: "Synthetic source" }], max_completion_tokens: 100 });
+  expect(Object.isFrozen(frozen)).toBe(true);
+  expect((await budget.status()).committed).toBe(0); expect(adapter).not.toHaveBeenCalled();
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=?").bind(scope.installationId).first("n")).toBe(0);
+  const result = await broker.invoke(token, frozen.path, JSON.parse(frozen.body));
+  expect(result.operationKey).toBe(frozen.operationKey); expect(adapter).toHaveBeenCalledTimes(1);
+});
+it("descriptive metadata cannot bypass source withdrawal or authorize a rekeyed prompt", async () => {
+  const token = await permit(), original = await broker.describe(token, path, payload());
+  const changed = await broker.describe(token, path, { ...payload(), messages: [{ role: "user", content: "another request" }] });
+  expect(changed.operationKey).not.toBe(original.operationKey);
+  await owner.withdraw(sourceId, 1);
+  await expect(broker.describe(token, path, payload())).rejects.toThrow("broker_denied");
+  await expect(broker.invoke(token, original.path, JSON.parse(original.body))).rejects.toThrow("broker_denied");
+  expect(adapter).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(0);
+});
 it.each(["hold", "generation"])("restore %s after reservation prevents a new broker adapter attempt without freeing its commitment", async kind => {
   const token = await permit(), reserve = InferenceBudget.prototype.reserve;
   vi.spyOn(InferenceBudget.prototype, "reserve").mockImplementation(async function (this: InferenceBudget, ...args) {

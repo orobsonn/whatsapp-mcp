@@ -3,7 +3,7 @@ import { instrument, setProvider, type FlueExecutionContext } from "@flue/runtim
 import { getCloudflareContext, getDurableObjectIdentity } from "@flue/runtime/cloudflare";
 import { createEpisodeProvider } from "./provider";
 import type { EpisodeController, RuntimeIdentity } from "../agent/controller";
-type Resolver = (env: Record<string, unknown>, identity: RuntimeIdentity) => Promise<{ host: EpisodeController; episodeId: string }>;
+type Resolver = (env: Record<string, unknown>, identity: RuntimeIdentity) => Promise<{ host: Pick<EpisodeController, "model">; episodeId: string }>;
 /** Invocation-local host correlation; no global mutable active job/context. */
 export function installEpisodeRuntime(resolve: Resolver) {
   const execution = new AsyncLocalStorage<FlueExecutionContext>();
@@ -14,11 +14,16 @@ export function installEpisodeRuntime(resolve: Resolver) {
     const defined = Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined));
     return execution.run({ ...execution.getStore(), ...defined }, next);
   } });
-  setProvider(createEpisodeProvider(async payload => {
+  setProvider(createEpisodeProvider(async (payload, lane) => {
     const { env } = getCloudflareContext(), identity = getDurableObjectIdentity(), context = execution.getStore();
-    const profile = identity.className === "FlueOwnerRuntimeAgent" ? "owner" : identity.className === "FlueInterlocutorRuntimeAgent" ? "interlocutor" : null;
-    if (!profile || !context?.submissionId || context.agentName !== profile + "-runtime") throw new Error("episode_denied");
-    const nominal = { profile, runtimeId: identity.name, submissionId: context.submissionId };
+    const profiles = {
+      FlueOwnerRuntimeAgent: { profile: "owner", agentName: "owner-runtime", lane: "shadow" },
+      FlueInterlocutorRuntimeAgent: { profile: "interlocutor", agentName: "interlocutor-runtime", lane: "shadow" },
+      FlueOwnerDialogueRuntimeAgent: { profile: "owner-dialogue", agentName: "owner-dialogue-runtime", lane: "owner-dialogue" },
+    };
+    const selected = profiles[identity.className as keyof typeof profiles];
+    if (!selected || lane !== selected.lane || !context?.submissionId || context.agentName !== selected.agentName) throw new Error("episode_denied");
+    const nominal = { profile: selected.profile, runtimeId: identity.name, submissionId: context.submissionId };
     const { host, episodeId } = await resolve(env, nominal);
     return host.model(episodeId, nominal, payload);
   }));

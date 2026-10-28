@@ -138,6 +138,31 @@ test("native Pi provider buffers all events until the host returns a guarded com
   expect((await first).value.type).toBe("start");
   expect((await stream.result()).content).toEqual([{ type: "text", text: '{"decision":"no_reply","text":"","citations":[]}' }]);
 });
+test("native Pi provider selects the separate owner dialogue lane and reports only its completion marker", async () => {
+  let selected: unknown;
+  const provider = createEpisodeProvider(async (_payload, lane) => { selected = lane; return "owner_dialogue_complete"; });
+  const model = provider.getModels().find(model => model.id === "owner-dialogue");
+  expect(model).toBeDefined();
+  const result = await provider.streamSimple(model!, { messages: [{ role: "user", content: "Execute the admitted private dialogue.", timestamp: 100 }] } as any).result();
+  expect(selected).toBe("owner-dialogue"); expect(result.model).toBe("owner-dialogue");
+  expect(result.content).toEqual([{ type: "text", text: "owner_dialogue_complete" }]);
+});
+test("native Pi provider never routes an unknown or spoofed model to its host", async () => {
+  let calls = 0;
+  const provider = createEpisodeProvider(async () => { calls++; return "forbidden"; });
+  for (const patch of [{ id: "unregistered-model" }, { provider: "other-host" }, { api: "other-api" }]) {
+    const result = await provider.streamSimple({ ...provider.getModels()[0], ...patch } as any, { messages: [{ role: "user", content: "synthetic", timestamp: 100 }] } as any).result();
+    expect(result.stopReason).toBe("error");
+  }
+  expect(calls).toBe(0);
+});
+test("native owner dialogue never streams a private host result into the Flue transcript", async () => {
+  const provider = createEpisodeProvider(async () => "synthetic_private_reply_do_not_stream");
+  const model = provider.getModels().find(model => model.id === "owner-dialogue")!;
+  const result = await provider.streamSimple(model, { messages: [{ role: "user", content: "Execute the admitted private dialogue.", timestamp: 100 }] } as any).result();
+  expect(result.stopReason).toBe("error"); expect(result.content).toEqual([]);
+  expect(JSON.stringify(result)).not.toContain("synthetic_private_reply_do_not_stream");
+});
 test("native Pi provider refuses extra tools/non-text history before calling its host", async () => {
   let calls = 0;
   const provider = createEpisodeProvider(async () => { calls++; return "forbidden"; });

@@ -31,7 +31,8 @@ export function installationConfigs(input: unknown, repositoryRoot: string) {
   const assistant = { $schema: `${root}/node_modules/wrangler/config-schema.json`, name: INSTALLATION.worker, account_id: INSTALLATION.accountId,
     compatibility_date: "2026-10-25", compatibility_flags: ["nodejs_compat"], workers_dev: false, preview_urls: false, observability: { enabled: false },
     migrations: [{ tag: "flue-runtime-v1", new_sqlite_classes: ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] },
-      { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) }],
+      { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) },
+      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] }],
     durable_objects: { bindings: ownBindings.map(binding => ({ ...binding })) },
     containers: [{ name: `${INSTALLATION.worker}-cognee`, class_name: "CogneeContainer", scheduling_policy: "durable_object", images: { cognee: { image: manifest.imageDigest } }, observability: { enabled: false, logs: { enabled: false } } }],
     d1_databases: [{ binding: "DB", database_name: INSTALLATION.database, database_id: manifest.databaseId, migrations_dir: `${root}/assistant/migrations` }],
@@ -61,11 +62,12 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
       ROUTINES_ENABLED: z.literal("off"), ROUTINES_PAUSED: z.literal("true"), TELEGRAM_SUMMARIES_ENABLED: z.literal("false"), MEDIA_CONTEXT_ENABLED: z.literal("false"), RETENTION_AUTHORITY_REQUIRED: z.literal("true") }).strict(),
     $schema: z.string(), compatibility_date: z.literal("2026-10-25"), compatibility_flags: z.tuple([z.literal("nodejs_compat")]),
     observability: z.object({ enabled: z.literal(false) }).strict(), triggers: z.object({ crons: z.tuple([z.literal("* * * * *")]) }).strict(),
-    migrations: z.array(z.object({ tag: z.string(), new_sqlite_classes: z.array(z.string()) }).strict()).length(2),
+    migrations: z.array(z.object({ tag: z.string(), new_sqlite_classes: z.array(z.string()) }).strict()).length(3),
   }).strict().parse(input);
   if (JSON.stringify(config.services) !== JSON.stringify(services) || JSON.stringify(config.durable_objects.bindings) !== JSON.stringify(ownBindings) ||
     JSON.stringify(config.migrations) !== JSON.stringify([{ tag: "flue-runtime-v1", new_sqlite_classes: ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] },
-      { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) }])) throw new Error("installation_capability_config");
+      { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) },
+      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] }])) throw new Error("installation_capability_config");
   if (config.vars.ARTIFACTS_INSTALLATION_ID !== config.vars.INSTALLATION_ID || config.vars.ARTIFACTS_GENERATION !== config.vars.OPERATIONAL_GENERATION) throw new Error("installation_artifact_affinity");
   const root = repositoryRoot.replace(/\/$/, "");
   if (config.d1_databases[0].migrations_dir !== `${root}/assistant/migrations` || config.$schema !== `${root}/node_modules/wrangler/config-schema.json`) throw new Error("installation_config_path");

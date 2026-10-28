@@ -17,3 +17,15 @@ export function InterlocutorRuntime() { configure(); return "Interlocutor shadow
 InterlocutorRuntime.agentName = "interlocutor-runtime";
 InterlocutorRuntime.initialData = seed;
 InterlocutorRuntime.durability = { maxAttempts: 1, timeoutMs: 60000 };
+
+// Its native transcript contains only a host binding and a generic message.
+// The host executes private phases and returns only a completion marker.
+const dialogueSeed = v.strictObject({ bindingId: v.pipe(v.string(), v.regex(/^[a-f0-9]{64}$/)) });
+export function OwnerDialogueRuntime() {
+  useInitialData<v.InferOutput<typeof dialogueSeed>>();
+  useModel("assistant-host/owner-dialogue", { compaction: false });
+  return "Execute the admitted private owner dialogue. Return only its completion marker. No tools or delegation.";
+}
+OwnerDialogueRuntime.agentName = "owner-dialogue-runtime";
+OwnerDialogueRuntime.initialData = dialogueSeed;
+OwnerDialogueRuntime.durability = { maxAttempts: 1, timeoutMs: 60000 };
