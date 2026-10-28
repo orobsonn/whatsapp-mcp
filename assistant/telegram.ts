@@ -23,7 +23,7 @@ type Buttons={text:string;callback_data:string}[][];
 export interface TelegramApi { inspect():Promise<boolean>;createTopic(chat:string,name:string):Promise<number>;send(chat:string,thread:number|null,text:string,buttons:Buttons):Promise<number>;answer(id:string):Promise<void> }
 /** Fixed provider surface. No arbitrary URLs, methods or model-visible token. */
 export class TelegramBotApi implements TelegramApi {
- constructor(private token:string|undefined,private bot:string,private fetcher:typeof fetch=fetch,private effectCheck?:()=>Promise<void>){}
+ constructor(private token:string|undefined,private bot:string,private fetcher:typeof fetch=fetch,private effectCheck?:()=>Promise<void>,private parseMode?:"HTML"){}
  private async call(method:"getMe"|"createForumTopic"|"sendMessage"|"answerCallbackQuery",body:unknown):Promise<unknown>{
   if(!this.token||!/^\d{6,20}:[A-Za-z0-9_-]{20,128}$/.test(this.token))throw new Error("telegram_api_unconfigured");
   const controller=new AbortController();let expired=false,reader:ReadableStreamDefaultReader<Uint8Array>|undefined,timer:ReturnType<typeof setTimeout>|undefined;
@@ -44,7 +44,7 @@ export class TelegramBotApi implements TelegramApi {
  }
  async inspect(){const me=await this.call("getMe",{}) as {is_bot?:boolean;username?:string;has_topics_enabled?:boolean};return me.is_bot===true&&me.username?.toLowerCase()===this.bot.toLowerCase()&&me.has_topics_enabled===true;}
  async createTopic(chat:string,name:string){const result=await this.call("createForumTopic",{chat_id:chat,name}) as {message_thread_id?:number;name?:string};if(result.name!==name)throw new Error("telegram_topic_mismatch");return positive.parse(result.message_thread_id);}
- async send(chat:string,thread:number|null,text:string,buttons:Buttons){const result=await this.call("sendMessage",{chat_id:chat,...(thread===null?{}:{message_thread_id:thread}),text,protect_content:true,...(buttons.length?{reply_markup:{inline_keyboard:buttons}}:{})}) as {message_id?:number;message_thread_id?:number;chat?:{id?:number;type?:string}};
+ async send(chat:string,thread:number|null,text:string,buttons:Buttons){const result=await this.call("sendMessage",{chat_id:chat,...(thread===null?{}:{message_thread_id:thread}),text,...(this.parseMode?{parse_mode:this.parseMode}:{}),protect_content:true,...(buttons.length?{reply_markup:{inline_keyboard:buttons}}:{})}) as {message_id?:number;message_thread_id?:number;chat?:{id?:number;type?:string}};
   if(String(result.chat?.id)!==chat||result.chat?.type!=="private"||(thread===null?result.message_thread_id!==undefined:result.message_thread_id!==thread))throw new Error("telegram_message_mismatch");return positive.parse(result.message_id);}
  async answer(id:string){if(await this.call("answerCallbackQuery",{callback_query_id:id,text:"Revisão registrada em modo sombra."})!==true)throw new Error("telegram_answer_unavailable");}
 }
