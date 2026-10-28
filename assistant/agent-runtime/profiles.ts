@@ -12,11 +12,11 @@ function configure() {
 export function OwnerRuntime() { configure(); return "Owner shadow runtime. No operational tools or delegation."; }
 OwnerRuntime.agentName = "owner-runtime";
 OwnerRuntime.initialData = seed;
-OwnerRuntime.durability = { maxAttempts: 1, timeoutMs: 60000 };
+OwnerRuntime.durability = { maxAttempts: 1, timeoutMs: 120000 };
 export function InterlocutorRuntime() { configure(); return "Interlocutor shadow runtime. No owner authority, operational tools or delegation."; }
 InterlocutorRuntime.agentName = "interlocutor-runtime";
 InterlocutorRuntime.initialData = seed;
-InterlocutorRuntime.durability = { maxAttempts: 1, timeoutMs: 60000 };
+InterlocutorRuntime.durability = { maxAttempts: 1, timeoutMs: 120000 };
 
 // Its native transcript contains only a host binding and a generic message.
 // The host executes private phases and returns only a completion marker.

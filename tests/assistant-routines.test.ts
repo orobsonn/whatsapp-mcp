@@ -28,6 +28,7 @@ import { OriginGuard } from "../assistant/origin-guard";
 import {runtimeHost} from '../assistant/agent-runtime/runtime';
 import {readProactivePilot,pilotAllowsSubject,pilotBindingCurrent} from '../assistant/proactive-pilot';
 import {CanonicalCandidateExtractor} from '../assistant/canonical-extraction';
+import {OwnerRuntime,InterlocutorRuntime} from '../assistant/agent-runtime/profiles';
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,author:string|null,fromMe:boolean;
 let snapshots:Map<string,unknown>,model:ModelAdapter,driver:EpisodeDriver;
 const keys=()=>[scope.installationId,scope.generation],query=(sql:string,...values:(string|number|null)[])=>env.DB.prepare(sql).bind(...values);
@@ -181,9 +182,56 @@ it("late cron makes only the current daily metadata review and does not replay m
  expect(a.summary.reportingScope).toBe("current_generation_cumulative");expect(a.summary.snapshotAt).toBe(now);expect(a.summary.budget.state).toBe("unconfigured");expect(a.summary.pipelineGaps).toContain("canonical_relations_not_observed");expect(a.summary.canonicalExtraction).toMatchObject({sources:0,published:0,pending:0,observation:'not_observed'});
 });
 it("reconciles the same uncertain episode after restart without new job, alias or model charge",async()=>{
- await event();modelFailure=true;await scheduler().tick();const initial=await query("SELECT id,job_id,episode_id,run_id FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first();expect(modelCalls).toBe(1);
+ const timeout=vi.spyOn(AbortSignal,'timeout');await event();modelFailure=true;await scheduler().tick();const initial=await query("SELECT id,job_id,episode_id,run_id FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first();expect(modelCalls).toBe(1);
+ const temporal=await query('SELECT e.deadline,j.lease_until,j.lease_generation FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id WHERE e.installation_id=? AND e.generation=?',...keys()).first<{deadline:number;lease_until:number;lease_generation:number}>();
  now+=60001;await scheduler().tick();expect(await query("SELECT id,job_id,episode_id,run_id FROM assistant_routine_items WHERE installation_id=? AND generation=?",...keys()).first()).toEqual(initial);expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+ expect(await query('SELECT e.deadline,j.lease_until,j.lease_generation FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id WHERE e.installation_id=? AND e.generation=?',...keys()).first()).toEqual(temporal);expect(timeout).toHaveBeenCalledWith(temporal!.deadline-now);
  expect(await query("SELECT COUNT(*) n FROM assistant_budget_reservations WHERE installation_id=? AND generation=?",...keys()).first("n")).toBe(1);
+});
+it('gives new scheduler episodes time for native preparation without renewing an existing paid attempt',async()=>{
+ const timeout=vi.spyOn(AbortSignal,'timeout'),start=now;await event();await scheduler().tick();
+ const episode=await query('SELECT deadline,binding_json FROM assistant_episodes WHERE installation_id=? AND generation=?',...keys()).first<{deadline:number;binding_json:string}>();
+ const lease=JSON.parse(episode!.binding_json).lease.lease_until as number;
+ expect(lease).toBe(start+180000);expect(episode!.deadline).toBe(start+120000);
+ expect(episode!.deadline).toBeLessThan(lease!);
+ expect(timeout).toHaveBeenCalledWith(120000);
+ expect(OwnerRuntime.durability).toEqual({maxAttempts:1,timeoutMs:120000});expect(InterlocutorRuntime.durability).toEqual({maxAttempts:1,timeoutMs:120000});
+});
+it('holds an expired uncertain pilot attempt as metadata only and lets one new message advance',async()=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'expired-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
+ const nativeDriver=driver;driver=(profile,runtimeId)=>{const port=nativeDriver(profile,runtimeId);return {dispatch:port.dispatch,read:async(receipt,options)=>{await port.read(receipt,options);throw Error('synthetic native ACK lost after a completed paid model response');}};};
+ await event(1,0,'expired');expect(await scheduler().tick()).toMatchObject({state:'uncertain'});
+ expect(await query("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=? AND generation=? AND state='complete'",...keys()).first('n')).toBe(1);
+ const item=await query('SELECT * FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first<{id:string;job_id:string;episode_id:string;binding_json:string}>();
+ const lease=await query('SELECT lease_until FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.job_id).first<number>('lease_until');
+ const tables=['assistant_jobs','assistant_job_ledger','assistant_episodes','assistant_episode_calls','assistant_model_receipts','assistant_budget_accounts','assistant_budget_reservations','assistant_shadow_decisions'];
+ const preserved=async()=>Promise.all(tables.map(async table=>({table,rows:(await query(`SELECT * FROM ${table} WHERE installation_id=? AND generation=? ORDER BY rowid`,...keys()).all()).results})));
+ const before=await preserved();expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+ now=lease!+1;await event(2,1,'next','Synthetic independent request');
+ for(const [key,value]of snapshots)snapshots.set(key,{...(value as object),watermark:2});
+ expect(await pilotBindingCurrent(settings,JSON.parse(item!.binding_json))).toBe(false);
+ expect(await scheduler().tick()).toMatchObject({state:'held',gap:'expired_model_attempt_preserved',reconcileOnly:true});
+ expect(await preserved()).toEqual(before);expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
+ expect(await query('SELECT state,phase,last_gap FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.id).first()).toEqual({state:'uncertain',phase:'held_expired',last_gap:'expired_model_attempt_preserved'});
+ expect(await query('SELECT state,active_item_id FROM assistant_routine_state WHERE installation_id=? AND generation=?',...keys()).first()).toEqual({state:'idle',active_item_id:null});
+ driver=nativeDriver;modelFailure=false;now+=60001;await scheduler().tick();expect(modelCalls).toBe(2);expect(dispatches).toBe(2);
+ const current=await query('SELECT id,state FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id<>?',...keys(),item!.id).first<{id:string;state:string}>();expect(current!.state).toBe('complete');
+ now+=60001;await scheduler().tick();expect(modelCalls).toBe(2);expect(dispatches).toBe(2);
+ const {search}=hostConfiguredSearch(settings,'automation',()=>now),host=new EpisodeController(env.DB,{...scope,period:'2026-10-26'},search,model,DEFAULT_BROKER_CONFIG,{purpose:'automation',clock:()=>now});
+ const old=boundEpisode((await host.episodes.get(item!.episode_id))!);
+ await expect(host.model(old.id,{profile:old.profile,runtimeId:old.runtime_id,submissionId:old.submission_id!},{messages:[{role:'user',content:host.message(old)}]})).rejects.toThrow('episode_denied');
+ expect(await host.publish(old.id,{...old.receipt!.receipt,text:'{}',data:{}})).toEqual({state:'blocked'});expect(modelCalls).toBe(2);
+ expect((await host.episodes.get(old.id))!.deadline).toBe(old.deadline);
+});
+it.each(['different_lease','published_proposal'] as const)('does not detach an expired pilot attempt with %s',async reason=>{
+ settings.PROACTIVE_PILOT_JSON=JSON.stringify({id:'expired-pilot',revision:1,startAfterSequence:0,chatIds:['chat']});
+ modelFailure=true;await event();await scheduler().tick();
+ const item=await query('SELECT id,job_id FROM assistant_routine_items WHERE installation_id=? AND generation=?',...keys()).first<{id:string;job_id:string}>();
+ const lease=await query('SELECT lease_until FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.job_id).first<number>('lease_until');
+ if(reason==='different_lease')await query('UPDATE assistant_jobs SET lease_generation=lease_generation+1 WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.job_id).run();
+ else await query("INSERT INTO assistant_shadow_decisions(installation_id,generation,id,job_id,request_hash,lease_generation,episode_id,outcome,binding_hash,pack_hash,proposal_hash,dependencies_json,receipts_json,proposal_json,recorded_at) SELECT d.installation_id,d.generation,?,d.job_id,d.request_hash,d.lease_generation,d.episode_id,'proposed',e.binding_hash,?,?,'[]','[]','{}',d.recorded_at FROM assistant_shadow_decisions d JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id WHERE d.installation_id=? AND d.generation=? AND d.job_id=? LIMIT 1",'d'.repeat(64),'e'.repeat(64),'f'.repeat(64),...keys(),item!.job_id).run();
+ now=lease!+1;expect((await scheduler().tick()).state).not.toBe('held');
+ expect(await query('SELECT phase FROM assistant_routine_items WHERE installation_id=? AND generation=? AND id=?',...keys(),item!.id).first('phase')).toBe('episode');expect(modelCalls).toBe(1);expect(dispatches).toBe(1);
 });
 it("claimId never leases a different pending job or renews an old processing lease",async()=>{
  const source=await new SourceController(env.DB,scope,{kind:"owner"},()=>now).create({originKey:"owner",text:"Synthetic owner directive",occurredAt:now}),queue=new JobQueue(env.DB,scope);

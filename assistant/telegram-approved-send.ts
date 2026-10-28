@@ -50,7 +50,9 @@ export class TelegramApprovedSendReview {
  async dispatchDecision(decisionId:string,operationId:string):Promise<{id:string;state:string}>{
   await this.active();const id=await bridgeHash(['telegram-approved-send-v1',this.scope,this.bot,operationId]);let row=await this.row(id);
   if(!row){
-   const detail=await this.journal.get(decisionId);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||detail.proposal.decision!=='proposed'||detail.subject?.kind!=='capture_event')return {id,state:'not_applicable'};
+   const detail=await this.journal.get(decisionId);if(!('proposal' in detail)||!detail.proposal||detail.freshness!=='current'||detail.subject?.kind!=='capture_event')return {id,state:'blocked'};
+   if(detail.proposal.decision==='waiting_context')return {id,state:detail.proposal.text.trim()?'needs_clarification':'clarification_unavailable'};
+   if(detail.proposal.decision!=='proposed')return {id,state:'not_applicable'};
    const fence=await this.fence(),topic=await this.sql(`SELECT thread_id,fence_json FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='pending' AND state='ready'`,...this.keys(),fence.linkRevision).first<{thread_id:number;fence_json:string}>();if(!topic||topic.fence_json!==JSON.stringify(fence))return {id,state:'blocked'};
    const envelope={kind:'text' as const,chatId:detail.subject.chatId,text:detail.proposal.text};
    // No truncation: the human must see the exact entire approved body.

@@ -187,7 +187,7 @@ export class EpisodeController {
     const binding = parseBinding({ lease, actor, subject: request.subject, purpose: this.purpose, search: found.fence, runId, query, context, coverage: found.coverage, config: { ...this.config },...(request.outgoing?{outgoing:request.outgoing}:{}),
       work: work ? { kind: "follow_up", fence: work, target } : { kind: "not_follow_up" } });
     const episode = await this.episodes.prepare({ lease, requestHash: ledger.request_hash, profile, checkpoint: await bridgeHash([found.fence, context.sources.map(row => row.fence)]),
-      binding, deadline: Math.min(this.clock() + 60000, lease.lease_until - 1, bounded.deadlineAt), maxCalls: 3 });
+      binding, deadline: Math.min(this.clock() + 120000, lease.lease_until - 1, bounded.deadlineAt), maxCalls: 3 });
     return boundEpisode(await this.episodes.envelope(episode.id, { message: this.message(boundEpisode(episode)), initialData: { bindingId: episode.id }, idempotencyKey: "episode:" + episode.id }));
   }
   message(episode: BoundEpisode) {
@@ -344,7 +344,7 @@ export class EpisodeController {
     if (episode.state === "settled") return this.journal.publishedEpisode(id);
     try {
       const reply = await driver(episode.profile, episode.runtime_id).read(nativeReceipt.parse(stored.receipt),
-        { signal: AbortSignal.timeout(Math.max(1, Math.min(60000, episode.deadline - this.clock()))) });
+        { signal: AbortSignal.timeout(Math.max(1, Math.min(120000, episode.deadline - this.clock()))) });
       return this.publish(id, reply);
     } catch {
       await this.episodes.uncertain(id, "model_uncertain");

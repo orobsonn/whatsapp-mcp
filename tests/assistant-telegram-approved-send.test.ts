@@ -15,6 +15,7 @@ const proposal={decision:'proposed',text:'Podemos conversar amanhã às 10h?'};
 const envelope={kind:'text' as const,chatId:'synthetic-conversation',text:proposal.text};
 const q=(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(...args);
 beforeEach(async()=>{
+ proposal.decision='proposed';proposal.text=envelope.text;
  now=2000000;current=true;scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'c1'};
  await q(`INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',0)`,scope.installationId,scope.generation,bot,scope.sourceEpoch,scope.sourceGeneration).run();
  const fence={...scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
@@ -53,6 +54,22 @@ it('rejects an old simulation callback and an expired real approval',async()=>{
 });
 it('discards without calling the actuator',async()=>{
  await host.dispatchDecision('d1','routine:one');expect(await host.receiveCallback(callback(1))).toBe('discarded');expect(actuator.execute).not.toHaveBeenCalled();
+});
+it('routes uncertainty to an owner clarification without preparing a WhatsApp action',async()=>{
+ proposal.decision='waiting_context';
+ expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'needs_clarification'});
+ expect(actuator.prepare).not.toHaveBeenCalled();expect(actuator.execute).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
+});
+it('preserves correct silence without asking a question or preparing a send',async()=>{
+ proposal.decision='no_reply';proposal.text='';
+ expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'not_applicable'});
+ expect(actuator.prepare).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
+});
+it('does not invent a clarification from a stale or empty proposal',async()=>{
+ proposal.decision='waiting_context';current=false;
+ expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'blocked'});
+ current=true;proposal.text='';expect(await host.dispatchDecision('d1','routine:one')).toMatchObject({state:'clarification_unavailable'});
+ expect(actuator.prepare).not.toHaveBeenCalled();expect(api.send).not.toHaveBeenCalled();
 });
 it('authorizes the exact action only after a real owner callback, with a short grant',async()=>{
  await host.dispatchDecision('d1','routine:one');const row=await q(`SELECT id FROM assistant_telegram_send_reviews WHERE installation_id=?`,scope.installationId).first<{id:string}>();

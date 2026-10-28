@@ -45,6 +45,23 @@ export class AssistantScheduler {
  private async update(cycle:RoutineCycle,id:string,sql:string,values:(string|number|null)[]=[]){const owner=this.owned(cycle);await this.sql(`UPDATE assistant_routine_items SET ${sql},updated_at=? WHERE ${originScopeSql} AND id=? AND ${owner.sql}`,...values,this.clock(),...this.keys(),id,...owner.values).run();}
  private async gap(cycle:RoutineCycle,id:string,reason:string,uncertain=false){await this.update(cycle,id,"state=?,last_gap=?",[uncertain?"uncertain":["source_changed","inventory_changed"].includes(reason)?"blocked":"waiting_context",reason]);return uncertain?"uncertain":"waiting_context";}
  private configuration(){return schedulerConfiguration(this.scope,this.env);}
+ /** Detach an expired pilot attempt from coordination only. Its immutable
+  * episode, job, receipts, uncertainty and costs remain available for audit. */
+ private async holdExpiredModelAttempt(cycle:RoutineCycle,itemId:string){
+  const now=this.clock(),owner=this.owned(cycle);
+  const held=await this.sql(`UPDATE assistant_routine_items SET phase='held_expired',last_gap='expired_model_attempt_preserved',updated_at=?
+   WHERE ${originScopeSql} AND id=? AND state='uncertain' AND phase='episode'
+   AND json_type(binding_json,'$.pilot.id')='text' AND length(json_extract(binding_json,'$.pilot.id'))>0
+   AND EXISTS(SELECT 1 FROM assistant_routine_state r WHERE r.installation_id=assistant_routine_items.installation_id AND r.generation=assistant_routine_items.generation AND r.source_epoch=assistant_routine_items.source_epoch AND r.source_generation=assistant_routine_items.source_generation AND r.active_item_id=assistant_routine_items.id)
+   AND EXISTS(SELECT 1 FROM assistant_episodes e JOIN assistant_jobs j ON j.installation_id=e.installation_id AND j.generation=e.generation AND j.id=e.job_id
+    WHERE e.installation_id=assistant_routine_items.installation_id AND e.generation=assistant_routine_items.generation AND e.id=assistant_routine_items.episode_id AND e.job_id=assistant_routine_items.job_id
+    AND e.state='uncertain' AND e.deadline<=? AND j.state='processing' AND j.lease_until<=?
+    AND json_extract(e.binding_json,'$.lease.id')=j.id AND json_extract(e.binding_json,'$.lease.lease_generation')=j.lease_generation
+    AND json_extract(e.binding_json,'$.subject.sourceEpoch')=assistant_routine_items.source_epoch AND json_extract(e.binding_json,'$.subject.sourceGeneration')=assistant_routine_items.source_generation
+    AND NOT EXISTS(SELECT 1 FROM assistant_shadow_decisions d WHERE d.installation_id=j.installation_id AND d.generation=j.generation AND d.job_id=j.id AND d.proposal_json IS NOT NULL))
+   AND ${owner.sql} RETURNING id`,now,...this.keys(),itemId,now,now,...owner.values).first<{id:string}>();
+  return !!held;
+ }
  async tick(){
   if(this.env.ROUTINES_ENABLED!=="shadow")return {state:"disabled"};const paused=this.env.ROUTINES_PAUSED==="true";let pilot;try{pilot=readProactivePilot(this.env);}catch{return {state:'blocked',gap:'proactive_pilot_configuration'};}
   try{await assertRestoredGeneration(this.env);}catch(error){const known=["restore_runtime_paused","restore_generation_inactive","restore_generation_seal_required","canonical_writers_quiesced"];return {state:"blocked",gap:error instanceof Error&&known.includes(error.message)?error.message:"restore_runtime_unavailable"};}
@@ -60,7 +77,8 @@ export class AssistantScheduler {
    }
    if(!paused){
     const selection=pilot?pilotSelection(pilot):null;
-    const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ${selection?`AND ${selection.sql}`:''} ORDER BY updated_at,id LIMIT 1`,...this.keys(),...(selection?.values??[])).first<{id:string}>();
+    const row=reconcileOnly?await this.sql(`SELECT active_item_id id FROM assistant_routine_state WHERE ${originScopeSql}`,...this.keys()).first<{id:string}>():await this.sql(`SELECT id FROM assistant_routine_items WHERE ${originScopeSql} AND phase<>'held_expired' AND (state IN ('pending','waiting_context','ready','processing','uncertain') OR (state='complete' AND phase='review')) ${selection?`AND ${selection.sql}`:''} ORDER BY updated_at,id LIMIT 1`,...this.keys(),...(selection?.values??[])).first<{id:string}>();
+    if(reconcileOnly&&row?.id&&await this.holdExpiredModelAttempt(cycle,row.id)){await this.routines.phase(cycle,'expired_model_attempt_held',null);await this.routines.finish(cycle,'expired_model_attempt_preserved',false);return {state:'held',gap:'expired_model_attempt_preserved',reconcileOnly};}
     if(reconcileOnly&&row?.id&&pilot){const item=await this.item(row.id);if(!item||!await pilotBindingCurrent(this.env,JSON.parse(item.binding_json))){await this.routines.finish(cycle,'pilot_backlog_held',true);return {state:'blocked',gap:'pilot_backlog_held',reconcileOnly};}}
     if(row?.id){const item=await this.item(row.id);if(item){await this.routines.phase(cycle,"work",item.id);state=await this.process(cycle,item,reconcileOnly);gap=(await this.item(item.id))?.last_gap??gap;}}
    }
@@ -257,12 +275,21 @@ export class AssistantScheduler {
   await this.update(cycle,item.id,"state='complete',phase='review',last_gap=NULL");
   if(binding.pilot){
    if(this.env.TELEGRAM_SUGGESTIONS_ENABLED!=="true"||this.env.WHATSAPP_APPROVED_SEND_ENABLED!=="true")return 'complete';
-   const decision=await this.sql(`SELECT id FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND episode_id=? AND proposal_json IS NOT NULL`,this.scope.installationId,this.scope.generation,episodeId).first<{id:string}>();
+   const decision=await this.sql(`SELECT id,recorded_at FROM assistant_shadow_decisions WHERE installation_id=? AND generation=? AND episode_id=? AND proposal_json IS NOT NULL`,this.scope.installationId,this.scope.generation,episodeId).first<{id:string;recorded_at:number}>();
    if(!decision)return 'complete';
    try{
     const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
     const review=await createTelegramApprovedSendReview(this.env,this.scope,()=>this.owned(cycle));
     const result=await review.dispatchDecision(decision.id,'routine-send:'+item.id);
+    if(result.state==='needs_clarification'){
+     const questions=await createTelegramReview(this.env,this.scope,()=>this.owned(cycle));
+     const notice=await questions.execute({kind:'notification.prepare',operationId:'routine-clarification:'+item.id,topic:'pending',decisionId:decision.id,expiresAt:decision.recorded_at+3600000}) as {id:string};
+     const delivery=await questions.execute({kind:'notification.dispatch',id:notice.id}) as {state:string};
+     if(delivery.state==='sent')await this.update(cycle,item.id,"phase='done',last_gap=NULL");
+     else if(delivery.state==='uncertain')await this.update(cycle,item.id,"phase='done',last_gap='telegram_clarification_delivery_uncertain'");
+     else await this.update(cycle,item.id,'last_gap=?',['telegram_clarification_'+delivery.state]);
+     return 'complete';
+    }
     if(['sent','uncertain','cancelled','not_applicable'].includes(result.state))await this.update(cycle,item.id,"phase='done',last_gap=NULL");
     else await this.update(cycle,item.id,"last_gap=?",['telegram_'+result.state]);
    }catch{await this.update(cycle,item.id,"last_gap='telegram_approved_send_unavailable'");}
@@ -322,7 +349,7 @@ export class AssistantScheduler {
   if(result.state==="pending"&&configured.semantic){await this.routines.phase(cycle,"semantic_presearch",item.id);await configured.search.advanceSemantic(binding.actor,progress.runId);result=await configured.search.result(binding.actor,progress.runId);}
   if(result.state!=="ready")return this.gap(cycle,item.id,result.coverage.gaps[0]??"waiting_context",result.coverage.engine==="unavailable");
   await this.update(cycle,item.id,"state='ready',last_gap=NULL");await this.routines.phase(cycle,"claim_episode",item.id);
-  const lease=await host.queue.claimId(item.job_id,this.clock(),90000);if(!lease)return this.gap(cycle,item.id,"job_not_claimable");
+  const lease=await host.queue.claimId(item.job_id,this.clock(),180000);if(!lease)return this.gap(cycle,item.id,"job_not_claimable");
   const episode=await host.prepare(lease,binding.profile,progress.runId);await this.update(cycle,item.id,"episode_id=?,state='processing',phase='episode'",[episode.id]);
   return (await this.existingEpisode(cycle,{...item,episode_id:episode.id},host,false))??"uncertain";
  }
