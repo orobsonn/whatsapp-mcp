@@ -1,6 +1,20 @@
 # Envio aprovado — implantação e aceite pendente
 
-Atualização mais recente: 28/10/2026, 18:14 UTC. Os snapshots anteriores permanecem abaixo como histórico. [Issue146](https://github.com/orobsonn/whatsapp-mcp/issues/146), [PR147](https://github.com/orobsonn/whatsapp-mcp/pull/147). Este registro distingue código implantado de comportamento homologado.
+Atualização mais recente: 28/10/2026, 22:38 UTC. Os snapshots anteriores permanecem abaixo como histórico. [Issue146](https://github.com/orobsonn/whatsapp-mcp/issues/146), [PR147](https://github.com/orobsonn/whatsapp-mcp/pull/147). Este registro distingue código implantado de comportamento homologado.
+
+## Contexto na revisão e feedback real
+
+A prévia real Telegram100 apresentou mensagem recebida, resumo da IA e resposta sugerida em campos separados. Houve callback autenticado de descarte. O Source confirmou ação expirada e `attempted_at=NULL`: nenhuma tentativa WhatsApp. Isso comprova o formato e o descarte; não comprova o envio aprovado. O dono confirmou que o circuito funcionou, mas que aquela mensagem encerrava a conversa e não precisava de resposta. Essa avaliação exige refinar a decisão `no_reply`, sem confundir publicação com utilidade.
+
+Source0017/0018 foram aplicadas. O Source ativo é `e85774d5-8bfb-4623-a3ff-a68c9dfd9d17`; o piloto usa revisão3, `captured_private/conversation_manifest`, preservando cutoff3683. As provas de identidade são metadados de atividade, sem mesclar históricos. O contexto chega ao runtime diretamente pelo manifesto; resposta posterior e nova entrada superam gatilhos antigos.
+
+O caso privado que não publicou revelou resposta e resumo pagos completos, mas citações vazias. A regra adicional do parser recusava o resultado. `fcd49e9` permite citações vazias somente no manifesto privado congelado pelo host; as que forem fornecidas continuam validadas, e os outros modos conservam sua exigência. Os380microUSD da tentativa anterior foram preservados, sem reabrir episódio nem repetir inferência. Episódios preparados vencidos também deixam a coordenação após vencerem os dois prazos, sem renovar autoridade.
+
+A correção visual traduz a assinatura WhatsApp inicial em negrito/itálico escapados no Telegram, preservando original e envelope. A orientação ao modelo passa a considerar silêncio em confirmações, risadas ou encerramentos sem pedido pendente; a qualidade dessa orientação deve ser acompanhada em novas conversas reais.
+
+CI de `44d410b`: [40763919056](https://github.com/orobsonn/whatsapp-mcp/actions/runs/40763919056),1782gerais,13OAuth,70nativos e verificações Node/tipos/builds/auditoria aprovadas. `cd145c4` também tem CI aprovada. Ajustes posteriores têm verificações dirigidas; o resultado de cada CI deve ser consultado no commit exato antes do fechamento do marco.
+
+Ainda falta sugestão atual útil → aprovação real do dono → tentativa única e consequência do provedor. A issue146 e a release0.52 continuam pendentes desse aceite. Resposta autônoma permanece desligada.
 
 ## Sugestão real e defeito de identidade —18:14UTC
 

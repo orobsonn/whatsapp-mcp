@@ -165,3 +165,11 @@ it('labels a long original as an excerpt and preserves the entire escaped outgoi
  expect(await host.dispatchDecision('d1','routine:long-context')).toMatchObject({state:'sent'});
  const body=vi.mocked(api.send).mock.calls[0][2];expect(body.length).toBeLessThanOrEqual(4096);expect(body).toContain('Mensagem recebida (trecho)');expect(body).toContain(proposal.text.replaceAll('&','&amp;'));expect(body).not.toContain('<longo>');
 });
+
+it('renders a WhatsApp signature safely while preserving its original and the outgoing body',async()=>{
+ reviewContext!.text='*_Pessoa <sintética>:_*\nkkk tudo bem';
+ expect(await host.dispatchDecision('d1','routine:signature')).toMatchObject({state:'sent'});
+ const body=vi.mocked(api.send).mock.calls[0][2];expect(body).toContain('<b><i>Pessoa &lt;sintética&gt;:</i></b>\nkkk tudo bem');expect(body).not.toContain('*_Pessoa');
+ expect(vi.mocked(actuator.prepare).mock.calls[0][0].envelope).toEqual(envelope);
+ const target=await q('SELECT target_json FROM assistant_telegram_send_reviews WHERE installation_id=?',scope.installationId).first<string>('target_json');expect(JSON.parse(target!).review.received.text).toBe(reviewContext!.text);
+});

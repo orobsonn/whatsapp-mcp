@@ -14,6 +14,8 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Piloto proativo por conversas e watermark Source, com contexto imutável de até três fontes/8KiB e revalidação nos callbacks Flue. Não drena backlog nem FUP anterior.
 
 ### Fixed
+- Assinaturas de nome do WhatsApp são formatadas na prévia Telegram, com escape HTML e original preservado. A orientação de resposta considera encerramentos sem pedido pendente.
+- Manifestos privados podem publicar respostas sem citações produzidas pelo modelo; contexto e origem seguem conferidos pelo host e citações fornecidas seguem validadas.
 - Mensagem posterior invalida sugestões anteriores, inclusive áudio ou texto acima do limite; o claim confere o watermark observado.
 - Callback privado autenticado pode registrar a relação telefone/LID, criando somente metadados ausentes. Contradição bloqueia a automação também no novo telefone sem desativar captura nem envios manuais.
 - Claim final confere o destino efetivamente usado, inclusive mudança A→B→A durante consultas assíncronas, além de conexão, envelope e expiração.

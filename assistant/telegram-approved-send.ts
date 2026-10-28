@@ -29,6 +29,8 @@ const receivedContext=z.object({sourceId:label,revision:positive,version:positiv
 type ReceivedContext=z.infer<typeof receivedContext>;
 type ReviewDetail=Awaited<ReturnType<JournalPort['get']>>;
 const escape=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+// A WhatsApp signature is display text, never authenticated sender identity.
+const receivedHtml=(text:string)=>escape(text).replace(/^\*_([^\r\n_*]{1,160}:)_\*(?=\r?\n)/u,'<b><i>$1</i></b>');
 
 /** Host-only actuator. The model can propose text; only this authenticated
  * callback records approval. Historical r_ simulation buttons never reach it. */
@@ -66,12 +68,12 @@ export class TelegramApprovedSendReview {
   const prefix=`💬 <b>SUGESTÃO DE RESPOSTA</b>\n\n<b>Conversa:</b> ${escape(target.name)}\n${escape(target.address)}${target.kind==='group'?' · Grupo':''}\n\n`;
   const suffix=`${summary?`\n\n🧭 <b>Resumo da IA</b>\n${escape(summary)}`:''}\n\n✍️ <b>Resposta sugerida</b>\n${escape(text)}\n\n<i>Aprovar envia apenas a resposta sugerida ao WhatsApp.</i>`;
   const label='📩 <b>Mensagem recebida';
-  const limit=Math.min(1000,4096-prefix.length-suffix.length-label.length-' (trecho)</b>\n…'.length);
+  const limit=Math.min(1000,4096-prefix.length-suffix.length-label.length-' (trecho)</b>\n…'.length-14);
   if(limit<Math.min(80,escape(context.text).length))return null;
   let excerpt='',length=0;
   for(const point of context.text){const size=escape(point).length;if(length+size>limit)break;excerpt+=point;length+=size;}
   const clipped=excerpt.length<context.text.length;
-  const body=prefix+label+(clipped?' (trecho)':'')+'</b>\n'+escape(excerpt)+(clipped?'…':'')+suffix;
+  const body=prefix+label+(clipped?' (trecho)':'')+'</b>\n'+receivedHtml(excerpt)+(clipped?'…':'')+suffix;
   return body.length<=4096?body:null;
  }
  private async current(row:Row){
