@@ -8,6 +8,7 @@ const label = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}
 const entity = z.enum(["notes", "missions", "follow_ups", "policies"]);
 export const dialogueWitnesses = z.array(z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("owner_model"), source: sourceFence, operationKey: label, requestHash: hash, resultHash: hash, bindingHash: hash, submissionId: label }).strict(),
+  z.object({ kind: z.literal("owner_answer"), source: sourceFence, operationKey: label, requestHash: hash, resultHash: hash, bindingHash: hash, submissionId: label }).strict(),
   z.object({ kind: z.literal("owner_listing"), entity, rowsJSON: z.string().max(20000) }).strict(),
   z.object({ kind: z.literal("owner_command"), operationId: label, resultJSON: z.string().max(16384) }).strict(),
   z.object({ kind: z.literal("calendar_action"), actionId: hash, resultJSON: z.string().max(4096) }).strict(),
@@ -72,10 +73,10 @@ export class DialogueState {
         guards.push(new SourceAccess(this.db, this.scope).guard({ kind: "owner" }, proof.source, Date.now()), {
           sql: `EXISTS(SELECT 1 FROM assistant_telegram_dialogue_phases p JOIN assistant_model_receipts m ON m.installation_id=p.installation_id AND m.generation=p.generation AND m.operation_key=p.operation_key
             JOIN assistant_episodes e ON e.installation_id=p.installation_id AND e.generation=p.generation AND e.id=p.episode_id
-            WHERE p.installation_id=? AND p.generation=? AND p.request_id=? AND p.phase='intent' AND p.state='complete' AND p.purged=0 AND p.operation_key=? AND p.request_hash=? AND p.result_hash=?
+            WHERE p.installation_id=? AND p.generation=? AND p.request_id=? AND p.phase=? AND p.state='complete' AND p.purged=0 AND p.operation_key=? AND p.request_hash=? AND p.result_hash=?
             AND e.binding_hash=? AND e.submission_id=? AND e.state IN ('dispatching','accepted','running') AND e.deadline>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)
             AND m.request_hash=p.request_hash AND m.source_id=p.request_id AND m.state='complete' AND m.actual_units IS NOT NULL AND m.response_json=p.result_json)`,
-          values: [this.scope.installationId, this.scope.generation, proof.source.source.id, proof.operationKey, proof.requestHash, proof.resultHash, proof.bindingHash, proof.submissionId],
+          values: [this.scope.installationId, this.scope.generation, proof.source.source.id, proof.kind === "owner_answer" ? "answer" : "intent", proof.operationKey, proof.requestHash, proof.resultHash, proof.bindingHash, proof.submissionId],
         });
       }
     }

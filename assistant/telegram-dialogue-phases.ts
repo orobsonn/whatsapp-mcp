@@ -35,7 +35,7 @@ export class OwnerDialoguePhases {
   private readonly checkpoint: Promise<string>;
   constructor(private readonly db: D1Database, scope: Scope, raw: Context, private readonly inbox: TelegramOwnerInbox,
     private readonly turn: TelegramOwnerTurn, private readonly adapter: ModelAdapter,
-    private readonly options: { origin?: Pick<OriginGuard, "check" | "localGuard">; signal?: AbortSignal } = {}) {
+    private readonly options: { origin?: Pick<OriginGuard, "check" | "localGuard">; signal?: AbortSignal; githubQuestion?: boolean } = {}) {
     this.scope = Object.freeze({ ...scope }); this.context = Object.freeze(JSON.parse(JSON.stringify(raw)));
     const c = this.context, frame = inbox.replyFence(turn);
     if (["installationId", "generation", "sourceEpoch", "sourceGeneration"].some(key => frame[key as keyof OwnerAffinity] !== scope[key as keyof OwnerAffinity])
@@ -78,6 +78,7 @@ export class OwnerDialoguePhases {
       AND json_extract(e.binding_json,'$.period')=? AND json_extract(e.binding_json,'$.config')=?)`,
       values: [this.scope.installationId, this.scope.generation, c.episodeId, c.bindingHash, c.lease.id, c.identity.runtimeId, c.identity.submissionId, c.deadlineAt,
         c.source.source.id, await this.checkpoint, this.scope.period, JSON.stringify(c.config)] },
+      ...(this.options.githubQuestion ? [{ sql: `EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND json_extract(result_json,'$.kind')='telegram_owner_research' AND json_extract(result_json,'$.mode')='github_question')`, values: [this.scope.installationId, this.scope.generation, c.episodeId] }] : []),
       ...deps.flatMap(dep => [this.access.guard(owner, dep.source, Date.now()), ...(dep.origin ? [this.options.origin!.localGuard(dep.origin)] : [])]));
   }
   private async authority(deps: ReplyDependency[]) {
@@ -137,7 +138,7 @@ export class OwnerDialoguePhases {
   async run(phase: Phase, payload: unknown, inputDeps: ReplyDependency[] = []): Promise<Result> {
     if (!["intent", "answer"].includes(phase) || this.lifetime.aborted) return { state: "blocked" };
     const owned = JSON.stringify(payload); if (!owned || new TextEncoder().encode(owned).length > 65536) throw Error("dialogue_phase_payload");
-    const deps = this.dependencies(inputDeps); if (phase === "intent" && deps.length) throw Error("dialogue_phase_dependencies");
+    const deps = this.dependencies(inputDeps); if (phase === "intent" && deps.length && !this.options.githubQuestion) throw Error("dialogue_phase_dependencies");
     let row: Row | null = null, runToken: string | undefined;
     const config = { ...this.context.config, extractionConfig: this.context.config.extractionConfig + ":" + phase };
     const broker = new CogneeModelBroker(this.db, this.scope, config, async request => {

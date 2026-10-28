@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import { assertActive, currentFence, safeEqual } from "./core";
 import { resolveRuntimeEnv } from "./connection";
 import {readRecipientEnvelope} from './assistant-recipient-reader';
+import {readCaptureConversationSearch} from './assistant-search-reader';
 
 const MAX_BYTES = 32768;
 const id = z.string().min(1).max(256);
@@ -152,6 +153,7 @@ export async function readInstallationAffinity(rawEnv: Env, input: unknown): Pro
 
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
+  searchConversations(input: unknown) { return readCaptureConversationSearch(this.env, input); }
   readRecipientEnvelope(input:unknown){return readRecipientEnvelope(this.env,input);}
   readSnapshot(input: unknown): Promise<CaptureSnapshot> { return readCaptureSnapshot(this.env, input); }
   installationAffinity(input: unknown): Promise<CaptureInstallationAffinity> { return readInstallationAffinity(this.env, input); }

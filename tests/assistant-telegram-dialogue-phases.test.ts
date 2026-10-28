@@ -164,3 +164,15 @@ it("purges private phases and a late model body while preserving a paid settleme
   const row = await env.DB.prepare("SELECT body_json,result_json,deps_json FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND generation=? AND request_id=? AND phase='answer'").bind(scope.installationId, scope.generation, source.source.id).first();
   expect(row).toEqual({ body_json: null, result_json: null, deps_json: "[]" });
 });
+
+it("read-context intent is admitted only in a host-locked GitHub research episode and replays without a second provider call", async () => {
+  const support = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "github-research-grant", text: "Synthetic read grant", occurredAt: Date.now() });
+  const dep = { source: (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, support.id))!.fence };
+  const research = new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter, { githubQuestion: true });
+  expect((await research.run("intent", payload(), [dep])).state).toBe("blocked"); expect(adapter).not.toHaveBeenCalled();
+  await env.DB.prepare("UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND id=?").bind(JSON.stringify({ kind: "telegram_owner_research", mode: "github_question", dependencies: [dep] }), scope.installationId, context.episodeId).run();
+  expect((await research.run("intent", payload(), [dep])).state).toBe("complete");
+  expect((await new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter, { githubQuestion: true }).run("intent", payload(), [dep])).state).toBe("complete"); expect(adapter).toHaveBeenCalledTimes(1);
+  await new SourceController(env.DB, scope, { kind: "owner" }).withdraw(support.id, 1);
+  expect((await research.run("answer", payload("Explain the selected sources."), [dep])).state).toBe("blocked"); expect(adapter).toHaveBeenCalledTimes(1);
+});
