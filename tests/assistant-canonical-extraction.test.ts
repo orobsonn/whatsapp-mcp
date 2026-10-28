@@ -19,15 +19,12 @@ import {receiveCapture} from '../assistant/ingress';
 import * as ingress from '../assistant/ingress';
 import {Retrieval} from '../assistant/retrieval';
 import {RetentionPurge} from '../assistant/retention-purge';
-// @ts-expect-error Vite SQL fixtures.
-const migrations=import.meta.glob('../assistant/migrations/*.sql',{query:'?raw',import:'default',eager:true}) as Record<string,string>;
 let scope:OriginScope,now:number,sourceId:string,owner:SourceController,controls:OwnerControl,adapter:ReturnType<typeof vi.fn<ModelAdapter>>,guarded:boolean,paused:boolean;
 const keys=()=>[scope.installationId,scope.generation],sql=(q:string,...v:(string|number|null)[])=>env.DB.prepare(q).bind(...v);
 const claims=()=>[{kind:'suggestion',subject:{kind:'mission',id:'mission-a'},object:{kind:'project',id:'project-a'},predicate:'deadline',quote:'Marina sugeriu sexta.'}];
 function extractor(db=env.DB){return new CanonicalCandidateExtractor(db,scope,{clock:()=>now,adapter,enabled:()=>!paused,guard:()=>({sql:guarded?'1':'0',values:[]})});}
 async function catalog(){await controls.execute({kind:'project.put',operationId:'project',id:'project-a',expectedVersion:0,name:'Marina'});await controls.execute({kind:'mission.put',operationId:'mission',id:'mission-a',expectedRevision:0,objective:'Follow the source, with no action authority',source:{id:sourceId,revision:1},project:{id:'project-a',revision:1},state:'draft'});}
 beforeEach(async()=>{
- for(const [,migration]of Object.entries(migrations).sort(([a],[b])=>a.localeCompare(b))){const parts=migration.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(p=>p.trim());if(parts.length)await env.DB.batch(parts.map(p=>env.DB.prepare(p)));}
  scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'epoch',sourceGeneration:'capture'};now=Date.parse('2026-10-26T12:00:00Z');guarded=true;paused=false;
  owner=new SourceController(env.DB,scope,{kind:'owner'},()=>now);controls=new OwnerControl(env.DB,scope,{kind:'owner'},()=>now);sourceId=(await owner.create({originKey:'note',text:'Marina sugeriu sexta. Marina sugeriu segunda.',authorId:'literal-source-author',authorLabel:'Marina',occurredAt:now})).id;
  await new InferenceBudget(env.DB,{...scope,period:'2026-10-26'}).configure(100000);

@@ -25,14 +25,11 @@ import { InferenceBudget } from '../assistant/budget';
 import { RetentionPurge } from '../assistant/retention-purge';
 import { OriginGuard } from '../assistant/origin-guard';
 import { CaptureMaterializer } from '../assistant/materialize';
-// @ts-expect-error Vite glob assets.
-const migrations = import.meta.glob('../assistant/migrations/*.sql', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 import type { MediaModelPort } from '../assistant/media-model';
 let scope: { installationId: string; generation: string; period: string; sourceEpoch: string; sourceGeneration: string }, context: MediaContext, sourceId: string, port: ReturnType<typeof vi.fn<MediaModelPort>>, original: Uint8Array, origin: OriginGuard, options: ConstructorParameters<typeof MediaContext>[2], snapshot: any, snapshotReader: {readSnapshot: () => Promise<any>};
 const owner = { kind: 'owner' } as const;
 const response = () => JSON.stringify({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify({ observations: 'Órbita não foi confirmado; depende de Ana.', pages: [{ page: 1, state: 'readable', text: 'NÃO confirmar terça' }] }) }] }], usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } });
 beforeEach(async () => {
-  for (const [name, sql] of Object.entries(migrations).sort()) await env.DB.batch(sql.replace(/^--.*$/gm, '').trim().split(/;\s*(?=CREATE|$)/).filter(x => x.trim()).map(x => env.DB.prepare(x)));
   scope = { installationId: crypto.randomUUID(), generation: 'g', period: '2026-10-26', sourceEpoch: 'e', sourceGeneration: 'cg' }; original = png();
   const blobHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', original)), x => x.toString(16).padStart(2, '0')).join('');
   snapshot = { observation: 'capture_snapshot', state: 'available', sourceEpoch: 'e', sourceGeneration: 'cg', sourceKind: 'media', sourceId: 'media1', chatId: 'chat', sourceVersion: 1, watermark: 1, conversationKind: 'private', access: { captureEnabled: true, captureSince: 0, discontinuous: false }, content: { kind: 'image', messageId: 'msg1', messageVersion: 1, media: { id: 'media1', version: 1, hash: blobHash, size: original.length, mime: 'image/png' } } };

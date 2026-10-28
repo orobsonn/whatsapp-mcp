@@ -7,12 +7,9 @@ import { InferenceBudget } from '../assistant/budget';
 import { AssistantExport } from '../assistant/retention';
 import { installationHealth } from '../assistant/installation-health';
 import { JobQueue } from '../assistant/queue';
-// @ts-expect-error Vite SQL assets.
-const migrations = import.meta.glob('../assistant/migrations/*.sql', {query:'?raw',import:'default',eager:true}) as Record<string,string>;
 const owner={kind:'owner'} as const, hash='a'.repeat(64), key='canonical-owner-v2:'+'b'.repeat(64), guard={allow:async()=>{},withdraw:async()=>{}};
 let scope:{installationId:string;generation:string;period:string}, sources:SourceController, a:string,b:string;
 beforeEach(async()=>{
- for(const [,sql] of Object.entries(migrations).sort())await env.DB.batch(sql.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|ALTER|INSERT|DROP|$)/).filter(q=>q.trim()).map(q=>env.DB.prepare(q)));
  scope={installationId:crypto.randomUUID(),generation:'g1',period:'2026-10-27'};sources=new SourceController(env.DB,scope,owner,()=>100,guard);
  a=(await sources.create({originKey:'anchor',audience:'public',text:'Independent original.',occurredAt:1})).id;b=(await sources.create({originKey:'support',text:'Private support BODY.',occurredAt:1})).id;
  const anchor=(await new SourceAccess(env.DB,scope).read(owner,a))!,support=(await new SourceAccess(env.DB,scope).read(owner,b))!;
