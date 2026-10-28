@@ -21,6 +21,17 @@ it("renders only observed busy intervals and keeps incomplete coverage explicit"
   const text = renderCalendarObservation({ ...partial, busy: [{ start: "2026-10-28T12:00:00Z", end: "2026-10-28T13:00:00Z" }] });
   expect(text).toContain("09:00–10:00"); expect(text.toLowerCase()).toContain("somente leitura");
 });
+it("renders separate escaped event titles, including transparent and all-day appointments", () => {
+  const raw = { state: "available", start: "2026-10-28T03:00:00Z", busy: [], coverage: { complete: true, configuredCalendars: 1 }, eventsCoverage: { complete: true }, events: [
+    { title: "Reunião <b>literal</b>", start: { dateTime: "2026-10-28T12:00:00Z" }, end: { dateTime: "2026-10-28T13:00:00Z" }, transparent: false },
+    { title: "Revisão & proposta", start: { dateTime: "2026-10-28T12:30:00Z" }, end: { dateTime: "2026-10-28T13:30:00Z" }, transparent: true },
+    { title: "Compromisso de dia inteiro", start: { date: "2026-10-28" }, end: { date: "2026-10-29" }, transparent: false },
+  ] };
+  const text = renderCalendarObservation(raw);
+  expect(text).toContain("Reunião &lt;b&gt;literal&lt;/b&gt;"); expect(text).toContain("09:00–10:00");
+  expect(text).toContain("Revisão &amp; proposta"); expect(text).toContain("Dia inteiro"); expect(text).not.toContain("Nenhum compromisso");
+  expect(text.length).toBeLessThan(4000);
+});
 
 async function configured(tokenEffect?: () => void) {
   const scope = { installationId: crypto.randomUUID(), generation: "calendar-dialogue", sourceEpoch: "calendar-epoch", sourceGeneration: "calendar-capture" };
@@ -46,4 +57,13 @@ it("uses the real reader, returns its authorization fences, and never reads afte
   expect(request).toHaveBeenCalledOnce(); stop.abort();
   expect((await readTelegramCalendar(f.settings, f.scope, "Agenda amanhã", occurredAt, options)).state).toBe("unavailable");
   expect(request).toHaveBeenCalledOnce(); expect(f.token).toHaveBeenCalledOnce();
+});
+it("bounds a reply and its private observation when many titles need escaping or truncation", async () => {
+  const f = await configured(), request = vi.fn(async () => Response.json({ items: Array.from({ length: 30 }, () => ({ status: "confirmed", summary: "&<".repeat(500),
+    start: { dateTime: "2026-10-28T12:00:00Z" }, end: { dateTime: "2026-10-28T13:00:00Z" } })) }));
+  const result = await readTelegramCalendar(f.settings, f.scope, "Compromissos amanhã", occurredAt, { deadlineAt: Date.now() + 60000, check: async () => {}, request });
+  expect(result.state).toBe("available"); if (result.state !== "available") return;
+  expect(result.text.length).toBeLessThan(4000); expect(result.text).toContain("&amp;");
+  expect(new TextEncoder().encode(JSON.stringify(result.observation.result)).length).toBeLessThanOrEqual(6000);
+  expect(result.observation.result).toMatchObject({ eventsCoverage: { complete: false }, projection: "telegram_calendar_event_excerpt_v1" });
 });

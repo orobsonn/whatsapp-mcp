@@ -22,21 +22,29 @@ beforeEach(async () => {
   const source = await controller.create({ originKey: "calendar-permission", text: "Host config enables selected calendars", occurredAt: 1, projectId: "project" });
   authorization = { sourceId: source.id, revision: source.revision };
 });
-test("explicit interval and IANA time zone reach GET events only; private event details never return", async () => {
-  const requests: Request[] = [], reader = new CalendarReader(env.DB, scope, config(), "synthetic-calendar-secret", async request => { requests.push(request); return Response.json({ items: [busy()] }); }, () => 100);
+test("explicit interval and IANA time zone reach GET events with titles, while notes and attendees remain excluded", async () => {
+  const requests: Request[] = [], reader = new CalendarReader(env.DB, scope, config(), "synthetic-calendar-secret", async request => { requests.push(request); return Response.json({ items: [busy()] }); }, () => 100, true);
   const result = await reader.execute(owner, query);
   expect(result).toMatchObject({ state: "available", origin: "calendar", audience: "owner", start: query.start, end: query.end, timeZone: query.timeZone,
     execution: "unconfirmed", busy: [{ start: "2026-10-26T13:00:00.000Z", end: "2026-10-26T14:00:00.000Z" }], availability: "conflict_observed", coverage: { complete: true, snapshot: "not_atomic", pages: 1 } });
-  for (const privateText of ["synthetic-private", "private-person", "synthetic-calendar-secret"]) expect(JSON.stringify(result)).not.toContain(privateText);
+  expect(result).toMatchObject({ events: [{ title: "synthetic-private-title" }] });
+  for (const privateText of ["synthetic-private-notes", "private-person", "synthetic-calendar-secret"]) expect(JSON.stringify(result)).not.toContain(privateText);
   expect(requests).toHaveLength(1); expect(requests[0].method).toBe("GET"); expect(requests[0].body).toBeNull(); expect(requests[0].redirect).toBe("manual");
   const url = new URL(requests[0].url);
   expect(url.origin).toBe("https://www.googleapis.com"); expect(url.pathname).toBe("/calendar/v3/calendars/synthetic-private-calendar%40example.invalid/events");
   expect(url.searchParams.get("timeMin")).toBe(query.start); expect(url.searchParams.get("timeMax")).toBe(query.end); expect(url.searchParams.get("timeZone")).toBe(query.timeZone);
-  expect(url.searchParams.get("fields")).toBe("items(status,transparency,start,end),nextPageToken");
+  expect(url.searchParams.get("fields")).toBe("items(status,transparency,start,end,summary),nextPageToken");
+});
+test("keeps distinct titles for overlapping, transparent and all-day events instead of attaching them to merged busy intervals", async () => {
+  const items = [busy(), { ...busy(), summary: "Transparent appointment", transparency: "transparent" },
+    { status: "confirmed", summary: "All-day appointment", start: { date: "2026-10-26" }, end: { date: "2026-10-27" } }];
+  const result = await new CalendarReader(env.DB, scope, config(), "token", async () => Response.json({ items }), Date.now, true).execute(owner, query);
+  expect(result).toMatchObject({ events: [{ title: "synthetic-private-title" }, { title: "Transparent appointment", transparent: true }, { title: "All-day appointment", start: { date: "2026-10-26" } }],
+    eventsCoverage: { complete: true }, busy: [{ start: "2026-10-26T13:00:00.000Z", end: "2026-10-26T14:00:00.000Z" }] });
 });
 test("missing/invalid interval, time zone and mutation fields are rejected before any request", async () => {
   const request = vi.fn(async () => Response.json({ items: [] })), reader = new CalendarReader(env.DB, scope, config(), "token", request);
-  for (const extra of [{ method: "POST" }, { url: "https://other.invalid" }, { calendars: ["work"] }, { recipients: ["hidden@example.invalid"] }]) await expect(reader.execute(owner, { ...query, ...extra })).rejects.toThrow();
+  for (const extra of [{ method: "POST" }, { url: "https://other.invalid" }, { calendars: ["work"] }, { recipients: ["hidden@example.invalid"] }, { includeEventTitles: true }]) await expect(reader.execute(owner, { ...query, ...extra })).rejects.toThrow();
   for (const changed of [{ timeZone: "Unknown/Nowhere" }, { timeZone: undefined }, { start: "2026-10-26T09:00:00" }, { end: query.start }, { end: "2027-10-26T09:00:00Z" }]) await expect(reader.execute(owner, { ...query, ...changed })).rejects.toThrow();
   expect(request).not.toHaveBeenCalled();
 });
@@ -138,12 +146,14 @@ test("the authenticated RPC reports OAuth missing and exposes configured GET rea
   expect(await new OwnerAssistant(createExecutionContext(), settings).query(affinity, query)).toMatchObject({ state: "pending_configuration", dependency: "calendar_read" });
   const configured = { ...settings, CALENDAR_READ_CALENDARS: JSON.stringify(config()) };
   expect(await new OwnerAssistant(createExecutionContext(), configured).query(affinity, query)).toMatchObject({ dependency: "calendar_read_oauth" });
-  const network = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ items: [] }));
+  const network = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ items: [busy()] }));
   try {
     const credential = vi.fn(async () => ({ state: "ready" as const, accessToken: "synthetic-token", expiresAt: Date.now() + 3600000 }));
     const rpc = new OwnerAssistant(createExecutionContext(), { ...configured, CALENDAR_OAUTH_CONFIGURATION_VERSION: "1", CALENDAR_OAUTH_SECRET_EPOCH: "synthetic-epoch",
       CALENDAR_OAUTH: { idFromName: (name: string) => name, get: () => ({ token: credential }) } as unknown as import("../assistant/env").AssistantEnv["CALENDAR_OAUTH"] });
-    expect(await rpc.query(affinity, query)).toMatchObject({ origin: "calendar", audience: "owner", availability: "no_conflict_observed" });
+    const result = await rpc.query(affinity, query);
+    expect(result).toMatchObject({ origin: "calendar", audience: "owner", availability: "conflict_observed" });
+    expect(result).not.toHaveProperty("events"); expect(JSON.stringify(result)).not.toContain("synthetic-private-title");
     await expect(rpc.query({ ...affinity, generation: "foreign" }, query)).rejects.toThrow("owner_binding_affinity");
     expect(network).toHaveBeenCalledTimes(1); expect((network.mock.calls[0][0] as Request).method).toBe("GET");
   } finally { network.mockRestore(); }

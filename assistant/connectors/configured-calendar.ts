@@ -7,7 +7,7 @@ import type { ReadFetch, OwnerReadBoundary } from "./read-only";
 
 export type CalendarReadBoundary = OwnerReadBoundary;
 /** Shared MCP/Telegram configuration. No credential or transport goes to a model. */
-export function configuredCalendar(env: AssistantEnv, scope: SourceScope, boundary?: CalendarReadBoundary) {
+export function configuredCalendar(env: AssistantEnv, scope: SourceScope, boundary?: CalendarReadBoundary, includeEventTitles = false) {
   if (!env.DB || !env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" } as const;
   if (!env.CALENDAR_OAUTH) return { state: "pending_configuration", dependency: "calendar_read_oauth" } as const;
   const affinity = oauthAffinity.safeParse({ installationId: scope.installationId, generation: scope.generation, configurationVersion: Number(env.CALENDAR_OAUTH_CONFIGURATION_VERSION), secretEpoch: env.CALENDAR_OAUTH_SECRET_EPOCH });
@@ -37,5 +37,5 @@ export function configuredCalendar(env: AssistantEnv, scope: SourceScope, bounda
     await check();
     return (boundary?.request ?? fetch)(lifetime ? new Request(input, { signal: AbortSignal.any([input.signal, lifetime]) }) : input);
   };
-  return { state: "ready", calendars, check, reader: new CalendarReader(env.DB, scope, calendars, token, request) } as const;
+  return { state: "ready", calendars, check, reader: new CalendarReader(env.DB, scope, calendars, token, request, Date.now, includeEventTitles) } as const;
 }
