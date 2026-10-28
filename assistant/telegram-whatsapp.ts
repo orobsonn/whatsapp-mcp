@@ -14,7 +14,7 @@ export type WhatsAppSelection = z.infer<typeof selectionSchema>;
 type Boundary = { check: () => Promise<void>; deadlineAt: number; signal?: AbortSignal };
 export type WhatsAppObservation = { kind: 'whatsapp'; question: string; query: WhatsAppSelection;
   messages: { sourceId: string; text: string; authorId: string | null; authorLabel: string | null; fromMe: boolean | null; occurredAt: number; conversationId: string }[];
-  coverage: { complete: false; method: 'lexical_recent'; from: number | null; to: number | null; limit: 6; gaps: string[] } };
+  coverage: { complete: false; method: 'lexical_recent'; from: number | null; to: number | null; limit: 3; gaps: string[] } };
 export type WhatsAppRead = { state: 'available'; observation: WhatsAppObservation; dependencies: ReplyDependency[]; guard: AccessGuard }
   | { state: 'clarify' | 'unavailable'; text: string };
 type DiscoveryReader = SnapshotReader & { searchConversations?: (input: unknown) => Promise<unknown> };
@@ -93,13 +93,15 @@ export async function readTelegramWhatsApp(env: AssistantEnv, scope: OwnerAffini
         conversation, conversation, query.authorName, query.authorName, query.from, query.from, query.to, query.to).all<{ id: string; revision: number; score: number }>();
     await check();
     const gaps = new Set(['captured_local_versions_only', 'semantic_search_not_used', 'bounded_recent_context']);
-    if (rows.results.length > 6) gaps.add('message_limit');
+    if (rows.results.length > 3) gaps.add('message_limit');
     if (searchTerms.length && !rows.results.some(row => row.score > 0)) gaps.add('lexical_no_hit');
     const observation: WhatsAppObservation = { kind: 'whatsapp', question: ownerText, query,
-      messages: [], coverage: { complete: false, method: 'lexical_recent', from: query.from, to: query.to, limit: 6, gaps: [] } };
+      messages: [], coverage: { complete: false, method: 'lexical_recent', from: query.from, to: query.to, limit: 3, gaps: [] } };
     const dependencies: ReplyDependency[] = [];
     for (const row of rows.results.slice(0, 12)) {
-      if (dependencies.length === 6) break;
+      // Keep the combined admission predicate below D1's expression-depth
+      // limit; every included message still carries its full source+origin.
+      if (dependencies.length === 3) break;
       await check(); const source = await access.read(owner, row.id, row.revision);
       if (!source || source.text === null || source.fence.source.origin !== 'whatsapp' || !source.fence.source.conversationId) { gaps.add('source_unavailable'); continue; }
       if (conversation !== null && source.fence.source.conversationId !== conversation) { gaps.add('source_changed'); continue; }

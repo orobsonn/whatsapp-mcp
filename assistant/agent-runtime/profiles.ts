@@ -28,4 +28,6 @@ export function OwnerDialogueRuntime() {
 }
 OwnerDialogueRuntime.agentName = "owner-dialogue-runtime";
 OwnerDialogueRuntime.initialData = dialogueSeed;
-OwnerDialogueRuntime.durability = { maxAttempts: 1, timeoutMs: 60000 };
+// A private dialogue may have two paid phases. Match the host's two-minute
+// ceiling; its immutable input frame/lease can still expire earlier.
+OwnerDialogueRuntime.durability = { maxAttempts: 1, timeoutMs: 120000 };

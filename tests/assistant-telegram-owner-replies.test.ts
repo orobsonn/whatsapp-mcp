@@ -51,6 +51,49 @@ it("publishes one reply with inbox completion and sends once in the exact origin
   expect(sends).toEqual([{ chat: "101", thread: 10, text: "Resposta com fonte" }]);
 });
 
+async function unorderedDependencies() {
+  const deps = await Promise.all([note("hash-a"), note("hash-b"), note("hash-c")]);
+  return deps.map(item => item.dep).sort((a, b) => b.source.source.id.localeCompare(a.source.source.id)).map(dep => ({
+    source: { ...dep.source, source: Object.fromEntries(Object.entries(dep.source.source).reverse()) as typeof dep.source.source },
+  }));
+}
+
+it("uses the same hash for a three-source Plan and outbox despite dependency and property order", async () => {
+  const deps = await unorderedDependencies(), text = "Resposta com três fontes", frame = inbox.replyFence(turn);
+  await prepare(text, deps);
+  const row = await query("SELECT request_hash FROM assistant_telegram_owner_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first<{ request_hash: string }>();
+  const legacy = await bridgeHash([frame, text, deps, []]);
+  expect(legacy).not.toBe(row!.request_hash);
+  expect(await replies.requestHash(Object.fromEntries(Object.entries(frame).reverse()), text, deps)).toBe(row!.request_hash);
+  expect(await replies.requestHash(frame, text, [...deps].reverse())).toBe(row!.request_hash);
+});
+
+it("matches a sent legacy Plan historically without sending again, and rejects altered text, sources and witnesses", async () => {
+  const dependencies = await unorderedDependencies(), text = "Resposta histórica com três fontes";
+  const legacyPlan = { text, dependencies, witnesses: [], outboxRequestHash: await bridgeHash([inbox.replyFence(turn), text, dependencies, []]) };
+  await prepare(text, dependencies); await replies.dispatch(3); await revoke();
+  const row = await query("SELECT request_hash FROM assistant_telegram_owner_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first<{ request_hash: string }>();
+  expect(legacyPlan.outboxRequestHash).not.toBe(row!.request_hash);
+  const expected = { text: legacyPlan.text, dependencies: legacyPlan.dependencies, witnesses: legacyPlan.witnesses };
+  expect(await replies.inspect(3, expected)).toMatchObject({ state: "sent", attempts: 1, messageId: 201, purged: false, requestHash: row!.request_hash });
+  for (const tampered of [
+    { ...expected, text: "Texto alterado" },
+    { ...expected, dependencies: dependencies.slice(1) },
+    { ...expected, witnesses: [{ kind: "owner_listing" as const, entity: "notes" as const, rowsJSON: "[]" }] },
+  ]) await expect(replies.inspect(3, tampered)).rejects.toThrow("telegram_owner_reply_conflict");
+  expect(legacyPlan.outboxRequestHash).not.toBe(row!.request_hash);
+  expect(await replies.dispatch(3)).toMatchObject({ state: "sent", attempts: 1 }); expect(sends).toHaveLength(1);
+});
+
+it("refuses a self-consistent sent envelope copied onto a different update", async () => {
+  await prepare("Resposta do turno original"); await replies.dispatch(3);
+  await query(`INSERT INTO assistant_telegram_owner_replies
+    SELECT installation_id,generation,bot_instance,4,request_hash,body_hash,fence_json,text,deps_json,expires_at,published_at,state,attempts,attempt_token,message_id,purged,witnesses_json
+    FROM assistant_telegram_owner_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3`).run();
+  await expect(replies.inspect(4, { text: "Resposta do turno original", dependencies: [] })).rejects.toThrow("telegram_owner_reply_corrupt");
+  expect(sends).toHaveLength(1);
+});
+
 it("concurrent dispatchers observe one real attempt instead of reporting a duplicate as blocked", async () => {
   await prepare();
   const results = await Promise.all([replies.dispatch(3), replies.dispatch(3)]);
@@ -129,6 +172,7 @@ it("late success after revoke and source purge settles the same attempt without 
   expect(await replies.dispatch(3)).toMatchObject({ state: "sent", attempts: 1, messageId: 201, purged: true });
   const row = await query("SELECT text,deps_json FROM assistant_telegram_owner_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first();
   expect(row).toEqual({ text: null, deps_json: "[]" });
+  expect(await replies.inspect(3, { text: "Private derived answer A", dependencies: [dep] })).toBeNull();
   expect(await query("SELECT text FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=3").first("text")).toBeNull();
   expect(await replies.dispatch(3)).toMatchObject({ state: "sent", attempts: 1 }); expect(sends).toHaveLength(1);
 });

@@ -108,7 +108,7 @@ export class TelegramDialogueHost {
     if (githubRepository || (episode.result as any)?.mode === "github_question") {
       const answered = await answerGitHubQuestion({ env: this.env, scope: this.scope, episode, identity, turn, inbox: this.inbox, repository: githubRepository ?? (episode.result as any).github?.repository?.id ?? "", signal, origin: this.origin });
       const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answered.text, witnesses: answered.witnesses, dependencies: answered.dependencies,
-        research: answered.research, outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answered.text, answered.dependencies, answered.witnesses]), intentOperationKey: answered.intentOperationKey, intentRequestHash: answered.intentRequestHash, intentResultHash: answered.intentResultHash };
+        research: answered.research, outboxRequestHash: await this.replies().requestHash(this.inbox.replyFence(turn), answered.text, answered.dependencies, answered.witnesses), intentOperationKey: answered.intentOperationKey, intentRequestHash: answered.intentRequestHash, intentResultHash: answered.intentResultHash };
       const guards = merge(this.inbox.guard(turn), this.state.guard(answered.witnesses), ...answered.dependencies.map(d => new SourceAccess(this.db, this.scope).guard({ kind: "owner" }, d.source, Date.now())));
       const saved = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json=? AND (${guards.sql}) RETURNING id`,
         [JSON.stringify(plan), this.scope.installationId, this.scope.generation, episode.id, episode.binding_hash, answered.checkpointJSON, ...guards.values]).first();
@@ -236,11 +236,17 @@ export class TelegramDialogueHost {
     } else if (choice.kind === "observe") text = "🔧 <b>Seleção de conversas em preparação</b>\n\nEssa opção ainda está sendo conectada no Telegram. As configurações atuais continuam ativas.";
     const answer = text, witnesses = dialogueWitnesses.parse(proofs);
     const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answer, witnesses, dependencies, ...(research ? { research } : {}), ...(observation ? { observation } : {}),
-      outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answer, dependencies, witnesses]), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
+      outboxRequestHash: await this.replies().requestHash(this.inbox.replyFence(turn), answer, dependencies, witnesses), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
+    try {
     const guard = actionGuard(), saved = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS ? AND (${guard.sql}) RETURNING id`,
       [JSON.stringify(plan), this.scope.installationId, this.scope.generation, id, episode.binding_hash, checkpointJSON, ...guard.values]).first();
     if (!saved) throw Error("dialogue_result_blocked");
-    return this.finishReply(episode, plan, signal);
+    return await this.finishReply(episode, plan, signal);
+    } catch (error) {
+      const reason = signal?.aborted ? "dialogue_native_cancelled" : error instanceof Error && /^(?:dialogue_result_blocked|statement_capacity)$/.test(error.message) ? error.message : "dialogue_finalization_error";
+      await this.db.prepare("UPDATE assistant_episodes SET reason=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=?").bind(reason, this.scope.installationId, this.scope.generation, id, episode.binding_hash).run().catch(() => {});
+      throw error;
+    }
   }
   /** Recover only this persisted response, never its model or command. */
   private async finishReply(episode: Episode, plan: Plan, signal?: AbortSignal) {
@@ -262,7 +268,7 @@ export class TelegramDialogueHost {
     if (b?.kind !== "telegram_owner_dialogue" || !envelope?.receipt || (episode.result as Plan | null)?.kind !== "telegram_owner_reply_plan" || !episode.submission_id) return { state: "pending" };
     const reply = await ownerDialogueDriver(episode.runtime_id).read(envelope.receipt, { signal: AbortSignal.timeout(5000) });
     if (reply.text !== OWNER_DIALOGUE_COMPLETION || reply.uid !== envelope.receipt.uid || reply.submissionId !== episode.submission_id || reply.submissionId !== envelope.receipt.submissionId) throw Error("dialogue_native_result");
-    const plan = episode.result as Plan, outbox = await this.replies().inspect(plan.updateId);
+    const plan = episode.result as Plan, outbox = await this.replies().inspect(plan.updateId, { text: plan.text, dependencies: plan.dependencies, witnesses: plan.witnesses });
     if (outbox?.state !== "sent") return { state: "delivery_unconfirmed" };
     // Historical settlement only: the input frame has already been consumed.
     // No model admission, command or send is granted by this exact receipt.
@@ -273,13 +279,13 @@ export class TelegramDialogueHost {
         JOIN assistant_episodes e ON e.installation_id=j.installation_id AND e.generation=j.generation AND e.job_id=j.id
         JOIN assistant_telegram_owner_replies r ON r.installation_id=j.installation_id AND r.generation=j.generation AND r.bot_instance=? AND r.update_id=?
         WHERE j.installation_id=? AND j.generation=? AND j.id=? AND j.lease_generation=? AND e.id=? AND e.binding_hash=? AND e.submission_id=? AND e.result_json=?
-        AND e.receipt_json=? AND r.state='sent' AND r.message_id=? AND r.request_hash=? AND EXISTS(SELECT 1 FROM assistant_telegram_dialogue_phases p
+        AND e.receipt_json=? AND r.state='sent' AND r.purged=0 AND r.message_id=? AND r.request_hash=? AND EXISTS(SELECT 1 FROM assistant_telegram_dialogue_phases p
           JOIN assistant_model_receipts m ON m.installation_id=p.installation_id AND m.generation=p.generation AND m.operation_key=p.operation_key
           JOIN assistant_budget_reservations br ON br.installation_id=m.installation_id AND br.generation=m.generation AND br.operation_key=m.operation_key AND br.request_hash=m.request_hash
           WHERE p.installation_id=j.installation_id AND p.generation=j.generation AND p.request_id=j.source_id AND p.phase='intent' AND p.state='complete' AND p.purged=0
           AND p.episode_id=e.id AND p.binding_hash=e.binding_hash AND p.operation_key=? AND p.request_hash=? AND p.result_hash=?
           AND m.state='complete' AND m.request_hash=p.request_hash AND m.response_json=p.result_json AND br.state='settled' AND br.actual_units=m.actual_units) ON CONFLICT DO NOTHING`)
-        .bind(result, Date.now(), this.env.TELEGRAM_BOT_INSTANCE!, plan.updateId, this.scope.installationId, this.scope.generation, episode.job_id, b.lease.lease_generation, episode.id, episode.binding_hash, reply.submissionId, JSON.stringify(plan), JSON.stringify(episode.receipt), outbox.messageId, plan.outboxRequestHash, plan.intentOperationKey, plan.intentRequestHash, plan.intentResultHash),
+        .bind(result, Date.now(), this.env.TELEGRAM_BOT_INSTANCE!, plan.updateId, this.scope.installationId, this.scope.generation, episode.job_id, b.lease.lease_generation, episode.id, episode.binding_hash, reply.submissionId, JSON.stringify(plan), JSON.stringify(episode.receipt), outbox.messageId, outbox.requestHash, plan.intentOperationKey, plan.intentRequestHash, plan.intentResultHash),
       this.db.prepare("UPDATE assistant_job_ledger SET state='complete' WHERE installation_id=? AND generation=? AND job_id=? AND EXISTS(SELECT 1 FROM assistant_job_receipts r WHERE r.installation_id=assistant_job_ledger.installation_id AND r.generation=assistant_job_ledger.generation AND r.job_id=assistant_job_ledger.job_id AND r.result=?)").bind(this.scope.installationId, this.scope.generation, episode.job_id, result),
       this.db.prepare("UPDATE assistant_jobs SET state='shadow_completed',lease_until=NULL WHERE installation_id=? AND generation=? AND id=? AND lease_generation=? AND EXISTS(SELECT 1 FROM assistant_job_receipts r WHERE r.installation_id=assistant_jobs.installation_id AND r.generation=assistant_jobs.generation AND r.job_id=assistant_jobs.id AND r.result=?)").bind(this.scope.installationId, this.scope.generation, episode.job_id, b.lease.lease_generation, result),
       this.db.prepare("UPDATE assistant_episodes SET state='settled' WHERE installation_id=? AND generation=? AND id=? AND EXISTS(SELECT 1 FROM assistant_jobs j WHERE j.installation_id=assistant_episodes.installation_id AND j.generation=assistant_episodes.generation AND j.id=assistant_episodes.job_id AND j.state='shadow_completed')").bind(this.scope.installationId, this.scope.generation, episode.id),

@@ -9,16 +9,18 @@ import { OriginGuard } from '../assistant/origin-guard';
 
 const secret = 'synthetic-whatsapp-reader-secret-exclusive';
 const selection = { query: null, conversationName: 'Ana', authorName: null, from: null, to: null };
-async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private') {
+async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private', messageCount = 1) {
   const scope = { installationId: crypto.randomUUID(), generation: 'telegram-wa', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g' };
   let active = true;
   const reader = {
     async searchConversations(q: { requestId: string }): Promise<{ observation: string; state: string; requestId: string; sourceEpoch: string; sourceGeneration: string; refs: { chatId: string; kind: string }[]; complete: boolean; nextCursor: string | null }> { return { observation: 'capture_conversation_search', state: 'available', requestId: q.requestId, sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', refs: [{ chatId: 'chat', kind: 'private' }], complete: true, nextCursor: null }; },
-    async readSnapshot() { return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind: 'message', sourceId: 'message', chatId: 'chat', sourceVersion: 1, watermark: 1, conversationKind, access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: 'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: 'message', messageVersion: 1 } } : {}) }; },
+    async readSnapshot(input?: { sourceId: string }) { const sourceId=input?.sourceId??'message'; return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind: 'message', sourceId, chatId: 'chat', sourceVersion: 1, watermark: messageCount, conversationKind, access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: 'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: sourceId, messageVersion: 1 } } : {}) }; },
   };
   const settings = { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: 'wa-e', BRIDGE_SOURCE_GENERATION: 'wa-g', BRIDGE_SECRET: secret, CAPTURE_READER: reader } as AssistantEnv;
-  const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence: 1, previousSequence: 0, chatId: 'chat', sourceId: 'message', sourceKind: 'message', operation: 'upsert', recordedAt: 100 }) }), settings);
+  for(let sequence=1;sequence<=messageCount;sequence++){
+  const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence, previousSequence: sequence-1, chatId: 'chat', sourceId: sequence===1?'message':'message-'+sequence, sourceKind: 'message', operation: 'upsert', recordedAt: 100 }) }), settings);
   expect(response.status).toBe(200);
+  }
   await new CaptureMaterializer(env.DB, () => scope, reader, secret, () => 100).drain();
   return { scope, settings, reader, text, withdraw: () => { active = false; }, boundary: { deadlineAt: Date.now() + 60000, check: async () => {} } };
 }
@@ -105,6 +107,15 @@ it('bounds UTF-8 evidence and skips a whole oversized message without deleting i
   expect(result.state).toBe('available'); if (result.state !== 'available') return;
   expect(result.observation.messages).toEqual([]); expect(result.observation.coverage.gaps).toContain('message_bytes_limit');
   expect(new TextEncoder().encode(JSON.stringify(result.observation)).length).toBeLessThanOrEqual(16384);
+});
+it('bounds owner Q&A to three fully fenced messages and exposes omitted evidence', async () => {
+  const f = await fixture('Assunto do projeto, somente se houver confirmação.', false, 'group', 5);
+  const result = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse sobre projeto no grupo?', f.boundary);
+  expect(result.state).toBe('available'); if(result.state!=='available')return;
+  expect(result.observation.messages).toHaveLength(3);
+  expect(result.dependencies).toHaveLength(3);
+  expect(result.observation.coverage).toMatchObject({complete:false,method:'lexical_recent',limit:3});
+  expect(result.observation.coverage.gaps).toContain('message_limit');
 });
 it('paginates name discovery and preserves correlation, exclusions and literal LIKE input', async () => {
   const key = crypto.randomUUID(), source = { ...env, OWNER_SUB: 'synthetic-owner', INSTALLATION_EPOCH: key, CONNECTION_GENERATION: key, MAINTENANCE: 'false', RUNTIME_CONFIG: 'static' as const, DEVELOPMENT: 'true', ASSISTANT_READER_SECRET: secret };

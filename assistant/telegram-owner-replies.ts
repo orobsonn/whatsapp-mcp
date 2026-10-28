@@ -23,6 +23,7 @@ const merge = (...guards: AccessGuard[]): AccessGuard => ({ sql: guards.map(g =>
 type ReplyRow = { update_id: number; request_hash: string; body_hash: string; fence_json: string; text: string | null; deps_json: string;
   expires_at: number; state: string; attempts: number; attempt_token: string | null; message_id: number | null; purged: number; witnesses_json: string };
 type Metadata = { updateId: number; state: string; attempts: number; messageId: number | null; purged: boolean };
+export type OwnerReplyContent = { text: string; dependencies: ReplyDependency[]; witnesses?: DialogueWitness[] };
 
 /** Host-only outbox. The executor must supply ALL read dependencies; model
  * citations alone are insufficient. No query/control, model or generic sender. */
@@ -60,6 +61,15 @@ export class TelegramOwnerReplies {
       return [...selected.values()].sort((a, b) => a.source.source.id.localeCompare(b.source.source.id));
     } catch { throw Error("telegram_owner_reply_input"); }
   }
+  private ownContent(text: string, input: ReplyDependency[], witnesses: DialogueWitness[]) {
+    if (typeof text !== "string" || !text.trim() || text.length > 4000 || bytes(text) > 12000) throw Error("telegram_owner_reply_input");
+    return { text, deps: this.ownDependencies(input), proof: dialogueWitnesses.parse(witnesses) };
+  }
+  /** One canonical envelope for the Plan, publication and historical settlement. */
+  requestHash(inputFrame: unknown, text: string, input: ReplyDependency[], witnesses: DialogueWitness[] = []): Promise<string> {
+    const frame = this.frame(inputFrame), content = this.ownContent(text, input, witnesses);
+    return bridgeHash([frame, content.text, content.deps, content.proof]);
+  }
   private sourceGuard(deps: ReplyDependency[]) {
     return merge({ sql: "1", values: [] }, ...deps.flatMap(dep => [this.access.guard(owner, dep.source, Date.now()), ...(dep.origin ? [this.origin!.localGuard(dep.origin)] : [])]));
   }
@@ -74,13 +84,29 @@ export class TelegramOwnerReplies {
   private metadata(row: ReplyRow, state = row.state): Metadata {
     return { updateId: row.update_id, state, attempts: row.attempts, messageId: row.message_id, purged: row.purged === 1 };
   }
-  async inspect(updateId: number): Promise<Metadata | null> { const row = await this.read(updateId); return row ? this.metadata(row) : null; }
+  async inspect(updateId: number): Promise<Metadata | null>;
+  async inspect(updateId: number, expected: OwnerReplyContent): Promise<(Metadata & { requestHash: string }) | null>;
+  async inspect(updateId: number, expected?: OwnerReplyContent): Promise<(Metadata & { requestHash?: string }) | null> {
+    // Capture the expected private envelope before the first await. This path
+    // proves historical equality only; it never admits another send or model.
+    const content = expected ? this.ownContent(expected.text, expected.dependencies, expected.witnesses ?? []) : null;
+    const row = await this.read(updateId); if (!row) return null;
+    if (!content) return this.metadata(row);
+    if (row.state !== "sent" || row.purged || row.text === null || !Number.isSafeInteger(row.message_id) || row.message_id! < 1) return null;
+    const frame = this.frame(JSON.parse(row.fence_json));
+    if (frame.updateId !== updateId || row.expires_at !== frame.deadlineAt || await bridgeHash(row.text) !== row.body_hash
+      || await this.requestHash(frame, row.text, JSON.parse(row.deps_json), JSON.parse(row.witnesses_json)) !== row.request_hash) throw Error("telegram_owner_reply_corrupt");
+    const expectedHash = await this.requestHash(frame, content.text, content.deps, content.proof);
+    if (expectedHash !== row.request_hash) throw Error("telegram_owner_reply_conflict");
+    const completed = this.completed(frame);
+    if (!await jsonStatement(this.db, `SELECT 1 WHERE ${completed.sql}`, completed.values).first()) throw Error("telegram_owner_reply_corrupt");
+    return { ...this.metadata(row), requestHash: expectedHash };
+  }
   async prepare(turn: TelegramOwnerTurn, text: string, input: ReplyDependency[], witnesses: DialogueWitness[] = []): Promise<Metadata> {
     // Own every model-derived scalar/proof synchronously, before hashing/RPC.
-    if (typeof text !== "string" || !text.trim() || text.length > 4000 || bytes(text) > 12000) throw Error("telegram_owner_reply_input");
-    const deps = this.ownDependencies(input), frame = this.frame(this.inbox.replyFence(turn));
-    const proof = dialogueWitnesses.parse(witnesses), proofJSON = JSON.stringify(proof), proofGuard = new DialogueState(this.db, this.scope).guard(proof);
-    const frameJSON = JSON.stringify(frame), depsJSON = JSON.stringify(deps), requestHash = await bridgeHash([frame, text, deps, proof]), bodyHash = await bridgeHash(text);
+    const { deps, proof } = this.ownContent(text, input, witnesses), frame = this.frame(this.inbox.replyFence(turn));
+    const proofJSON = JSON.stringify(proof), proofGuard = new DialogueState(this.db, this.scope).guard(proof);
+    const frameJSON = JSON.stringify(frame), depsJSON = JSON.stringify(deps), requestHash = await this.requestHash(frame, text, deps, proof), bodyHash = await bridgeHash(text);
     const previous = await this.read(frame.updateId);
     if (previous) { if (previous.request_hash !== requestHash) throw Error("telegram_owner_reply_conflict"); return this.metadata(previous); }
     if (!await this.remote(deps)) return { updateId: frame.updateId, state: "blocked", attempts: 0, messageId: null, purged: false };
@@ -93,14 +119,16 @@ export class TelegramOwnerReplies {
     if (saved) { if (saved.request_hash !== requestHash) throw Error("telegram_owner_reply_conflict"); return this.metadata(saved); }
     return { updateId: frame.updateId, state: "blocked", attempts: 0, messageId: null, purged: false };
   }
-  private current(row: ReplyRow, deps: ReplyDependency[], state: "prepared" | "attempting", nonce?: string): AccessGuard {
-    const frame = this.frame(JSON.parse(row.fence_json));
-    const completed = { sql: `EXISTS(SELECT 1 FROM assistant_telegram_owner_turns t JOIN assistant_telegram_updates u
+  private completed(frame: TelegramOwnerReplyFence): AccessGuard {
+    return { sql: `EXISTS(SELECT 1 FROM assistant_telegram_owner_turns t JOIN assistant_telegram_updates u
       ON u.installation_id=t.installation_id AND u.generation=t.generation AND u.bot_instance=t.bot_instance AND u.update_id=t.update_id
       WHERE t.installation_id=? AND t.generation=? AND t.bot_instance=? AND t.update_id=? AND t.state='complete'
       AND t.source_epoch=? AND t.source_generation=? AND t.link_revision=? AND t.user_id=? AND t.chat_id=? AND t.message_id=? AND t.thread_id IS ? AND t.deadline_at=?
       AND u.state='completed' AND u.payload_hash=t.payload_hash AND u.token=t.update_token AND u.user_id=t.user_id AND u.chat_id=t.chat_id AND u.message_id=t.message_id AND u.thread_id IS t.thread_id)`,
       values: [...this.keys(), frame.updateId, frame.sourceEpoch, frame.sourceGeneration, frame.linkRevision, frame.userId, frame.chatId, frame.messageId, frame.threadId, frame.deadlineAt] };
+  }
+  private current(row: ReplyRow, deps: ReplyDependency[], state: "prepared" | "attempting", nonce?: string): AccessGuard {
+    const frame = this.frame(JSON.parse(row.fence_json)), completed = this.completed(frame);
     const reply = { sql: `EXISTS(SELECT 1 FROM assistant_telegram_owner_replies WHERE ${ns} AND update_id=? AND request_hash=? AND body_hash=? AND fence_json=?
       AND text IS ? AND deps_json=? AND witnesses_json=? AND expires_at=? AND expires_at>${liveMillis} AND purged=0 AND state=? AND attempts=? ${nonce ? "AND attempt_token=?" : "AND attempt_token IS NULL"})`,
       values: [...this.keys(), row.update_id, row.request_hash, row.body_hash, row.fence_json, row.text, row.deps_json, row.witnesses_json, row.expires_at, state, state === "prepared" ? 0 : 1, ...(nonce ? [nonce] : [])] };
@@ -110,7 +138,7 @@ export class TelegramOwnerReplies {
     const row = await this.read(updateId); if (!row) return null;
     if (row.state !== "prepared" || row.purged || row.text === null) return this.metadata(row);
     const deps = this.ownDependencies(JSON.parse(row.deps_json)), frame = this.frame(JSON.parse(row.fence_json));
-    if (row.expires_at !== frame.deadlineAt || await bridgeHash(row.text) !== row.body_hash || await bridgeHash([frame, row.text, deps, dialogueWitnesses.parse(JSON.parse(row.witnesses_json))]) !== row.request_hash) throw Error("telegram_owner_reply_corrupt");
+    if (row.expires_at !== frame.deadlineAt || await bridgeHash(row.text) !== row.body_hash || await this.requestHash(frame, row.text, deps, JSON.parse(row.witnesses_json)) !== row.request_hash) throw Error("telegram_owner_reply_corrupt");
     if (!await this.remote(deps)) return this.metadata(row, "blocked");
     const nonce = crypto.randomUUID(), guard = this.current(row, deps, "prepared");
     try {
