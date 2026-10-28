@@ -37,7 +37,7 @@ export function renderCalendarObservation(raw: unknown) {
   const result = raw as { start: string; busy: { start: string; end: string }[]; events?: CalendarEventObservation[]; eventsCoverage?: { complete: boolean }; coverage: { complete: boolean; gaps: string[]; configuredCalendars: number } };
   const date = new Intl.DateTimeFormat("pt-BR", { timeZone, dateStyle: "short" }).format(new Date(result.start));
   const clock = (at: string) => new Intl.DateTimeFormat("pt-BR", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(at));
-  let text = `🗓️ <b>SUA AGENDA · ${date}</b>\n\n`;
+  let text = `<b>SUA AGENDA - ${date}</b>\n\n`;
   if (result.events) {
     let shown = 0, abbreviated = false;
     for (const event of result.events) {
@@ -48,7 +48,7 @@ export function renderCalendarObservation(raw: unknown) {
         const day = (at: string) => new Intl.DateTimeFormat("pt-BR", { timeZone, day: "2-digit", month: "2-digit" }).format(new Date(at));
         when = day(event.start.dateTime) === day(event.end.dateTime) ? `${clock(event.start.dateTime)}–${clock(event.end.dateTime)}` : `${day(event.start.dateTime)} ${clock(event.start.dateTime)} → ${day(event.end.dateTime)} ${clock(event.end.dateTime)}`;
       }
-      const line = `📌 <b>${when}</b>\n${title.html}${event.transparent ? "\n<i>Não bloqueia horário.</i>" : ""}\n\n`;
+      const line = `<b>${when}</b> - ${title.html}\n\n`;
       if (text.length + line.length > 3300) break;
       text += line; shown++;
     }
@@ -56,8 +56,7 @@ export function renderCalendarObservation(raw: unknown) {
     if (shown < result.events.length) text += `📄 Mostrei ${shown} compromissos; há mais no recorte consultado.\n\n`;
     if (!result.eventsCoverage?.complete) text += "⚠️ Há lacunas na leitura dos compromissos.\n\n";
     if (abbreviated) text += "<i>Há títulos abreviados.</i>\n\n";
-    if (!result.coverage.complete) text += "ℹ️ A consulta de horários livres também tem lacunas.\n\n";
-    return text + `📍 <i>Horário de Fortaleza · ${result.coverage.configuredCalendars} agenda(s) autorizada(s).</i>\n\n<i>Consulta de leitura · a agenda pode mudar após a consulta.</i>`;
+    return text.trimEnd();
   }
   if (result.busy.length) {
     const shown = result.busy.slice(0, 50);
@@ -65,7 +64,7 @@ export function renderCalendarObservation(raw: unknown) {
     if (shown.length < result.busy.length) text += `\n\nMostrei ${shown.length} de ${result.busy.length} intervalos.`;
   } else text += result.coverage.complete ? "✅ Não observei conflito nesse dia nas agendas autorizadas consultadas." : "⚠️ A leitura incompleta não permite concluir se há horários ocupados nesse dia.";
   if (!result.coverage.complete) text += "\n\nHá lacunas na consulta; a disponibilidade continua parcial.";
-  return text + `\n\n📍 <i>Horário de Fortaleza · ${result.coverage.configuredCalendars} agenda(s) autorizada(s).</i>\n\n<i>Somente leitura · a agenda pode mudar após a consulta.</i>`;
+  return text.trimEnd();
 }
 function calendarReplyProjection(raw: Record<string, any>) {
   const busy = raw.busy.slice(0, 10), events = raw.events.slice(0, 10);

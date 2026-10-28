@@ -19,7 +19,7 @@ it("renders only observed busy intervals and keeps incomplete coverage explicit"
   expect(renderCalendarObservation(partial)).toContain("não permite concluir");
   expect(renderCalendarObservation(partial)).not.toContain("está livre");
   const text = renderCalendarObservation({ ...partial, busy: [{ start: "2026-10-28T12:00:00Z", end: "2026-10-28T13:00:00Z" }] });
-  expect(text).toContain("09:00–10:00"); expect(text.toLowerCase()).toContain("somente leitura");
+  expect(text).toContain("09:00–10:00");
 });
 it("renders separate escaped event titles, including transparent and all-day appointments", () => {
   const raw = { state: "available", start: "2026-10-28T03:00:00Z", busy: [], coverage: { complete: true, configuredCalendars: 1 }, eventsCoverage: { complete: true }, events: [
