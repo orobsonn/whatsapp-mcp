@@ -83,11 +83,12 @@ it("records only static stage/status diagnostics when the provider refuses a rea
   const f = await fixture(), warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   try {
     f.request.mockResolvedValue(new Response("synthetic-private-provider-body", { status: 403, headers: { "x-ratelimit-limit": "60", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793157000" } }));
-    expect((await readTelegramGitHub(f.settings, f.scope, selection, "Leia README", f.boundary)).state).toBe("unavailable");
+    const result = await readTelegramGitHub(f.settings, f.scope, selection, "Leia README", f.boundary);
+    expect(result.state).toBe("unavailable"); expect(result.text).toContain("limite de consultas");
     githubReadFailure("contents", Error("synthetic-private-provider-body"));
     expect(warn.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([
       { event: "github_read_failure", stage: "http", code: "status", status: 403, rateLimit: 60, remaining: 0, resetAt: 1793157000 },
-      { event: "github_read_failure", stage: "resolve", code: "connector_unavailable" },
+      { event: "github_read_failure", stage: "resolve", code: "github_rate_limited" },
       { event: "github_read_failure", stage: "contents", code: "unclassified" },
     ]);
     expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private-provider-body");

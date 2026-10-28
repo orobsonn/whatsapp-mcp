@@ -28,6 +28,10 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
         if (value && /^\d{1,12}$/.test(value)) rate[field] = Number(value);
       }
       console.warn(JSON.stringify({ event: "github_read_failure", stage: "http", code: "status", status: response.status, ...rate }));
+      if ((response.status === 403 || response.status === 429) && rate.remaining === 0) {
+        void response.body?.cancel().catch(() => {});
+        throw Error("github_rate_limited");
+      }
     }
     return response;
   };

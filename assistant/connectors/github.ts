@@ -60,14 +60,14 @@ export class GitHubReader {
       return await this.access.current(actor, fence) ? result : { state: "unavailable", reason: "source_changed" };
     } catch (error) {
       githubReadFailure("contents", error);
-      return { state: "unavailable", reason: "github_read_failed", ...observation, coverage: { kind: "unknown", complete: false } };
+      return { state: "unavailable", reason: error instanceof Error && error.message === "github_rate_limited" ? "github_rate_limited" : "github_read_failed", ...observation, coverage: { kind: "unknown", complete: false } };
     }
   }
 }
 
 /** Static diagnostics only: never log a provider body, URL, token or source text. */
 export function githubReadFailure(stage: "resolve" | "contents" | "admission" | "presentation", error: unknown) {
-  const codes = new Set(["connector_unavailable", "connector_response_limit", "connector_timeout", "github_file_unsupported", "github_file_limit", "github_file_binary", "github_listing", "github_dialogue_expired", "github_authorization_changed", "dialogue_read_denied"]);
+  const codes = new Set(["connector_unavailable", "connector_response_limit", "connector_timeout", "github_file_unsupported", "github_file_limit", "github_file_binary", "github_listing", "github_dialogue_expired", "github_authorization_changed", "dialogue_read_denied", "github_rate_limited"]);
   const code = error instanceof Error && codes.has(error.message) ? error.message : error instanceof Error && error.name === "ZodError" ? "schema" : "unclassified";
   console.warn(JSON.stringify({ event: "github_read_failure", stage, code }));
 }

@@ -12,6 +12,7 @@ export type GitHubObservation = { kind: "github"; query: ReturnType<typeof githu
 type Result = { state: "available"; text: string; dependencies: ReplyDependency[]; observation: GitHubObservation } | { state: "clarify" | "unavailable"; text: string };
 type Selection = { action: "read" | "list" | null; repository: string | null; path: string | null };
 const unavailable = (): Result => ({ state: "unavailable", text: "⚠️ <b>Não consegui consultar o GitHub</b>\n\nConfira o repositório e o caminho do arquivo. A consulta continua somente para leitura." });
+const rateLimited = (): Result => ({ state: "unavailable", text: "⏳ <b>O GitHub atingiu o limite de consultas</b>\n\nNão consegui ler esse arquivo agora. Você pode tentar novamente mais tarde." });
 function explicitRepositories(text: string, path: string | null) {
   const names = new Set<string>(); let otherURL = false, ref = false;
   let remainder = text.replace(/https?:\/\/[^\s<>()]+/gi, value => {
@@ -60,7 +61,8 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
     if (!await access.current({ kind: "owner" }, source)) return unavailable();
     stage = "contents";
     const pinned = { ...query, commit }, raw = await configured.reader.execute({ kind: "owner" }, pinned) as Record<string, any>;
-    await configured.check(); if (raw.state !== "available" || !await access.current({ kind: "owner" }, source)) return unavailable();
+    await configured.check(); if (raw.state !== "available") return raw.reason === "github_rate_limited" ? rateLimited() : unavailable();
+    if (!await access.current({ kind: "owner" }, source)) return unavailable();
     stage = "presentation";
     const label = telegramText(repository.owner + "/" + repository.repo, 200), footer = `\n\n📦 ${label}\n🔎 <i>commit consultado: <code>${commit.slice(0, 12)}</code></i>`;
     let text: string, result: FileResult | DirectoryResult;
@@ -80,5 +82,5 @@ export async function readTelegramGitHub(env: AssistantEnv, scope: SourceScope, 
     const observation: GitHubObservation = { kind: "github", query: pinned, result };
     if (new TextEncoder().encode(JSON.stringify(observation)).length > 20000 || text.length > 3900) return unavailable();
     return { state: "available", text, dependencies: [{ source }], observation };
-  } catch (error) { githubReadFailure(stage, error); return unavailable(); }
+  } catch (error) { githubReadFailure(stage, error); return error instanceof Error && error.message === "github_rate_limited" ? rateLimited() : unavailable(); }
 }
