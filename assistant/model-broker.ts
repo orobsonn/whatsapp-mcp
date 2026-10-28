@@ -41,7 +41,7 @@ function normalize(path: string, payload: unknown, config: BrokerConfig): { path
       const parsed = z.object({ model: z.literal(config.chatModel), messages: z.array(z.object({
         role: z.enum(["system", "user", "assistant", "developer"]), content: z.string(),
       }).strict()).min(1).max(64), max_tokens: count.optional(), max_completion_tokens: count.optional(),
-      temperature: z.number().min(0).max(2).optional(), stream: z.literal(false).optional(), n: z.literal(1).optional(),
+      reasoning_effort: z.enum(["none", "low"]).optional(), temperature: z.number().min(0).max(2).optional(), stream: z.literal(false).optional(), n: z.literal(1).optional(),
       response_format: z.union([z.object({ type: z.literal("json_object") }).strict(), z.object({ type: z.literal("json_schema"),
         json_schema: z.object({ name: z.string().min(1).max(256), schema: z.record(z.string(), z.unknown()), strict: z.boolean().optional() }).strict(),
       }).strict()]).optional(),

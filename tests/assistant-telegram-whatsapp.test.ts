@@ -9,7 +9,7 @@ import { OriginGuard } from '../assistant/origin-guard';
 
 const secret = 'synthetic-whatsapp-reader-secret-exclusive';
 const selection = { query: null, conversationName: 'Ana', authorName: null, from: null, to: null };
-async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private', messageCount = 1) {
+async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private', messageCount = 1, materialize = true) {
   const scope = { installationId: crypto.randomUUID(), generation: 'telegram-wa', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g' };
   let active = true;
   const reader = {
@@ -21,7 +21,7 @@ async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o
   const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence, previousSequence: sequence-1, chatId: 'chat', sourceId: sequence===1?'message':'message-'+sequence, sourceKind: 'message', operation: 'upsert', recordedAt: 100 }) }), settings);
   expect(response.status).toBe(200);
   }
-  await new CaptureMaterializer(env.DB, () => scope, reader, secret, () => 100).drain();
+  if(materialize)await new CaptureMaterializer(env.DB, () => scope, reader, secret, () => 100).drain();
   return { scope, settings, reader, text, withdraw: () => { active = false; }, boundary: { deadlineAt: Date.now() + 60000, check: async () => {} } };
 }
 
@@ -116,6 +116,18 @@ it('bounds owner Q&A to three fully fenced messages and exposes omitted evidence
   expect(result.dependencies).toHaveLength(3);
   expect(result.observation.coverage).toMatchObject({complete:false,method:'lexical_recent',limit:3});
   expect(result.observation.coverage.gaps).toContain('message_limit');
+});
+it('materializes an authenticated pending capture before owner retrieval without a paid model operation', async () => {
+  const f = await fixture('Próximo passo do projeto, condicionado à confirmação.', false, 'group', 1, false);
+  const count = (table: string) => env.DB.prepare(`SELECT COUNT(*) n FROM ${table} WHERE installation_id=? AND generation=?`).bind(f.scope.installationId,f.scope.generation).first<{n:number}>();
+  expect((await count('assistant_sources'))!.n).toBe(0);
+  const result = await readTelegramWhatsApp(f.settings, f.scope, selection, 'O que Ana disse sobre projeto no grupo?', f.boundary);
+  expect(result.state).toBe('available'); if(result.state!=='available')return;
+  expect(result.observation.messages).toMatchObject([{text:f.text,fromMe:false}]);
+  expect(result.dependencies).toHaveLength(1);
+  expect((await count('assistant_sources'))!.n).toBe(1);
+  expect((await env.DB.prepare('SELECT application_state state FROM assistant_capture_inbox WHERE installation_id=? AND generation=?').bind(f.scope.installationId,f.scope.generation).first<{state:string}>())!.state).toBe('applied');
+  expect((await count('assistant_model_receipts'))!.n).toBe(0);
 });
 it('paginates name discovery and preserves correlation, exclusions and literal LIKE input', async () => {
   const key = crypto.randomUUID(), source = { ...env, OWNER_SUB: 'synthetic-owner', INSTALLATION_EPOCH: key, CONNECTION_GENERATION: key, MAINTENANCE: 'false', RUNTIME_CONFIG: 'static' as const, DEVELOPMENT: 'true', ASSISTANT_READER_SECRET: secret };

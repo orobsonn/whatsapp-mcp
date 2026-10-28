@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import * as transport from "../assistant/model-transport";
+import * as retirementAuthority from "../assistant/retention-authority";
 import { answerGitHubQuestion } from "../assistant/telegram-research";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TelegramOwnerInbox, type TelegramOwnerTurn } from "../assistant/telegram-owner-inbox";
@@ -33,7 +34,7 @@ async function episode(key = "primary", selectedConfig = config) {
   const job = await queue.enqueue({ kind: "reasoning", dedupeKey: "telegram-owner-v1:" + key, sourceId: source.source.id, sourceRevision: 1, request: "telegram-owner-dialogue-v1", maxAttempts: 1, runtime: "flue_owner_dialogue" }, Date.now(), { id: crypto.randomUUID(), guard: inbox.guard(turn), statements: [] });
   const lease = (await queue.claimId(job.id, Date.now(), 90000, inbox.guard(turn)))!, ledger = (await queue.ledger(job.id))!, episodes = new Episodes(env.DB, scope);
   const checkpoint = await inbox.checkpoint(turn), deadlineAt = Math.min(Date.now() + 60000, turn.deadlineAt - 1);
-  const row = await episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding: { kind: "telegram_owner_dialogue", scope, source, checkpoint, lease, config: selectedConfig, period: scope.period }, deadline: deadlineAt, maxCalls: 2 });
+  const row = await episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding: { kind: "telegram_owner_dialogue", scope: { installationId: scope.installationId, generation: scope.generation, sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration }, source, checkpoint, lease, config: selectedConfig, period: scope.period }, deadline: deadlineAt, maxCalls: 2 });
   await episodes.envelope(row.id, { message: "Execute the admitted private dialogue.", initialData: { bindingId: row.id }, idempotencyKey: "dialogue:" + row.id });
   expect(await episodes.dispatch(row.id)).toBe(true); expect(await episodes.submission(row.id, "synthetic-native-submission")).toBe(true);
   return { lease, episodeId: row.id, bindingHash: row.binding_hash, deadlineAt, source, identity: { profile: "owner-dialogue", runtimeId: row.runtime_id, submissionId: "synthetic-native-submission" }, config: selectedConfig };
@@ -213,4 +214,56 @@ it("completes repository research through both real model phases and the persist
     const replay = await answerGitHubQuestion({ env: settings, scope, episode: recovered, identity: c.identity, turn, inbox, repository: "app" });
     expect(replay.text).toBe(result.text); expect(calls).toBe(2);
   } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("answers taught notes through the real host and recovers the sent plan without paid replay", async () => {
+  const question = "O que eu te ensinei sobre o projeto Prisma?";
+  await link.receive({ update_id: 5, message: { message_id: 105, date: Math.floor(Date.now() / 1000), from: { id: 101, is_bot: false }, chat: { id: 101, type: "private" }, text: question } });
+  turn = (await inbox.claim(5))!;
+  const captured = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
+  source = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, captured.id))!.fence;
+  const c = await episode("notes-complete", { ...config, maxOutputTokens: 6000 });
+  const noteText = "No projeto Prisma, o dono prefere explicações curtas em português.";
+  const note = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "prisma-note", title: "Preferência Prisma", text: noteText, occurredAt: Date.now() });
+  let calls = 0;
+  vi.spyOn(transport, "createOpenAIAdapter").mockReturnValue(async () => {
+    calls++;
+    const content = calls === 1 ? { kind: "note_answer", entity: null, text: null, title: null, conversationId: null, githubAction: null, repository: null, path: null, conversationName: null, authorName: null, from: null, to: null }
+      : { claims: [{ text: "Você prefere explicações curtas em português no projeto Prisma.", basis: "observed", citations: [{ id: note.id, quote: noteText }] }], missing: null };
+    return { status: 200, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), actualUnits: 1 };
+  });
+  const send = vi.spyOn(TelegramBotApi.prototype, "send").mockResolvedValue(305);
+  const host = new TelegramDialogueHost({ DB: env.DB, TELEGRAM_OWNER_DIALOGUE_ENABLED: "shadow", FLUE_EPISODES_ENABLED: "shadow", OPENAI_API_KEY: "synthetic", TELEGRAM_BOT_TOKEN: "synthetic", TELEGRAM_BOT_INSTANCE: bot, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: scope.sourceEpoch, BRIDGE_SOURCE_GENERATION: scope.sourceGeneration } as AssistantEnv);
+  const request = { messages: [{ role: "user" as const, content: "Execute the admitted private dialogue." }] };
+  expect(await host.model(c.episodeId, c.identity, request)).toBe("owner_dialogue_complete");
+  const row = await env.DB.prepare("SELECT state,attempts,text,deps_json FROM assistant_telegram_owner_replies WHERE installation_id=? AND update_id=5").bind(scope.installationId).first<{ state: string; attempts: number; text: string; deps_json: string }>();
+  expect(row).toMatchObject({ state: "sent", attempts: 1 }); expect(row!.text).toContain("explicações curtas");
+  expect(JSON.parse(row!.deps_json)).toHaveLength(1); expect(calls).toBe(2); expect(send).toHaveBeenCalledTimes(1);
+  expect(await host.model(c.episodeId, c.identity, request)).toBe("owner_dialogue_complete");
+  expect(calls).toBe(2); expect(send).toHaveBeenCalledTimes(1);
+});
+
+
+it("keeps repository questions inside a literal note correction as data", async () => {
+  const replacement = "Como funciona a autenticação no repo owner/app?";
+  const question = 'Corrija a nota “Preferência Prisma” para: ' + replacement;
+  await link.receive({ update_id: 6, message: { message_id: 106, date: Math.floor(Date.now() / 1000), from: { id: 101, is_bot: false }, chat: { id: 101, type: "private" }, text: question } });
+  turn = (await inbox.claim(6))!;
+  const captured = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
+  source = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, captured.id))!.fence;
+  const c = await episode("notes-correct-repo", { ...config, maxOutputTokens: 6000 });
+  const note = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "prisma-correct", title: "Preferência Prisma", text: "Texto original", occurredAt: Date.now() });
+  const model = vi.fn<ModelAdapter>(async () => ({ status: 200, body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ kind: "clarify", entity: null, text: null, title: null, conversationId: null, githubAction: null, repository: null, path: null }) } }] }), actualUnits: 1 }));
+  vi.spyOn(transport, "createOpenAIAdapter").mockReturnValue(model);
+  vi.spyOn(retirementAuthority, "configuredRetirementGuard").mockReturnValue(retirement);
+  const send = vi.spyOn(TelegramBotApi.prototype, "send").mockResolvedValue(306);
+  const host = new TelegramDialogueHost({ DB: env.DB, TELEGRAM_OWNER_DIALOGUE_ENABLED: "shadow", FLUE_EPISODES_ENABLED: "shadow", OPENAI_API_KEY: "synthetic", TELEGRAM_BOT_TOKEN: "synthetic", TELEGRAM_BOT_INSTANCE: bot, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: scope.sourceEpoch, BRIDGE_SOURCE_GENERATION: scope.sourceGeneration,
+    GITHUB_READ_REPOSITORIES: JSON.stringify([{ id: "app", owner: "owner", repo: "app", ownerId: 123, version: 1, projectId: "github-project", authorization: { sourceId: note.id, revision: 1 } }]) } as AssistantEnv);
+  const request = { messages: [{ role: "user" as const, content: "Execute the admitted private dialogue." }] };
+  expect(await host.model(c.episodeId, c.identity, request)).toBe("owner_dialogue_complete");
+  expect((await new SourceAccess(env.DB, scope).read({ kind: "owner" }, note.id))?.text).toBe(replacement);
+  expect(model).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(1);
+  expect(await host.model(c.episodeId, c.identity, request)).toBe("owner_dialogue_complete");
+  expect(model).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(1);
 });

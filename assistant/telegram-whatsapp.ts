@@ -5,6 +5,7 @@ import { SourceAccess, type AccessGuard } from './access';
 import { OriginGuard, checkOriginsWithin, sameFence, type SnapshotReader } from './origin-guard';
 import type { ReplyDependency } from './telegram-owner-replies';
 import { jsonStatement } from './d1-statement';
+import { CaptureMaterializer } from './materialize';
 
 const boundedName = z.string().trim().min(1).max(256).nullable();
 const timestamp = z.number().int().nonnegative().safe().nullable();
@@ -70,6 +71,14 @@ export async function readTelegramWhatsApp(env: AssistantEnv, scope: OwnerAffini
       if (found.size !== 1) return { state: 'clarify', text: found.size ? 'Há mais de uma conversa com esse nome. Diga um detalhe que diferencie a pessoa ou o grupo.' : 'Não localizei essa conversa no recorte com captura ativa. Confirme o nome da pessoa ou do grupo.' };
       conversation = [...found][0];
     }
+    // Advance only the bounded, authenticated inbox already received by this
+    // installation. This controller performs no model or automation work.
+    await check(); let captureGap: string | undefined;
+    try {
+      const refreshed = await new CaptureMaterializer(db, () => scope, reader, env.BRIDGE_SECRET).drain(10);
+      if (refreshed.some(item => item.state !== 'applied')) captureGap = 'capture_refresh_incomplete';
+    } catch { captureGap = 'capture_refresh_unavailable'; }
+    await check();
     const searchTerms = terms(query.query ?? ownerText).filter(term => !terms(query.conversationName ?? '').includes(term) && !terms(query.authorName ?? '').includes(term));
     const visible = access.ownerRows(Date.now());
     if (query.authorName) {
@@ -93,6 +102,7 @@ export async function readTelegramWhatsApp(env: AssistantEnv, scope: OwnerAffini
         conversation, conversation, query.authorName, query.authorName, query.from, query.from, query.to, query.to).all<{ id: string; revision: number; score: number }>();
     await check();
     const gaps = new Set(['captured_local_versions_only', 'semantic_search_not_used', 'bounded_recent_context']);
+    if (captureGap) gaps.add(captureGap);
     if (rows.results.length > 3) gaps.add('message_limit');
     if (searchTerms.length && !rows.results.some(row => row.score > 0)) gaps.add('lexical_no_hit');
     const observation: WhatsAppObservation = { kind: 'whatsapp', question: ownerText, query,

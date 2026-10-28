@@ -43,6 +43,17 @@ it("describes the exact canonical model operation before any reservation, receip
   const result = await broker.invoke(token, frozen.path, JSON.parse(frozen.body));
   expect(result.operationKey).toBe(frozen.operationKey); expect(adapter).toHaveBeenCalledTimes(1);
 });
+it("pins explicit reasoning effort into the operation while preserving legacy requests", async () => {
+  const token = await permit(), old = await broker.describe(token, path, payload());
+  expect(JSON.parse(old.body)).not.toHaveProperty("reasoning_effort");
+  const selected = await broker.describe(token, path, { ...payload(), reasoning_effort: "none" });
+  const answer = await broker.describe(token, path, { ...payload(), reasoning_effort: "low" });
+  expect(JSON.parse(selected.body).reasoning_effort).toBe("none");
+  expect(new Set([old.requestHash, selected.requestHash, answer.requestHash]).size).toBe(3);
+  await expect(broker.describe(token, path, { ...payload(), reasoning_effort: "high" })).rejects.toThrow("broker_invalid_request");
+  await expect(broker.describe(token, "/v1/embeddings", { model: config.embeddingModel, input: "synthetic", reasoning_effort: "none" })).rejects.toThrow("broker_invalid_request");
+  expect(adapter).not.toHaveBeenCalled(); expect((await budget.status()).committed).toBe(0);
+});
 it("descriptive metadata cannot bypass source withdrawal or authorize a rekeyed prompt", async () => {
   const token = await permit(), original = await broker.describe(token, path, payload());
   const changed = await broker.describe(token, path, { ...payload(), messages: [{ role: "user", content: "another request" }] });
