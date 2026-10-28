@@ -13,7 +13,7 @@ let chatId:string;
 const input=()=>({secret,scope,operationId:"notice-1",envelope:{kind:"text" as const,chatId,text:"Olá, confirmo nossa conversa."}});
 beforeEach(async()=>{
  authorized=true;checks=0;
- await env.DB.exec("DELETE FROM assistant_approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;");
+ await env.DB.exec("DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;");
  const {items}=await upsertDirectoryPage(e,{epoch:"e1",generation:"g1"},{items:[{externalId:"5585999999999",kind:"individual",name:"Pessoa selecionada"}],complete:true});chatId=items[0]!.id;
 });
 function provider(hook?:()=>Promise<void>,fail=false){let sends=0;const port:SendProvider={status:async()=>{await hook?.();return {connected:true,phone:"device"};},send:async()=>{sends++;if(fail)throw Error("lost ack");return {messageId:"provider-1",zaapId:"zaap-1"};}};return {port,count:()=>sends};}
@@ -31,7 +31,7 @@ describe("private Source approved send",()=>{
  it("redacts frozen recipient metadata with action retention and cannot recreate the operation",async()=>{
   const a=await prepareApprovedSend(e,input());
   await env.DB.prepare("UPDATE actions SET status='expired',envelope_json='{}' WHERE id=?").bind(a.actionId).run();
-  expect(await env.DB.prepare("SELECT target_json FROM assistant_approved_sends WHERE action_id=?").bind(a.actionId).first<string>("target_json")).toBe("{}");
+  expect(await env.DB.prepare("SELECT target_json FROM approved_sends WHERE action_id=?").bind(a.actionId).first<string>("target_json")).toBe("{}");
   await expect(prepareApprovedSend(e,input())).rejects.toThrow("approved_send_expired");
  });
  it("denies wrong secret, source affinity and broad/media envelopes",async()=>{

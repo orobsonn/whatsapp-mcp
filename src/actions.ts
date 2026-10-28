@@ -156,7 +156,7 @@ export async function executeAction(
 ) {
   let a = await row(env, id);
   // Telegram proposals cannot fall back to the MCP's client-attested confirmation.
-  if (!hostGuard && await env.DB.prepare("SELECT 1 FROM assistant_approved_sends WHERE action_id=?").bind(id).first())
+  if (!hostGuard && await env.DB.prepare("SELECT 1 FROM approved_sends WHERE action_id=?").bind(id).first())
     throw new AppError("approved_send_actuator_required", 403);
   if (confirmation !== undefined)
     assertChatConfirmation(confirmation, a.hash, "chat");

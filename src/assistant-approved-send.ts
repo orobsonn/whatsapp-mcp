@@ -27,7 +27,7 @@ async function authenticate(raw: Env, secret: string, scope: ApprovedSendScope):
 }
 async function mapped(env: Env, scope: ApprovedSendScope, field: "action_id" | "operation_id", value: string): Promise<MappedAction> {
   const row = await env.DB.prepare(`SELECT s.action_id,s.hash,s.target_json,a.envelope_json,a.status,a.expires_at,a.provider_message_id,a.provider_zaap_id,a.last_error
-    FROM assistant_approved_sends s JOIN actions a ON a.id=s.action_id AND a.epoch=s.source_epoch AND a.generation=s.source_generation AND a.hash=s.hash WHERE ${ns} AND s.${field}=?`).bind(...keys(scope), value).first<MappedAction>();
+    FROM approved_sends s JOIN actions a ON a.id=s.action_id AND a.epoch=s.source_epoch AND a.generation=s.source_generation AND a.hash=s.hash WHERE ${ns} AND s.${field}=?`).bind(...keys(scope), value).first<MappedAction>();
   if (!row) throw new AppError("approved_send_not_found", 404);
   return row;
 }
@@ -43,10 +43,10 @@ export async function prepareApprovedSend(raw: Env, input: unknown): Promise<App
   const targetJson = JSON.stringify(target), local = sendEnvelopeGuard(selected), connection = await runtimeConnectionGuard(env);
   // The unique operation and its action commit together. Losing/concurrent callers reuse the winner.
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO assistant_approved_sends(installation_id,generation,source_epoch,source_generation,operation_id,action_id,hash,target_json,created_at)
+    env.DB.prepare(`INSERT INTO approved_sends(installation_id,generation,source_epoch,source_generation,operation_id,action_id,hash,target_json,created_at)
       SELECT ?,?,?,?,?,?,?,?,? WHERE (${connection.sql}) AND (${local.sql}) ON CONFLICT DO NOTHING`).bind(...keys(q.scope), q.operationId, actionId, hash, targetJson, now, ...connection.values, ...local.values),
     env.DB.prepare(`INSERT INTO actions(id,epoch,generation,chat_id,envelope_json,hash,status,expires_at,created_at)
-      SELECT action_id,source_epoch,source_generation,?,?,hash,'proposed',?,? FROM assistant_approved_sends s WHERE ${ns} AND s.operation_id=? AND s.action_id=? AND s.hash=?`).bind(selected.chat.id, canonicalEnvelope(envelope), now + 600000, now, ...keys(q.scope), q.operationId, actionId, hash),
+      SELECT action_id,source_epoch,source_generation,?,?,hash,'proposed',?,? FROM approved_sends s WHERE ${ns} AND s.operation_id=? AND s.action_id=? AND s.hash=?`).bind(selected.chat.id, canonicalEnvelope(envelope), now + 600000, now, ...keys(q.scope), q.operationId, actionId, hash),
   ]);
   const saved = await mapped(env, q.scope, "operation_id", q.operationId);
   if (saved.hash !== hash) throw new AppError("approved_send_conflict", 409);
@@ -82,7 +82,7 @@ export async function executeApprovedSend(raw: Env, input: unknown, provider?: S
       const proof = authorizationSchema.safeParse(await owner.approvedSendAuthorization(q.scope, { secret: q.secret, approvalId: q.approvalId, actionId: q.actionId, hash: saved.hash }));
       const now = Date.now();
       if (!proof.success || proof.data.actionId !== q.actionId || proof.data.hash !== saved.hash || proof.data.approvalId !== q.approvalId || proof.data.expiresAt <= now || proof.data.expiresAt > now + 10000) throw new AppError("approved_send_denied", 403);
-      const mapping = `EXISTS(SELECT 1 FROM assistant_approved_sends s WHERE ${ns} AND s.action_id=? AND s.hash=? AND s.target_json=?)`;
+      const mapping = `EXISTS(SELECT 1 FROM approved_sends s WHERE ${ns} AND s.action_id=? AND s.hash=? AND s.target_json=?)`;
       const exactTarget = "EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=? AND name=? AND external_id=? AND kind=?)";
       return { sql: `(${connection.sql}) AND (${local.sql}) AND (${mapping}) AND (${exactTarget}) AND ?>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)`, values: [...connection.values, ...local.values, ...keys(q.scope), q.actionId, saved.hash, saved.target_json, target.chatId, q.scope.sourceEpoch, q.scope.sourceGeneration, target.name, target.address, target.kind, proof.data.expiresAt] };
     },
