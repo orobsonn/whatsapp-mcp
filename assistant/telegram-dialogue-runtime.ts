@@ -34,7 +34,7 @@ function display(value: unknown, maximum = 3000) {
   }
   return result;
 }
-const stateLabels: Record<string, string> = { active: "Em andamento", draft: "Rascunho", paused: "Pausada", resolved: "Concluída", cancelled: "Cancelada", scheduled: "Agendada", awaiting_approval: "Aguardando sua revisão", uncertain: "Resultado incerto" };
+const stateSymbols: Record<string, string> = { active: "⏳", draft: "📝", paused: "⏸️", resolved: "✅", cancelled: "❌", scheduled: "🗓️", awaiting_approval: "👀", uncertain: "❓" };
 const intent = z.object({ kind: z.enum(["greet", "list", "note", "mission", "observe", "clarify", "unsupported"]),
   entity: z.enum(["notes", "missions", "follow_ups", "policies"]).nullable(), text: z.string().max(2048).nullable(), title: z.string().max(120).nullable(), conversationId: z.string().max(256).nullable() }).strict();
 const intentSchema = { type: "object", additionalProperties: false, required: ["kind", "entity", "text", "title", "conversationId"], properties: {
@@ -113,21 +113,21 @@ export class TelegramDialogueHost {
     let choice: z.infer<typeof intent>;
     try { choice = intent.parse(JSON.parse((result.body as any).choices[0].message.content)); } catch { choice = { kind: "clarify", entity: null, text: null, title: null, conversationId: null }; }
     let text = "💬 <b>Me explica um pouco melhor?</b>\n\nNão consegui identificar o que você quer fazer com esse pedido.";
-    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências\n\n🌙 <i>Modo sombra ativo.</i>";
-    else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.\n\n🌙 <i>O piloto continua em modo sombra.</i>";
+    if (choice.kind === "greet") text = "👋 <b>Oi! Como posso ajudar?</b>\n\n📝 Guardar e listar suas notas\n🎯 Criar e consultar missões\n📌 Consultar pendências";
+    else if (choice.kind === "unsupported") text = "🔧 <b>Essa consulta ainda está em preparação</b>\n\nPor enquanto, posso guardar anotações, criar missões e listar suas notas, missões e pendências.";
     else if (choice.kind === "list" && choice.entity) {
       const listing = await this.state.list(choice.entity); proofs.push(listing.witness);
       const names = { notes: "📝 SUAS NOTAS", missions: "🎯 SUAS MISSÕES", follow_ups: "📌 SUAS PENDÊNCIAS", policies: "⚙️ CONVERSAS E POLÍTICAS" };
       text = "<b>" + names[choice.entity] + "</b>\n\n"; let shown = 0;
       for (const r of listing.rows) {
-        const status = r.state ? `\n<i>${display(stateLabels[String(r.state)] ?? r.state, 100)}</i>` : "";
-        const line = `<b>${shown + 1}.</b> ${display(r.title || r.objective || r.purpose || r.id, 550)}${status}\n\n`;
+        const marker = r.state ? stateSymbols[String(r.state)] ?? "•" : "•";
+        const line = `${marker} ${display(r.title || r.objective || r.purpose || r.id, 550)}\n\n`;
         if (text.length + line.length > 3600) break;
         text += line; shown++;
       }
       if (!listing.rows.length) text += "Nenhum item disponível nesse recorte.\n\n";
       if (listing.more || shown < listing.rows.length) text += `📄 <i>Mostrei ${shown} itens; há mais conteúdo disponível.</i>\n\n`;
-      text += "🌙 <i>Modo sombra</i>";
+      text = text.trimEnd();
     } else if (choice.kind === "note" || choice.kind === "mission") {
       // Canary writes require an explicit host-recognized imperative. The
       // entire stored body is a literal span of the authenticated message,
@@ -144,9 +144,9 @@ export class TelegramDialogueHost {
       proofs.push({ kind: "owner_command", operationId, resultJSON: JSON.stringify(result) });
       const listing = await this.state.list(choice.kind === "note" ? "notes" : "missions"); proofs.push(listing.witness);
       text = choice.kind === "note" ? "✅ <b>Anotação guardada</b>\n\n" + display(literal) + "\n\n🗂 <i>Você pode me pedir para listar suas notas.</i>"
-        : "🎯 <b>Missão criada</b>\n\n" + display(literal) + "\n\n🌙 <i>Em modo sombra, sem envio de mensagens.</i>";
+        : "🎯 <b>Missão criada</b>\n\n⏳ " + display(literal) + "\n\n<i>Em modo sombra, sem envio de mensagens.</i>";
       }
-    } else if (choice.kind === "observe") text = "🔧 <b>Seleção de conversas em preparação</b>\n\nEssa opção ainda está sendo conectada no Telegram.\n\n🌙 <i>As configurações atuais e o modo sombra continuam ativos.</i>";
+    } else if (choice.kind === "observe") text = "🔧 <b>Seleção de conversas em preparação</b>\n\nEssa opção ainda está sendo conectada no Telegram. As configurações atuais continuam ativas.";
     const answer = text, witnesses = dialogueWitnesses.parse(proofs);
     const plan: Plan = { kind: "telegram_owner_reply_plan", updateId: turn.updateId, text: answer, witnesses,
       outboxRequestHash: await bridgeHash([this.inbox.replyFence(turn), answer, [], witnesses]), intentOperationKey: result.operationKey, intentRequestHash: receipt.request_hash, intentResultHash: receipt.result_hash };
