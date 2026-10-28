@@ -243,7 +243,12 @@ export class TelegramDialogueHost {
         text = found.state === "available" ? "" : found.text;
         if (found.state === "available") {
           dependencies.push(...found.dependencies);
-          const documents = found.observation.messages.map(m => ({ id: m.sourceId, label: `${m.fromMe === true ? "Você" : m.authorLabel ?? "Autor não identificado"} · ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Fortaleza", dateStyle: "short", timeStyle: "short" }).format(m.occurredAt)}`, text: m.text, metadata: { authorLabel: m.authorLabel, fromMe: m.fromMe, occurredAt: new Date(m.occurredAt).toISOString() } }));
+          const documents = found.observation.messages.map(m => {
+            const provenance = m.sourceKind === "derivative" ? m.contentKind === "transcript" ? "Transcrição capturada" : "Texto derivado capturado" : m.contentKind === "text" ? "Mensagem" : "Texto capturado";
+            const sender = m.fromMe === true ? "remetente: você" : m.authorLabel ? "remetente: " + m.authorLabel : "remetente não identificado";
+            return { id: m.sourceId, label: `${provenance} · ${sender} · ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Fortaleza", dateStyle: "short", timeStyle: "short" }).format(m.occurredAt)}`, text: m.text,
+              metadata: { authorLabel: m.authorLabel, fromMe: m.fromMe, sourceKind: m.sourceKind, contentKind: m.contentKind, attribution: m.sourceKind === "derivative" ? "captured_derivative" : "captured_message", occurredAt: new Date(m.occurredAt).toISOString() } };
+          });
           // The existing answer phase freezes this exact body+all dependencies
           // before reserving/invoking the provider; no duplicate episode blob.
           context = { kind: "telegram_owner_research", mode: "whatsapp_answer", question: turn.text, documents, dependencies, coverage: found.observation.coverage };

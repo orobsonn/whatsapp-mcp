@@ -9,16 +9,16 @@ import { OriginGuard } from '../assistant/origin-guard';
 
 const secret = 'synthetic-whatsapp-reader-secret-exclusive';
 const selection = { query: null, conversationName: 'Ana', authorName: null, from: null, to: null };
-async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private', messageCount = 1, materialize = true) {
+async function fixture(text = 'Não confirmei terça. Ficou quinta às 14h, se o contrato chegar.', fromMe: boolean | null = false, conversationKind: 'private' | 'group' = 'private', messageCount = 1, materialize = true, sourceKind: 'message' | 'derivative' = 'message') {
   const scope = { installationId: crypto.randomUUID(), generation: 'telegram-wa', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g' };
   let active = true;
   const reader = {
     async searchConversations(q: { requestId: string }): Promise<{ observation: string; state: string; requestId: string; sourceEpoch: string; sourceGeneration: string; refs: { chatId: string; kind: string }[]; complete: boolean; nextCursor: string | null }> { return { observation: 'capture_conversation_search', state: 'available', requestId: q.requestId, sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', refs: [{ chatId: 'chat', kind: 'private' }], complete: true, nextCursor: null }; },
-    async readSnapshot(input?: { sourceId: string }) { const sourceId=input?.sourceId??'message'; return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind: 'message', sourceId, chatId: 'chat', sourceVersion: 1, watermark: messageCount, conversationKind, access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: 'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: sourceId, messageVersion: 1 } } : {}) }; },
+    async readSnapshot(input?: { sourceId: string }) { const sourceId=input?.sourceId??'message'; return { observation: 'capture_snapshot', state: active ? 'available' : 'withdrawn', sourceEpoch: 'wa-e', sourceGeneration: 'wa-g', sourceKind, sourceId, chatId: 'chat', sourceVersion: sourceKind==='derivative'?null:1, watermark: messageCount, conversationKind, access: { captureEnabled: active, captureSince: 0, discontinuous: false }, ...(active ? { content: { kind: sourceKind==='derivative'?'transcript':'text', text, authorId: 'ana', authorName: 'Ana', ...(fromMe === null ? {} : { fromMe }), occurredAt: 100, messageId: sourceKind==='derivative'?'parent-'+sourceId:sourceId, messageVersion: 1, ...(sourceKind==='derivative'?{mediaVersion:1}:{}) } } : {}) }; },
   };
   const settings = { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: 'wa-e', BRIDGE_SOURCE_GENERATION: 'wa-g', BRIDGE_SECRET: secret, CAPTURE_READER: reader } as AssistantEnv;
   for(let sequence=1;sequence<=messageCount;sequence++){
-  const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence, previousSequence: sequence-1, chatId: 'chat', sourceId: sequence===1?'message':'message-'+sequence, sourceKind: 'message', operation: 'upsert', recordedAt: 100 }) }), settings);
+  const response = await receiveCapture(new Request('https://synthetic.invalid/bridge', { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify({ protocol: 1, ...scope, sequence, previousSequence: sequence-1, chatId: 'chat', sourceId: sequence===1?'message':'message-'+sequence, sourceKind, operation: 'upsert', recordedAt: 100 }) }), settings);
   expect(response.status).toBe(200);
   }
   if(materialize)await new CaptureMaterializer(env.DB, () => scope, reader, secret, () => 100).drain();
@@ -128,6 +128,15 @@ it('materializes an authenticated pending capture before owner retrieval without
   expect((await count('assistant_sources'))!.n).toBe(1);
   expect((await env.DB.prepare('SELECT application_state state FROM assistant_capture_inbox WHERE installation_id=? AND generation=?').bind(f.scope.installationId,f.scope.generation).first<{state:string}>())!.state).toBe('applied');
   expect((await count('assistant_model_receipts'))!.n).toBe(0);
+});
+it('preserves transcript provenance and uncertain or incoming direction from the source snapshot', async () => {
+  for(const fromMe of [false,null]){
+    const f = await fixture('Transcrição já armazenada, somente se houver confirmação.',fromMe,'group',1,true,'derivative');
+    const result = await readTelegramWhatsApp(f.settings,f.scope,selection,'Qual foi a transcrição de Ana no grupo?',f.boundary);
+    expect(result.state).toBe('available');if(result.state!=='available')continue;
+    expect(result.observation.messages).toMatchObject([{sourceKind:'derivative',contentKind:'transcript',text:f.text,fromMe}]);
+    expect(result.dependencies[0].origin?.sourceKind).toBe('derivative');
+  }
 });
 it('paginates name discovery and preserves correlation, exclusions and literal LIKE input', async () => {
   const key = crypto.randomUUID(), source = { ...env, OWNER_SUB: 'synthetic-owner', INSTALLATION_EPOCH: key, CONNECTION_GENERATION: key, MAINTENANCE: 'false', RUNTIME_CONFIG: 'static' as const, DEVELOPMENT: 'true', ASSISTANT_READER_SECRET: secret };

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssistantEnv } from './env';
 import type { OwnerAffinity } from './mcp';
 import { SourceAccess, type AccessGuard } from './access';
-import { OriginGuard, checkOriginsWithin, sameFence, type SnapshotReader } from './origin-guard';
+import { OriginGuard, checkOriginsWithin, sameFence, type OriginFence, type SnapshotReader } from './origin-guard';
 import type { ReplyDependency } from './telegram-owner-replies';
 import { jsonStatement } from './d1-statement';
 import { CaptureMaterializer } from './materialize';
@@ -14,7 +14,7 @@ const selectionSchema = z.object({ query: z.string().max(2048).nullable(), conve
 export type WhatsAppSelection = z.infer<typeof selectionSchema>;
 type Boundary = { check: () => Promise<void>; deadlineAt: number; signal?: AbortSignal };
 export type WhatsAppObservation = { kind: 'whatsapp'; question: string; query: WhatsAppSelection;
-  messages: { sourceId: string; text: string; authorId: string | null; authorLabel: string | null; fromMe: boolean | null; occurredAt: number; conversationId: string }[];
+  messages: { sourceId: string; sourceKind: OriginFence['sourceKind']; contentKind: string; text: string; authorId: string | null; authorLabel: string | null; fromMe: boolean | null; occurredAt: number; conversationId: string }[];
   coverage: { complete: false; method: 'lexical_recent'; from: number | null; to: number | null; limit: 3; gaps: string[] } };
 export type WhatsAppRead = { state: 'available'; observation: WhatsAppObservation; dependencies: ReplyDependency[]; guard: AccessGuard }
   | { state: 'clarify' | 'unavailable'; text: string };
@@ -121,7 +121,7 @@ export async function readTelegramWhatsApp(env: AssistantEnv, scope: OwnerAffini
       const observed = await origin.observe(scope, proof);
       if (observed.state !== 'available' || observed.hash !== proof.hash || observed.watermark !== proof.watermark || observed.kind !== proof.conversationKind || !sameFence(await origin.fence(source.id), proof)) { gaps.add('origin_stale'); continue; }
       if (typeof observed.content?.text !== 'string' || observed.content.text !== source.text) { gaps.add('message_text_unavailable'); continue; }
-      const message = { sourceId: source.id, text: source.text, authorId: source.authorId, authorLabel: source.authorLabel,
+      const message = { sourceId: source.id, sourceKind: proof.sourceKind, contentKind: observed.content.kind, text: source.text, authorId: source.authorId, authorLabel: source.authorLabel,
         fromMe: typeof observed.content.fromMe === 'boolean' ? observed.content.fromMe : null, occurredAt: source.occurredAt, conversationId: source.fence.source.conversationId };
       if (bytes({ ...observation, messages: [...observation.messages, message] }) > 15360) { gaps.add('context_bytes_limit'); continue; }
       observation.messages.push(message); dependencies.push({ source: source.fence, origin: proof });
