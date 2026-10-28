@@ -1,0 +1,116 @@
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { TelegramOwnerInbox, type TelegramOwnerTurn } from "../assistant/telegram-owner-inbox";
+import { TelegramOwnerRequests } from "../assistant/telegram-owner-requests";
+import { TelegramLink } from "../assistant/telegram-auth";
+import { SourceAccess, type SourceFence } from "../assistant/access";
+import { JobQueue, type JobLease } from "../assistant/queue";
+import { Episodes } from "../assistant/agent/episodes";
+import { InferenceBudget } from "../assistant/budget";
+import type { BrokerConfig, ModelAdapter } from "../assistant/model-broker";
+import { SourceController } from "../assistant/sources";
+import { RetentionPurge } from "../assistant/retention-purge";
+import { OwnerDialoguePhases } from "../assistant/telegram-dialogue-phases";
+
+const bot = "synthetic_phase_bot", secret = "synthetic-phase-webhook-secret-for-tests";
+const config: BrokerConfig = { extractionConfig: "telegram-owner-dialogue-v1", priceVersion: "synthetic", chatModel: "gpt-6-luna", embeddingModel: "text-embedding-3-small", maxOutputTokens: 100, chatCeiling: 5, embeddingCeiling: 2 };
+const retirement = { allow: async () => {}, withdraw: async () => {} };
+let scope: { installationId: string; generation: string; sourceEpoch: string; sourceGeneration: string; period: string };
+let inbox: TelegramOwnerInbox, turn: TelegramOwnerTurn, link: TelegramLink, source: SourceFence, context: ConstructorParameters<typeof OwnerDialoguePhases>[2], phases: OwnerDialoguePhases;
+let adapter: ReturnType<typeof vi.fn<ModelAdapter>>;
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const payload = (text = "Interpret only this authenticated owner request.") => ({ model: config.chatModel, messages: [{ role: "system", content: text }, { role: "user", content: turn.text }], max_completion_tokens: 100 });
+async function episode(key = "primary") {
+  const queue = new JobQueue(env.DB, scope, { kind: "owner" }, async () => inbox.guard(turn));
+  const job = await queue.enqueue({ kind: "reasoning", dedupeKey: "telegram-owner-v1:" + key, sourceId: source.source.id, sourceRevision: 1, request: "telegram-owner-dialogue-v1", maxAttempts: 1, runtime: "flue_owner_dialogue" }, Date.now(), { id: crypto.randomUUID(), guard: inbox.guard(turn), statements: [] });
+  const lease = (await queue.claimId(job.id, Date.now(), 90000, inbox.guard(turn)))!, ledger = (await queue.ledger(job.id))!, episodes = new Episodes(env.DB, scope);
+  const checkpoint = await inbox.checkpoint(turn), deadlineAt = Math.min(Date.now() + 60000, turn.deadlineAt - 1);
+  const row = await episodes.prepare({ lease, requestHash: ledger.request_hash, profile: "owner", checkpoint: checkpoint.fingerprint, binding: { kind: "telegram_owner_dialogue", scope, source, checkpoint, config, period: scope.period }, deadline: deadlineAt, maxCalls: 2 });
+  await episodes.envelope(row.id, { message: "Execute the admitted private dialogue.", initialData: { bindingId: row.id }, idempotencyKey: "dialogue:" + row.id });
+  expect(await episodes.dispatch(row.id)).toBe(true); expect(await episodes.submission(row.id, "synthetic-native-submission")).toBe(true);
+  return { lease, episodeId: row.id, bindingHash: row.binding_hash, deadlineAt, source, identity: { profile: "owner-dialogue", runtimeId: row.runtime_id, submissionId: "synthetic-native-submission" }, config };
+}
+beforeEach(async () => {
+  scope = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "epoch", sourceGeneration: "capture", period: "2026-10-28" };
+  await env.DB.prepare("INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',?)").bind(scope.installationId, scope.generation, bot, scope.sourceEpoch, scope.sourceGeneration, Math.floor(Date.now() / 1000) - 10).run();
+  link = new TelegramLink(env.DB, scope, bot, secret); inbox = new TelegramOwnerInbox(env.DB, scope, bot);
+  const activation = await inbox.activate(); await wait(Math.max(1, (activation.cutoffSecond + 1) * 1000 - Date.now() + 10));
+  expect(await link.receive({ update_id: 3, message: { message_id: 103, date: Math.floor(Date.now() / 1000), from: { id: 101, is_bot: false }, chat: { id: 101, type: "private" }, text: "O que ficou pendente?" } })).toBe("pending");
+  turn = (await inbox.claim(3))!; const captured = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
+  source = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, captured.id))!.fence;
+  context = await episode(); await new InferenceBudget(env.DB, scope).configure(100);
+  adapter = vi.fn<ModelAdapter>(async () => ({ status: 200, body: '{"choices":[{"message":{"content":"synthetic private intent"}}]}', actualUnits: 1 }));
+  phases = new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter);
+});
+afterEach(() => vi.restoreAllMocks());
+
+it("executes a frozen phase once, recovers its exact receipt and refuses rekeying before a second reservation", async () => {
+  expect(await phases.run("intent", payload())).toMatchObject({ state: "complete", body: { choices: [{ message: { content: "synthetic private intent" } }] } });
+  expect(await phases.run("intent", payload())).toMatchObject({ state: "complete" });
+  await expect(phases.run("intent", payload("changed instruction"))).rejects.toThrow("dialogue_phase_conflict");
+  expect(adapter).toHaveBeenCalledTimes(1); expect((await new InferenceBudget(env.DB, scope).status()).committed).toBe(1);
+  expect(await phases.inspect("intent")).toMatchObject({ state: "complete", ordinal: 1, purged: false });
+});
+
+it("does not give another episode a second phase slot or model cost for the same owner request", async () => {
+  await phases.run("intent", payload());
+  const alternate = new OwnerDialoguePhases(env.DB, scope, await episode("alternate"), inbox, turn, adapter);
+  await expect(alternate.run("intent", payload())).rejects.toThrow("dialogue_phase_conflict");
+  expect(adapter).toHaveBeenCalledTimes(1);
+});
+
+it("a losing concurrent descriptor cannot consume an ordinal or reserve another model attempt", async () => {
+  const result = await Promise.allSettled([phases.run("intent", payload("first candidate")), phases.run("intent", payload("second candidate"))]);
+  expect(result.filter(row => row.status === "fulfilled")).toHaveLength(1);
+  expect(result.filter(row => row.status === "rejected")).toHaveLength(1);
+  expect(adapter).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_episode_calls WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("n")).toBe(1);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_budget_reservations WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("n")).toBe(1);
+});
+
+it("does not poison an in-flight winner when an identical invocation arrives concurrently", async () => {
+  let release!: () => void; const waiting = new Promise<void>(resolve => { release = resolve; });
+  adapter.mockImplementation(async () => { await waiting; return { status: 200, body: '{"choices":[{"message":{"content":"winner"}}]}', actualUnits: 1 }; });
+  const winner = phases.run("intent", payload());
+  await vi.waitFor(() => expect(adapter).toHaveBeenCalledTimes(1));
+  expect(await phases.run("intent", payload())).toMatchObject({ state: "in_progress" });
+  release(); expect(await winner).toMatchObject({ state: "complete" }); expect(adapter).toHaveBeenCalledTimes(1);
+});
+
+it("preserves a reservation when execution is interrupted before receipt admission and never rekeys it", async () => {
+  const reserve = InferenceBudget.prototype.reserve;
+  vi.spyOn(InferenceBudget.prototype, "reserve").mockImplementation(async function (this: InferenceBudget, ...args) { await reserve.apply(this, args); throw Error("synthetic interruption after reservation"); });
+  expect(await phases.run("intent", payload())).toMatchObject({ state: "uncertain" });
+  expect(await phases.run("intent", payload())).toMatchObject({ state: "uncertain" });
+  expect(await phases.inspect("intent")).toMatchObject({ state: "uncertain" });
+  expect(adapter).not.toHaveBeenCalled(); expect((await new InferenceBudget(env.DB, scope).status()).committed).toBe(5);
+});
+
+it("propagates native cancellation to the real adapter signal and prevents a second phase", async () => {
+  const native = new AbortController(); let observed: AbortSignal | undefined;
+  adapter.mockImplementation(async request => { observed = request.signal; return new Promise((_, reject) => request.signal.addEventListener("abort", () => reject(Error("synthetic adapter aborted")), { once: true })); });
+  phases = new OwnerDialoguePhases(env.DB, scope, context, inbox, turn, adapter, { signal: native.signal });
+  const result = phases.run("intent", payload()); await vi.waitFor(() => expect(adapter).toHaveBeenCalledTimes(1)); native.abort();
+  expect(await result).toMatchObject({ state: "uncertain" }); expect(observed?.aborted).toBe(true);
+  expect(await phases.run("answer", payload())).toMatchObject({ state: "blocked" }); expect(adapter).toHaveBeenCalledTimes(1);
+});
+
+it("purges private phases and a late model body while preserving a paid settlement and the phase latch", async () => {
+  await phases.run("intent", payload());
+  const note = await new SourceController(env.DB, scope, { kind: "owner" }).create({ originKey: "support", text: "synthetic private support", occurredAt: 1 });
+  const dependency = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, note.id))!.fence;
+  let release!: () => void; const waiting = new Promise<void>(resolve => { release = resolve; });
+  adapter.mockImplementation(async () => { await waiting; return { status: 200, body: '{"choices":[{"message":{"content":"late private support"}}]}', actualUnits: 2 }; });
+  const result = phases.run("answer", payload("Use synthetic private support"), [{ source: dependency }]);
+  await vi.waitFor(() => expect(adapter).toHaveBeenCalledTimes(2));
+  await new SourceController(env.DB, scope, { kind: "owner" }, Date.now, retirement).withdraw(note.id, 1);
+  const purge = new RetentionPurge(env.DB, scope, { kind: "owner" }, Date.now, retirement); let state: { state: string } = { state: "pending" };
+  for (let i = 0; i < 25 && state.state !== "complete"; i++) state = await purge.advance({ kind: "source.purge", operationId: "purge-phase-support", sourceId: note.id });
+  expect(state.state).toBe("complete"); release(); expect(await result).toMatchObject({ state: "uncertain" });
+  expect(await phases.inspect("answer")).toMatchObject({ state: "cancelled", purged: true });
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_episodes WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("n")).toBe(0);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_model_receipts WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("n")).toBe(0);
+  expect((await new InferenceBudget(env.DB, scope).status()).committed).toBe(3);
+  const row = await env.DB.prepare("SELECT body_json,result_json,deps_json FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND generation=? AND request_id=? AND phase='answer'").bind(scope.installationId, scope.generation, source.source.id).first();
+  expect(row).toEqual({ body_json: null, result_json: null, deps_json: "[]" });
+});

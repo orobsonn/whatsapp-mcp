@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { instrument, setProvider, type FlueExecutionContext } from "@flue/runtime";
 import { getCloudflareContext, getDurableObjectIdentity } from "@flue/runtime/cloudflare";
-import { createEpisodeProvider } from "./provider";
-import type { EpisodeController, RuntimeIdentity } from "../agent/controller";
-type Resolver = (env: Record<string, unknown>, identity: RuntimeIdentity) => Promise<{ host: Pick<EpisodeController, "model">; episodeId: string }>;
+import { createEpisodeProvider, type EpisodePayload } from "./provider";
+import type { RuntimeIdentity } from "../agent/controller";
+type Resolver = (env: Record<string, unknown>, identity: RuntimeIdentity) => Promise<{
+  host: { model(id: string, identity: RuntimeIdentity, payload: EpisodePayload, signal?: AbortSignal): Promise<string> }; episodeId: string;
+}>;
 /** Invocation-local host correlation; no global mutable active job/context. */
 export function installEpisodeRuntime(resolve: Resolver) {
   const execution = new AsyncLocalStorage<FlueExecutionContext>();
@@ -14,7 +16,7 @@ export function installEpisodeRuntime(resolve: Resolver) {
     const defined = Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined));
     return execution.run({ ...execution.getStore(), ...defined }, next);
   } });
-  setProvider(createEpisodeProvider(async (payload, lane) => {
+  setProvider(createEpisodeProvider(async (payload, lane, signal) => {
     const { env } = getCloudflareContext(), identity = getDurableObjectIdentity(), context = execution.getStore();
     const profiles = {
       FlueOwnerRuntimeAgent: { profile: "owner", agentName: "owner-runtime", lane: "shadow" },
@@ -25,6 +27,6 @@ export function installEpisodeRuntime(resolve: Resolver) {
     if (!selected || lane !== selected.lane || !context?.submissionId || context.agentName !== selected.agentName) throw new Error("episode_denied");
     const nominal = { profile: selected.profile, runtimeId: identity.name, submissionId: context.submissionId };
     const { host, episodeId } = await resolve(env, nominal);
-    return host.model(episodeId, nominal, payload);
+    return host.model(episodeId, nominal, payload, signal);
   }));
 }

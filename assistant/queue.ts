@@ -231,9 +231,15 @@ export class JobQueue {
         lease: lease.lease_generation, now, hash: auth.ledger.request_hash }), ...auth.guard.values] };
   }
   async isAuthorized(lease: JobLease, now: number) {
-    const auth = await this.authorization(lease, now); if (!auth) return false;
-    const guard = this.jobGuard(lease, auth, now, null), statement = this.raw(`SELECT 1 WHERE ${guard.sql}`, ...guard.values);
-    return (await this.db.batch([...auth.statements, statement])).at(-1)!.results.length === 1;
+    const plan = await this.currentPlan(lease, now); if (!plan) return false;
+    const statement = this.raw(`SELECT 1 WHERE ${plan.guard.sql}`, ...plan.guard.values);
+    return (await this.db.batch([...plan.statements, statement])).at(-1)!.results.length === 1;
+  }
+  /** Host-only current fence for an atomic dependent admission, before or
+   * after ledger admission. This plan itself neither claims nor executes. */
+  async currentPlan(lease: JobLease, now: number): Promise<RuntimeGuardPlan | null> {
+    const auth = await this.authorization(lease, now); if (!auth) return null;
+    return { guard: this.jobGuard(lease, auth, now, null), statements: auth.statements };
   }
   async isCurrent(lease: JobLease, now: number) {
     return !!await this.statement(`SELECT id FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=? AND ${liveLease}`,

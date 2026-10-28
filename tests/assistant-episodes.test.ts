@@ -163,6 +163,13 @@ test("native owner dialogue never streams a private host result into the Flue tr
   expect(result.stopReason).toBe("error"); expect(result.content).toEqual([]);
   expect(JSON.stringify(result)).not.toContain("synthetic_private_reply_do_not_stream");
 });
+test("native dialogue forwards its invocation abort signal to the private host", async () => {
+  const native = new AbortController(); let observed: AbortSignal | undefined;
+  const provider = createEpisodeProvider(async (_payload, _lane, signal) => { observed = signal; return "owner_dialogue_complete"; });
+  const model = provider.getModels().find(model => model.id === "owner-dialogue")!;
+  expect((await provider.streamSimple(model, { messages: [{ role: "user", content: "Execute the admitted private dialogue.", timestamp: 100 }] } as any, { signal: native.signal }).result()).stopReason).toBe("stop");
+  expect(observed).toBe(native.signal);
+});
 test("native Pi provider refuses extra tools/non-text history before calling its host", async () => {
   let calls = 0;
   const provider = createEpisodeProvider(async () => { calls++; return "forbidden"; });

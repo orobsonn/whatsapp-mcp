@@ -24,7 +24,7 @@ function payload(context: TranscriptContext): EpisodePayload {
 }
 /** Native Pi adapter. The host returns only a complete, revalidated JSON
  * proposal. No partial token/event crosses this boundary before that check. */
-export function createEpisodeProvider(call: (payload: EpisodePayload, lane: EpisodeLane) => Promise<string>) {
+export function createEpisodeProvider(call: (payload: EpisodePayload, lane: EpisodeLane, signal?: AbortSignal) => Promise<string>) {
   const model: Model<"assistant-shadow"> = { id: "shadow", name: "Fenced shadow episode", provider: "assistant-host", api: "assistant-shadow", baseUrl: "",
     reasoning: false, input: ["text"], contextWindow: 32768, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const models = [model, { ...model, id: "owner-dialogue", name: "Private owner dialogue" }];
@@ -40,7 +40,7 @@ export function createEpisodeProvider(call: (payload: EpisodePayload, lane: Epis
         if (!selected) throw 0;
         const request = payload(context);
         if (options?.signal?.aborted) throw 0;
-        const text = await call(request, selected.id as EpisodeLane);
+        const text = await call(request, selected.id as EpisodeLane, options?.signal);
         if (options?.signal?.aborted || typeof text !== "string" || bytes(text) > 24000) throw 0;
         // Dialogue questions, context and answers stay in the host's private
         // journal. Even a faulty host cannot stream them into Flue history.

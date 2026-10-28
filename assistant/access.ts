@@ -39,7 +39,7 @@ export class SourceAccess {
     this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation });
     const origin=scope as SourceScope & {sourceEpoch?:unknown;sourceGeneration?:unknown};if(typeof origin.sourceEpoch==='string'&&origin.sourceEpoch.length&&typeof origin.sourceGeneration==='string'&&origin.sourceGeneration.length)this.metadataOrigin=Object.freeze({sourceEpoch:origin.sourceEpoch,sourceGeneration:origin.sourceGeneration});
   }
-  private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number): AccessGuard | null {
+  private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number, operational = false): AccessGuard | null {
     if (actor.kind === "extractor") return null;
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) return null;
     const keys = [this.scope.installationId, this.scope.generation, ...(id === null ? [] : [id]), expectedRevision ?? null, expectedRevision ?? null];
@@ -51,7 +51,7 @@ export class SourceAccess {
     if (actor.kind === "owner") {
       // Operational requests remain available only by exact ID to trusted
       // owner audit/model admission. They are never factual context inventory.
-      return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}${id === null ? " AND s.origin<>'owner_request'" : ""}`, values: keys };
+      return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}${id === null && !operational ? " AND s.origin<>'owner_request'" : ""}`, values: keys };
     } else {
       // Select the latest mandate before testing its state, dates or permissions.
       return { sql: `SELECT ${sourceColumns},COALESCE(p.revision,0) AS policy_revision,
@@ -87,6 +87,9 @@ export class SourceAccess {
   }
   /** Host SQL snapshot used by private context proofs; no caller permission SQL. */
   ownerRows(now=this.clock()):AccessGuard{return this.current({kind:'owner'},null,undefined,now)!;}
+  /** Exact canonical work supports may be Owner directives. This internal
+   * relation is never a factual search inventory or an ingest candidate. */
+  ownerSupportRows(now=this.clock()):AccessGuard{return this.current({kind:'owner'},null,undefined,now,true)!;}
   async read(actor: TrustedActor, id: string, expectedRevision?: number, now = this.clock()): Promise<SourceRead | null> {
     actor = Object.freeze({ ...actor });
     const query = this.current(actor, id, expectedRevision, now);

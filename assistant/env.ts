@@ -20,6 +20,7 @@ export interface AssistantEnv {
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;
   TELEGRAM_SUMMARIES_ENABLED?: string;
+  TELEGRAM_OWNER_DIALOGUE_ENABLED?: string;
   MEDIA_CONTEXT_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   SEMANTIC_SEARCH_MODE?: string;

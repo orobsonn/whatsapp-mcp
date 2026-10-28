@@ -59,3 +59,14 @@ export async function resolveRuntimeEpisode(raw: Record<string, unknown>, identi
   const { purpose } = z.object({ purpose: z.enum(["automation", "owner_read"]) }).parse(JSON.parse(row.binding_json));
   return { host: runtimeHost(env, purpose), episodeId: row.id };
 }
+/** Installed dispatcher keeps the legacy shadow-controller contract separate. */
+export async function resolveInstalledRuntime(raw: Record<string, unknown>, identity: RuntimeIdentity) {
+  if (identity.profile !== "owner-dialogue") return resolveRuntimeEpisode(raw, identity);
+  const env = raw as AssistantEnv;
+  if (!env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION) throw Error("episode_unconfigured");
+  const row = await env.DB.prepare("SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND profile='owner' AND runtime_id=? AND json_extract(binding_json,'$.kind')='telegram_owner_dialogue'")
+    .bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION, identity.runtimeId).first<{ id: string }>();
+  if (!row) throw Error("episode_denied");
+  const { TelegramDialogueHost } = await import("../telegram-dialogue-runtime");
+  return { host: new TelegramDialogueHost(env), episodeId: row.id };
+}

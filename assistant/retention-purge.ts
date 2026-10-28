@@ -11,7 +11,13 @@ export const purgeCommand = z.object({ kind: z.literal("source.purge"), operatio
 const namespace = (alias: string) => `${alias}.installation_id=?1 AND ${alias}.generation=?2`;
 const refs = (kind: string) => `SELECT id FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3 AND kind='${kind}'`;
 const gate = `EXISTS(SELECT 1 FROM assistant_retention_purge_grants WHERE installation_id=?1 AND generation=?2 AND source_id=?4 AND purge_id=?3)`;
-const supportedTables = new Set(`sources source_versions source_changes change_cursors people provider_identities projects project_memberships conversation_policies mandates mandate_actions mandate_sources missions follow_ups fup_occurrences jobs capture_streams capture_inbox job_ledger job_receipts origin_conversations source_origins origin_versions materialization_results materialization_progress source_admissions budget_accounts budget_reservations relation_batches canonical_extractions owner_canonical_supports owner_relation_proofs owner_canonical_status model_permits model_receipts conversations conversation_replay project_revisions owner_commands episodes episode_calls retrieval_runs retrieval_steps retrieval_items retrieval_semantic mission_versions policy_versions decision_jobs shadow_decisions telegram_links telegram_pairings telegram_updates telegram_owner_activations telegram_owner_turns telegram_owner_replies fup_provenance media_receipts media_artifacts telegram_topics telegram_notifications telegram_reviews telegram_read_admissions retention_barriers retention_purges retention_purge_refs retention_purge_grants retention_object_claims retention_installation_gate retention_snapshot_sessions retention_snapshot_pages retention_restore_sessions retention_restore_rows retention_restore_grants retention_restored_work retention_generation_seals retention_quarantines routine_state routine_cycles routine_items routine_event_items routine_reviews routine_fup_results routine_ingestions telegram_summaries evaluation_exposures evaluation_assessments capture_changes bridge_cursors`.split(" ").map(name => "assistant_" + name));
+const dialogueSupports = (json: string) => `EXISTS(SELECT 1 FROM json_each(${json}) w WHERE
+  json_extract(w.value,'$.source.source.id')=?4 OR
+  (json_extract(w.value,'$.kind')='owner_command' AND (json_extract(CASE WHEN json_valid(json_extract(w.value,'$.resultJSON')) THEN json_extract(w.value,'$.resultJSON') ELSE '{}' END,'$.id')=?4
+    OR json_extract(w.value,'$.operationId') IN (${refs("command")}))) OR
+  (json_extract(w.value,'$.kind')='owner_listing' AND EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(json_extract(w.value,'$.rowsJSON')) THEN json_extract(w.value,'$.rowsJSON') ELSE '[]' END) r
+    WHERE json_extract(r.value,'$.source_id')=?4 OR (json_extract(w.value,'$.entity')='notes' AND json_extract(r.value,'$.id')=?4))))`;
+const supportedTables = new Set(`sources source_versions source_changes change_cursors people provider_identities projects project_memberships conversation_policies mandates mandate_actions mandate_sources missions follow_ups fup_occurrences jobs capture_streams capture_inbox job_ledger job_receipts origin_conversations source_origins origin_versions materialization_results materialization_progress source_admissions budget_accounts budget_reservations relation_batches canonical_extractions owner_canonical_supports owner_relation_proofs owner_canonical_status model_permits model_receipts conversations conversation_replay project_revisions owner_commands episodes episode_calls retrieval_runs retrieval_steps retrieval_items retrieval_semantic mission_versions policy_versions decision_jobs shadow_decisions telegram_links telegram_pairings telegram_updates telegram_owner_activations telegram_owner_turns telegram_owner_replies telegram_dialogue_phases fup_provenance media_receipts media_artifacts telegram_topics telegram_notifications telegram_reviews telegram_read_admissions retention_barriers retention_purges retention_purge_refs retention_purge_grants retention_object_claims retention_installation_gate retention_snapshot_sessions retention_snapshot_pages retention_restore_sessions retention_restore_rows retention_restore_grants retention_restored_work retention_generation_seals retention_quarantines routine_state routine_cycles routine_items routine_event_items routine_reviews routine_fup_results routine_ingestions telegram_summaries evaluation_exposures evaluation_assessments capture_changes bridge_cursors`.split(" ").map(name => "assistant_" + name));
 /** A fixed, typed closure of the assistant contracts. SQL identifiers and JSON
  * paths below are host constants; neither a command nor source supplies SQL. */
 export class RetentionPurge {
@@ -67,6 +73,17 @@ export class RetentionPurge {
         collect("job", `SELECT e.job_id AS id FROM assistant_episodes e WHERE ${namespace("e")} AND (json_extract(e.binding_json,'$.runId') IN (${refs("run")}) OR (e.profile='owner' AND (json_extract(e.binding_json,'$.lease.source_id') IN (${refs("owner_anchor")}) OR EXISTS(SELECT 1 FROM json_each(e.binding_json,'$.context.sources') j WHERE json_extract(j.value,'$.id') IN (${refs("owner_anchor")})))))`),
       ] : []),
       collect("mission", `SELECT id FROM assistant_missions t WHERE ${namespace("t")} AND t.source_id=?4`),
+      ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
+        collect("job", `SELECT e.job_id AS id FROM assistant_episodes e WHERE ${namespace("e")} AND ${dialogueSupports("CASE WHEN json_valid(e.result_json) THEN COALESCE(json_extract(e.result_json,'$.witnesses'),'[]') ELSE '[]' END")}`),
+      ] : []),
+      ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
+        collect("job", `SELECT e.job_id AS id FROM assistant_telegram_dialogue_phases p JOIN assistant_episodes e
+          ON e.installation_id=p.installation_id AND e.generation=p.generation AND e.id=p.episode_id WHERE ${namespace("p")}
+          AND (p.request_id=?4 OR EXISTS(SELECT 1 FROM json_each(p.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4))`),
+        collect("model", `SELECT p.operation_key AS id FROM assistant_telegram_dialogue_phases p WHERE ${namespace("p")}
+          AND (p.request_id=?4 OR p.episode_id IN (SELECT e.id FROM assistant_episodes e WHERE ${namespace("e")} AND e.job_id IN (${refs("job")}))
+          OR EXISTS(SELECT 1 FROM json_each(p.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4))`),
+      ] : []),
       collect("mission_version", `SELECT json_array(id,revision) AS id FROM assistant_mission_versions t WHERE ${namespace("t")} AND json_extract(body_json,'$.sourceId')=?4`),
       collect("fup", `SELECT id FROM assistant_follow_ups t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.mission_id IN (${refs("mission")}))`),
       collect("job", `SELECT id FROM assistant_jobs t WHERE ${namespace("t")} AND (t.source_id=?4 OR t.occurrence_id IN (SELECT id FROM assistant_fup_occurrences f WHERE ${namespace("f")} AND f.follow_up_id IN (${refs("fup")})))
@@ -127,13 +144,31 @@ export class RetentionPurge {
           WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM assistant_sources s WHERE ${namespace("s")} AND s.id=?4 AND s.origin='owner_request'
           AND s.origin_key=json_array('telegram-owner-request-v1',t.bot_instance,t.update_id)) AND ${gate}`),
       ] : []),
+      ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
+        // Erase copies before clearing dependency proofs. Canonical raw Owner
+        // input is an independent audit source, not generated from read deps.
+        sql(`UPDATE assistant_telegram_updates AS t SET text=NULL,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE ${namespace("t")}
+          AND EXISTS(SELECT 1 FROM assistant_telegram_dialogue_phases p JOIN assistant_sources s ON s.installation_id=p.installation_id AND s.generation=p.generation AND s.id=p.request_id
+          WHERE ${namespace("p")} AND s.origin='owner_request' AND s.origin_key=json_array('telegram-owner-request-v1',t.bot_instance,t.update_id)
+          AND (p.request_id=?4 OR p.episode_id IN (${episodes}) OR EXISTS(SELECT 1 FROM json_each(p.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4))) AND ${gate}`),
+        sql(`UPDATE assistant_telegram_owner_replies AS t SET text=NULL,deps_json='[]',witnesses_json='[]',purged=1,state=CASE WHEN state='prepared' THEN 'cancelled' WHEN state='attempting' THEN 'uncertain' ELSE state END
+          WHERE ${namespace("t")} AND EXISTS(SELECT 1 FROM assistant_telegram_dialogue_phases p JOIN assistant_sources s ON s.installation_id=p.installation_id AND s.generation=p.generation AND s.id=p.request_id
+          WHERE ${namespace("p")} AND s.origin='owner_request' AND s.origin_key=json_array('telegram-owner-request-v1',t.bot_instance,t.update_id)
+          AND (p.request_id=?4 OR p.episode_id IN (${episodes}) OR EXISTS(SELECT 1 FROM json_each(p.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4))) AND ${gate}`),
+        sql(`UPDATE assistant_telegram_dialogue_phases AS p SET body_json=NULL,result_json=NULL,deps_json='[]',purged=1,state='cancelled' WHERE ${namespace("p")}
+          AND (p.request_id=?4 OR p.episode_id IN (${episodes}) OR EXISTS(SELECT 1 FROM json_each(p.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4)) AND ${gate}`),
+      ] : []),
+      ...(catalog.some(row => row.name === "assistant_telegram_dialogue_phases") ? [
+        sql(`UPDATE assistant_telegram_owner_replies AS t SET text=NULL,deps_json='[]',witnesses_json='[]',purged=1,state=CASE WHEN state='prepared' THEN 'cancelled' WHEN state='attempting' THEN 'uncertain' ELSE state END
+          WHERE ${namespace("t")} AND ${dialogueSupports("t.witnesses_json")} AND ${gate}`),
+      ] : []),
       ...(catalog.some(row => row.name === "assistant_telegram_owner_replies") ? [
         // Select corresponding input bodies BEFORE clearing dependency keys.
         // Both writes share the same purge grant and transaction.
         sql(`UPDATE assistant_telegram_updates AS t SET text=NULL WHERE ${namespace("t")} AND t.state='completed' AND EXISTS(
           SELECT 1 FROM assistant_telegram_owner_replies r WHERE ${namespace("r")} AND r.bot_instance=t.bot_instance AND r.update_id=t.update_id AND r.purged=0
           AND EXISTS(SELECT 1 FROM json_each(r.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4)) AND ${gate}`),
-        sql(`UPDATE assistant_telegram_owner_replies AS t SET text=NULL,deps_json='[]',purged=1,state=CASE WHEN state='prepared' THEN 'cancelled' WHEN state='attempting' THEN 'uncertain' ELSE state END
+        sql(`UPDATE assistant_telegram_owner_replies AS t SET text=NULL,deps_json='[]',witnesses_json='[]',purged=1,state=CASE WHEN state='prepared' THEN 'cancelled' WHEN state='attempting' THEN 'uncertain' ELSE state END
           WHERE ${namespace("t")} AND t.purged=0 AND EXISTS(SELECT 1 FROM json_each(t.deps_json) d WHERE json_extract(d.value,'$.source.source.id')=?4) AND ${gate}`),
       ] : []),
       del("assistant_telegram_reviews", `t.notification_id IN (SELECT id FROM assistant_telegram_notifications n WHERE ${namespace("n")} AND n.decision_id IN (${refs("decision")}))`),
