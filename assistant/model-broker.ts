@@ -8,6 +8,7 @@ import { reportModelAdmissionFailure, type ModelAdmissionFailure } from "./model
 export type ModelPath = "/v1/chat/completions" | "/v1/embeddings";
 export type BrokerConfig = { extractionConfig: string; priceVersion: string; chatModel: string; embeddingModel: string;
   maxOutputTokens: number; chatCeiling: number; embeddingCeiling: number };
+export type ModelOperation = Readonly<{ operationKey: string; requestHash: string; configHash: string; path: ModelPath; body: string }>;
 export type ModelAdapter = (request: Readonly<{ path: ModelPath; body: string; signal: AbortSignal }>) => Promise<{ status: number; body: string; actualUnits: number }>;
 // Host-only admission. Statements and the model receipt share one transaction;
 // callers supply no SQL through messages, Flue metadata or model responses.
@@ -40,7 +41,7 @@ function normalize(path: string, payload: unknown, config: BrokerConfig): { path
       const parsed = z.object({ model: z.literal(config.chatModel), messages: z.array(z.object({
         role: z.enum(["system", "user", "assistant", "developer"]), content: z.string(),
       }).strict()).min(1).max(64), max_tokens: count.optional(), max_completion_tokens: count.optional(),
-      temperature: z.number().min(0).max(2).optional(), stream: z.literal(false).optional(), n: z.literal(1).optional(),
+      reasoning_effort: z.enum(["none", "low"]).optional(), temperature: z.number().min(0).max(2).optional(), stream: z.literal(false).optional(), n: z.literal(1).optional(),
       response_format: z.union([z.object({ type: z.literal("json_object") }).strict(), z.object({ type: z.literal("json_schema"),
         json_schema: z.object({ name: z.string().min(1).max(256), schema: z.record(z.string(), z.unknown()), strict: z.boolean().optional() }).strict(),
       }).strict()]).optional(),
@@ -127,6 +128,14 @@ export class CogneeModelBroker {
     const key = "cognee:" + await bridgeHash([...this.keys(), fence.source.id, fence.source.revision,
       fence.source.version, fence.source.hash, configHash, requestHash]);
     return { key, requestHash, configHash };
+  }
+  /** Host-only description for freezing a phase BEFORE budget reservation.
+   * Read-only metadata, never an inference grant: invoke/replay still validate
+   * their current permit, source and transactional admission independently. */
+  async describe(token: string, path: string, payload: unknown): Promise<ModelOperation> {
+    const request = normalize(path, payload, this.config), permit = await this.permit(token);
+    const { key, requestHash, configHash } = await this.requestKey(permit.fence, request);
+    return Object.freeze({ operationKey: key, requestHash, configHash, ...request });
   }
   /** Reconstruction capability: exact completed receipts only. Deliberately
    * never calls recover(), budget methods or the network adapter. */

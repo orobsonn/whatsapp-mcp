@@ -35,7 +35,12 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
       const review = await createTelegramReview(env, { installationId: env.INSTALLATION_ID!, generation: env.OPERATIONAL_GENERATION!, sourceEpoch: env.BRIDGE_SOURCE_EPOCH!, sourceGeneration: env.BRIDGE_SOURCE_GENERATION! });
       return reply(await review.receiveCallback(input));
     }
-    return reply(await link.receive(input));
+    const outcome = await link.receive(input);
+    if (outcome === "pending" && env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
+      const { TelegramDialogueHost } = await import("./telegram-dialogue-runtime");
+      await new TelegramDialogueHost(env).start((input as { update_id: number }).update_id);
+    }
+    return reply(outcome);
   } catch (error) {
     if (error instanceof InputError) return reply("telegram_input", error.status);
     if (error instanceof Error && error.message === "telegram_input") return reply("telegram_input", 400);

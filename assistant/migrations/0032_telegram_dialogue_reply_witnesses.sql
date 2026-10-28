@@ -1,0 +1,1 @@
+ALTER TABLE assistant_telegram_owner_replies ADD COLUMN witnesses_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(witnesses_json) AND json_type(witnesses_json)='array' AND length(CAST(witnesses_json AS BLOB))<=32768);

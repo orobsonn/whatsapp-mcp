@@ -117,7 +117,9 @@ export class CanonicalRestore {
   }
   private async pair(manifest: SnapshotManifest, pair: RestoreSourcePair) {
     const header = await this.verified(manifest, pair.header), source = header.value;
-    if (header.table !== "assistant_sources" || !["owner_note", "whatsapp"].includes(String(source.origin)) || typeof source.origin_key !== "string" || typeof source.id !== "string" || !["active", "withdrawn"].includes(String(source.status))) throw new Error("restore_source_header");
+    if (header.table !== "assistant_sources" || !["owner_note", "whatsapp", "owner_request"].includes(String(source.origin)) || typeof source.origin_key !== "string" || typeof source.id !== "string" || !["active", "withdrawn"].includes(String(source.status))) throw new Error("restore_source_header");
+    // Restore audit history, never the operational turn/checkpoint/authority.
+    if (source.origin === "owner_request" && (source.audience !== "owner" || source.conversation_id !== null || source.project_id !== null || source.status === "active" && source.current_version !== 1)) throw new Error("restore_owner_request_header");
     positive.parse(source.revision);
     if (source.status === "active") {
       positive.parse(source.current_version);

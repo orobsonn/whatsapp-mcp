@@ -25,14 +25,11 @@ import type { AssistantEnv } from "../assistant/env";
 import type { ModelAdapter } from "../assistant/model-broker";
 import type { OriginScope,ReaderQuery } from "../assistant/origin-guard";
 import { OriginGuard } from "../assistant/origin-guard";
-// @ts-expect-error Vite raw SQL imports.
-const migrations=import.meta.glob("../assistant/migrations/*.sql",{query:"?raw",import:"default",eager:true}) as Record<string,string>;
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,author:string|null,fromMe:boolean;
 let snapshots:Map<string,unknown>,model:ModelAdapter,driver:EpisodeDriver;
 const keys=()=>[scope.installationId,scope.generation],query=(sql:string,...values:(string|number|null)[])=>env.DB.prepare(sql).bind(...values);
 const scheduler=()=>new AssistantScheduler(settings,{clock:()=>now,driver,model});
 beforeEach(async()=>{
- for(const [name,sql]of Object.entries(migrations).sort(([a],[b])=>a.localeCompare(b))){const parts=sql.replace(/^--.*$/gm,"").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(p=>p.trim());if(parts.length)await env.DB.batch(parts.map(p=>env.DB.prepare(p)));}
  scope={installationId:crypto.randomUUID(),generation:"g1",sourceEpoch:"capture-epoch",sourceGeneration:"capture-generation"};now=Date.parse("2026-10-26T12:00:00Z");modelCalls=0;dispatches=0;modelFailure=false;author="a".repeat(64);fromMe=false;snapshots=new Map();
  const reader={async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw new Error("synthetic secret mismatch");const found=snapshots.get(input.sourceKind+":"+input.sourceId);if(!found)throw new Error("synthetic offline");return found;}};
  settings={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,CAPTURE_READER:reader,OPENAI_API_KEY:"synthetic-not-a-provider-key",FLUE_EPISODES_ENABLED:"shadow",ROUTINES_ENABLED:"shadow"};

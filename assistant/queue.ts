@@ -16,7 +16,7 @@ export type Ledger = {
   request_hash: string; request_json: string; admitted_lease_generation: number | null; state: "prepared" | "attempting" | "uncertain" | "complete";
 };
 export type NewJob = {
-  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue"; subject?: DecisionSubject;
+  kind: JobKind; dedupeKey: string; sourceId: string; sourceRevision: number; request: string; maxAttempts?: number; runtime?: "flue" | "flue_owner_dialogue"; subject?: DecisionSubject;
 };
 /** Trusted coordinator's atomic admission, never decoded from NewJob or text. */
 export type JobAdmission = { id: string; guard: AccessGuard; statements: D1PreparedStatement[] };
@@ -56,14 +56,21 @@ export class JobQueue {
   }
   async enqueue(input: NewJob, now: number, admission?: JobAdmission): Promise<Job> {
     input = Object.freeze({ ...input, ...(input.subject ? { subject: decisionSubject.parse(input.subject) } : {}) });
+    const dialogue = input.runtime === "flue_owner_dialogue";
+    if (dialogue && (!admission || !this.runtimeGuard || this.actor.kind !== "owner")) throw new Error("owner_dialogue_admission_required");
+    const reservedDialogue = typeof input.dedupeKey === "string" && input.dedupeKey.startsWith("telegram-owner-v1:");
+    if (dialogue && (input.kind !== "reasoning" || input.maxAttempts !== 1 || input.request !== "telegram-owner-dialogue-v1" || !reservedDialogue || input.dedupeKey.length <= "telegram-owner-v1:".length || input.subject)
+      || !dialogue && reservedDialogue) throw new Error("invalid_job_request");
     if (input.runtime === "flue" && !input.subject) throw new Error("decision_subject_required");
     if (input.subject && (input.runtime !== "flue" || (input.kind === "follow_up") !== (input.subject.kind === "fup_occurrence"))) throw new Error("decision_subject_invalid");
     integer(now); integer(input.sourceRevision, 1); integer(input.maxAttempts ?? 3, 1);
-    if (!input.dedupeKey || input.dedupeKey.length > 256 || !input.sourceId || typeof input.request !== "string" || (input.runtime !== undefined && input.runtime !== "flue")) {
+    if (!input.dedupeKey || input.dedupeKey.length > 256 || !input.sourceId || typeof input.request !== "string" || (input.runtime !== undefined && input.runtime !== "flue" && !dialogue)) {
       throw new Error("invalid_job_request");
     }
     const source = await this.access.read(this.actor, input.sourceId, input.sourceRevision, now);
     if (!source) throw new Error("source_access_denied");
+    if (dialogue && source.fence.source.origin !== "owner_request") throw new Error("owner_dialogue_source_required");
+    if (!dialogue && source.fence.source.origin === "owner_request") throw new Error("operational_source_requires_owner_dialogue");
     const chatId = this.actor.kind === "interlocutor" ? this.actor.conversationId : source.fence.source.conversationId;
     const conversation = chatId ? await jobConversationFence(this.db, this.scope, chatId, source.fence.source.origin === "whatsapp", source.id) : null;
     if (chatId && !conversation) throw new Error("conversation_not_ready");
@@ -71,7 +78,7 @@ export class JobQueue {
     const storedOutgoing=fup?await this.statement(`SELECT json_extract(body_json,'$.outgoing') outgoing FROM assistant_fup_provenance WHERE installation_id=? AND generation=? AND fup_id=? AND version=?`,fup.followUpId,fup.followUpVersion).first<string>('outgoing'):null;
     const outgoing=storedOutgoing?outgoingProof.parse(JSON.parse(storedOutgoing)):undefined;
     const request = JSON.stringify({ kind: input.kind, sourceId: input.sourceId, sourceRevision: input.sourceRevision,...(outgoing?{outgoing}:{}),
-      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}) });
+      input: input.request, actor: this.actor, fence: source.fence, conversation, ...(input.runtime ? { runtime: input.runtime, subject: input.subject } : {}), ...(dialogue ? { dialogueKey: input.dedupeKey } : {}) });
     if (new TextEncoder().encode(request).length > 32768) throw new Error("job_request_too_large");
     const hash = await digest(request);
     const due=input.kind==="follow_up" ? input.subject?.kind==="fup_occurrence" ? dueFollowUpGuard(this.scope,{id:input.subject.followUpId,version:input.subject.followUpVersion},{id:input.sourceId,revision:input.sourceRevision},now,input.subject.occurrenceId) : {sql:"0",values:[]} : null;
@@ -86,8 +93,8 @@ export class JobQueue {
       ...gateValues,...(due?[this.scope.installationId,this.scope.generation,input.subject?.kind==="fup_occurrence"?input.subject.occurrenceId:null]:[])),
       this.raw(`INSERT INTO assistant_job_ledger(installation_id,generation,job_id,request_hash,request_json)
         SELECT installation_id,generation,id,?,? FROM assistant_jobs
-        WHERE installation_id=? AND generation=? AND dedupe_key=? ${admission ? `AND (${admission.guard.sql})` : ""} ON CONFLICT DO NOTHING`, hash, request,
-      this.scope.installationId, this.scope.generation, input.dedupeKey,...(admission?.guard.values ?? [])),
+        WHERE installation_id=? AND generation=? AND dedupe_key=? ${dialogue ? "AND id=? AND source_id=? AND source_revision=? AND kind='reasoning' AND max_attempts=1" : admission ? `AND (${admission.guard.sql})` : ""} ON CONFLICT DO NOTHING`, hash, request,
+      this.scope.installationId, this.scope.generation, input.dedupeKey,...(dialogue ? [admission!.id, input.sourceId, input.sourceRevision] : admission?.guard.values ?? [])),
     ]);
     const row = await this.statement(`SELECT j.*,l.request_hash FROM assistant_jobs j JOIN assistant_job_ledger l
       ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
@@ -103,15 +110,15 @@ export class JobQueue {
       this.statement(`UPDATE assistant_job_ledger SET state='uncertain' WHERE installation_id=? AND generation=? AND state='attempting'
         AND EXISTS(SELECT 1 FROM assistant_jobs j WHERE j.installation_id=assistant_job_ledger.installation_id
           AND j.generation=assistant_job_ledger.generation AND j.id=job_id AND j.state='processing'
-          AND j.lease_until<=? AND j.attempts>=j.max_attempts)`, now),
+          AND j.dedupe_key NOT GLOB 'telegram-owner-v1:*' AND j.lease_until<=? AND j.attempts>=j.max_attempts)`, now),
       this.statement(`UPDATE assistant_jobs SET state='failed',lease_until=NULL,last_error='attempt_limit_exhausted'
-        WHERE installation_id=? AND generation=? AND state='processing' AND lease_until<=? AND attempts>=max_attempts`, now),
+        WHERE installation_id=? AND generation=? AND state='processing' AND dedupe_key NOT GLOB 'telegram-owner-v1:*' AND lease_until<=? AND attempts>=max_attempts`, now),
     ]);
     // SQLite chooses and updates one row in the same mutation; generation fences all later writes.
     return this.raw(`UPDATE assistant_jobs SET state='processing',attempts=attempts+1,
       lease_generation=lease_generation+1,lease_until=? WHERE installation_id=? AND generation=? AND id=(
         SELECT id FROM assistant_jobs WHERE installation_id=? AND generation=? AND attempts<max_attempts
-        AND dedupe_key NOT GLOB 'owner-once-v1:*'
+        AND dedupe_key NOT GLOB 'owner-once-v1:*' AND dedupe_key NOT GLOB 'telegram-owner-v1:*'
         AND ((state='pending' AND next_attempt_at<=?) OR (state='processing' AND lease_until<=?))
         ORDER BY next_attempt_at,id LIMIT 1) RETURNING *`, now + leaseMs,
     this.scope.installationId, this.scope.generation, this.scope.installationId, this.scope.generation, now, now).first<JobLease>();
@@ -123,7 +130,7 @@ export class JobQueue {
     const selected = await this.statement("SELECT dedupe_key FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=?", id).first<{dedupe_key: string}>();
     // Explicit Owner plans never enter the global scheduler or gain a lease
     // from a bare job ID. Their trusted coordinator supplies a fresh SQL fence.
-    if (selected?.dedupe_key.startsWith("owner-once-v1:") && !admission) return null;
+    if ((selected?.dedupe_key.startsWith("owner-once-v1:") || selected?.dedupe_key.startsWith("telegram-owner-v1:")) && !admission) return null;
     return this.raw(`UPDATE assistant_jobs SET state='processing',attempts=attempts+1,lease_generation=lease_generation+1,lease_until=?
       WHERE installation_id=? AND generation=? AND id=? AND state='pending' AND next_attempt_at<=? AND attempts<max_attempts
       AND EXISTS(SELECT 1 FROM assistant_job_ledger l WHERE l.installation_id=assistant_jobs.installation_id AND l.generation=assistant_jobs.generation AND l.job_id=assistant_jobs.id AND l.state='prepared')
@@ -148,19 +155,30 @@ export class JobQueue {
     const ledger = await this.ledger(lease.id);
     if (!ledger || await digest(ledger.request_json) !== ledger.request_hash) return null;
     try {
-      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null; runtime?: string };
+      const request = JSON.parse(ledger.request_json) as { actor: TrustedActor; fence: SourceFence; sourceId: string; sourceRevision: number; conversation?: ConversationFence | null; runtime?: string; input?: string; dialogueKey?: string; subject?: unknown; kind?: string };
       if (request.sourceId !== lease.source_id || request.sourceRevision !== lease.source_revision
         || request.fence.source.id !== lease.source_id || request.fence.source.revision !== lease.source_revision) return null;
+      const dialogue = request.runtime === "flue_owner_dialogue";
+      if (request.fence.source.origin === "owner_request" && !dialogue) return null;
+      if (dialogue && (this.actor.kind !== "owner" || request.actor.kind !== "owner" || request.kind !== "reasoning" || request.conversation !== null || request.fence.source.origin !== "owner_request" || request.input !== "telegram-owner-dialogue-v1"
+        || typeof request.dialogueKey !== "string" || !request.dialogueKey.startsWith("telegram-owner-v1:") || request.dialogueKey.length > 256 || request.subject !== undefined
+        || lease.kind !== "reasoning" || lease.max_attempts !== 1)) return null;
       const chatId = request.actor.kind === "interlocutor" ? request.actor.conversationId : request.fence.source.conversationId;
       const guard = this.access.guard(request.actor, request.fence, now);
       const statements: D1PreparedStatement[] = [];
       if (request.runtime !== undefined) {
-        if (request.runtime !== "flue" || !this.runtimeGuard) return null;
+        if (request.runtime !== "flue" && !dialogue || !this.runtimeGuard) return null;
         const runtime = await this.runtimeGuard(lease, now);
         if (!runtime) return null;
         const current = "guard" in runtime ? runtime.guard : runtime;
-        guard.sql += ` AND EXISTS(SELECT 1 FROM assistant_decision_jobs WHERE installation_id=? AND generation=? AND job_id=? AND request_hash=? AND subject_json=?)`;
-        guard.values.push(this.scope.installationId, this.scope.generation, lease.id, ledger.request_hash, JSON.stringify(decisionSubject.parse((JSON.parse(ledger.request_json) as {subject: unknown}).subject)));
+        if (dialogue) {
+          guard.sql += ` AND EXISTS(SELECT 1 FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=? AND dedupe_key=? AND kind='reasoning' AND max_attempts=1 AND attempts=1
+            AND lease_until>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER))`;
+          guard.values.push(this.scope.installationId, this.scope.generation, lease.id, request.dialogueKey!);
+        } else {
+          guard.sql += ` AND EXISTS(SELECT 1 FROM assistant_decision_jobs WHERE installation_id=? AND generation=? AND job_id=? AND request_hash=? AND subject_json=?)`;
+          guard.values.push(this.scope.installationId, this.scope.generation, lease.id, ledger.request_hash, JSON.stringify(decisionSubject.parse(request.subject)));
+        }
         if ("guard" in runtime) statements.push(...runtime.statements);
         guard.sql = `(${guard.sql}) AND (${current.sql})`; guard.values.push(...current.values);
       }
@@ -186,7 +204,7 @@ export class JobQueue {
       WHERE installation_id=? AND generation=? AND job_id=? AND state='prepared' AND request_hash=? AND request_json=? AND EXISTS(
         SELECT 1 FROM assistant_jobs WHERE assistant_jobs.installation_id=assistant_job_ledger.installation_id
         AND assistant_jobs.generation=assistant_job_ledger.generation AND assistant_jobs.id=job_id
-        AND source_id=? AND source_revision=? AND ${liveLease} AND ${auth.guard.sql})
+        AND source_id=? AND source_revision=? AND ${liveLease}) AND (${auth.guard.sql})
       RETURNING request_hash,request_json,admitted_lease_generation,state`,
     lease.lease_generation, this.scope.installationId, this.scope.generation, lease.id, auth.ledger.request_hash, auth.ledger.request_json,
     lease.source_id, lease.source_revision, lease.lease_generation, now, ...auth.guard.values);
@@ -208,14 +226,20 @@ export class JobQueue {
       JOIN (SELECT json(?) AS p) args WHERE j.installation_id=json_extract(p,'$.i') AND j.generation=json_extract(p,'$.g')
       AND j.id=json_extract(p,'$.id') AND j.state='processing' AND j.lease_generation=json_extract(p,'$.lease')
       AND j.lease_until>json_extract(p,'$.now') AND l.request_hash=json_extract(p,'$.hash')
-      ${state === "attempting" ? "AND l.state='attempting' AND l.admitted_lease_generation=j.lease_generation" : state === "complete" ? "AND l.state='complete'" : ""} AND (${auth.guard.sql}))`,
+      ${state === "attempting" ? "AND l.state='attempting' AND l.admitted_lease_generation=j.lease_generation" : state === "complete" ? "AND l.state='complete'" : ""}) AND (${auth.guard.sql})`,
       values: [JSON.stringify({ i: this.scope.installationId, g: this.scope.generation, id: lease.id,
         lease: lease.lease_generation, now, hash: auth.ledger.request_hash }), ...auth.guard.values] };
   }
   async isAuthorized(lease: JobLease, now: number) {
-    const auth = await this.authorization(lease, now); if (!auth) return false;
-    const guard = this.jobGuard(lease, auth, now, null), statement = this.raw(`SELECT 1 WHERE ${guard.sql}`, ...guard.values);
-    return (await this.db.batch([...auth.statements, statement])).at(-1)!.results.length === 1;
+    const plan = await this.currentPlan(lease, now); if (!plan) return false;
+    const statement = this.raw(`SELECT 1 WHERE ${plan.guard.sql}`, ...plan.guard.values);
+    return (await this.db.batch([...plan.statements, statement])).at(-1)!.results.length === 1;
+  }
+  /** Host-only current fence for an atomic dependent admission, before or
+   * after ledger admission. This plan itself neither claims nor executes. */
+  async currentPlan(lease: JobLease, now: number): Promise<RuntimeGuardPlan | null> {
+    const auth = await this.authorization(lease, now); if (!auth) return null;
+    return { guard: this.jobGuard(lease, auth, now, null), statements: auth.statements };
   }
   async isCurrent(lease: JobLease, now: number) {
     return !!await this.statement(`SELECT id FROM assistant_jobs WHERE installation_id=? AND generation=? AND id=? AND ${liveLease}`,
@@ -235,6 +259,9 @@ export class JobQueue {
   }
   async recordResult(lease: JobLease, result: string, now: number) {
     integer(now);
+    if (await this.statement(`SELECT 1 FROM assistant_jobs j LEFT JOIN assistant_job_ledger l ON l.installation_id=j.installation_id AND l.generation=j.generation AND l.job_id=j.id
+      WHERE j.installation_id=? AND j.generation=? AND j.id=? AND (j.dedupe_key GLOB 'telegram-owner-v1:*'
+      OR json_extract(CASE WHEN json_valid(l.request_json) THEN l.request_json ELSE '{}' END,'$.runtime')='flue_owner_dialogue')`, lease.id).first()) throw new Error("owner_dialogue_completion_required");
     if (typeof result !== "string" || new TextEncoder().encode(result).length > 32768) throw new Error("invalid_job_result");
     // Receipts may arrive late. Only the job publication is conditional on current lease/source.
     await this.db.batch([
@@ -255,6 +282,10 @@ export class JobQueue {
     lease = Object.freeze({ ...lease }); integer(now);
     const auth = await this.authorization(lease, now);
     if (!auth) return null;
+    // Dialogue completion must validate its native receipt, frozen phases and
+    // typed reply/control outcome in the dedicated host coordinator. A generic
+    // result string or additional SQL predicate cannot substitute that proof.
+    if (JSON.parse(auth.ledger.request_json).runtime === "flue_owner_dialogue") return null;
     const statement = this.raw(`UPDATE assistant_jobs SET state='shadow_completed',lease_until=NULL,last_error=NULL
       WHERE installation_id=? AND generation=? AND id=? AND ${liveLease} AND source_id=? AND source_revision=?
       AND ${auth.guard.sql} ${JSON.parse(auth.ledger.request_json).runtime === "flue" ? `AND EXISTS(SELECT 1 FROM assistant_shadow_decisions d JOIN assistant_episodes e ON e.installation_id=d.installation_id AND e.generation=d.generation AND e.id=d.episode_id

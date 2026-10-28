@@ -179,7 +179,7 @@ export class CogneeEngine implements EnginePort {
     input = JSON.parse(JSON.stringify(input)) as EngineIngest;
     if (input.expectedIndex !== undefined) input.expectedIndex = ingestExpectation.parse(input.expectedIndex);
     const s = input.source, f = s.fence.source;
-    if (s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
+    if (f.origin === "owner_request" || s.id !== f.id || !s.text || await sourceTextHash(s.text) !== f.hash) throw 0;
     const source = refSchema.extend({ text: z.string().min(1), occurredAt: counter, authorId: identifier.optional(), projectId: identifier.optional() }).strict().parse({ id: s.id, version: f.version, hash: f.hash, text: s.text, occurredAt: s.occurredAt,
       ...(s.authorId !== null ? { authorId: s.authorId } : {}), ...(f.projectId !== null ? { projectId: f.projectId } : {}) });
     return { input, source };

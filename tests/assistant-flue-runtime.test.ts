@@ -28,8 +28,8 @@ beforeAll(() => {
 afterAll(async () => { await runtime?.dispose(); rmSync(scratch, { recursive: true, force: true }); expect(externalCalls).toBe(0); });
 test("official assistant bundle retains isolated SQLite runtime classes", () => {
   const config = configAt(join(root, "dist/assistant"));
-  expect(config?.durable_objects?.bindings?.map((binding: any) => binding.class_name)).toEqual(expect.arrayContaining(["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"]));
-  expect(config.migrations.flatMap((migration: any) => migration.new_sqlite_classes ?? [])).toEqual(expect.arrayContaining(["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"]));
+  expect(config?.durable_objects?.bindings?.map((binding: any) => binding.class_name)).toEqual(expect.arrayContaining(["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent", "FlueOwnerDialogueRuntimeAgent"]));
+  expect(config.migrations.flatMap((migration: any) => migration.new_sqlite_classes ?? [])).toEqual(expect.arrayContaining(["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent", "FlueOwnerDialogueRuntimeAgent"]));
 });
 
 // Only this disposable test application registers a synthetic provider and

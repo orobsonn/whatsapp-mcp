@@ -2,6 +2,8 @@ import { createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage, Model, ProviderStreams, TranscriptContext } from "@earendil-works/pi-ai";
 export type EpisodePayload = { messages: { role: "system" | "user" | "assistant"; content: string }[] };
+export type EpisodeLane = "shadow" | "owner-dialogue";
+export const OWNER_DIALOGUE_COMPLETION = "owner_dialogue_complete";
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 function payload(context: TranscriptContext): EpisodePayload {
   const copy: TranscriptContext = JSON.parse(JSON.stringify(context));
@@ -22,20 +24,27 @@ function payload(context: TranscriptContext): EpisodePayload {
 }
 /** Native Pi adapter. The host returns only a complete, revalidated JSON
  * proposal. No partial token/event crosses this boundary before that check. */
-export function createEpisodeProvider(call: (payload: EpisodePayload) => Promise<string>) {
+export function createEpisodeProvider(call: (payload: EpisodePayload, lane: EpisodeLane, signal?: AbortSignal) => Promise<string>) {
   const model: Model<"assistant-shadow"> = { id: "shadow", name: "Fenced shadow episode", provider: "assistant-host", api: "assistant-shadow", baseUrl: "",
     reasoning: false, input: ["text"], contextWindow: 32768, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-  const stream: ProviderStreams["streamSimple"] = (_model, context, options) => {
+  const models = [model, { ...model, id: "owner-dialogue", name: "Private owner dialogue" }];
+  const stream: ProviderStreams["streamSimple"] = (requested, context, options) => {
+    const selected = models.find(candidate => candidate.id === requested.id && candidate.provider === requested.provider && candidate.api === requested.api);
+    const active = selected ?? model;
     const output = createAssistantMessageEventStream();
-    const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [],
+    const message: AssistantMessage = { role: "assistant", api: active.api, provider: active.provider, model: active.id, content: [],
       // Billing authority is the host's persistent budget/receipt, not Pi usage.
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
     void (async () => {
       try {
+        if (!selected) throw 0;
         const request = payload(context);
         if (options?.signal?.aborted) throw 0;
-        const text = await call(request);
+        const text = await call(request, selected.id as EpisodeLane, options?.signal);
         if (options?.signal?.aborted || typeof text !== "string" || bytes(text) > 24000) throw 0;
+        // Dialogue questions, context and answers stay in the host's private
+        // journal. Even a faulty host cannot stream them into Flue history.
+        if (selected.id === "owner-dialogue" && text !== OWNER_DIALOGUE_COMPLETION) throw 0;
         output.push({ type: "start", partial: message });
         message.content = [{ type: "text", text }];
         output.push({ type: "text_start", contentIndex: 0, partial: message });
@@ -47,5 +56,5 @@ export function createEpisodeProvider(call: (payload: EpisodePayload) => Promise
     })();
     return output;
   };
-  return createProvider({ id: "assistant-host", models: [model], auth: { apiKey: { name: "Host admission", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } });
+  return createProvider({ id: "assistant-host", models, auth: { apiKey: { name: "Host admission", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } });
 }

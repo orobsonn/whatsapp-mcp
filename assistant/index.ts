@@ -5,7 +5,15 @@ import { runScheduledAssistant } from "./scheduler";
 export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
-  async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) { ctx.waitUntil(runScheduledAssistant(env)); },
+  async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      if (env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
+        const { tickOwnerDialogues } = await import("./telegram-dialogue-runtime");
+        await tickOwnerDialogues(env);
+      }
+      await runScheduledAssistant(env);
+    })());
+  },
   async fetch(request: Request, env: AssistantEnv): Promise<Response> {
     const headers = {
       "Cache-Control": "no-store",
@@ -15,7 +23,7 @@ export default {
       return Response.json(
         {
           mode: "shadow",
-          capabilities: { whatsappSend: false, calendarWrite: false },
+          capabilities: { whatsappSend: false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
         },
         { headers },
       );

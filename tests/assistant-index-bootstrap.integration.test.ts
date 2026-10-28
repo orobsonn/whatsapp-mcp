@@ -24,8 +24,6 @@ import {OwnerControl} from '../assistant/control';
 import {JobQueue} from '../assistant/queue';
 import {runtimeHost} from '../assistant/agent-runtime/runtime';
 import {readOnceGrant,onceReceipt} from '../assistant/owner-once-guard';
-// @ts-expect-error Vite migration fixtures.
-const migrations=import.meta.glob('../assistant/migrations/*.sql',{query:'?raw',import:'default',eager:true}) as Record<string,string>;
 let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number;
 let data:Map<string,unknown>,physical:Map<string,SourceStamp>,running:boolean,tail:Promise<unknown>;
 let engine:CogneeContainer,port:ReturnType<typeof physicalPort>,model:ModelAdapter,driver:EpisodeDriver;
@@ -60,7 +58,6 @@ function physicalPort(){let saved:Map<string,SourceStamp>|undefined,last:Checkpo
     })};
 }
 beforeEach(async()=>{
-  for(const [_,query]of Object.entries(migrations).sort(([a],[b])=>a.localeCompare(b))){const parts=query.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(p=>p.trim());if(parts.length)await env.DB.batch(parts.map(p=>env.DB.prepare(p)));}
   scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'synthetic-first-e',sourceGeneration:'synthetic-first-g'};now=Date.parse('2026-10-26T12:00:00Z');modelCalls=0;dispatches=0;data=new Map();physical=new Map();running=false;tail=Promise.resolve();onReceipt=undefined;
   vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(now);
   const capturedAt=now,secret='synthetic-first-index-capture-secret',reader={async readSnapshot(input:ReaderQuery){if(input.secret!==secret)throw Error('denied');return{observation:'capture_snapshot',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:'message',sourceId:'first',chatId:'chat',sourceVersion:1,watermark:1,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:'Synthetic first captured request.',authorId:'a'.repeat(64),authorName:'Synthetic author',fromMe:false,occurredAt:capturedAt,messageId:'first',messageVersion:1}};}};

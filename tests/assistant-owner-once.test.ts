@@ -23,17 +23,11 @@ import type { EngineSearch, SearchTicket } from "../assistant/engine";
 import { compactStatement } from "../assistant/d1-statement";
 import { ownerContextStamp } from "../assistant/relation-visibility";
 
-// @ts-expect-error Vite raw migration fixtures, including future additive files.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 type Receiver = { ownerOnce(expected: OwnerAffinity, command: unknown): Promise<unknown> };
 let scope: OwnerAffinity, settings: AssistantEnv, now: number;
 let bootstrap: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
-  for (const [_, migration] of Object.entries(migrations).sort(([a], [b]) => a.localeCompare(b))) {
-    const sql = migration.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim());
-    if (sql.length) await env.DB.batch(sql.map(part => env.DB.prepare(part)));
-  }
   now = Date.parse("2026-10-27T12:00:00Z");
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
   scope = { installationId: crypto.randomUUID(), generation: "once-g1", sourceEpoch: "once-e1", sourceGeneration: "once-c1" };

@@ -89,3 +89,21 @@ test("the real owner RPC exposes configured queries and reports missing configur
     expect(network).toHaveBeenCalledTimes(1);
   } finally { network.mockRestore(); }
 });
+test("the owner RPC resolves an owned private repository by name and never falls back after grant revocation", async () => {
+  const grant = await controller.create({ originKey: "owner-wide", text: "Owner explicitly permits own repository reads", occurredAt: 2, projectId: "project" });
+  const affinity = { ...scope, sourceEpoch: "capture-e", sourceGeneration: "capture-g" };
+  const settings = { DB: env.DB, INSTALLATION_ID: scope.installationId, OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration,
+    GITHUB_READ_REPOSITORIES: JSON.stringify(config()), GITHUB_READ_OWNER: JSON.stringify({ owner: "synthetic-owner", ownerId: 101, projectId: "project", version: 1, authorization: { sourceId: grant.id, revision: 1 } }) };
+  const network = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    return Response.json(url.pathname.includes("/contents/") ? file() : { name: "other-private", owner: { id: 101, login: "synthetic-owner" }, private: true });
+  });
+  try {
+    const rpc = new OwnerAssistant(createExecutionContext(), settings);
+    expect(await rpc.query(affinity, { ...query, repository: "other-private" })).toMatchObject({ state: "available", repository: "synthetic-owner/other-private", text });
+    expect(network).toHaveBeenCalledTimes(2);
+    await controller.withdraw(grant.id, 1);
+    expect(await rpc.query(affinity, query)).toMatchObject({ state: "unavailable", reason: "source_denied" });
+    expect(network).toHaveBeenCalledTimes(2);
+  } finally { network.mockRestore(); }
+});

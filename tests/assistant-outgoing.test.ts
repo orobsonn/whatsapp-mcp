@@ -14,6 +14,8 @@ import {InferenceBudget} from '../assistant/budget';
 import {DEFAULT_BROKER_CONFIG} from '../assistant/model-transport';
 import {DecisionJournal} from '../assistant/decisions';
 import {OwnerControl} from '../assistant/control';
+import {TelegramOwnerInbox} from '../assistant/telegram-owner-inbox';
+import {TelegramLink} from '../assistant/telegram-auth';
 import {outgoingPort} from '../assistant/outgoing';
 import {uploadMedia} from '../src/media';
 import {setCapture} from '../src/directory';
@@ -34,6 +36,19 @@ beforeEach(async()=>{
 });
 afterEach(()=>vi.restoreAllMocks());
 const command=()=>({kind:'fup.put',operationId:'initiative',id:'initiative',expectedVersion:0,conversationId:target,policyRevision:1,source:{id:source.id,revision:1},purpose:'Evaluate the exact owner-requested shadow proposal.',dueAt:now-1,timezone:'UTC',precision:'exact',state:'scheduled',outgoing:{envelope:{kind:'text',chatId:target,text:'Hello, this is the exact authorized text.'},authorization:{kind:'owner_exact'}}});
+it('admits a Telegram-authorized outgoing shadow FUP within the cloud D1 parameter limit',async()=>{
+ await rpc.control(scope,{kind:'project.put',operationId:'tg-project',id:'tg-project',expectedVersion:0,name:'Synthetic Telegram initiative'});
+ await rpc.control(scope,{kind:'mission.put',operationId:'tg-mission',id:'tg-mission',expectedRevision:0,objective:'Only a shadow proposal',source:{id:source.id,revision:1},project:{id:'tg-project',revision:1},state:'active'});
+ await rpc.control(scope,{kind:'mandate.put',operationId:'tg-mandate',id:'tg-mandate',expectedVersion:0,conversationId:target,policyRevision:1,project:{id:'tg-project',revision:1},purpose:'Only a shadow proposal',status:'active',expiresAt:Date.now()+60000,actions:['future_contact'],sources:[{id:source.id,revision:1}]});
+ const bot='synthetic_bot';await env.DB.prepare("INSERT INTO assistant_telegram_links VALUES(?,?,?,?,?,1,'active','101','101',?)").bind(scope.installationId,scope.generation,bot,scope.sourceEpoch,scope.sourceGeneration,Math.floor(Date.now()/1000)-10).run();
+ const inbox=new TelegramOwnerInbox(env.DB,scope,bot),activation=await inbox.activate();await new Promise(resolve=>setTimeout(resolve,Math.max(1,(activation.cutoffSecond+1)*1000-Date.now()+15)));now=Date.now();
+ const link=new TelegramLink(env.DB,scope,bot,secret);expect(await link.receive({update_id:3,message:{message_id:103,date:Math.floor(now/1000),from:{id:101,is_bot:false},chat:{id:101,type:'private'},text:'Prepare somente esta iniciativa em sombra'}})).toBe('pending');const turn=(await inbox.claim(3))!;
+ const prepare=env.DB.prepare.bind(env.DB),db={prepare:(sql:string)=>new Proxy(prepare(sql),{get(value,key){if(key==='bind')return(...args:unknown[])=>{if(args.length>100)throw Error('cloud_d1_parameter_limit:'+args.length);return value.bind(...args);};const item=Reflect.get(value,key,value);return typeof item==='function'?item.bind(value):item;}}),batch:env.DB.batch.bind(env.DB)} as D1Database;
+ const input={...command(),project:{id:'tg-project',revision:1},mission:{id:'tg-mission',revision:1},mandate:{id:'tg-mandate',version:1},outgoing:{...command().outgoing,authorization:{kind:'mandate',id:'tg-mandate',version:1}}};
+ await expect(new OwnerControl(db,scope,{kind:'owner'},()=>now,outgoingPort(settings),()=>inbox.guard(turn)).execute(input)).resolves.toMatchObject({kind:'fup.put',version:1,shadow:true});
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=?').bind(scope.installationId).first('n')).toBe(1);
+ expect(await archive.prepare('SELECT COUNT(*) n FROM actions').first('n')).toBe(0);
+});
 async function prepared(during:()=>Promise<void>=async()=>{},input:unknown=command()){
  await rpc.control(scope,input);const row=await env.DB.prepare('SELECT body_json FROM assistant_fup_provenance WHERE installation_id=?').bind(scope.installationId).first<string>('body_json');expect(JSON.parse(row!).outgoing.observation.recipient.chatId).toBe(target);
  const due=new FollowUps(env.DB,scope,{clock:()=>now}),admitted=(await due.admitDue()).items[0];expect(admitted.state).toBe('admitted');const queue=new JobQueue(env.DB,scope),lease=(await queue.claim(now,90000))!,ledger=(await queue.ledger(lease.id))!,request=JSON.parse(ledger.request_json);expect(request.outgoing).toEqual(JSON.parse(row!).outgoing);

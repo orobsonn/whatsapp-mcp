@@ -19,6 +19,10 @@ test("artifact rendering is private, idempotent, local-only and refuses a change
     await assert.rejects(renderInstallation({ ...manifest(), generation: "other" }, directory, "/synthetic/root", "synthetic-head"));
     const review = JSON.parse(await readFile(join(directory, "review.json"), "utf8")); assert.equal(review.sourceHead, "synthetic-head");
     const config = JSON.parse(await readFile(join(directory, "assistant.wrangler.jsonc"), "utf8"));
+    assert.deepEqual(config.migrations.map(migration => migration.tag), ["flue-runtime-v1", "assistant-shadow-host-v2", "assistant-owner-dialogue-v3"]);
+    assert.deepEqual(config.migrations[0].new_sqlite_classes, ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"]);
+    assert.deepEqual(config.migrations[2].new_sqlite_classes, ["FlueOwnerDialogueRuntimeAgent"]);
+    assert.throws(() => validateAssistantInstallConfig({ ...config, migrations: config.migrations.slice(0, 2) }, "/synthetic/root"));
     assert.equal(config.vars.ARTIFACTS_INSTALLATION_ID, manifest().installationId); assert.equal(config.vars.ARTIFACTS_GENERATION, manifest().generation);
     assert.throws(() => validateAssistantInstallConfig({ ...config, vars: { ...config.vars, ARTIFACTS_GENERATION: "foreign" } }, "/synthetic/root"));
     await assert.rejects(renderInstallation(manifest(), "/unrelated-project/install", "/synthetic/root"));

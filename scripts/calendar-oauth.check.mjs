@@ -23,9 +23,23 @@ test("private environment stores the refresh credential and encryption key but n
   const response = { access_token: "synthetic-access-secret", refresh_token: "synthetic-refresh-secret", expires_in: 3600, token_type: "Bearer", scope: CALENDAR_SCOPE };
   try {
     const content = credentialEnvironment("synthetic-client", "synthetic-client-secret", response, { credentialGeneration: "synthetic-g" });
+    assert.match(content, /CALENDAR_OAUTH_PERMISSION='read_only'/);
     assert.equal(content.includes("synthetic-access-secret"), false); assert.equal(content.includes("synthetic-refresh-secret"), true);
     await writePrivateEnvironment(destination, content); assert.equal((await stat(destination)).mode & 0o777, 0o600); assert.equal(await readFile(destination, "utf8"), content);
     await assert.rejects(writePrivateEnvironment(destination, "must-not-overwrite")); assert.equal(await readFile(destination, "utf8"), content);
     for (const patch of [{ scope: "https://www.googleapis.com/auth/calendar" }, { scope: undefined }, { refresh_token: undefined }, { token_type: "DPoP" }, { expires_in: 1 }]) assert.throws(() => credentialEnvironment("synthetic-client", "synthetic-secret", { ...response, ...patch }, { credentialGeneration: "synthetic-g" }));
   } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+test("write-owned opt-in requests only event management on owned calendars and requires this scope in response", () => {
+  const owned = "https://www.googleapis.com/auth/calendar.events.owned";
+  const url = new URL(authorization("synthetic-client", "synthetic-state", "v".repeat(64), "write_owned"));
+  assert.equal(url.searchParams.get("scope"), owned);
+  const response = { access_token: "synthetic-access", refresh_token: "synthetic-refresh", expires_in: 3600, token_type: "Bearer", scope: owned };
+  const options = { credentialGeneration: "synthetic-g", permission: "write_owned" };
+  const content = credentialEnvironment("synthetic-client", "synthetic-secret", response, options);
+  assert.match(content, /CALENDAR_OAUTH_PERMISSION='write_owned'/);
+  assert.match(content, /CALENDAR_OAUTH_CONFIGURATION_VERSION='2'/);
+  assert.throws(() => credentialEnvironment("synthetic-client", "synthetic-secret", { ...response, scope: CALENDAR_SCOPE }, options));
+  assert.throws(() => credentialEnvironment("synthetic-client", "synthetic-secret", response, { credentialGeneration: "synthetic-g" }));
 });

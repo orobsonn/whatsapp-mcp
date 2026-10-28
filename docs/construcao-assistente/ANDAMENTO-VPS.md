@@ -1,4 +1,36 @@
-# Construção na VPS — atualização27/10/2026
+# Construção da assistente — atualização28/10/2026
+
+## Estado atual — marco técnico integrado0.51.0
+
+**Escopo humano vigente:** títulos e criar/editar/excluir eventos únicos da agenda principal própria; GitHub somente leitura em todos os repositórios próprios, sem expiração configurada. WhatsApp automático desabilitado e rotinas contínuas pausadas. Restrições anteriores diferentes no histórico foram substituídas pelas retificações do dono.
+
+O diálogo do dono está integrado: mensagem autenticada → Flue → leitor/controlador → resposta no mesmo tópico. As provas reais cobrem notas ensinadas, pergunta sobre conteúdo, correção com consulta posterior da versão nova, retirada, missão concluída e política observe→ignore. Todas as respostas desses ensaios tiveram uma tentativa e conclusão nativa. O grupo comum usado na prova de política retornou aignore, com exclusão0. [Memória e controles](evidencias/144-memory-controls-telegram.md).
+
+GitHub respondeu sobre autenticação do repositório público e finalidade/partes de um privado próprio: cinco arquivos no recorte, síntese com citações literais e conclusão Flue. WhatsApp respondeu sobre conversa privada e grupo a partir de até três fontes textuais atuais. Transcrições já existentes são identificadas como derivados; remetente não comprova quem fala. Não se declara busca semântica global ou compreensão de todo o histórico. [GitHub](evidencias/144-github-telegram.md) e [WhatsApp](evidencias/144-whatsapp-telegram.md).
+
+Calendar mostrou três compromissos com títulos, depois criou, editou e excluiu o mesmo evento técnico pelo Telegram, com GETs independentes no Google. Layout atual: SUA AGENDA/data, horário e título, sem os rodapés removidos pelo dono. Séries/convites não fazem parte do primeiro caminho. [Agenda](evidencias/144-calendar-telegram.md).
+
+As falhas intermediárias foram conservadas e corrigidas: contexto duplicado excedendo32KB, profundidade SQL com seis fontes, hash sem canonicalização, janela nativa incompatível e geração sem conteúdo/ID de citação válido. Nenhum fallback foi contado como resposta útil. A revisão preserva payloads pagos congelados, custos e ausência de repetição de efeitos.
+
+Snapshot dos ensaios: Source81aa2f63/30bindings e Own44867212/44bindings, código funcional30e0ead; runtime/container/imagem/cron/exposição/pausa preservados e Elo intacto. CIa8ab1cb aprovada1694/13/70, ajustes posteriores com casos dirigidos/tipos/build; o SHA/CI final, readbacks e situação da #144 são vinculados à [release0.51.0](https://github.com/orobsonn/whatsapp-mcp/releases/tag/v0.51.0), sem reutilizar CI anterior como prova de um SHA novo.
+
+O aceite é técnico para uso reativo e ensaios delimitados em sombra. Avaliação longitudinal permanece desconhecida; corpus representativo deve ser ampliado/medido antes de ativar observação contínua. Google permaneceExternal/Testing; continuidade longa requer renovação de consentimento ou publicação apropriada. Custos e limites atuais na [matriz dos16requisitos](evidencias/piloto-canais-proprios-20261027.md).
+
+## Histórico — checkpoints anteriores
+
+Os estados seguintes conservam a cronologia. 'Sem consumidor', Calendar readonly, GitHub público único, pendências e custos antigos não descrevem a composição atual acima.
+
+Canário real instalado e conferido na conversa: consulta → resposta, anotação → consulta posterior e missão → consulta posterior passaram no bot próprio com Flue nativo e controladores canônicos. Novas respostas têm espaçamento, emojis, negrito/itálico e status em português, confirmados visualmente após deploy. Sete entradas/758microUSD liquidados, respostas com uma tentativa e episódiossettled. CI0857aa3 aprovada1608/13/70; CI do ajuste visual99db45c posteriormente confirmada aprovada. Pausa global, imagem e40bindings preservados; #144 segue aberta para o restante. [Provas e limites atuais](evidencias/144-telegram-dialogue-canary.md). Os checkpoints seguintes são históricos.
+
+Continuação no PR145: fila específica do diálogo, descrição exata da chamada antes de reservar orçamento e perfil Flue privado foram acrescentados no branch.89 testes de fila/broker,25 Node, seis focados do provider, types e builds passaram. A migração do novo perfil foi acrescentada sem reescrever namespaces antigos; o resolver continua recusando diálogo enquanto faltam fases/conclusão tipada/consumidor. A CI40608983403 de a54fbb0 foi aprovada1591/13/66; não comprova o novo diff. Chrome/Telegram acessíveis por leitura nesta sessão, sem mensagem real desse caminho. [Limites e sequência](telegram-owner-runtime-plan.md).
+
+Avanço no branch do [PR145](https://github.com/orobsonn/whatsapp-mcp/pull/145): retomada do mesmo turno em outra instância e captura do pedido real como histórico privado foram implementadas com testes. Snapshot/restore conserva esse histórico sem trazer execução; inventários/busca/índice excluem o pedido da memória factual, e retirada limpa a cópia original do Telegram. CI do commit anterior0822607 aprovada1572/13/66; novo diff tem39 testes de inbox/captura e150 de arquivos afetados aprovados, com sobreposição. Types/builds passaram; revisão adversarial encontrou um P2 de gravação parcial por expiração, reproduzido e corrigido sob witness do pacote. [Plano/evidências/limites](telegram-owner-runtime-plan.md). Continua sem interpretação natural/consumidor ou nova instalação; não declara o requisito11 concluído.
+
+A auditoria final encontrou requisito11 incompleto: `TelegramLink.receive` persiste texto direto do dono em `assistant_telegram_updates` como pending, mas não existe consumidor que encaminhe essa mensagem para consulta/controle e resposta no chat. O webhook responde ao provedor, não ao dono. O scheduler não consome essa fila; despausar ou ligar resumos não implementa a interação. Revisão adversarial independente confirmou o P1. [Issue144](https://github.com/orobsonn/whatsapp-mcp/issues/144).
+
+As v0.49.0/v0.50.0 e o fechamento #140/#48 permanecem válidos para seus aceites delimitados (execução pontual, tópicos, notificações e callbacks); não demonstram o requisito11 integrado ou o goal completo. A v0.50.0 está no commitf979c56, Sourcee303/0.50.0 com30bindings e Own1358/38 preservados, CI do PR40588276121/main40589704902 aprovada. Havia zero issues abertas antes desta descoberta; a ausência de pendências catalogadas não equivale a prontidão.
+
+Goal permanece ativo. Falta implementar e homologar texto do dono em linguagem natural→consulta/controle autorizado→resposta real, usando componentes existentes e guard atual do vínculo na própria transação de admissão. Não reduzir a entrega a `/status`, comandos JSON ou mensagens técnicas fabricadas. Sem despausar backlog global, sem Root expirada renovada, WhatsApp automático, Calendar write ou avaliação humana inventada. Desenho/ataque adversarial completos antecedem código; a nova issue só fecha com sua release minor e evidências reais.
 
 ## Marcos próprios — execução Owner e revisão Telegram
 

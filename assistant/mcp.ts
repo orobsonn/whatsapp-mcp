@@ -13,9 +13,10 @@ import { hostConfiguredSearch } from "./configured-search";
 import { TelegramLink, type TelegramLinkCommand } from "./telegram-auth";
 import { createTelegramReview } from "./telegram";
 import { FollowUps } from "./followups";
-import { githubQuery, GitHubReader } from "./connectors/github";
-import { calendarQuery, CalendarReader } from "./connectors/calendar";
-import { calendarOAuthName, oauthAffinity } from "./connectors/calendar-oauth";
+import { githubQuery } from "./connectors/github";
+import { configuredGitHub } from "./connectors/configured-github";
+import { calendarQuery } from "./connectors/calendar";
+import { configuredCalendar } from "./connectors/configured-calendar";
 import { Evaluation, evaluationQuery } from "./evaluation";
 import { assistantHealth } from "./health";
 import { configuredRetirementGuard, retirementBootstrapPlan, bootstrapRetirementAuthority } from "./retention-authority";
@@ -65,7 +66,7 @@ export interface OwnerJournalReader {
 }
 const ns = "installation_id=? AND generation=?";
 const listings = {
-  sources: { table: "assistant_sources", key: "id", columns: "id,origin,audience,status,revision,current_version AS version,conversation_id,project_id", extra: "" },
+  sources: { table: "assistant_sources", key: "id", columns: "id,origin,audience,status,revision,current_version AS version,conversation_id,project_id", extra: "AND origin<>'owner_request'" },
   projects: { table: "assistant_projects", key: "id", columns: "id,name", extra: "" },
   missions: { table: "assistant_missions", key: "id", columns: "id,revision,objective,source_id,source_revision,project_id,state,next_evaluation_at", extra: "" },
   policies: { table: "assistant_conversation_policies", key: "conversation_id", columns: "conversation_id AS id,revision,kind,excluded,group_mode", extra: "" },
@@ -208,17 +209,12 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
       const { kind: _, ...input } = query; return evaluation.sample(input);
     }
     if (query.kind === "github.list" || query.kind === "github.read") {
-      if (!this.env.GITHUB_READ_REPOSITORIES) return { state: "pending_configuration", dependency: "github_read" };
-      return new GitHubReader(this.env.DB!, scope, JSON.parse(this.env.GITHUB_READ_REPOSITORIES), this.env.GITHUB_READ_TOKEN).execute({ kind: "owner" }, query);
+      const configured = configuredGitHub(this.env, scope, undefined, query.repository);
+      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, { ...query, repository: configured.canonicalRepository ?? query.repository }) : configured;
     }
     if (query.kind === "calendar.availability" || query.kind === "calendar.propose") {
-      if (!this.env.CALENDAR_READ_CALENDARS) return { state: "pending_configuration", dependency: "calendar_read" };
-      if (!this.env.CALENDAR_OAUTH) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
-      const expected = oauthAffinity.safeParse({ installationId: scope.installationId, generation: scope.generation,
-        configurationVersion: Number(this.env.CALENDAR_OAUTH_CONFIGURATION_VERSION), secretEpoch: this.env.CALENDAR_OAUTH_SECRET_EPOCH });
-      if (!expected.success) return { state: "pending_configuration", dependency: "calendar_read_oauth" };
-      const token = () => this.env.CALENDAR_OAUTH!.get(this.env.CALENDAR_OAUTH!.idFromName(calendarOAuthName(expected.data))).token(expected.data);
-      return new CalendarReader(this.env.DB!, scope, JSON.parse(this.env.CALENDAR_READ_CALENDARS), token).execute({ kind: "owner" }, query);
+      const configured = configuredCalendar(this.env, scope);
+      return configured.state === "ready" ? configured.reader.execute({ kind: "owner" }, query) : configured;
     }
     const { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read");
     const journal = new DecisionJournal(this.env.DB!, scope, { kind: "owner" }, { origin, semantic, ownerOncePlan,outgoing:outgoingPort(this.env) });

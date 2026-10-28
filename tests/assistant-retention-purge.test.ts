@@ -8,12 +8,9 @@ import { InferenceBudget } from "../assistant/budget";
 import { CogneeModelBroker } from "../assistant/model-broker";
 import { JobQueue } from "../assistant/queue";
 import { OwnerControl } from "../assistant/control";
-// @ts-expect-error Vite SQL assets.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const owner = { kind: "owner" } as const, digest = "a".repeat(64), guard = { allow: async () => {}, withdraw: async () => {} };
 let scope: { installationId: string; generation: string; period: string }, controller: SourceController;
 beforeEach(async () => {
-  for (const [, sql] of Object.entries(migrations).sort()) await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|DROP|$)/).filter(part => part.trim()).map(part => env.DB.prepare(part)));
   scope = { installationId: crypto.randomUUID(), generation: "g", period: "2026-10-26" }; controller = new SourceController(env.DB, scope, owner, () => 100, guard);
 });
 const note = (originKey = "source") => controller.create({ originKey, text: "Synthetic BODY remains private", occurredAt: 1 });

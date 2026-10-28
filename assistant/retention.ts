@@ -84,6 +84,10 @@ export class AssistantExport {
         // immutable admit token is a live bearer grant, never model-visible.
         // This operational table is excluded from canonical restore snapshots.
         if (table === "assistant_owner_commands" && key === "token") return [key, null];
+        if ((table === "assistant_telegram_updates" && key === "token") ||
+          (table === "assistant_telegram_owner_turns" && ["token", "update_token", "finish_token"].includes(key))) return [key, null];
+        if (table === "assistant_telegram_owner_replies" && key === "attempt_token") return [key, null];
+        if (table === "assistant_telegram_dialogue_phases" && ["freeze_token", "run_token", "claim_nonce"].includes(key)) return [key, null];
         if (value instanceof ArrayBuffer) return [key, { blobBase64: encode(new Uint8Array(value)) }];
         // D1 JSON results expose SQLite BLOBs as byte arrays. Preserve the
         // binary value explicitly so restore never mistakes it for JSON text.

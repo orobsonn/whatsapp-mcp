@@ -5,8 +5,6 @@ import { SourceController } from "../assistant/sources";
 import { OwnerAssistant } from "../assistant/mcp";
 import { SourceAccess } from "../assistant/access";
 import { bridgeHash } from "../assistant/ingress";
-// @ts-expect-error Vite SQL assets.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 class Store implements RetirementStore {
   values = new Map<string, unknown>(); failure?: "ack" | "rollback"; private tail = Promise.resolve();
   async get<T>(key: string) { return structuredClone(this.values.get(key)) as T | undefined; }
@@ -22,7 +20,6 @@ class Store implements RetirementStore {
 const owner = { kind: "owner" } as const;
 let store: Store, scope: { installationId: string; generation: string };
 beforeEach(async () => {
-  for (const [, sql] of Object.entries(migrations).sort()) await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim()).map(part => env.DB.prepare(part)));
   store = new Store(); scope = { installationId: crypto.randomUUID(), generation: "retention-test" };
 });
 async function initialized() {

@@ -25,6 +25,6 @@ export async function assistantHealth(env: AssistantEnv, actor: TrustedActor, no
   return { state: pipeline!.received ? "observed_local_pipeline" : "unknown", observedAt: now, configuration, installation, pipeline, conversations, replay, budget,
     coverage: { capturedEvents: pipeline!.received, appliedEvents: pipeline!.applied, appliedFraction: pipeline!.received ? pipeline!.applied / pipeline!.received : null, scope: "received_events_only", upstreamCompleteness: "unknown" },
     recency: { lastReceivedAt: pipeline!.lastReceivedAt, ageMs: pipeline!.lastReceivedAt === null ? null : Math.max(0, now - pipeline!.lastReceivedAt), interpretation: "no_new_event_does_not_prove_failure" },
-    capabilities: { whatsappSend: false, calendarWrite: false, basis: "shadow_architecture_not_live_probe" }, clientHealth: "not_observed", schedulerHealth: installation.scheduler.observation, snapshot: "not_atomic" };
+    capabilities: { whatsappSend: false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR, basis: "shadow_architecture_not_live_probe" }, clientHealth: "not_observed", schedulerHealth: installation.scheduler.observation, snapshot: "not_atomic" };
   } catch { return { state: "unknown", configuration, installation, observation: "schema_or_pipeline_unavailable", clientHealth: "not_observed" }; }
 }

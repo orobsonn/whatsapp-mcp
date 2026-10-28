@@ -17,6 +17,14 @@ export type CalendarTokenResult = { state: "ready"; accessToken: string; expires
 export type CalendarTokenSource = () => Promise<CalendarTokenResult>;
 const scopes = new Set(["https://www.googleapis.com/auth/calendar.events.readonly", "https://www.googleapis.com/auth/calendar.readonly"]);
 export function readonlyCalendarScope(value: string) { const items = value.trim().split(/\s+/); return items.length > 0 && items.every(item => scopes.has(item)); }
+export type CalendarPermission = "read_only" | "write_owned";
+export const OWNED_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned";
+export function calendarPermissionScope(value: string, permission: CalendarPermission) {
+  if (permission === "read_only") return readonlyCalendarScope(value);
+  const items = value.trim().split(/\s+/);
+  return items.includes(OWNED_CALENDAR_SCOPE) && items.every(item => item === OWNED_CALENDAR_SCOPE || scopes.has(item));
+}
+const oauthProfile = (permission: CalendarPermission) => permission === "write_owned" ? "calendar-oauth-write-owned-v1" : "calendar-oauth-v1";
 const encode = (value: Uint8Array) => btoa(String.fromCharCode(...value));
 const decode = (value: string) => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 
@@ -27,11 +35,11 @@ export class CalendarOAuthBroker {
   private readonly configuration: { clientId: string; clientSecret: string; refreshToken: string; encryptionKey: string };
   constructor(private readonly store: OAuthStore, affinity: OAuthAffinity, configuration: {
     clientId: string; clientSecret: string; refreshToken: string; encryptionKey: string;
-  }, private readonly request: (request: Request) => Promise<Response> = request => fetch(request), private readonly clock = Date.now) {
+  }, private readonly request: (request: Request) => Promise<Response> = request => fetch(request), private readonly clock = Date.now, private readonly permission: CalendarPermission = "read_only") {
     this.affinity = oauthAffinity.parse(affinity);
     this.configuration = z.object({ clientId: secret, clientSecret: secret, refreshToken: secret, encryptionKey: z.string().min(1).max(128) }).strict().parse(configuration);
   }
-  private async identity() { return bridgeHash(["calendar-oauth-v1", this.affinity, this.configuration.clientId]); }
+  private async identity() { return bridgeHash([oauthProfile(this.permission), this.affinity, this.configuration.clientId]); }
   private async cryptography() {
     const bytes = decode(this.configuration.encryptionKey); if (bytes.length !== 32) throw new Error("oauth_key");
     return { key: await crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]), additionalData: new TextEncoder().encode(await this.identity()) };
@@ -65,7 +73,7 @@ export class CalendarOAuthBroker {
       const current = stored.parse(raw); if (current.affinity !== affinity) return { state: "unavailable" };
       if (current.phase !== "ready") return { state: current.phase === "needs_consent" ? "needs_consent" : "uncertain" };
       const tokens = await this.open(current.cipher), now = this.clock();
-      if (tokens.accessToken && tokens.expiresAt && tokens.expiresAt > now + 60000 && tokens.scope && readonlyCalendarScope(tokens.scope)) return { state: "ready", accessToken: tokens.accessToken, expiresAt: tokens.expiresAt };
+      if (tokens.accessToken && tokens.expiresAt && tokens.expiresAt > now + 60000 && tokens.scope && calendarPermissionScope(tokens.scope, this.permission)) return { state: "ready", accessToken: tokens.accessToken, expiresAt: tokens.expiresAt };
       attempt = { ...current, revision: current.revision + 1, phase: "attempting", attemptId: crypto.randomUUID() };
       if (!await this.commit(current, attempt)) return { state: "unavailable" };
       const response = await this.refresh(tokens.refreshToken);
@@ -74,7 +82,7 @@ export class CalendarOAuthBroker {
       }
       if (response.status !== 200) throw new Error("oauth_response");
       const value = z.object({ access_token: secret, expires_in: z.number().int().min(120).max(86400), token_type: z.literal("Bearer"), scope: z.string().min(1).max(512), refresh_token: secret.optional() }).parse(response.body);
-      if (!readonlyCalendarScope(value.scope)) throw new Error("oauth_scope");
+      if (!calendarPermissionScope(value.scope, this.permission)) throw new Error("oauth_scope");
       const expiresAt = now + value.expires_in * 1000;
       if (expiresAt <= this.clock() + 60000) throw new Error("oauth_expired");
       const next: Stored = { ...attempt, revision: attempt.revision + 1, phase: "ready", cipher: await this.seal({ refreshToken: value.refresh_token ?? tokens.refreshToken, accessToken: value.access_token, expiresAt, scope: value.scope }) };
@@ -99,18 +107,19 @@ export class CalendarOAuthBroker {
   }
 }
 
-export function calendarOAuthName(affinity: OAuthAffinity) { return JSON.stringify(["calendar-oauth-v1", affinity.installationId, affinity.generation, affinity.configurationVersion, affinity.secretEpoch]); }
+export function calendarOAuthName(affinity: OAuthAffinity, permission: CalendarPermission = "read_only") { return JSON.stringify([oauthProfile(permission), affinity.installationId, affinity.generation, affinity.configurationVersion, affinity.secretEpoch]); }
 export class CalendarOAuth extends DurableObject<AssistantEnv> {
-  async token(expected: OAuthAffinity): Promise<CalendarTokenResult> {
+  async token(expected: OAuthAffinity, permission: CalendarPermission = "read_only"): Promise<CalendarTokenResult> {
+    if (permission !== (this.env.CALENDAR_OAUTH_PERMISSION ?? "read_only") || !["read_only", "write_owned"].includes(permission)) throw new Error("calendar_oauth_permission");
     const actual = oauthAffinity.parse({ installationId: this.env.INSTALLATION_ID, generation: this.env.OPERATIONAL_GENERATION,
       configurationVersion: Number(this.env.CALENDAR_OAUTH_CONFIGURATION_VERSION), secretEpoch: this.env.CALENDAR_OAUTH_SECRET_EPOCH });
     if (JSON.stringify(oauthAffinity.parse(expected)) !== JSON.stringify(actual)) throw new Error("calendar_oauth_affinity");
-    if (!this.env.CALENDAR_OAUTH || this.ctx.id.toString() !== this.env.CALENDAR_OAUTH.idFromName(calendarOAuthName(actual)).toString()) throw new Error("calendar_oauth_instance");
+    if (!this.env.CALENDAR_OAUTH || this.ctx.id.toString() !== this.env.CALENDAR_OAUTH.idFromName(calendarOAuthName(actual, permission)).toString()) throw new Error("calendar_oauth_instance");
     if (this.env.CALENDAR_OAUTH_CREDENTIAL_GENERATION !== actual.generation) return { state: "pending_configuration" };
     if (!this.env.CALENDAR_OAUTH_CLIENT_ID || !this.env.CALENDAR_OAUTH_CLIENT_SECRET || !this.env.CALENDAR_OAUTH_REFRESH_TOKEN || !this.env.CALENDAR_OAUTH_ENCRYPTION_KEY) return { state: "pending_configuration" };
     return this.ctx.blockConcurrencyWhile(() => new CalendarOAuthBroker({
       get: () => this.ctx.storage.get("credentials"), transaction: action => this.ctx.storage.transaction(store => action({ get: () => store.get("credentials"), put: value => store.put("credentials", value) })),
-    }, actual, { clientId: this.env.CALENDAR_OAUTH_CLIENT_ID!, clientSecret: this.env.CALENDAR_OAUTH_CLIENT_SECRET!, refreshToken: this.env.CALENDAR_OAUTH_REFRESH_TOKEN!, encryptionKey: this.env.CALENDAR_OAUTH_ENCRYPTION_KEY! }).token());
+    }, actual, { clientId: this.env.CALENDAR_OAUTH_CLIENT_ID!, clientSecret: this.env.CALENDAR_OAUTH_CLIENT_SECRET!, refreshToken: this.env.CALENDAR_OAUTH_REFRESH_TOKEN!, encryptionKey: this.env.CALENDAR_OAUTH_ENCRYPTION_KEY! }, undefined, Date.now, permission).token());
   }
   async fetch() { return new Response("forbidden", { status: 403 }); }
 }

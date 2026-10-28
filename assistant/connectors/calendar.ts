@@ -20,16 +20,22 @@ export const calendarQuery = z.discriminatedUnion("kind", [
 ]).refine(value => Date.parse(value.end) > Date.parse(value.start) && Date.parse(value.end) - Date.parse(value.start) <= 31 * 86400000, "calendar_interval");
 export const calendarConfiguration = connectorAuthority.extend({ id, calendarId: z.string().min(1).max(512).refine(value => !/[\u0000-\u001f\u007f]/.test(value)) }).strict();
 const date = z.object({ dateTime: instant.optional(), date: z.iso.date().optional(), timeZone: z.string().max(128).optional() });
-const event = z.object({ status: z.enum(["confirmed", "tentative", "cancelled"]), transparency: z.enum(["opaque", "transparent"]).optional(), start: date.optional(), end: date.optional() });
+const event = z.object({ status: z.enum(["confirmed", "tentative", "cancelled"]), transparency: z.enum(["opaque", "transparent"]).optional(), start: date.optional(), end: date.optional(), summary: z.string().nullable().optional() });
 const page = z.object({ items: z.array(event).max(100), nextPageToken: z.string().min(1).max(2048).optional() });
 type Busy = { start: string; end: string };
+export type CalendarEventObservation = { calendar: string; title: string; titleTruncated: boolean; status: "confirmed" | "tentative"; transparent: boolean; start?: z.infer<typeof date>; end?: z.infer<typeof date> };
+function boundedTitle(value: string) {
+  const encoder = new TextEncoder(); let title = "", bytes = 0;
+  for (const character of value) { const size = encoder.encode(character).length; if (bytes + size > 512) break; title += character; bytes += size; }
+  return { title, titleTruncated: title.length < value.length };
+}
 
 /** Reads every configured calendar; callers cannot omit one and claim global availability. */
 export class CalendarReader {
   private readonly calendars: z.infer<typeof calendarConfiguration>[];
   private readonly access: ConnectorAccess;
   constructor(db: D1Database, scope: SourceScope, calendars: unknown, private readonly token: string | CalendarTokenSource | undefined,
-    private readonly request: ReadFetch = request => fetch(request), private readonly clock = Date.now) {
+    private readonly request: ReadFetch = request => fetch(request), private readonly clock = Date.now, private readonly includeEventTitles = false) {
     this.calendars = z.array(calendarConfiguration).min(1).max(5).parse(calendars);
     if (new Set(this.calendars.map(item => item.id)).size !== this.calendars.length || new Set(this.calendars.map(item => item.calendarId)).size !== this.calendars.length) throw new Error("calendar_configuration");
     this.access = new ConnectorAccess(db, scope, clock);
@@ -51,7 +57,8 @@ export class CalendarReader {
       return { state: "unavailable", dependency: "calendar_read_oauth", coverage: { complete: false }, availability: "unknown" };
     if (!await this.access.currentMany(actor, fences)) return { state: "unavailable", reason: "source_changed", coverage: { complete: false }, availability: "unknown" };
     const begin = Date.parse(query.start), end = Date.parse(query.end), gaps = new Set<string>(), intervals: Busy[] = [], deadline = Date.now() + 12000;
-    let pages = 0, completedCalendars = 0;
+    const events: CalendarEventObservation[] = [], eventGaps = new Set<string>();
+    let pages = 0, completedCalendars = 0, eventBytes = 0, observedEvents = 0;
     for (let index = 0; index < this.calendars.length; index++) {
       const calendar = this.calendars[index], tokens = new Set<string>(); let nextPageToken: string | undefined;
       try {
@@ -64,11 +71,28 @@ export class CalendarReader {
           const timeMin = begin % 1000 ? new Date(Math.floor(begin / 1000) * 1000).toISOString() : query.start;
           const timeMax = end % 1000 ? new Date(Math.ceil(end / 1000) * 1000).toISOString() : query.end;
           url.search = new URLSearchParams({ timeMin, timeMax, timeZone: query.timeZone, singleEvents: "true", orderBy: "startTime", maxResults: "100",
-            fields: "items(status,transparency,start,end),nextPageToken", ...(nextPageToken ? { pageToken: nextPageToken } : {}) }).toString();
+            fields: this.includeEventTitles ? "items(status,transparency,start,end,summary),nextPageToken" : "items(status,transparency,start,end),nextPageToken", ...(nextPageToken ? { pageToken: nextPageToken } : {}) }).toString();
           const value = page.parse(await readJson(url, { Authorization: `Bearer ${credential.accessToken}`, Accept: "application/json" }, this.request, 262144, Math.max(1, Math.min(8000, deadline - Date.now()))));
           pages++;
           for (const item of value.items) {
-            if (item.status === "cancelled" || item.transparency === "transparent") continue;
+            if (item.status === "cancelled") continue;
+            if (item.start?.dateTime && item.end?.dateTime) {
+              const start = Date.parse(item.start.dateTime), finish = Date.parse(item.end.dateTime);
+              if (finish <= start) { eventGaps.add("invalid_event_interval"); if (item.transparency !== "transparent") gaps.add("invalid_event_interval"); continue; }
+              if (start >= end || finish <= begin) continue;
+            }
+            if (this.includeEventTitles) {
+              observedEvents++;
+              const title = boundedTitle(item.summary || "Compromisso sem título disponível");
+              if (!item.summary) eventGaps.add("event_title_unavailable");
+              if (title.titleTruncated) eventGaps.add("event_title_truncated");
+              if ((!item.start?.dateTime || !item.end?.dateTime) && (!item.start?.date || !item.end?.date)) eventGaps.add("incomplete_event");
+              const observed: CalendarEventObservation = { calendar: calendar.id, ...title, status: item.status, transparent: item.transparency === "transparent", ...(item.start ? { start: item.start } : {}), ...(item.end ? { end: item.end } : {}) };
+              const size = new TextEncoder().encode(JSON.stringify(observed)).length;
+              if (events.length >= 100 || eventBytes + size > 60000) eventGaps.add("events_result_limit");
+              else { events.push(observed); eventBytes += size; }
+            }
+            if (item.transparency === "transparent") continue;
             if (!item.start?.dateTime || !item.end?.dateTime) { gaps.add("all_day_or_incomplete_event"); continue; }
             const start = Date.parse(item.start.dateTime), finish = Date.parse(item.end.dateTime);
             if (finish <= start) { gaps.add("invalid_event_interval"); continue; }
@@ -78,8 +102,8 @@ export class CalendarReader {
           if (tokens.has(value.nextPageToken)) throw new Error("calendar_page_cycle");
           tokens.add(value.nextPageToken); nextPageToken = value.nextPageToken;
         }
-        if (nextPageToken) gaps.add("page_limit");
-      } catch { gaps.add("calendar_unavailable"); }
+        if (nextPageToken) { gaps.add("page_limit"); eventGaps.add("page_limit"); }
+      } catch { gaps.add("calendar_unavailable"); eventGaps.add("calendar_unavailable"); }
     }
     intervals.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
     const busy: Busy[] = [];
@@ -92,7 +116,8 @@ export class CalendarReader {
     const complete = completedCalendars === this.calendars.length && !gaps.size;
     const availability = busy.length ? "conflict_observed" : complete ? "no_conflict_observed" : "unknown";
     const result = { state: "available", origin: "calendar", audience: "owner", start: query.start, end: query.end, timeZone: query.timeZone,
-      busy, availability, observedAt: this.clock(), execution: "unconfirmed", coverage: { complete, pages, configuredCalendars: this.calendars.length, completedCalendars, gaps: [...gaps], snapshot: "not_atomic" },
+      busy, ...(this.includeEventTitles ? { events, eventsCoverage: { complete: completedCalendars === this.calendars.length && !eventGaps.size, observedEvents, returnedEvents: events.length, gaps: [...eventGaps] } } : {}),
+      availability, observedAt: this.clock(), execution: "unconfirmed", coverage: { complete, pages, configuredCalendars: this.calendars.length, completedCalendars, gaps: [...gaps], snapshot: "not_atomic" },
       sources: this.calendars.map(item => ({ id: item.id, projectId: item.projectId, configurationVersion: item.version })) };
     const hash = await bridgeHash([result, fences]);
     // Final coherent D1 proof is mandatory even for partial/error/empty results,

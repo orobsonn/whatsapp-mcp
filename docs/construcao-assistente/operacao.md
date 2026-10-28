@@ -1,6 +1,6 @@
 # Instalação sombra da assistente — #56
 
-Este runbook descreve artefatos e etapas de instalação. Renderizar configuração, ter CI verde e observar um binding não equivalem a homologação do piloto. #57 exige a jornada cloud integrada e os negativos. Nenhum comando abaixo concede WhatsApp automático ou escrita Calendar.
+Este runbook descreve artefatos e etapas de instalação. Renderizar configuração, ter CI verde e observar um binding não equivalem a homologação do piloto. #57 exige a jornada cloud integrada e os negativos. Instalação/flags não concedem WhatsApp automático ou delegação de escrita Calendar. O diálogo autenticado do dono possui perfil Calendar próprio de gestão, autorizado separadamente em28/10/2026.
 
 ## Estado observado na retomada VPS
 
@@ -50,7 +50,7 @@ A configuração inicial deixa routines off, pausa true, mídia e resumos Telegr
 7. Fixar a afinidade privada na configuração da assistente, verificar novamente por RPC e selar RetentionAuthority a partir do inventário canônico comprovado. Um banco supostamente vazio não prova ausência de tombstones. O selo externo não é resetado por restore.
 8. Revisar/aplicar apenas o delta ASSISTANT_* do Archive contra o baseline exato pós-upgrade/pós-secrets. Preservar todos os outros bindings, rotas, settings e secrets; o artefato não é uma substituição de wrangler.jsonc legado. Não alterar MAINTENANCE/captura do Archive para pausar a assistente. O cron existente entrega outbox durável; cursor/ACK perdido não autoriza reset de sequência.
 9. Conferir saúde privada, migrações e bindings reais; observar disparo real de cron na Cloudflare com a VPS desligada/desconectada. Metadados de schedule e um teste local de scheduled não provam essa fronteira. Publicar um callback Telegram próprio exige etapa separada de routing/ownership/segredo, mantendo default403 e sem mudar Access/MCP/Elo; só então configurar webhook e homologar vínculo.
-10. Antes de habilitar rotina sombra, conferir orçamento global, checkpoint/restore, cobertura e gates de #57. Ativar rotina shadow e remover pausa é mudança explícita e auditada de flags após os gates; flags nunca habilitam WhatsApp ou Calendar write porque essas capacidades não são instaladas.
+10. Antes de habilitar rotina sombra, conferir orçamento global, checkpoint/restore, cobertura e gates de #57. Ativar rotina shadow e remover pausa é mudança explícita e auditada de flags após os gates. As flags não habilitam envio WhatsApp nem delegam escrita Calendar; gestão reativa da agenda exige o pedido autenticado e seu perfil/grant próprio.
 
 [Cloudflare: Vite gera configuração de deploy](https://developers.cloudflare.com/workers/vite-plugin/reference/migrating-from-wrangler-dev/). [Containers: política de agendamento](https://developers.cloudflare.com/containers/configuration/scheduling-policy/).
 
@@ -103,4 +103,18 @@ Upload versionado deve reter os bindings existentes no servidor, sem extrair/cop
 
 Teto autorizado de testes pagos: US$10. O executor deve consultar todos os períodos/gerações/instalações anteriores e reservas incertas antes de configurar novo cap insert-only. O handoff registrava 48.405 microUSD comprometidos, incluindo 40.000 incertos; isso é referência histórica, não saldo atual. O instalador não cria cap de US$10 por geração/dia nem um ledger paralelo. Container/infra têm custo separado de inferência; não inferir mensalidade por amostra sintética.
 
-Pendências humanas: homologação/login no cliente MCP; credenciais próprias de provedores que não estejam disponíveis por canal privado; vínculo e autorização Telegram; client/consentimento Google somente leitura. Roteamento, imagem, migrações, bootstrap, deploy, cron e integração são trabalho de engenharia. Até a prova cloud/cliente, declarar infraestrutura preparada/configurada separadamente da prontidão funcional #57 e da avaliação longitudinal do piloto.
+Cliente MCP, vínculo Telegram, credencial GitHub própria e consentimento Google de gestão foram homologados nas evidências dos marcos46/47/48/51/144. O app Google continua External/Testing, com renovação de consentimento necessária conforme a validade desse perfil; não prometer credencial Calendar permanente. A credencial GitHub foi configurada sem expiração, permanecendo revogável pelo dono/provedor.
+
+Observação contínua continua pausada: antes de ativá-la, definir escopo/corpus representativo, medir recuperação e conferir orçamento. Avaliação longitudinal e benefício humano são medidos durante o piloto; não podem ser preenchidos pelo executor a partir de cliques, entrega ou fixtures.
+
+## Uso reativo no Telegram
+
+O diálogo autenticado funciona com `TELEGRAM_OWNER_DIALOGUE_ENABLED=shadow` mesmo com `ROUTINES_PAUSED=true`. Não remover a pausa para responder ao dono. Consulte as provas de [agenda](evidencias/144-calendar-telegram.md), [GitHub](evidencias/144-github-telegram.md), [WhatsApp](evidencias/144-whatsapp-telegram.md) e [memória/políticas](evidencias/144-memory-controls-telegram.md).
+
+- Notas: `Anote: …`; pergunte sobre o que ensinou; `Corrija a nota “título completo” para: …`; `Esqueça a nota “título completo”`.
+- Políticas: `Acompanhe em sombra o grupo “nome completo”`; `Ignore o grupo “nome completo”`; `Exclua a conversa “nome completo” do assistente`. Configurar observação não executa a rotina pausada. Exclusão não habilita reativação implícita.
+- GitHub: pergunte sobre um repositório próprio explicitamente citado. Consulta a branch padrão e até cinco arquivos; caminhos, código e README não provam deployment ou execução.
+- WhatsApp: indique pessoa/grupo e o que procura. Consulta até três mensagens atuais da captura, com cobertura limitada; texto de legenda não equivale a analisar imagem. Captura atrasada, fonte alterada/excluída ou nome ambíguo podem impedir a resposta. Uma passagem limitada do materializador atualiza a inbox já autenticada antes da leitura; não drena todo o passado nem chama IA para capturar.
+- Agenda: títulos, horários e CRUD de eventos únicos na agenda principal própria, organizados pelo dono e sem convidados. Séries/convites não fazem parte desse primeiro caminho. Após resultado incerto, consultar a agenda; não repetir o comando como tentativa de corrigir timeout.
+
+Pedidos devem trazer alvo e dados necessários; não pressupor contexto implícito de uma pergunta anterior ou identidade por pronome. Nova tentativa humana recebe novo frame; o executor nunca renova uma autorização expirada ou repete uma fase paga incerta automaticamente. GitHub e WhatsApp fornecem respostas sustentadas pelos documentos efetivamente lidos, sem alegação de entendimento global do acervo.

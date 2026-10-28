@@ -20,6 +20,7 @@ export interface AssistantEnv {
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;
   TELEGRAM_SUMMARIES_ENABLED?: string;
+  TELEGRAM_OWNER_DIALOGUE_ENABLED?: string;
   MEDIA_CONTEXT_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   SEMANTIC_SEARCH_MODE?: string;
@@ -27,9 +28,12 @@ export interface AssistantEnv {
   CAPTURE_MEDIA_READER?: MediaReader;
   MEDIA_PDF_PARSER?: PdfAdmissionReader;
   GITHUB_READ_REPOSITORIES?: string;
+  GITHUB_READ_OWNER?: string;
   GITHUB_READ_TOKEN?: string;
   CALENDAR_READ_CALENDARS?: string;
+  CALENDAR_WRITE_CALENDAR?: string;
   CALENDAR_OAUTH?: DurableObjectNamespace<CalendarOAuth>;
+  CALENDAR_OAUTH_PERMISSION?: "read_only" | "write_owned";
   CALENDAR_OAUTH_CONFIGURATION_VERSION?: string;
   CALENDAR_OAUTH_SECRET_EPOCH?: string;
   CALENDAR_OAUTH_CREDENTIAL_GENERATION?: string;

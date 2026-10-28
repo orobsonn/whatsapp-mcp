@@ -17,6 +17,7 @@ const actor = z.discriminatedUnion("kind", [z.object({ kind: z.literal("owner") 
 const origin = z.object({ ...scope, sourceEpoch: label, sourceGeneration: label, sourceKind: z.enum(["message", "media", "derivative", "conversation"]),
   sourceId: label, chatId: label, canonicalId: label, revision: version, version, watermark: time, hash,
   conversationKind: z.enum(["private", "group"]), policyRevision: time, policyMode: label }).strict();
+export { origin as originFence };
 const source = z.object({ id: label, text: z.string().max(32768).nullable(), authorId: label.nullable(), authorLabel: label.nullable(), occurredAt: time,
   fence: sourceFence, origin: origin.optional(), mediaEvidence: mediaEvidenceSchema.optional() }).strict();
 const lease = z.object({ id: label, kind: z.enum(["extraction", "reasoning", "follow_up", "review", "maintenance"]), state: z.literal("processing"),

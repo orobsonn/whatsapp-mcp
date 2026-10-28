@@ -1,6 +1,7 @@
 import { bridgeHash } from "./ingress";
 import type { SourceScope } from "./sources";
 import type { SourceRetirementGuard } from "./retention-authority";
+import type { AccessGuard } from "./access";
 type Barrier = { source_id: string; origin: string; origin_key: string; base_revision: number; source_version: number; operation_id: string; request_hash: string; state: string; external_state: string };
 /** Local withdrawal is committed before any external await. The original CAS,
  * identity and operation survive an uncertain DO/D1 acknowledgement. */
@@ -10,11 +11,12 @@ export class WithdrawalBarrier {
   private keys() { return [this.scope.installationId, this.scope.generation]; }
   private sql(query: string, ...values: (string | number | null)[]) { return this.db.prepare(query).bind(...values); }
   private read(id: string) { return this.sql(`SELECT * FROM assistant_retention_barriers WHERE installation_id=? AND generation=? AND source_id=?`, ...this.keys(), id).first<Barrier>(); }
-  async begin(id: string, expected: number, operationId: string, requestHash: string, now: number) {
+  async begin(id: string, expected: number, operationId: string, requestHash: string, now: number, admission?: AccessGuard) {
     const token = crypto.randomUUID();
     try { await this.db.batch([
       this.sql(`INSERT INTO assistant_retention_barriers SELECT installation_id,generation,id,origin,origin_key,revision,current_version,?,?,?,'pending_withdraw','pending',? FROM assistant_sources
-       WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=assistant_sources.installation_id AND b.generation=assistant_sources.generation AND b.source_id=assistant_sources.id) ON CONFLICT DO NOTHING`, operationId, requestHash, token, now, ...this.keys(), id, expected),
+       WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=assistant_sources.installation_id AND b.generation=assistant_sources.generation AND b.source_id=assistant_sources.id)
+       ${admission ? `AND (${admission.sql})` : ""} ON CONFLICT DO NOTHING`, operationId, requestHash, token, now, ...this.keys(), id, expected, ...(admission?.values ?? [])),
       this.sql(`UPDATE assistant_sources SET status='withdrawn',revision=revision+1 WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active'
        AND EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=assistant_sources.installation_id AND b.generation=assistant_sources.generation AND b.source_id=assistant_sources.id AND b.claim_token=?)`, ...this.keys(), id, expected, token),
       this.sql(`INSERT INTO assistant_source_changes(installation_id,generation,source_id,revision,version,kind,changed_at)

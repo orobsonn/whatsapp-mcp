@@ -4,6 +4,35 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-28
+
+### Added
+- Diálogo privado do dono no Telegram conectado ao Flue, à fila durável e aos leitores/controladores existentes. Perguntas recebem respostas no tópico original; notas e missões podem ser criadas, consultadas e administradas em português.
+- Respostas sobre projetos GitHub a partir de até cinco arquivos da branch padrão, fixados no mesmo SHA, com seleção e síntese separadas. Credencial própria permite leitura de todos os repositórios do dono, sem expiração configurada; não permite escrita.
+- Consulta reativa ao texto capturado do WhatsApp, incluindo derivados já existentes com proveniência explícita. Recorte de até três fontes atuais; não habilita envio, participação automática ou busca semântica global.
+- Ensino, consulta, correção e retirada de notas pelo Telegram; políticas de observar/ignorar/excluir conversas com identidade e revisão congeladas, usando os controladores canônicos.
+- Agenda com títulos e criação, edição e exclusão por pedido explícito do dono, usando OAuth próprio de gestão. Primeiro caminho atende eventos únicos na agenda principal, organizados pelo dono e sem convidados.
+
+### Changed
+- Respostas com espaçamento, formatação e símbolos de estado. Agenda usa cabeçalho/data, horário e título, sem os rodapés removidos por pedido do dono.
+
+### Fixed
+- Conteúdo de pesquisa reutiliza o corpo durável das fases, evitando duplicação no limite de32KB do episódio. Recuperação conserva o payload antigo exato, sem nova cobrança ou seleção de contexto.
+- Hashes do Plan e da outbox compartilham a mesma canonicalização. Conclusão histórica confere envelope, recibos e envio sem reenviar a resposta; reconciliação deixa de ser bloqueada por episódios sem Plan.
+- Diálogo nativo tem teto compatível de120segundos, mantendo os limites originais do turno/lease e uma tentativa. Contexto WhatsApp limitado preserva os guards dentro da profundidade SQL suportada.
+- Seleção/intent usam esforço explícito `none`; síntese usa `low` e4000tokens, mantendo modelo/caps. IDs de citação são restritos aos documentos enviados, com verificação literal no host.
+- Proveniência distingue mensagem, transcrição e outro texto derivado. Remetente não é apresentado como identidade comprovada de quem fala no áudio.
+- Uma citação inválida omite a afirmação inteira, preservando pontos independentes sustentados com aviso de resposta parcial. Sem ponto válido, conserva o fallback; nenhuma citação é remapeada ou aceita por aproximação.
+
+### Validation
+- Ensaios reais no bot comprovaram resposta útil sobre código público/privado, WhatsApp privado/grupo, ciclo de ensino→consulta→correção→consulta atual→retirada e política observe→ignore. Respostas conservam uma tentativa e conclusão nativa verificável.
+- Calendar criou, editou e excluiu o mesmo evento técnico com readbacks independentes no Google. Falhas de quota, tamanho, citação, contexto desatualizado e saída vazia permanecem registradas, sem serem contadas como sucesso.
+- Revisão adversarial, CI e readbacks do marco vinculados ao SHA e ao asset da release. Evidências: [GitHub](docs/construcao-assistente/evidencias/144-github-telegram.md), [WhatsApp](docs/construcao-assistente/evidencias/144-whatsapp-telegram.md), [agenda](docs/construcao-assistente/evidencias/144-calendar-telegram.md) e [memória/políticas](docs/construcao-assistente/evidencias/144-memory-controls-telegram.md).
+
+### Notes
+- WhatsApp automático permanece desabilitado e as rotinas contínuas pausadas. O marco atende uso reativo e ensaios delimitados em sombra; ampliar/medir corpus precede ativação contínua. Avaliação longitudinal e benefício humano permanecem desconhecidos até o piloto.
+- Google continua External/Testing, sujeito à renovação de consentimento desse perfil. Séries, convidados, escrita proativa Calendar e compreensão de todo o acervo não fazem parte deste aceite. Custos/incertezas e infraestrutura permanecem separados na [auditoria](docs/construcao-assistente/evidencias/piloto-canais-proprios-20261027.md).
+
 ## [0.50.0] - 2026-10-27
 
 ### Validation

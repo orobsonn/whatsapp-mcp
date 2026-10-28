@@ -95,3 +95,24 @@ test("malformed credential state cannot bootstrap over or disclose the old state
   store.value = { phase: "ready", cipher: { data: "synthetic-private-invalid" } }; const request = vi.fn(async () => response());
   expect(await new CalendarOAuthBroker(store, affinity, configuration(), request, () => now).token()).toEqual({ state: "unavailable" }); expect(request).not.toHaveBeenCalled(); expect(store.writes).toHaveLength(0);
 });
+
+test("owned write grant requires positive owned scope and cannot reuse readonly ciphertext", async () => {
+  const owned = "https://www.googleapis.com/auth/calendar.events.owned";
+  const request = vi.fn(async () => response({ scope: owned }));
+  expect(await new CalendarOAuthBroker(store, affinity, configuration(), request, () => now, "write_owned").token()).toMatchObject({ state: "ready" });
+  expect(await new CalendarOAuthBroker(store, affinity, configuration(), request, () => now).token()).toEqual({ state: "unavailable" });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(calendarOAuthName(affinity, "write_owned")).not.toBe(calendarOAuthName(affinity));
+  const readonlyStore = new Store(), readonlyRequest = vi.fn(async () => response());
+  await new CalendarOAuthBroker(readonlyStore, affinity, configuration(), readonlyRequest, () => now).token();
+  expect(await new CalendarOAuthBroker(readonlyStore, affinity, configuration(), request, () => now, "write_owned").token()).toEqual({ state: "unavailable" });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+test("write profile rejects readonly-only and unrelated expanded grants without retry", async () => {
+  for (const invalidScope of [scope, "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/calendar.events.owned https://www.googleapis.com/auth/drive.readonly"]) {
+    const isolated = new Store(), request = vi.fn(async () => response({ scope: invalidScope }));
+    expect(await new CalendarOAuthBroker(isolated, affinity, configuration(), request, () => now, "write_owned").token()).toEqual({ state: "uncertain" });
+    expect(await new CalendarOAuthBroker(isolated, affinity, configuration(), request, () => now, "write_owned").token()).toEqual({ state: "uncertain" });
+    expect(request).toHaveBeenCalledTimes(1);
+  }
+});
