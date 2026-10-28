@@ -186,29 +186,45 @@ export class TelegramDialogueHost {
         proofs.push({ kind: "calendar_observation", episodeId: episode.id, bindingHash: episode.binding_hash, submissionId: identity.submissionId, observationJSON: JSON.stringify(observation) });
       }
     } else if (choice.kind === "whatsapp") {
+      try {
       let context: ResearchCheckpoint | null = checkpointJSON ? JSON.parse(checkpointJSON) : null;
       if (context && (context.mode !== "whatsapp_answer" || context.question !== turn.text)) throw Error("whatsapp_checkpoint_conflict");
-      if (!context) {
+      const frozenAnswer = await this.db.prepare("SELECT body_json,deps_json,state,purged FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND generation=? AND request_id=? AND episode_id=? AND binding_hash=? AND phase='answer'")
+        .bind(this.scope.installationId, this.scope.generation, b.source.source.id, episode.id, episode.binding_hash).first<{ body_json: string | null; deps_json: string; state: string; purged: number }>();
+      let frozenPayload: unknown;
+      if (frozenAnswer) {
+        if (frozenAnswer.purged || !frozenAnswer.body_json || frozenAnswer.state === "cancelled") throw Error("whatsapp_context_withdrawn");
+        frozenPayload = JSON.parse(frozenAnswer.body_json);
+        const stored = JSON.parse((frozenPayload as { messages: { content: string }[] }).messages[1].content);
+        context = { kind: "telegram_owner_research", mode: "whatsapp_answer", question: turn.text, documents: stored.documents, coverage: stored.coverage, dependencies: JSON.parse(frozenAnswer.deps_json) };
+        dependencies.push(...context.dependencies);
+      } else if (context) dependencies.push(...context.dependencies);
+      else {
         const found = await readTelegramWhatsApp(this.env, this.scope, { query: choice.text, conversationName: choice.conversationName, authorName: choice.authorName, from: choice.from, to: choice.to }, turn.text, readBoundary);
         text = found.state === "available" ? "" : found.text;
         if (found.state === "available") {
           dependencies.push(...found.dependencies);
           const documents = found.observation.messages.map(m => ({ id: m.sourceId, label: `${m.fromMe === true ? "Você" : m.authorLabel ?? "Autor não identificado"} · ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Fortaleza", dateStyle: "short", timeStyle: "short" }).format(m.occurredAt)}`, text: m.text, metadata: { authorLabel: m.authorLabel, fromMe: m.fromMe, occurredAt: new Date(m.occurredAt).toISOString() } }));
+          // The existing answer phase freezes this exact body+all dependencies
+          // before reserving/invoking the provider; no duplicate episode blob.
           context = { kind: "telegram_owner_research", mode: "whatsapp_answer", question: turn.text, documents, dependencies, coverage: found.observation.coverage };
-          const g = merge(actionGuard(), found.guard), encoded = JSON.stringify(context);
-          const frozen = await jsonStatement(this.db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS NULL AND (${g.sql}) RETURNING id`, [encoded, this.scope.installationId, this.scope.generation, id, episode.binding_hash, ...g.values]).first();
-          if (!frozen) throw Error("whatsapp_context_blocked"); checkpointJSON = encoded;
         }
-      } else dependencies.push(...context.dependencies);
+      }
       if (context && !context.documents?.length) text = "Não encontrei mensagens atuais que sustentem uma resposta nesse recorte. Isso não significa que o assunto não exista no seu WhatsApp; tente indicar a conversa ou o período.";
       if (context?.documents?.length) {
-        const answered = await phases.run("answer", groundedAnswerPayload(b.config.chatModel, turn.text, context.documents, context.coverage), dependencies);
+        const answered = await phases.run("answer", frozenPayload ?? groundedAnswerPayload(b.config.chatModel, turn.text, context.documents, context.coverage), dependencies);
         if (answered.state !== "complete") throw Error("whatsapp_answer_incomplete");
         try { text = renderGroundedAnswer(answered.body, context.documents); } catch { text = "Encontrei mensagens, mas ainda não consegui sustentar uma resposta à sua pergunta. Preciso de mais contexto para concluir."; }
         const receipt = await this.db.prepare("SELECT request_hash,result_hash FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND generation=? AND request_id=? AND phase='answer' AND state='complete' AND purged=0").bind(this.scope.installationId, this.scope.generation, b.source.source.id).first<{ request_hash: string; result_hash: string }>();
         if (!receipt) throw Error("whatsapp_answer_receipt");
         proofs.push({ kind: "owner_answer", source: b.source, operationKey: answered.operationKey, requestHash: receipt.request_hash, resultHash: receipt.result_hash, bindingHash: episode.binding_hash, submissionId: identity.submissionId });
         research = { mode: "whatsapp_answer", documents: context.documents.length };
+      }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        const reason = /^(?:whatsapp_[a-z_]+|statement_[a-z_]+)$/.test(message) ? message : /CHECK constraint/i.test(message) ? "whatsapp_checkpoint_capacity" : "whatsapp_storage_or_transport_error";
+        await this.db.prepare("UPDATE assistant_episodes SET reason=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=?").bind(reason, this.scope.installationId, this.scope.generation, id, episode.binding_hash).run().catch(() => {});
+        throw error;
       }
     } else if (choice.kind === "github") {
       const github = await readTelegramGitHub(this.env, this.scope, { action: choice.githubAction, repository: choice.repository, path: choice.path }, turn.text, readBoundary);
@@ -244,7 +260,7 @@ export class TelegramDialogueHost {
   async reconcile(episode: Episode) {
     const b = episode.binding as any, envelope = episode.receipt as any;
     if (b?.kind !== "telegram_owner_dialogue" || !envelope?.receipt || (episode.result as Plan | null)?.kind !== "telegram_owner_reply_plan" || !episode.submission_id) return { state: "pending" };
-    const reply = await ownerDialogueDriver(episode.runtime_id).read(envelope.receipt, { signal: AbortSignal.timeout(1000) });
+    const reply = await ownerDialogueDriver(episode.runtime_id).read(envelope.receipt, { signal: AbortSignal.timeout(5000) });
     if (reply.text !== OWNER_DIALOGUE_COMPLETION || reply.uid !== envelope.receipt.uid || reply.submissionId !== episode.submission_id || reply.submissionId !== envelope.receipt.submissionId) throw Error("dialogue_native_result");
     const plan = episode.result as Plan, outbox = await this.replies().inspect(plan.updateId);
     if (outbox?.state !== "sent") return { state: "delivery_unconfirmed" };
@@ -275,7 +291,7 @@ export class TelegramDialogueHost {
 }
 export async function tickOwnerDialogues(env: AssistantEnv) {
   if (env.TELEGRAM_OWNER_DIALOGUE_ENABLED !== "shadow") return;
-  const host = new TelegramDialogueHost(env), rows = await env.DB!.prepare("SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND json_extract(binding_json,'$.kind')='telegram_owner_dialogue' AND state IN ('dispatching','accepted','running') ORDER BY deadline LIMIT 2")
+  const host = new TelegramDialogueHost(env), rows = await env.DB!.prepare("SELECT id FROM assistant_episodes WHERE installation_id=? AND generation=? AND json_extract(binding_json,'$.kind')='telegram_owner_dialogue' AND state IN ('dispatching','accepted','running') AND json_extract(result_json,'$.kind')='telegram_owner_reply_plan' ORDER BY deadline LIMIT 2")
     .bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION).all<{ id: string }>();
   for (const row of rows.results) { const episode = await new Episodes(env.DB!, host.scope).get(row.id); if (episode) try { await host.reconcile(episode); } catch { /* A read timeout is not an execution retry. */ } }
   const pending = await env.DB!.prepare(`SELECT u.update_id FROM assistant_telegram_updates u JOIN assistant_telegram_owner_activations a

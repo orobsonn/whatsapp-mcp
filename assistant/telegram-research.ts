@@ -29,7 +29,15 @@ export async function answerGitHubQuestion(input: Input): Promise<ResearchAnswer
     { sql: "EXISTS(SELECT 1 FROM assistant_episodes WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND submission_id=? AND state IN ('dispatching','accepted','running') AND deadline>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER))", values: [...keys, identity.submissionId] });
   const check = async () => { const g = guard(); if (!await jsonStatement(db, `SELECT 1 WHERE ${g.sql}`, g.values).first()) throw Error("research_denied"); };
   const save = async (record: ResearchCheckpoint) => {
-    dependencies = record.dependencies; const g = guard(), serialized = JSON.stringify(record);
+    dependencies = record.dependencies; const g = guard();
+    let serialized = JSON.stringify(record);
+    if (serialized.length > 32000 && record.github?.paths.length) {
+      const paths = record.github.paths, omitted = record.github.coverage.omittedFiles; let low = 0, high = paths.length;
+      const fit = (count: number) => { record.github!.paths = paths.slice(0, count); record.github!.coverage.omittedFiles = omitted + paths.length - count; return JSON.stringify(record); };
+      while (low < high) { const middle = Math.ceil((low + high) / 2); if (fit(middle).length <= 32000) low = middle; else high = middle - 1; }
+      serialized = fit(low);
+    }
+    if (serialized.length > 32768) throw Error("research_question_too_large");
     const row = await jsonStatement(db, `UPDATE assistant_episodes SET result_json=? WHERE installation_id=? AND generation=? AND id=? AND binding_hash=? AND result_json IS ? AND (${g.sql}) RETURNING id`, [serialized, ...keys, checkpointJSON, ...g.values]).first();
     if (!row) throw Error("research_checkpoint_conflict"); checkpointJSON = serialized;
   };

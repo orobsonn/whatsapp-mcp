@@ -180,6 +180,11 @@ it("read-context intent is admitted only in a host-locked GitHub research episod
 });
 
 it("completes repository research through both real model phases and the persisted context", async () => {
+  const question = "Como funciona o repo app? " + "Contexto de produto. ".repeat(210);
+  await link.receive({ update_id: 4, message: { message_id: 104, date: Math.floor(Date.now() / 1000), from: { id: 101, is_bot: false }, chat: { id: 101, type: "private" }, text: question } });
+  turn = (await inbox.claim(4))!;
+  const captured = (await new TelegramOwnerRequests(env.DB, inbox, retirement).capture(turn))!;
+  source = (await new SourceAccess(env.DB, scope).read({ kind: "owner" }, captured.id))!.fence;
   const c = await episode("github-complete", { ...config, maxOutputTokens: 6000, chatCeiling: 20 });
   const row = (await new Episodes(env.DB, scope).get(c.episodeId))!;
   await env.DB.prepare("INSERT INTO assistant_projects VALUES(?,?,?,?)").bind(scope.installationId, scope.generation, "github-project", "Synthetic repository").run();
@@ -191,7 +196,7 @@ it("completes repository research through both real model phases and the persist
   vi.stubGlobal("fetch", async (request: Request) => {
     const path = new URL(request.url).pathname;
     if (path.endsWith("/git/ref/heads/main")) return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: "a".repeat(40) } });
-    if (path.includes("/git/trees/")) return Response.json({ sha: "b".repeat(40), truncated: false, tree: [{ path: "src/auth.ts", type: "blob", mode: "100644", size: text.length }] });
+    if (path.includes("/git/trees/")) return Response.json({ sha: "b".repeat(40), truncated: false, tree: [{ path: "src/auth.ts", type: "blob", mode: "100644", size: text.length }, ...Array.from({ length: 420 }, (_, index) => ({ path: `zzdocs/${index}/${"x".repeat(80)}.md`, type: "blob", mode: "100644", size: 100 }))] });
     if (path.includes("/contents/")) return Response.json({ name: "auth.ts", path: "src/auth.ts", type: "file", size: text.length, sha: "c".repeat(40), encoding: "base64", content: btoa(text) });
     return Response.json({ name: "app", owner: { id: 123, login: "owner" }, default_branch: "main" });
   });
@@ -199,8 +204,13 @@ it("completes repository research through both real model phases and the persist
     const settings = { DB: env.DB, OPENAI_API_KEY: "synthetic", GITHUB_READ_REPOSITORIES: JSON.stringify([{ id: "app", owner: "owner", repo: "app", ownerId: 123, version: 1, projectId: "github-project", authorization: { sourceId: grant.id, revision: 1 } }]) } as AssistantEnv;
     const result = await answerGitHubQuestion({ env: settings, scope, episode: row, identity: c.identity, turn, inbox, repository: "app" });
     expect(result.text).toContain("verifica o dono via OAuth"); expect(result.research.documents).toBe(1); expect(calls).toBe(2);
+    expect(result.checkpointJSON.length).toBeLessThanOrEqual(32000);
+    expect(JSON.parse(result.checkpointJSON).question).toBe(question);
     expect(JSON.parse(result.checkpointJSON).documents).toBeUndefined();
     const frozen = await env.DB.prepare("SELECT body_json FROM assistant_telegram_dialogue_phases WHERE installation_id=? AND request_id=? AND phase='answer'").bind(scope.installationId, source.source.id).first<{ body_json: string }>();
     expect(JSON.parse(JSON.parse(frozen!.body_json).messages[1].content).documents[0].text).toBe(text);
+    const recovered = (await new Episodes(env.DB, scope).get(row.id))!;
+    const replay = await answerGitHubQuestion({ env: settings, scope, episode: recovered, identity: c.identity, turn, inbox, repository: "app" });
+    expect(replay.text).toBe(result.text); expect(calls).toBe(2);
   } finally { vi.unstubAllGlobals(); }
 });
