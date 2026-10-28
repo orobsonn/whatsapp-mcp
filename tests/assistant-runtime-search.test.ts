@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { runtimeHost, resolveRuntimeEpisode } from "../assistant/agent-runtime/runtime";
 import type { AssistantEnv } from "../assistant/env";
 import { RetrievalRuns } from "../assistant/retrieval-runs";
@@ -12,15 +12,7 @@ import { bridgeHash } from "../assistant/ingress";
 import { engineName } from "../assistant/container";
 import { hostConfiguredSearch } from "../assistant/configured-search";
 
-// @ts-expect-error Vite glob is transformed by the Worker test build.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const owner = { kind: "owner" } as const;
-beforeEach(async () => {
-  for (const [, sql] of Object.entries(migrations).sort()) {
-    const parts = sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim());
-    if (parts.length) await env.DB.batch(parts.map(part => env.DB.prepare(part)));
-  }
-});
 afterEach(() => vi.restoreAllMocks());
 
 test("host configuration requires a binding for explicit semantic modes and preserves unconfigured lexical fixtures", () => {

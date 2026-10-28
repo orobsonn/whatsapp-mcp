@@ -3,12 +3,9 @@ import { beforeEach, expect, test } from "vitest";
 import { AssistantExport } from "../assistant/retention";
 import type { TrustedActor } from "../assistant/access";
 import { InferenceBudget } from "../assistant/budget";
-// @ts-expect-error Vite SQL assets.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const owner = { kind: "owner" } as const;
 let scope: { installationId: string; generation: string }, archive: AssistantExport;
 beforeEach(async () => {
-  for (const [, sql] of Object.entries(migrations).sort()) await env.DB.batch(sql.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim()).map(part => env.DB.prepare(part)));
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS assistant_export_fixture(installation_id TEXT,generation TEXT,id TEXT,body TEXT)").run();
   scope = { installationId: crypto.randomUUID(), generation: "synthetic-g" };
   archive = new AssistantExport(env.DB, scope, owner);

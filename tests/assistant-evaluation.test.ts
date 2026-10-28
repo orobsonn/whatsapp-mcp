@@ -10,16 +10,10 @@ import { InferenceBudget } from "../assistant/budget";
 import { EpisodeController } from "../assistant/agent/controller";
 import { DEFAULT_BROKER_CONFIG } from "../assistant/model-transport";
 import { OwnerAssistant, type OwnerAffinity } from "../assistant/mcp";
-// @ts-expect-error Vite owns raw SQL glob imports.
-const migrations = import.meta.glob("../assistant/migrations/*.sql", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const owner = { kind: "owner" } as const;
 let scope: OwnerAffinity, now: number, journal: DecisionJournal, evaluation: Evaluation;
 const sql = (query: string, ...values: (string | number | null)[]) => env.DB.prepare(query).bind(...values);
 beforeEach(async () => {
-  for (const [, migration] of Object.entries(migrations).sort()) {
-    const parts = migration.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter(part => part.trim());
-    if (parts.length) await env.DB.batch(parts.map(part => env.DB.prepare(part)));
-  }
   scope = { installationId: crypto.randomUUID(), generation: "evaluation-g", sourceEpoch: "capture-e", sourceGeneration: "capture-g" }; now = 1000;
   journal = new DecisionJournal(env.DB, scope, owner, { clock: () => now });
   evaluation = new Evaluation(env.DB, scope, owner, journal, { clock: () => now });
