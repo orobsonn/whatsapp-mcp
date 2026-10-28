@@ -21,7 +21,14 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
   const request: ReadFetch = async input => {
     await check();
     const response = await (boundary?.request ?? fetch)(signal ? new Request(input, { signal: AbortSignal.any([input.signal, signal]) }) : input);
-    if (response.status !== 200) console.warn(JSON.stringify({ event: "github_read_failure", stage: "http", code: "status", status: response.status }));
+    if (response.status !== 200) {
+      const rate: Record<string, number> = {};
+      for (const [header, field] of [["x-ratelimit-limit", "rateLimit"], ["x-ratelimit-remaining", "remaining"], ["x-ratelimit-reset", "resetAt"]]) {
+        const value = response.headers.get(header);
+        if (value && /^\d{1,12}$/.test(value)) rate[field] = Number(value);
+      }
+      console.warn(JSON.stringify({ event: "github_read_failure", stage: "http", code: "status", status: response.status, ...rate }));
+    }
     return response;
   };
   const resolveDefault = async (id: string) => {
