@@ -25,7 +25,7 @@ As sete chamadas de modelo somaram 758 microUSD (US$0,000758). O financeiro hist
 - Diálogo só para o dono vinculado, mensagens posteriores ao corte de ativação e com prazo original. Cron global permanece pausado; backlog antigo não recebe execução. Resumos automáticos e mídia permanecem desligados.
 - Nenhum WhatsApp automático ou escrita no Calendar foi habilitado.
 
-O canário suporta listar notas/missões/pendências/políticas e reconhecer instruções literais para criar nota ou missão pelos controladores existentes. Consultas Calendar/GitHub/WhatsApp/busca semântica e seleção de conversas ainda recebem indicação explícita de indisponibilidade no Telegram. Não chamar esse recorte de assistente completo.
+O canário suporta listar notas/missões/pendências/políticas e reconhecer instruções literais para criar nota ou missão pelos controladores existentes. Calendar foi conectado depois deste primeiro canário e tem [evidência própria](144-calendar-telegram.md). Consultas GitHub/WhatsApp/busca semântica e seleção de conversas continuam pendentes no Telegram. Não chamar esse recorte de assistente completo.
 
 ## Validação e trabalho restante
 
