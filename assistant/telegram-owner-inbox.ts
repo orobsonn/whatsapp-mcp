@@ -1,7 +1,8 @@
 import type { OwnerAffinity } from "./mcp";
 import type { AccessGuard } from "./access";
-import { telegramLinkGuard } from "./telegram-auth";
+import { telegramLinkGuard, type TelegramLinkFence } from "./telegram-auth";
 import { retentionExecutionGuard } from "./retention-execution";
+import { compactStatement, jsonStatement } from "./d1-statement";
 
 // SQL time, not a captured JavaScript timestamp: a guard must expire even when
 // its caller holds it across an await and no cleanup worker has run.
@@ -9,6 +10,8 @@ const liveMillis = "CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)";
 const ns = "installation_id=? AND generation=? AND bot_instance=?";
 type Activation = Readonly<{ linkRevision: number; cutoffAt: number; cutoffSecond: number }>;
 export type TelegramOwnerTurn = Readonly<{ updateId: number; messageId: number; threadId: number | null; text: string; deadlineAt: number }>;
+export type TelegramOwnerReplyFence = Readonly<TelegramLinkFence & { updateId: number; messageId: number; threadId: number | null; deadlineAt: number }>;
+type CompletionExtension = { guard: AccessGuard; build: (witness: AccessGuard) => D1PreparedStatement[] };
 type TurnRow = {
   update_id: number; payload_hash: string; token: string; update_token: string;
   source_epoch: string; source_generation: string; link_revision: number; user_id: string; chat_id: string;
@@ -92,12 +95,19 @@ export class TelegramOwnerInbox {
       values: [...this.keys(), row.update_id, row.token, row.payload_hash, row.source_epoch, row.source_generation, row.link_revision, row.user_id, row.chat_id,
         row.message_id, row.message_date, row.thread_id, row.received_at, row.deadline_at, turn.text, ...link.values, ...retention.values] };
   }
-  async complete(turn: TelegramOwnerTurn): Promise<boolean> {
-    const guard = this.guard(turn), finish = crypto.randomUUID();
+  replyFence(turn: TelegramOwnerTurn): TelegramOwnerReplyFence {
+    const row = this.turns.get(turn); if (!row) throw Error("telegram_owner_turn_invalid");
+    return Object.freeze({ ...this.scope, botInstance: this.bot, linkRevision: row.link_revision, userId: row.user_id, chatId: row.chat_id,
+      updateId: row.update_id, messageId: row.message_id, threadId: row.thread_id, deadlineAt: row.deadline_at });
+  }
+  async complete(turn: TelegramOwnerTurn, extension?: CompletionExtension): Promise<boolean> {
+    const original = this.guard(turn), finish = crypto.randomUUID();
+    const guard = extension ? { sql: `(${original.sql}) AND (${extension.guard.sql})`, values: [...original.values, ...extension.guard.values] } : original;
+    const witness = { sql: `EXISTS(SELECT 1 FROM assistant_telegram_owner_turns WHERE ${ns} AND update_id=? AND finish_token=? AND state='complete')`,
+      values: [...this.keys(), turn.updateId, finish] };
     const result = await this.db.batch([
-      this.db.prepare(`UPDATE assistant_telegram_owner_turns SET state='complete',finish_token=?,completed_at=${liveMillis}
-        WHERE ${ns} AND update_id=? AND (${guard.sql}) RETURNING update_id`)
-        .bind(finish, ...this.keys(), turn.updateId, ...guard.values),
+      (extension ? jsonStatement : compactStatement)(this.db, `UPDATE assistant_telegram_owner_turns SET state='complete',finish_token=?,completed_at=${liveMillis}
+        WHERE ${ns} AND update_id=? AND (${guard.sql}) RETURNING update_id`, [finish, ...this.keys(), turn.updateId, ...guard.values]),
       // The first UPDATE changes the live guard. Only THIS batch's winning
       // nonce admits the second mutation; an old completion cannot satisfy it.
       this.db.prepare(`UPDATE assistant_telegram_updates SET state='completed' WHERE ${ns} AND update_id=?
@@ -105,6 +115,7 @@ export class TelegramOwnerInbox {
           AND t.generation=assistant_telegram_updates.generation AND t.bot_instance=assistant_telegram_updates.bot_instance
           AND t.update_id=assistant_telegram_updates.update_id AND t.finish_token=? AND t.state='complete')`)
         .bind(...this.keys(), turn.updateId, finish),
+      ...(extension?.build(witness) ?? []),
     ]);
     return result[0].results.length === 1 && result[1].meta.changes === 1;
   }

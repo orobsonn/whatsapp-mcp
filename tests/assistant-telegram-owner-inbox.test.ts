@@ -64,6 +64,19 @@ it("admits exactly one concurrent claimant and completes original plus sidecar t
   expect(await inbox.claim(3)).toBeNull();
 });
 
+it("admits dependent publication in the same completion batch and rejects a failed downstream guard", async () => {
+  await open(); await receive(); const turn = (await inbox.claim(3))!;
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_inbox_completion_fixture(installation_id TEXT,generation TEXT,update_id INTEGER,PRIMARY KEY(installation_id,generation,update_id))").run();
+  const build = (guard: { sql: string; values: (string | number | null)[] }) => [env.DB.prepare(`INSERT INTO owner_inbox_completion_fixture SELECT ?,?,? WHERE ${guard.sql}`)
+    .bind(scope.installationId, scope.generation, 3, ...guard.values)];
+  expect(await inbox.complete(turn, { guard: { sql: "0", values: [] }, build })).toBe(false);
+  expect(await inbox.inspect(3)).toMatchObject({ state: "claimed" });
+  expect(await env.DB.prepare("SELECT 1 FROM owner_inbox_completion_fixture WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first()).toBeNull();
+  expect(await inbox.complete(turn, { guard: { sql: "1", values: [] }, build })).toBe(true);
+  expect(await inbox.inspect(3)).toMatchObject({ state: "complete" });
+  expect(await env.DB.prepare("SELECT update_id FROM owner_inbox_completion_fixture WHERE installation_id=? AND generation=?").bind(scope.installationId, scope.generation).first("update_id")).toBe(3);
+});
+
 it("pins the text in the admission snapshot rather than adopting a later edit", async () => {
   await open(); await receive(3, "texto original admitido");
   const prepare = env.DB.prepare.bind(env.DB);
