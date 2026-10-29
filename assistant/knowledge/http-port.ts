@@ -47,7 +47,9 @@ export class HttpKnowledgePort implements KnowledgePort {
   if(new TextEncoder().encode(body).length>262144)throw Error('knowledge_request_size');
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),this.timeoutMs);
   try{
-   const response=await this.transport(this.endpoint,{method:'POST',redirect:'error',signal:controller.signal,
+   // Workers supports manual/follow only. Manual keeps the bearer on this host;
+   // the response.ok check below rejects every redirect without following it.
+   const response=await this.transport(this.endpoint,{method:'POST',redirect:'manual',signal:controller.signal,
     headers:{Authorization:'Bearer '+this.token,'Content-Type':'application/json',Accept:'application/json'},body});
    if(!response.ok||!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json'))throw Error('response');
    const reader=response.body?.getReader();if(!reader)throw Error('response');

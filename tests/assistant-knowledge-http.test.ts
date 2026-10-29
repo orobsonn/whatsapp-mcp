@@ -18,9 +18,31 @@ it('binds the default native fetch receiver to globalThis',async()=>{
   expect(await port.query({limit:20})).toEqual(page);
  }finally{nativeFetch.mockRestore();}
 });
+it('constructs an outbound request with the real Workers Request redirect policy',async()=>{
+ const page={claims:[],coverage:{scope:'native_candidate_page',state:'complete',candidates:0,returned:0}};
+ const port=new HttpKnowledgePort(options((async(url,init)=>{
+  // This constructor is workerd's real runtime boundary; unlike a permissive
+  // transport fake, it rejects unsupported RequestInit values before network.
+  const request=new Request(url,init);
+  expect(request.redirect).toBe('manual');
+  return Response.json({ok:true,namespace,result:page});
+ }) as typeof fetch));
+ expect(await port.query({limit:20})).toEqual(page);
+});
+it('rejects redirects without following Location or exposing upstream data',async()=>{
+ let count=0;
+ const port=new HttpKnowledgePort(options((async(_url,init)=>{
+  count++;
+  expect(init?.redirect).toBe('manual');
+  return new Response('private-upstream-response '+token,{status:302,
+   headers:{Location:'https://foreign.example/secret?token='+token}});
+ }) as typeof fetch));
+ await expect(port.query({limit:20})).rejects.toThrow(/^knowledge_transport_unavailable$/);
+ expect(count).toBe(1);
+});
 it('keeps shared namespace stable while separating operation receipts across runtime generations',async()=>{
  const calls:{namespace:typeof namespace;method:string;input:{operationId:string}}[]=[];
- const transport=(async(url,init)=>{expect(url).toBe('https://synthetic.example/knowledge');expect(init?.redirect).toBe('error');
+ const transport=(async(url,init)=>{expect(url).toBe('https://synthetic.example/knowledge');expect(init?.redirect).toBe('manual');
   expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer '+token);
   const body=JSON.parse(init?.body as string);calls.push(body);
   return Response.json({ok:true,namespace,result:{operationId:body.input.operationId,state:'ready'}});
