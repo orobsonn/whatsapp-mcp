@@ -65,7 +65,14 @@ export function ConversationRuntimeAgent(){
   await runtime.assertTaskCurrent(task);cohort.observe(task.taskRef);
   assertObserved(cohort.refsFor(task.taskRef),consumedTaskRefs);
  });
- useConversationKnowledgeTools(bound);
+ useConversationKnowledgeTools(async()=>{
+  const binding=await bound();
+  if(seed.channel!=='telegram'||!isCuratorPrincipal(seed.principalOrChatId)||!binding.frame)return binding;
+  // Capture the exact authenticated frame BEFORE the knowledge operation. A
+  // later join must not rebind an already committed write to a different run.
+  const frame=await binding.frame(binding.task),curator=frame.curator;
+  return {...binding,...(curator?{onKnowledgeReady:(operationId:string)=>curator.curator.reflectReady(curator.runId,operationId)}:{})};
+ });
  async function application(){const binding=await bound();if(!binding.frame)throw Error('conversation_application_unconfigured');return {...binding,...await binding.frame(binding.task)};}
  useConversationReadTools(application);
  useTool({name:'media_read',description:'Leia uma imagem/PDF capturado ou transcrição já disponível pelo SourceRef exato autorizado. A interpretação visual é derivada; páginas ilegíveis ou mídia pendente não significam conteúdo completo. Não invente citações literais do original a partir de OCR.',
