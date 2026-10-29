@@ -365,8 +365,8 @@ export class KnowledgeCurator {
   }
   return {identity,eventId:'curator-run:'+run.id,revision:1,kind:'incoming',author:{kind:'system',id:'curator-host'},occurredAt,body:JSON.stringify({type:calendar.kind==='sample'?'sample_curator':'daily_curator',run:this.public(run)})};
  }
- async authorizeEvent(event:HostConversationEvent,ownerId:string){
+ async authorizeEvent(event:HostConversationEvent,ownerId:string,hostRevision:1|2=1){
   if(!event.eventId.startsWith('curator-run:'))throw Error('curator_event_denied');const id=event.eventId.slice(12),expected=await this.event(id,event.identity,ownerId);
-  if(event.revision!==1||event.kind!=='incoming'||event.author.kind!=='system'||event.author.id!=='curator-host'||event.body!==expected.body||event.occurredAt!==expected.occurredAt||event.sourceRef||event.threadId||event.actionState)throw Error('curator_event_denied');return id;
+  if(event.revision!==hostRevision||event.kind!=='incoming'||event.author.kind!=='system'||event.author.id!=='curator-host'||event.body!==expected.body||event.occurredAt!==expected.occurredAt||event.sourceRef||event.threadId||event.actionState)throw Error('curator_event_denied');return id;
  }
 }

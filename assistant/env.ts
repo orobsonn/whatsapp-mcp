@@ -32,6 +32,8 @@ export interface AssistantEnv {
   NATIVE_CURATOR_SCHEDULE_ENABLED?: string;
   /** Host-only exact operation/window for a one-off sample; conflicts with schedule=true. */
   NATIVE_CURATOR_SAMPLE_REQUEST?: string;
+  /** Private operator-selected, one-time revision1→2 continuation of a failed daily run. */
+  NATIVE_CURATOR_RESUME_REQUEST?: string;
   FLUE_CONVERSATION_RUNTIME_AGENT?: {idFromName(name:string):DurableObjectId;get(id:DurableObjectId):DurableObjectStub & {eraseNativeContext(secret:string,sessionId:string):Promise<void>}};
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;

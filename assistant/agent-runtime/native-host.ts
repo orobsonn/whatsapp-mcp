@@ -29,7 +29,7 @@ import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
 import {NativeTasks,isNativeTaskDue} from './native-tasks';
 import {compactStatement,jsonStatement} from '../d1-statement';
-import {reconcileCuratorOutcomes} from './curator-outcomes';
+import {reconcileCuratorOutcomes,observeCuratorSettlement,curatorDispatchReceipt} from './curator-outcomes';
 
 const owner={kind:'owner'} as const;
 type NativeOwnerInput={text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string;native_identity_json:string|null;native_activation_key:string|null};
@@ -47,7 +47,7 @@ export class NativeApplicationHost {
  constructor(private readonly env:AssistantEnv){
   this.scope=nativeScope(env);
   if(!env.DB||!env.CAPTURE_READER||!env.BRIDGE_SECRET||nativeMode(env)==='off')throw Error('native_unconfigured');this.db=env.DB;
-  this.configured=[this.db,env.CAPTURE_READER,env.BRIDGE_SECRET,env.OPENAI_API_KEY,env.NATIVE_CONTEXT_ADMIN_SECRET,env.NATIVE_CONVERSATIONS_MODE,env.TELEGRAM_BOT_INSTANCE,env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_WEBHOOK_SECRET,env.WHATSAPP_APPROVED_SEND,env.WHATSAPP_APPROVED_SEND_SECRET];
+  this.configured=[this.db,env.CAPTURE_READER,env.BRIDGE_SECRET,env.OPENAI_API_KEY,env.NATIVE_CONTEXT_ADMIN_SECRET,env.NATIVE_CONVERSATIONS_MODE,env.TELEGRAM_BOT_INSTANCE,env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_WEBHOOK_SECRET,env.WHATSAPP_APPROVED_SEND,env.WHATSAPP_APPROVED_SEND_SECRET,env.NATIVE_CURATOR_RESUME_REQUEST];
   this.origin=new OriginGuard(this.db,()=>this.currentScope(),env.CAPTURE_READER,env.BRIDGE_SECRET,2000,'owner_read');
   this.retention=new NativeConversationRetention(this.db!,()=>this.currentScope(),this.origin,nativeContextDestroyPort(env));
   this.runtime=new ConversationRuntime(this.db!,{retention:this.retention,authority:async identity=>(await this.authority(identity)).authority,
@@ -56,7 +56,7 @@ export class NativeApplicationHost {
    knowledge:task=>configuredKnowledgeService(env,this.currentScope(),task.knowledge.client),assertTask:async task=>{await this.tasks().guardForTask(task);}});
  }
  currentScope(){
-  const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET];
+  const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET,e.NATIVE_CURATOR_RESUME_REQUEST];
   if(now.some((v,i)=>v!==this.configured[i])||JSON.stringify(nativeScope(e))!==JSON.stringify(this.scope)||nativeMode(e)==='off')throw Error('native_configuration_changed');
   return this.scope;
  }
@@ -77,7 +77,9 @@ export class NativeApplicationHost {
  private async authorizeEvent(event:VerifiedConversationEvent){
   if(isNativeTaskDue(event)){await this.tasks().authorizeEvent(event);return;}
   if(isCuratorPrincipal(event.identity.principalOrChatId)){
-   const {authority}=await this.authority(event.identity);await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
+   const {authority}=await this.authority(event.identity);
+   if(event.revision===2){const selected=await this.curatorResumeSelection();if(event.eventId!==selected.event.eventId||JSON.stringify(event.identity)!==JSON.stringify(selected.event.identity))throw Error('native_curator_resume_denied');await selected.curator.authorizeEvent(event,authority.ownerId,2);}
+   else await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
   }
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch);
   const row=await this.db!.prepare(`SELECT request_hash,source_ref_json,telegram_activation_key FROM assistant_native_host_events WHERE installation_id=? AND generation=? AND conversation_id=? AND event_id=? AND event_revision=?`)
@@ -447,9 +449,40 @@ export class NativeApplicationHost {
    await api.send(fence.chatId,topic,text,[]);await curator.settleNotice(receipt.id,'accepted');return {state:'accepted'};
   }catch{await curator.settleNotice(receipt.id,'uncertain');return {state:'uncertain'};}
  }
+ /** An explicit operator request, not an agent tool or automatic retry loop.
+  * Only the original revision1 receipt can select the one continuation2. */
+ private async curatorResumeSelection(){
+  const request=nativeCuratorDispatchRequest(this.env);if(request.kind!=='resume')throw Error('native_curator_resume_denied');
+  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope),row=await this.db.prepare(`SELECT c.id session_id,c.identity_json,e.authority_json,e.receipt_json,e.event_json,r.state run_state
+   FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=1
+   JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
+   WHERE r.installation_id=? AND r.generation=? AND r.source_epoch=? AND r.source_generation=? AND r.id=? AND r.run_kind='daily'
+    AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND e.event_json IS NOT NULL`)
+   .bind(...scopeKeys(scope),request.request.runId).first<{session_id:string;identity_json:string;authority_json:string;receipt_json:string;event_json:string;run_state:string}>();
+  this.currentScope();if(!row)throw Error('native_curator_resume_denied');
+  const receipt=curatorDispatchReceipt.parse(JSON.parse(row.receipt_json)),identity=conversationIdentity.parse(JSON.parse(row.identity_json));
+  if(receipt.submissionId!==request.request.previousSubmissionId||identity.channel!=='telegram'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_curator_resume_denied');
+  const {authority}=await this.authority(identity),current=await this.retention.currentIdentity('telegram',identity.principalOrChatId);this.currentScope();
+  if(JSON.stringify(authority)!==row.authority_json||JSON.stringify(current)!==JSON.stringify(identity))throw Error('native_curator_resume_denied');
+  const curator=await this.curator(identity);await curator.authorizeEvent(JSON.parse(row.event_json),fence.userId);
+  const event={...await curator.event(request.request.runId,identity,fence.userId),revision:2};this.currentScope();
+  return {sessionId:row.session_id,identity,receipt,curator,event,runState:row.run_state,runId:request.request.runId};
+ }
  async dispatchCurator(now=Date.now()){
   const request=nativeCuratorDispatchRequest(this.env);if(request.kind==='disabled')return {state:'disabled' as const};
   const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope);
+  if(request.kind==='resume'){
+   const selected=await this.curatorResumeSelection();
+   if(selected.runState==='complete')return {state:'complete' as const,runId:selected.runId};
+   const existing=await this.db.prepare("SELECT state FROM assistant_native_conversation_events WHERE conversation_id=? AND event_id=? AND revision=2").bind(selected.sessionId,selected.event.eventId).first<{state:string}>();this.currentScope();
+   if(existing?.state==='withdrawn')throw Error('native_curator_resume_denied');
+   if(!existing){
+    const outcome=await observeCuratorSettlement({instance:nativeConversationInstance,read:(id,receipt,signal)=>openNativeConversation(id).read(receipt,{signal})},selected.sessionId,selected.receipt);this.currentScope();
+    if(outcome!=='failed'&&outcome!=='aborted')throw Error('native_curator_resume_unconfirmed');
+    await selected.curator.reconcileReady(selected.runId);await selected.curator.status(selected.runId);this.currentScope();
+   }
+   return this.runtime.deliverConversation(verifiedConversationEvent(selected.event));
+  }
   if(request.kind==='sample'){
    // No identity()/registration before the run CAS. Even a contender which
    // observed no previous run must adopt the winner's immutable native epoch.
@@ -475,6 +508,8 @@ export class NativeApplicationHost {
   }
   const identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
   if(!run)return {state:'not_due' as const};
+  const completed=await this.db.prepare("SELECT 1 FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=? AND state='complete'").bind(scope.installationId,scope.generation,run.id).first();this.currentScope();
+  if(completed)return {state:'complete' as const,runId:run.id};
   // The curator's system job is not a fact SourceRef, owner request or policy.
   return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,identity,fence.userId)));
  }

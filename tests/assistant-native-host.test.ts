@@ -249,6 +249,68 @@ describe('native application composition on real D1 and Source reads',()=>{
   await expect(frame.effects.respondOwner('Destino livre')).rejects.toThrow('native_owner_response_denied');
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_context_exposures WHERE conversation_id=?').bind(task.sessionId).first<number>('n')).toBe(1);
  });
+ async function resumableDaily(){
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
+  await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'daily-resume',text:'Relato para revisão diária.',occurredAt:1});
+  const first=await f.host().dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(first.state!=='admitted'||!first.receipt)throw Error('fixture_curator');
+  const task=await latestTask(f.host(),first.taskRef),runId=task.cohort[0].eventId.slice(12),request={runId,previousSubmissionId:first.receipt.submissionId};
+  f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify(request);
+  transport.read.mockRejectedValue(Object.assign(Error('synthetic terminal'),{name:'AgentRunError',outcome:'failed',submissionId:first.receipt.submissionId}));
+  transport.dispatch.mockClear();return {...f,first,task,runId,request};
+ }
+ it('continues one explicitly selected failed daily run in the same session at revision2 and preserves its first receipt',async()=>{
+  const f=await resumableDaily(),host=f.host(),next=await host.dispatchCurator();if(next.state!=='admitted')throw Error('fixture_resume');
+  expect(next.sessionId).toBe(f.first.sessionId);expect(next.taskRef).not.toBe(f.first.taskRef);expect(transport.dispatch).toHaveBeenCalledOnce();
+  const task=await latestTask(host,next.taskRef);expect(task.cohort.at(-1)).toMatchObject({eventId:'curator-run:'+f.runId,revision:2});
+  expect(await env.DB.prepare('SELECT receipt_json FROM assistant_native_conversation_events WHERE task_ref=?').bind(f.first.taskRef).first('receipt_json')).toBe(JSON.stringify(f.first.receipt));
+  expect(await host.dispatchCurator()).toEqual(next);expect(transport.dispatch).toHaveBeenCalledOnce();expect(transport.read).toHaveBeenCalledOnce();
+ });
+ it.each(['completed','unknown','uid','wrong_submission'] as const)('does not resume an inconclusive or different predecessor (%s)',async mode=>{
+  const f=await resumableDaily();
+  if(mode==='completed')transport.read.mockResolvedValue({submissionId:f.first.receipt!.submissionId,uid:f.first.receipt!.uid});
+  if(mode==='unknown')transport.read.mockRejectedValue(Error('temporary observation failure'));
+  if(mode==='uid')transport.instance.mockResolvedValue({id:f.first.sessionId,uid:'different'});
+  if(mode==='wrong_submission')f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:'not-the-original'});
+  await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it('never turns the second receipt into a third revision or changes an existing resume grant',async()=>{
+  const f=await resumableDaily(),next=await f.host().dispatchCurator();if(next.state!=='admitted'||!next.receipt)throw Error('fixture_resume');
+  transport.dispatch.mockClear();f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:next.receipt.submissionId});
+  await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
+  expect(await env.DB.prepare("SELECT MAX(revision) n FROM assistant_native_conversation_events WHERE event_id=?").bind('curator-run:'+f.runId).first('n')).toBe(2);
+ });
+ it('replays an uncertain resume with the exact same native idempotency key, without another predecessor read',async()=>{
+  const f=await resumableDaily(),open=await import('../assistant/agent-runtime/native-transport'),original=open.openNativeConversation;
+  const dispatches:string[]=[];let lost=true;
+  vi.spyOn(open,'openNativeConversation').mockImplementation(id=>({ ...original(id),async dispatch(q:any){dispatches.push(q.idempotencyKey);if(lost){lost=false;throw Error('ack_lost');}return {submissionId:q.idempotencyKey,uid:id,acceptedAt:new Date(0).toISOString()};}}));
+  const host=f.host(),first=await host.dispatchCurator();expect(first.state).toBe('uncertain');expect((await host.dispatchCurator()).state).toBe('admitted');
+  expect(dispatches).toHaveLength(2);expect(dispatches[0]).toBe(dispatches[1]);expect(transport.read).toHaveBeenCalledOnce();
+ });
+ it('denies a selected resume if its configuration changes during predecessor observation',async()=>{
+  const f=await resumableDaily(),host=f.host();transport.read.mockImplementation(async()=>{f.own.NATIVE_CURATOR_RESUME_REQUEST=undefined;throw Object.assign(Error('failed'),{name:'AgentRunError',outcome:'failed',submissionId:f.first.receipt!.submissionId});});
+  await expect(host.dispatchCurator()).rejects.toThrow('native_configuration_changed');expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it.each(['tombstone','grant','pause'] as const)('denies resume transport if %s changes while observing the original receipt',async mode=>{
+  const f=await resumableDaily();transport.read.mockImplementation(async()=>{
+   if(mode==='tombstone')await env.DB.prepare('UPDATE assistant_native_conversations SET tombstoned_at=1 WHERE id=?').bind(f.first.sessionId).run();
+   if(mode==='grant')await env.DB.prepare('UPDATE assistant_telegram_links SET revision=revision+1 WHERE installation_id=?').bind(f.scope.installationId).run();
+   if(mode==='pause')f.own.ROUTINES_PAUSED='true';
+   throw Object.assign(Error('failed'),{name:'AgentRunError',outcome:'failed',submissionId:f.first.receipt!.submissionId});
+  });
+  await expect(f.host().dispatchCurator()).rejects.toThrow();expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it('concurrent requests for the same continuation use one persisted revision and one idempotency key',async()=>{
+  const f=await resumableDaily(),host=f.host(),a=await Promise.all([host.dispatchCurator(),host.dispatchCurator()]);
+  expect(a[0]).toMatchObject({state:'admitted'});expect(a[1]).toMatchObject({state:'admitted'});
+  const keys=transport.dispatch.mock.calls.map(([_session,q])=>q.idempotencyKey);expect(new Set(keys).size).toBe(1);
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversation_events WHERE event_id=? AND revision=2').bind('curator-run:'+f.runId).first('n')).toBe(1);
+ });
+ it('stops scheduling a completed daily window without treating its old SDK failure as its coverage',async()=>{
+  const f=await resumableDaily();await env.DB.prepare("UPDATE assistant_curator_runs SET state='complete' WHERE id=?").bind(f.runId).run();
+  expect(await f.host().dispatchCurator()).toEqual({state:'complete',runId:f.runId});expect(transport.dispatch).not.toHaveBeenCalled();expect(transport.read).not.toHaveBeenCalled();
+  f.own.NATIVE_CURATOR_RESUME_REQUEST=undefined;
+  expect(await f.host().dispatchCurator(Date.parse('2031-01-01T06:00:00Z'))).toEqual({state:'complete',runId:f.runId});expect(transport.dispatch).not.toHaveBeenCalled();
+ });
  it('curator finish produces one short daily summary in the fixed owner summary topic',async()=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-source',text:'Contexto do projeto.',occurredAt:1});
   const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};

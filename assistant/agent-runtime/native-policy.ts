@@ -9,12 +9,15 @@ import {isCuratorPrincipal,curatorSampleRequest,type CuratorSampleRequest} from 
 import {z} from 'zod';
 
 export type NativeMode='off'|'shadow'|'approval'|'autonomous';
+export const nativeCuratorResumeRequest=z.object({runId:z.string().min(1).max(256),previousSubmissionId:z.string().min(1).max(256)}).strict();
 /** Select the host's curation request before allocating any native identity or
  * admitting a daily window. A sample cannot silently disable a daily schedule. */
-export function nativeCuratorDispatchRequest(env:AssistantEnv):{kind:'disabled'}|{kind:'daily'}|{kind:'sample';request:CuratorSampleRequest}{
- const schedule=env.NATIVE_CURATOR_SCHEDULE_ENABLED??'false',sample=env.NATIVE_CURATOR_SAMPLE_REQUEST;
+export function nativeCuratorDispatchRequest(env:AssistantEnv):{kind:'disabled'}|{kind:'daily'}|{kind:'sample';request:CuratorSampleRequest}|{kind:'resume';request:z.infer<typeof nativeCuratorResumeRequest>}{
+ const schedule=env.NATIVE_CURATOR_SCHEDULE_ENABLED??'false',sample=env.NATIVE_CURATOR_SAMPLE_REQUEST,resume=env.NATIVE_CURATOR_RESUME_REQUEST;
  if(!['true','false'].includes(schedule))throw Error('native_curator_configuration_invalid');
  if(sample!==undefined&&schedule==='true')throw Error('native_curator_configuration_conflict');
+ if(resume!==undefined&&sample!==undefined)throw Error('native_curator_configuration_conflict');
+ if(resume!==undefined){if(env.NATIVE_CURATOR_ENABLED!=='true')return {kind:'disabled'};try{return {kind:'resume',request:nativeCuratorResumeRequest.parse(JSON.parse(resume))};}catch{throw Error('native_curator_resume_invalid');}}
  if(env.NATIVE_CURATOR_ENABLED!=='true'||schedule==='false'&&sample===undefined)return {kind:'disabled'};
  if(sample!==undefined){try{return {kind:'sample',request:curatorSampleRequest.parse(JSON.parse(sample))};}catch{throw Error('native_curator_sample_invalid');}}
  return {kind:'daily'};
