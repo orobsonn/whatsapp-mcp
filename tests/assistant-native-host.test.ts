@@ -235,6 +235,30 @@ describe('native application composition on real D1 and Source reads',()=>{
   f.own.NATIVE_CURATOR_SAMPLE_REQUEST=JSON.stringify({...request,window:{...request.window,fromSequence:to}});
   await expect(f.host().dispatchCurator()).rejects.toThrow('curator_sample_conflict');expect(transport.dispatch).toHaveBeenCalledTimes(1);
  });
+ it('binds the sample atomically when another dispatcher admits and retires it after the first dispatcher read null',async()=>{
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='false';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'sample-interleaving',text:'Amostra concorrente.',occurredAt:1});
+  const to=await env.DB.prepare('SELECT MAX(sequence) n FROM assistant_source_changes WHERE installation_id=? AND generation=?').bind(f.scope.installationId,f.scope.generation).first<number>('n');
+  f.own.NATIVE_CURATOR_SAMPLE_REQUEST=JSON.stringify({operationId:'sample-null-admit-purge',window:{fromSequence:to!-1,toSequence:to,day:'2026-10-29',timezone:'America/Fortaleza'}});
+  let selected=false,paused!:()=>void,resume!:()=>void;const stopped=new Promise<void>(resolve=>{paused=resolve;}),released=new Promise<void>(resolve=>{resume=resolve;});
+  function statement(original:D1PreparedStatement,block:boolean):D1PreparedStatement{return new Proxy(original,{get(target,key){
+   if(key==='bind')return (...args:(string|number|null)[])=>statement(target.bind(...args),block);
+   if(key==='first'&&block)return async(...args:[])=>{const value=await target.first(...args);expect(value).toBeNull();paused();await released;return value;};
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});}
+  f.own.DB=new Proxy(env.DB,{get(target,key){
+   if(key==='prepare')return (query:string)=>{const block=!selected&&(query.includes('SELECT r.id run_id')||query.includes('SELECT * FROM assistant_curator_runs')&&query.includes('day=?'));if(block)selected=true;return statement(target.prepare(query),block);};
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});
+  const a=f.host(),first=a.dispatchCurator();await stopped;
+  try{
+   const b=f.host(),winner=await b.dispatchCurator();if(typeof winner.taskRef!=='string')throw Error('fixture_sample');const task=await latestTask(b,winner.taskRef),runId=task.cohort[0].eventId.slice(12),curator=await b.curator(task.identity);
+   await expect(curator.event(runId,{...task.identity,contextEpoch:'different-epoch'},'101')).rejects.toThrow('curator_sample_binding_denied');
+   await expect(env.DB.prepare('UPDATE assistant_curator_runs SET native_session_id=? WHERE installation_id=? AND generation=? AND id=?').bind('replacement',f.scope.installationId,f.scope.generation,runId).run()).rejects.toThrow('curator_sample_binding_immutable');
+   await b.retention.purge(task.identity);resume();
+   expect(await first).toEqual({state:'retired',runId:task.cohort[0].eventId.slice(12),sessionId:winner.sessionId,taskRef:winner.taskRef});
+   expect(transport.dispatch).toHaveBeenCalledTimes(1);expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+  }finally{resume();await first.catch(()=>{});}
+ });
  it('asks privately and resumes a quoted authenticated owner clarification in the same WhatsApp session without faking an old cohort',async()=>{
   const f=await fixture(),incoming=await f.append('Você confirma a condição?'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
   const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};

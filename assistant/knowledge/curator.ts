@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {SourceAccess,type AccessGuard,type SourceRead,type SourceSelectionRef} from '../access';
 import type {OriginScope} from '../origin-guard';
-import type {ConversationIdentity,HostConversationEvent} from '../agent-runtime/conversation';
+import {conversationIdentity,conversationAddress,type ConversationIdentity,type HostConversationEvent} from '../agent-runtime/conversation';
 
 export const curatorSchedule=Object.freeze({timezone:'America/Fortaleza' as const,hour:3,utcCron:'0 6 * * *'});
 export const curatorInstructions=`Você é a curadoria privada do acervo autorizado do dono. Trabalhe somente na janela fixada pelo host e use curator_next para obter originais elegíveis. O aprendizado durante conversas continua independente desta revisão.
@@ -14,7 +14,7 @@ export type CuratorRun=Readonly<{id:string;kind:'daily'|'sample';window:CuratorW
 export type CuratorReceipt=CuratorRun&{state:'complete'|'partial';counts:Record<CuratorItemState,number>&{capturePending:number};needsHelp:boolean;shouldNotify:boolean};
 type CuratorItemState='pending'|'presented'|'evaluated'|'learned'|'indexing'|'unavailable'|'skipped_policy'|'superseded'|'withdrawn';
 type ItemRow={sequence:number;source_id:string;revision:number;version:number;source_hash:string|null;state:CuratorItemState;operation_ids_json:string};
-type RunRow={id:string;day:string;run_kind:'daily'|'sample';civil_day:string|null;created_at:number;source_epoch:string;source_generation:string;from_sequence:number;to_sequence:number;capture_to_sequence:number;state:string;needs_help:number};
+type RunRow={id:string;day:string;run_kind:'daily'|'sample';civil_day:string|null;created_at:number;native_identity_json:string|null;native_session_id:string|null;source_epoch:string;source_generation:string;from_sequence:number;to_sequence:number;capture_to_sequence:number;state:string;needs_help:number};
 export type CuratorItem={sequence:number;sourceRef:SourceSelectionRef;text:string;authorId:string|null;authorLabel:string|null;occurredAt:number;late:boolean;carried:boolean;state:'presented'|'indexing';operationIds:string[]};
 export type CuratorHost={
  /** Checks installation/runtime authority; the curator never grants itself effects. */
@@ -73,13 +73,27 @@ export class KnowledgeCurator {
   const id=crypto.randomUUID(),at=this.clock(),guard=this.host.authorityGuard();
   await this.db.batch([
    this.db.prepare(`INSERT INTO assistant_curator_runs(installation_id,generation,id,source_epoch,source_generation,day,run_kind,civil_day,from_sequence,to_sequence,capture_to_sequence,created_at)
-    SELECT ?,?,?,?,?,?,'sample',?,?,?,0,? WHERE (${guard.sql}) AND ?<=(SELECT COALESCE(MAX(sequence),0) FROM assistant_source_changes WHERE installation_id=? AND generation=?) ON CONFLICT DO NOTHING`)
-    .bind(...this.keys(scope),id,scope.sourceEpoch,scope.sourceGeneration,key,request.window.day,request.window.fromSequence,request.window.toSequence,at,...guard.values,request.window.toSequence,...this.keys(scope)),
+    SELECT ?,?,?,?,?,?,'sample',?,?,?,0,? WHERE (${guard.sql}) AND ?<=(SELECT COALESCE(MAX(sequence),0) FROM assistant_source_changes WHERE installation_id=? AND generation=?)
+    AND NOT EXISTS(SELECT 1 FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND day=?) ON CONFLICT DO NOTHING`)
+    .bind(...this.keys(scope),id,scope.sourceEpoch,scope.sourceGeneration,key,request.window.day,request.window.fromSequence,request.window.toSequence,at,...guard.values,request.window.toSequence,...this.keys(scope),...this.keys(scope),key),
    this.db.prepare(`INSERT INTO assistant_curator_items(installation_id,generation,run_id,sequence,source_id,revision,version,updated_at)
     SELECT c.installation_id,c.generation,r.id,c.sequence,c.source_id,c.revision,c.version,? FROM assistant_source_changes c JOIN assistant_curator_runs r ON r.installation_id=c.installation_id AND r.generation=c.generation AND r.id=? AND r.run_kind='sample'
     WHERE c.installation_id=? AND c.generation=? AND c.sequence>r.from_sequence AND c.sequence<=r.to_sequence ON CONFLICT DO NOTHING`).bind(at,id,...this.keys(scope)),
   ]);this.current(scope);
   const run=await lookup();this.current(scope);if(!run)throw Error('curator_admission_denied');return matches(run);
+ }
+ /** Host-only first-admission CAS. Candidate construction is pure; the losing
+  * dispatcher never registers its candidate or changes this binding. */
+ async bindSampleIdentity(runId:string,raw:ConversationIdentity){
+  const scope=this.scope(),candidate=conversationIdentity.parse(raw);await this.host.assertCurrent();const run=await this.run(scope,runId);
+  if(runCalendar(run).kind!=='sample'||candidate.installationId!==scope.installationId||candidate.generation!==scope.generation||candidate.channel!=='telegram'||!isCuratorPrincipal(candidate.principalOrChatId))throw Error('curator_sample_binding_denied');
+  const sessionId=await conversationAddress(candidate,candidate.channel,candidate.principalOrChatId,candidate.contextEpoch);this.current(scope);const guard=this.host.authorityGuard();
+  await this.db.prepare(`UPDATE assistant_curator_runs SET native_identity_json=?,native_session_id=? WHERE installation_id=? AND generation=? AND id=? AND run_kind='sample'
+   AND native_identity_json IS NULL AND native_session_id IS NULL AND (${guard.sql})`).bind(JSON.stringify(candidate),sessionId,...this.keys(scope),runId,...guard.values).run();
+  const bound=await this.run(scope,runId);if(!bound.native_identity_json||!bound.native_session_id)throw Error('curator_sample_binding_denied');
+  const identity=conversationIdentity.parse(JSON.parse(bound.native_identity_json)),actual=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch);this.current(scope);
+  if(actual!==bound.native_session_id||identity.installationId!==scope.installationId||identity.generation!==scope.generation||identity.channel!=='telegram'||identity.principalOrChatId!==candidate.principalOrChatId)throw Error('curator_sample_binding_denied');
+  return {identity,sessionId:bound.native_session_id};
  }
  /** Called by a host scheduler after cost approval. No cron or cost is enabled
   * here. The first run covers the available backlog explicitly via sequences. */
@@ -247,6 +261,10 @@ export class KnowledgeCurator {
  async event(runId:string,identity:ConversationIdentity,ownerId:string):Promise<HostConversationEvent>{
   const scope=this.scope(),run=await this.run(scope,runId);if(identity.installationId!==scope.installationId||identity.generation!==scope.generation||identity.channel!=='telegram'||identity.principalOrChatId!=='curator:'+ownerId)throw Error('curator_event_denied');
   const calendar=runCalendar(run),occurredAt=calendar.kind==='sample'?run.created_at:dayStart(calendar.day)+DAY+10800000;
+  if(calendar.kind==='sample'){
+   const parsed=conversationIdentity.parse(identity),sessionId=await conversationAddress(parsed,parsed.channel,parsed.principalOrChatId,parsed.contextEpoch);this.current(scope);
+   if(run.native_identity_json!==JSON.stringify(parsed)||run.native_session_id!==sessionId)throw Error('curator_sample_binding_denied');
+  }
   return {identity,eventId:'curator-run:'+run.id,revision:1,kind:'incoming',author:{kind:'system',id:'curator-host'},occurredAt,body:JSON.stringify({type:calendar.kind==='sample'?'sample_curator':'daily_curator',run:this.public(run)})};
  }
  async authorizeEvent(event:HostConversationEvent,ownerId:string){

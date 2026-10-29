@@ -315,26 +315,26 @@ export class NativeApplicationHost {
  }
  async dispatchCurator(now=Date.now()){
   const request=nativeCuratorDispatchRequest(this.env);if(request.kind==='disabled')return {state:'disabled' as const};
-  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope);let identity:ConversationIdentity|undefined;
+  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope);
   if(request.kind==='sample'){
-   // A sample is tied to its FIRST native admission even after a dependency
-   // retires that context. Allocating another epoch would create another paid
-   // request under a different Flue idempotency key for the same sample.
-   const prior=await this.db.prepare(`SELECT r.id run_id,r.source_epoch,r.source_generation,r.civil_day,r.from_sequence,r.to_sequence,
-    e.task_ref,e.state,c.id session_id,c.identity_json,c.tombstoned_at FROM assistant_curator_runs r
-    JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id
-    JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
-    WHERE r.installation_id=? AND r.generation=? AND r.day=? AND r.run_kind='sample' ORDER BY e.sequence LIMIT 1`)
-    .bind(scope.installationId,scope.generation,'sample:'+request.request.operationId).first<{run_id:string;source_epoch:string;source_generation:string;civil_day:string;from_sequence:number;to_sequence:number;task_ref:string;state:string;session_id:string;identity_json:string;tombstoned_at:number|null}>();
-   this.currentScope();if(prior){
-    if(prior.source_epoch!==scope.sourceEpoch||prior.source_generation!==scope.sourceGeneration)throw Error('curator_run_denied');
-    const window=request.request.window;if(prior.civil_day!==window.day||prior.from_sequence!==window.fromSequence||prior.to_sequence!==window.toSequence)throw Error('curator_sample_conflict');
-    if(prior.tombstoned_at!==null||prior.state==='withdrawn')return {state:'retired' as const,runId:prior.run_id,sessionId:prior.session_id,taskRef:prior.task_ref};
-    identity=conversationIdentity.parse(JSON.parse(prior.identity_json));
-   }
+   // No identity()/registration before the run CAS. Even a contender which
+   // observed no previous run must adopt the winner's immutable native epoch.
+   const candidate=await this.retention.currentIdentity('telegram','curator:'+fence.userId)??conversationIdentity.parse({version:1,installationId:scope.installationId,generation:scope.generation,channel:'telegram',principalOrChatId:'curator:'+fence.userId,contextEpoch:crypto.randomUUID()});
+   const {guard}=await this.authority(candidate);
+   // Admission metadata only: this object cannot release or expose originals.
+   const admission=new KnowledgeCurator(this.db,()=>this.currentScope(),{assertCurrent:async()=>{await this.authority(candidate);},authorityGuard:()=>guard,
+    verifySource:async()=>{throw Error('native_curator_admission_only');},expose:async()=>{throw Error('native_curator_admission_only');}});
+   const run=await admission.beginSample(request.request),bound=await admission.bindSampleIdentity(run.id,candidate);
+   const prior=await this.db.prepare(`SELECT c.tombstoned_at,e.state,e.task_ref FROM assistant_native_conversations c
+    LEFT JOIN assistant_native_conversation_events e ON e.conversation_id=c.id AND e.event_id=?
+    WHERE c.id=? AND c.installation_id=? AND c.generation=? ORDER BY e.sequence LIMIT 1`)
+    .bind('curator-run:'+run.id,bound.sessionId,scope.installationId,scope.generation).first<{tombstoned_at:number|null;state:string|null;task_ref:string|null}>();this.currentScope();
+   if(prior&&(prior.tombstoned_at!==null||prior.state==='withdrawn'))return {state:'retired' as const,runId:run.id,sessionId:bound.sessionId,...(prior.task_ref?{taskRef:prior.task_ref}:{})};
+   await this.authority(bound.identity);await this.retention.register(bound.identity);
+   const curator=await this.curator(bound.identity);
+   return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
   }
-  identity??=await this.identity('telegram','curator:'+fence.userId);
-  const curator=await this.curator(identity),run=request.kind==='sample'?await curator.beginSample(request.request):await curator.beginDue(now);
+  const identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
   if(!run)return {state:'not_due' as const};
   // The curator's system job is not a fact SourceRef, owner request or policy.
   return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,identity,fence.userId)));

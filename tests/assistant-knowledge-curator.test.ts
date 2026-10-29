@@ -31,7 +31,7 @@ it('samples only the requested canonical range without touching the daily cursor
 it('replays the same sample operation and actual creation instant, rejects changed arguments and invalid day/head before mutation',async()=>{
  const from=await head();await note('one');const to=await head(),request={operationId:'sample-stable-operation',window:sampleWindow(from,to)},created=now;
  const first=await curator.beginSample(request),identity={version:1 as const,installationId:scope.installationId,generation:scope.generation,channel:'telegram' as const,principalOrChatId:'curator:owner',contextEpoch:'epoch'};
- const event=await curator.event(first.id,identity,'owner');expect(event.occurredAt).toBe(created);expect(JSON.parse(event.body)).toMatchObject({type:'sample_curator',run:{kind:'sample'}});
+ await curator.bindSampleIdentity(first.id,identity);const event=await curator.event(first.id,identity,'owner');expect(event.occurredAt).toBe(created);expect(JSON.parse(event.body)).toMatchObject({type:'sample_curator',run:{kind:'sample'}});
  now+=9000;expect(await curator.beginSample(request)).toEqual(first);expect(await curator.event(first.id,identity,'owner')).toEqual(event);
  await expect(curator.beginSample({...request,window:sampleWindow(to,to)})).rejects.toThrow('curator_sample_conflict');
  await expect(curator.beginSample({operationId:'future-head',window:sampleWindow(from,to+1)})).rejects.toThrow('curator_sample_window');
