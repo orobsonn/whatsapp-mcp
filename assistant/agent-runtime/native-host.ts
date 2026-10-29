@@ -152,15 +152,19 @@ export class NativeApplicationHost {
   const row=await this.db!.prepare(`SELECT text,message_id,message_date,thread_id,payload_hash FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND outcome='pending' AND state='pending' AND (${link.sql})`)
    .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,...link.values).first<{text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string}>();
   if(!row||typeof row.text!=='string')throw Error('native_owner_input_denied');
-  const identity=await this.identity('telegram',fence.userId),operationId='native-telegram-source:'+await bridgeHash([this.scope,this.env.TELEGRAM_BOT_INSTANCE,updateId,row.payload_hash]);
+  // Quote correlation is part of the authenticated durable inbox, not the
+  // lifetime of this webhook request. Record it BEFORE canonical Source work
+  // so a failed report or cron recovery cannot reroute a WhatsApp clarification.
+  void raw;const help=await this.help();await help.recordPersistedReply(updateId);
+  const operationId='native-telegram-source:'+await bridgeHash([this.scope,this.env.TELEGRAM_BOT_INSTANCE,updateId,row.payload_hash]);
   // Owner input is an attributed report, never an automatic owner policy/note.
   const controller=new SourceController(this.db!,this.scope,owner,Date.now,configuredRetirementGuard(this.env),()=>link);
   const report=await controller.execute({kind:'source.report',operationId,input:{originKey:operationId,text:row.text,authorId:fence.userId,occurredAt:row.message_date*1000,audience:'owner'}}) as {id:string;revision:number;version:number};
   const source=await new SourceAccess(this.db!,this.scope,Date.now,'knowledge').read(owner,report.id,report.revision);
   if(!source||source.text!==row.text||source.fence.source.version!==report.version)throw Error('native_owner_source_changed');
   const ref={id:source.fence.source.id,revision:source.fence.source.revision,version:source.fence.source.version,hash:source.fence.source.hash};
-  const help=await this.help();if(raw!==undefined)await help.recordReply(raw);
   const resumed=await help.resume(updateId,ref);if(resumed.state==='resumed'||resumed.state==='pending')return resumed.receipt!;
+  const identity=await this.identity('telegram',fence.userId);
   const event=verifiedConversationEvent({identity,eventId:'telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId,revision:1,kind:'incoming',author:{kind:'owner',id:fence.userId},occurredAt:row.message_date*1000,body:row.text,sourceRef:ref,...(row.thread_id?{threadId:String(row.thread_id)}:{})});
   return this.admit(event,null,fence);
  }

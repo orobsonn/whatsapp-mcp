@@ -31,6 +31,7 @@ const messageSchema = z.object({ update_id: safe, message: z.object({ message_id
   chat: z.object({ id: safe.min(1), type: z.literal("private") }).passthrough(),
   text: z.string(), message_thread_id: safe.min(1).optional(),
 }).passthrough() }).passthrough();
+const quotedMessageSchema=z.object({message_id:safe.min(1),chat:z.object({id:safe.min(1),type:z.literal('private')}).passthrough(),message_thread_id:safe.min(1).optional()}).passthrough();
 /** The provider body is data, never an OwnerCommand. Copy it before any await. */
 function snapshot(input: unknown) {
   let raw: unknown;
@@ -145,7 +146,7 @@ export class TelegramLink {
     const challenge = /^\/start ([pc])_([A-Za-z0-9_-]{43})$/.exec(msg.text);
     const token = crypto.randomUUID(), gate = `EXISTS(SELECT 1 FROM assistant_telegram_updates WHERE ${ns} AND update_id=? AND token=?)`;
     const gateValues = [...this.keys(), updateId, token];
-    const columns = "installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,pairing_id,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at";
+    const columns = "installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,pairing_id,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at,reply_to_message_id,reply_to_chat_id,reply_to_thread_id";
     const base = [...this.keys(), updateId, hash, token, ...this.affinity()];
     if (challenge) {
       const phase = challenge[1] === "p" ? "p" : "c", nonceHash = await bridgeHash(challenge[2]);
@@ -160,7 +161,7 @@ export class TelegramLink {
       const validValues = [...this.keys(), pair.id, ...this.affinity(), phase === "p" ? "issued" : "confirmable", now, msg.date, second,
         ...(phase === "c" ? [user, chat] : [])];
       const outcome = phase === "p" ? "pairing_claimed" : "linked", revision = pair.expected_revision + (phase === "c" ? 1 : 0);
-      const statements = [this.db.prepare(`INSERT INTO assistant_telegram_updates(${columns}) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,'completed',? WHERE ${valid} ON CONFLICT DO NOTHING`)
+      const statements = [this.db.prepare(`INSERT INTO assistant_telegram_updates(${columns}) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,'completed',?,NULL,NULL,NULL WHERE ${valid} ON CONFLICT DO NOTHING`)
         .bind(...base, revision, pair.id, user, chat, msg.message_id, msg.date, msg.message_thread_id ?? null, outcome, now, ...validValues)];
       statements.push(this.db.prepare(`UPDATE assistant_telegram_pairings SET state=?,user_id=?,chat_id=? WHERE ${ns} AND id=? AND ${gate}`)
         .bind(phase === "p" ? "claimed" : "consumed", user, chat, ...this.keys(), pair.id, ...gateValues));
@@ -172,11 +173,17 @@ export class TelegramLink {
       // No raw command, source write or model execution happens in #47.
       const outcome = `CASE WHEN ?<activation_cut THEN 'denied_before_activation' WHEN ?=activation_cut THEN 'denied_ambiguous_activation' WHEN ?>? THEN 'denied_future' ELSE 'pending' END`;
       const timeValues = [msg.date, msg.date, msg.date, second];
+      const quoted=quotedMessageSchema.safeParse(msg.reply_to_message);
+      const quoteValues=quoted.success?[quoted.data.message_id,String(quoted.data.chat.id),quoted.data.message_thread_id??null]:[null,null,null];
       await this.db.batch([this.db.prepare(`INSERT INTO assistant_telegram_updates(${columns}) SELECT ?,?,?,?,?,?,?,?,revision,NULL,?,?,?,?,?,
-        CASE WHEN ?>activation_cut AND ?<=? THEN ? ELSE NULL END,${outcome},CASE WHEN ?>activation_cut AND ?<=? THEN 'pending' ELSE 'completed' END,?
+        CASE WHEN ?>activation_cut AND ?<=? THEN ? ELSE NULL END,${outcome},CASE WHEN ?>activation_cut AND ?<=? THEN 'pending' ELSE 'completed' END,?,
+        CASE WHEN ?>activation_cut AND ?<=? THEN ? ELSE NULL END,
+        CASE WHEN ?>activation_cut AND ?<=? THEN ? ELSE NULL END,
+        CASE WHEN ?>activation_cut AND ?<=? THEN ? ELSE NULL END
         FROM assistant_telegram_links WHERE ${ns} AND ${origin} AND state='active' AND user_id=? AND chat_id=? ON CONFLICT DO NOTHING`)
         .bind(...base, user, chat, msg.message_id, msg.date, msg.message_thread_id ?? null,
           msg.date, msg.date, second, msg.text, ...timeValues, msg.date, msg.date, second, now,
+          ...quoteValues.flatMap(value=>[msg.date,msg.date,second,value]),
           ...this.keys(), ...this.affinity(), user, chat)]);
     }
     const saved = await recover(); return saved ? saved.payload_hash === hash ? saved.outcome : "conflict" : "denied";

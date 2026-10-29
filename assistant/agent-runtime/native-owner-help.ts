@@ -94,27 +94,47 @@ export class NativeOwnerHelp {
   }catch{await this.sql("UPDATE assistant_native_help_questions SET state='uncertain',updated_at=? WHERE id=? AND state='attempting'",this.clock(),id).run();}
   return {questionId:id,state:(await this.row(id))!.state};
  }
- /** Router calls ONLY after TelegramLink.receive returned pending and the
-  * webhook secret was authenticated. Exact raw update hash must match D1. */
+ /** Compatibility for a live provider retry. The raw body may verify its
+  * existing receipt, but never backfills correlation or reconstructs a hash. */
  async recordReply(raw:unknown){
-  this.currentScope();const parsed=reply.safeParse(raw);if(!parsed.success)return {state:'unrelated' as const};const update=parsed.data,msg=update.message;
+  this.currentScope();const parsed=reply.safeParse(raw);if(!parsed.success)return {state:'unrelated' as const};
   const hash=await telegramUpdateHash(raw);if(!hash)return {state:'unrelated' as const};
-  const fence=await this.host.ownerFence();if(String(msg.from.id)!==fence.userId||String(msg.chat.id)!==fence.chatId||String(msg.reply_to_message.chat.id)!==fence.chatId)return {state:'denied' as const};
-  const prior=await this.sql('SELECT question_id,payload_hash FROM assistant_native_help_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=?',...this.keys(),update.update_id).first<{question_id:string;payload_hash:string}>();
-  if(prior)return prior.payload_hash===hash?{state:'recorded' as const,questionId:prior.question_id}:{state:'denied' as const};
-  const row=await this.sql(`SELECT * FROM assistant_native_help_questions WHERE installation_id=? AND generation=? AND bot_instance=? AND message_id=? AND state='sent' AND link_json=?`,...this.keys(),msg.reply_to_message.message_id,JSON.stringify(fence)).first<Row>();
+  const receipt=await this.sql('SELECT payload_hash FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=?',...this.keys(),parsed.data.update_id).first<{payload_hash:string}>();
+  if(!receipt||receipt.payload_hash!==hash)return {state:'denied' as const};
+  return this.recordPersistedReply(parsed.data.update_id);
+ }
+ /** The authenticated inbox committed these sanitized quote identifiers with
+  * its pending payload receipt. This path also runs after a process restart or
+  * an unavailable Source report, without any original webhook body. */
+ async recordPersistedReply(updateId:number){
+  this.currentScope();z.number().int().nonnegative().safe().parse(updateId);
+  const fence=await this.host.ownerFence(),link=telegramLinkGuard(fence);
+  const admitted=await this.sql(`SELECT payload_hash,message_id,thread_id,text,reply_to_message_id,reply_to_chat_id,reply_to_thread_id
+   FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=?
+   AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=?
+   AND outcome='pending' AND state='pending' AND text IS NOT NULL AND ${link.sql}`,
+   ...this.keys(),updateId,fence.sourceEpoch,fence.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,...link.values)
+   .first<{payload_hash:string;message_id:number;thread_id:number|null;text:string;reply_to_message_id:number|null;reply_to_chat_id:string|null;reply_to_thread_id:number|null}>();
+  if(!admitted)return {state:'denied' as const};
+  if(admitted.reply_to_message_id===null)return {state:'unrelated' as const};
+  if(admitted.reply_to_chat_id!==fence.chatId)return {state:'denied' as const};
+  const prior=await this.sql('SELECT question_id,payload_hash,reply_to_message_id,link_json FROM assistant_native_help_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=?',...this.keys(),updateId).first<{question_id:string;payload_hash:string;reply_to_message_id:number;link_json:string}>();
+  if(prior)return prior.payload_hash===admitted.payload_hash&&prior.reply_to_message_id===admitted.reply_to_message_id&&prior.link_json===JSON.stringify(fence)?{state:'recorded' as const,questionId:prior.question_id}:{state:'denied' as const};
+  const row=await this.sql(`SELECT * FROM assistant_native_help_questions WHERE installation_id=? AND generation=? AND bot_instance=? AND message_id=? AND state='sent' AND link_json=?`,...this.keys(),admitted.reply_to_message_id,JSON.stringify(fence)).first<Row>();
   if(!row)return {state:'unrelated' as const};
-  if(msg.message_thread_id!==row.thread_id||(msg.reply_to_message.message_thread_id!==undefined&&msg.reply_to_message.message_thread_id!==row.thread_id))return {state:'denied' as const};
+  if(admitted.thread_id!==row.thread_id||(admitted.reply_to_thread_id!==null&&admitted.reply_to_thread_id!==row.thread_id))return {state:'denied' as const};
   let proof:Awaited<ReturnType<NativeOwnerHelp['rowCurrent']>>;
   try{proof=await this.rowCurrent(row);}catch(error){if(this.stale(error))return this.cancelStale(row);throw error;}
-  const inbox={sql:`EXISTS(SELECT 1 FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND payload_hash=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_id=? AND text=? AND outcome='pending' AND state='pending')`,values:[...this.keys(),update.update_id,hash,fence.sourceEpoch,fence.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,msg.message_id,msg.text]};
+  const inbox:AccessGuard={sql:`EXISTS(SELECT 1 FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND payload_hash=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_id=? AND text=?
+   AND reply_to_message_id=? AND reply_to_chat_id=? AND reply_to_thread_id IS ? AND thread_id IS ? AND outcome='pending' AND state='pending')`,
+   values:[...this.keys(),updateId,admitted.payload_hash,fence.sourceEpoch,fence.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,admitted.message_id,admitted.text,admitted.reply_to_message_id,admitted.reply_to_chat_id,admitted.reply_to_thread_id,admitted.thread_id]};
   const guard=together(proof.guard,inbox);
   await this.host.db.batch([
    this.sql(`INSERT INTO assistant_native_help_replies(installation_id,generation,bot_instance,update_id,question_id,payload_hash,reply_to_message_id,link_json,created_at)
-    SELECT ?,?,?,?,?,?,?,?,? WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM assistant_native_help_questions WHERE id=? AND state='sent' AND owner_update_id IS NULL) ON CONFLICT DO NOTHING`,...this.keys(),update.update_id,row.id,hash,msg.reply_to_message.message_id,JSON.stringify(fence),this.clock(),...guard.values,row.id),
-   this.sql(`UPDATE assistant_native_help_questions SET state='answered',owner_update_id=?,updated_at=? WHERE id=? AND state='sent' AND owner_update_id IS NULL AND EXISTS(SELECT 1 FROM assistant_native_help_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND question_id=?) AND ${guard.sql}`,update.update_id,this.clock(),row.id,...this.keys(),update.update_id,row.id,...guard.values),
+    SELECT ?,?,?,?,?,?,?,?,? WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM assistant_native_help_questions WHERE id=? AND state='sent' AND owner_update_id IS NULL) ON CONFLICT DO NOTHING`,...this.keys(),updateId,row.id,admitted.payload_hash,admitted.reply_to_message_id,JSON.stringify(fence),this.clock(),...guard.values,row.id),
+   this.sql(`UPDATE assistant_native_help_questions SET state='answered',owner_update_id=?,updated_at=? WHERE id=? AND state='sent' AND owner_update_id IS NULL AND EXISTS(SELECT 1 FROM assistant_native_help_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND question_id=?) AND ${guard.sql}`,updateId,this.clock(),row.id,...this.keys(),updateId,row.id,...guard.values),
   ]);
-  return (await this.row(row.id))?.owner_update_id===update.update_id?{state:'recorded' as const,questionId:row.id}:{state:'denied' as const};
+  return (await this.row(row.id))?.owner_update_id===updateId?{state:'recorded' as const,questionId:row.id}:{state:'denied' as const};
  }
  /** Canonical owner input is supplied by the SAME authenticated adapter used
   * for owner Telegram. The service binds it to the quoted pending update. */

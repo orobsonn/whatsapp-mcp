@@ -13,7 +13,8 @@ import type {AssistantEnv} from '../assistant/env';
 import {receiveCapture,bridgeHash} from '../assistant/ingress';
 import {SourceController} from '../assistant/sources';
 import {InferenceBudget} from '../assistant/budget';
-import {telegramUpdateHash} from '../assistant/telegram-auth';
+import {TelegramLink} from '../assistant/telegram-auth';
+import {RetentionPurge} from '../assistant/retention-purge';
 const transport=vi.hoisted(()=>({dispatch:vi.fn(),abort:vi.fn(),quiesce:vi.fn(),destroy:vi.fn(),deliveries:new Map<string,DeliveredMessage>()}));
 vi.mock('../assistant/agent-runtime/native-transport',()=>({
  openNativeConversation:(sessionId:string)=>({dispatch:async(q:{idempotencyKey:string;message:DeliveredMessage})=>{transport.dispatch(sessionId,q);transport.deliveries.set(q.idempotencyKey,q.message);return {submissionId:q.idempotencyKey,uid:sessionId,acceptedAt:new Date().toISOString()};},read:async()=>({})}),
@@ -45,8 +46,7 @@ async function fixture(){
  };
  const ownerUpdate=async(updateId:number,text:string,threadId:number,replyTo?:number)=>{
   const raw={update_id:updateId,message:{message_id:updateId+100,date:Math.floor(Date.now()/1000),from:{id:101,is_bot:false},chat:{id:101,type:'private'},text,message_thread_id:threadId,...(replyTo?{reply_to_message:{message_id:replyTo,chat:{id:101,type:'private'},message_thread_id:threadId}}:{})}};
-  await env.DB.prepare(`INSERT INTO assistant_telegram_updates(installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at)
-   VALUES(?,?,?,?,?,?,'e1','g1',1,'101','101',?,?,?,?,'pending','pending',?)`).bind(scope.installationId,scope.generation,bot,updateId,await telegramUpdateHash(raw),crypto.randomUUID(),updateId+100,raw.message.date,threadId,text,Date.now()).run();return raw;
+  expect(await new TelegramLink(env.DB,scope,bot,own.TELEGRAM_WEBHOOK_SECRET!).receive(raw)).toBe('pending');return raw;
  };
  return {scope,source,own,append,ownerUpdate,host:()=>new NativeApplicationHost(own)};
 }
@@ -158,6 +158,65 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect((await host.activity(task)).triggerSequence).toBe(incoming.sequence);expect(task.returnChannel.id).toBe(incoming.chatId);
   await expect((await host.frame(task)).effects.calendarChange({verb:'create',summary:'Não autorizado por WhatsApp',start:'2031-01-01T10:00:00-03:00',end:'2031-01-01T11:00:00-03:00'})).rejects.toThrow('native_calendar_owner_required');
   expect(fetch).toHaveBeenCalledTimes(2);expect(await host.receiveTelegram(7,raw)).toMatchObject({taskRef:task.taskRef,state:'admitted'});
+ });
+ it('recovers a quoted owner clarification from the authenticated inbox after a crash before the native handler',async()=>{
+  const f=await fixture(),incoming=await f.append('Pergunta que requer orientação'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  vi.spyOn(globalThis,'fetch').mockImplementation(async url=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  await(await host.frame(originalTask)).effects.askOwner('Qual condição devo considerar?');
+  await f.ownerUpdate(21,'Use a condição especial.',42,77);
+  expect(await env.DB.prepare(`SELECT reply_to_message_id,reply_to_chat_id,reply_to_thread_id FROM assistant_telegram_updates WHERE installation_id=? AND update_id=21`).bind(f.scope.installationId).first()).toEqual({reply_to_message_id:77,reply_to_chat_id:'101',reply_to_thread_id:42});
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_help_replies WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(0);
+  // Simulate process loss: no raw webhook body is passed to the resumed host.
+  const recovered=f.host(),receipt=await recovered.receiveTelegram(21),task=await latestTask(recovered,receipt.taskRef);
+  expect(task.sessionId).toBe(originalTask.sessionId);expect(task.cohort.map(event=>event.kind)).toEqual(['clarification']);
+  expect(task.replyTo).toEqual({taskRef:originalTask.taskRef,sourceRef:originalTask.cohort[0].sourceRef});
+  expect(await env.DB.prepare(`SELECT COUNT(*) n FROM assistant_native_context_channels WHERE installation_id=? AND channel='telegram'`).bind(f.scope.installationId).first('n')).toBe(0);
+ });
+ it.each(['before','after'] as const)('retains help correlation when Source.report fails %s its commit, then recovers without provider retry',async phase=>{
+  const f=await fixture(),incoming=await f.append('Pergunta atual'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  vi.spyOn(globalThis,'fetch').mockImplementation(async url=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  await(await host.frame(originalTask)).effects.askOwner('Como devo responder?');await f.ownerUpdate(22,'A condição está aprovada para esta conversa.',42,77);
+  const execute=SourceController.prototype.execute;let fail=true;
+  const spy=vi.spyOn(SourceController.prototype,'execute').mockImplementation(async function(this:SourceController,input){
+   if(fail&&(input as {kind?:string}).kind==='source.report'){fail=false;if(phase==='after')await execute.call(this,input);throw Error('synthetic_source_report_unavailable');}
+   return execute.call(this,input);
+  });
+  await expect(host.receiveTelegram(22)).rejects.toThrow('synthetic_source_report_unavailable');spy.mockRestore();
+  expect(await env.DB.prepare('SELECT state,owner_update_id FROM assistant_native_help_questions WHERE conversation_id=?').bind(originalTask.sessionId).first()).toEqual({state:'answered',owner_update_id:22});
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_help_replies WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+  const recovered=f.host(),receipt=await recovered.receiveTelegram(22),task=await latestTask(recovered,receipt.taskRef);
+  expect(task.sessionId).toBe(originalTask.sessionId);expect(task.cohort[0]).toMatchObject({kind:'clarification',author:{kind:'owner',id:'101'}});
+  expect(await recovered.receiveTelegram(22)).toMatchObject({taskRef:task.taskRef,state:'admitted'});
+ });
+ it.each(['quote','thread','link'] as const)('persisted %s mismatch never resumes the WhatsApp question',async kind=>{
+  const f=await fixture(),incoming=await f.append('Pergunta'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  vi.spyOn(globalThis,'fetch').mockImplementation(async url=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  await(await host.frame(originalTask)).effects.askOwner('Qual orientação?');
+  await f.ownerUpdate(23,'Minha orientação.',kind==='thread'?43:42,kind==='quote'?999:77);
+  if(kind==='link')await env.DB.prepare(`UPDATE assistant_telegram_links SET revision=2 WHERE installation_id=?`).bind(f.scope.installationId).run();
+  expect((await(await host.help()).recordPersistedReply(23)).state).not.toBe('recorded');
+  expect(await env.DB.prepare('SELECT owner_update_id FROM assistant_native_help_questions WHERE conversation_id=?').bind(originalTask.sessionId).first('owner_update_id')).toBeNull();
+ });
+ it('retired source plus retained quote identifiers cannot restore a help question or dispatch its old WhatsApp context',async()=>{
+  const f=await fixture(),incoming=await f.append('Pergunta a retirar'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  vi.spyOn(globalThis,'fetch').mockImplementation(async url=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  await(await host.frame(originalTask)).effects.askOwner('Qual orientação?');await f.ownerUpdate(24,'Resposta à pergunta retirada.',42,77);
+  const ref=originalTask.cohort[0].sourceRef!,retirement={allow:async()=>{},withdraw:async()=>{}};
+  await new SourceController(env.DB,f.scope,{kind:'owner'},Date.now,retirement).withdraw(ref.id,ref.revision);
+  const purge=new RetentionPurge(env.DB,f.scope,{kind:'owner'},Date.now,retirement);let result:{state:string}={state:'pending'};
+  for(let page=0;page<25&&result.state==='pending';page++)result=await purge.advance({kind:'source.purge',operationId:'purge-pending-quoted-help',sourceId:ref.id});
+  expect(result.state).toBe('complete');const count=transport.dispatch.mock.calls.length;
+  expect((await(await f.host().help()).recordPersistedReply(24)).state).not.toBe('recorded');
+  expect(await env.DB.prepare('SELECT state FROM assistant_native_help_questions WHERE conversation_id=?').bind(originalTask.sessionId).first('state')).toBe('cancelled');
+  expect(transport.dispatch).toHaveBeenCalledTimes(count);
  });
  it('treats a quoted answer to a superseded question as stale instead of looping a 503 or resurrecting WhatsApp work',async()=>{
   const f=await fixture(),incoming=await f.append('Mensagem antiga'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
