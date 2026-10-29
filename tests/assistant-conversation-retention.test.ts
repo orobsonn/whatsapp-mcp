@@ -28,6 +28,21 @@ beforeEach(async()=>{
 });
 async function admit(chat=identity.principalOrChatId,eventId=crypto.randomUUID(),sourceRef?:typeof ref){const id={...identity,principalOrChatId:chat};const receipt=await runtime.deliverConversation(verifiedConversationEvent({identity:id,eventId,revision:1,kind:'incoming',author:{kind:'person',id:'nora'},occurredAt:1,body:'Synthetic input',...(sourceRef?{sourceRef}:{})}));return {id,receipt};}
 async function expose(id:ConversationIdentity){const source=(await new SourceAccess(env.DB,scope,()=>100,'knowledge').read({kind:'owner'},ref.id))!;await retention.expose(id,{sources:[source.fence],origins:[]});}
+it('reexposes an existing page with constant global checks and the final authority check intact',async()=>{
+ const a=await admit(),refs=[ref],service=new KnowledgeService(env.DB,()=>({scope,client:'owner_mcp'}),port,()=>100);
+ for(let i=0;i<2;i++)refs.push((await service.execute({kind:'context.report',operationId:'replay-page-'+i,text:'Synthetic page evidence '+i})).sourceRef);
+ const access=new SourceAccess(env.DB,scope,()=>100,'knowledge'),sources=[];
+ for(const r of refs)sources.push((await access.read({kind:'owner'},r.id))!.fence);
+ await retention.expose(a.id,{sources,origins:[]});
+ const checks=vi.spyOn(retention,'assertCurrent');
+ await retention.expose(a.id,{sources,origins:[]});expect(checks).toHaveBeenCalledTimes(2);
+});
+it('stops exposure registration when cancellation arrives during the origin proof',async()=>{
+ const origin=await captured(),a=await admit(),source=(await new SourceAccess(env.DB,scope,()=>100,'knowledge').read({kind:'owner'},ref.id))!,controller=new AbortController();
+ vi.spyOn(guard,'checkContext').mockImplementation(async()=>{controller.abort(new Error('exposure_cancelled'));return {state:'current'};});
+ await expect(retention.expose(a.id,{sources:[source.fence],origins:[origin]},controller.signal)).rejects.toThrow('exposure_cancelled');
+ expect(await env.DB.prepare('SELECT count(*) n FROM assistant_native_context_exposures WHERE conversation_id=?').bind(a.receipt.sessionId).first('n')).toBe(0);
+});
 async function captured(){
  snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:'e1',sourceGeneration:'sg1',sourceKind:'message',sourceId:'m1',chatId:'source-chat',sourceVersion:1,watermark:1,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:'Nora leads Cedar.',messageId:'m1',messageVersion:1}};
  const observed=await guard.observe(scope,{sourceKind:'message',sourceId:'m1',chatId:'source-chat'});

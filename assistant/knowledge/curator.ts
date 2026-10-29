@@ -23,7 +23,7 @@ export type CuratorHost={
  /** Fresh Source-origin verification, then a local predicate for the final D1 snapshot. */
  verifySource(read:SourceRead):Promise<{state:'current';guard:AccessGuard}|{state:'changed'|'unavailable'}>;
  /** Register dependency in the private native context BEFORE releasing the body. */
- expose(runId:string,read:SourceRead):Promise<void>;
+ exposePage(runId:string,reads:readonly SourceRead[],signal?:AbortSignal):Promise<void>;
 };
 const owner={kind:'owner'} as const,DAY=86400000;
 const scopeKey=(s:OriginScope)=>JSON.stringify([s.installationId,s.generation,s.sourceEpoch,s.sourceGeneration]);
@@ -164,27 +164,36 @@ export class KnowledgeCurator {
   // and bodies cannot consume a visible page or escape to the native model.
   const rows=await this.db.prepare(`SELECT i.* FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.sequence>? AND i.state IN ('pending','presented','unavailable','indexing') ORDER BY i.sequence LIMIT ?`)
    .bind(...visible.values,...this.keys(scope),runId,page.after,page.limit+1).all<ItemRow>();this.current(scope);signal?.throwIfAborted();
-  const items:CuratorItem[]=[],proofs:{read:SourceRead;guard:AccessGuard}[]=[];
+  const proofs:{read:SourceRead;guard:AccessGuard;row:ItemRow}[]=[];
   for(const row of rows.results.slice(0,page.limit)){
    signal?.throwIfAborted();const read=await this.access(scope).read(owner,row.source_id,row.revision);this.current(scope);signal?.throwIfAborted();if(!read||read.fence.source.version!==row.version||read.text===null)continue;
-   const proof=await this.host.verifySource(read);this.current(scope);signal?.throwIfAborted();
+   // Capture the exact original and its permission fence before external I/O.
+   const captured:SourceRead=JSON.parse(JSON.stringify(read));
+   const proof=await this.host.verifySource(captured);this.current(scope);signal?.throwIfAborted();
    if(proof.state!=='current'){
     await this.db.prepare("UPDATE assistant_curator_items SET state=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND state IN ('pending','presented','unavailable','indexing')")
      .bind(proof.state==='changed'?'superseded':'unavailable',this.clock(),...this.keys(scope),runId,row.sequence).run();signal?.throwIfAborted();continue;
    }
-   await this.host.expose(runId,read);signal?.throwIfAborted();await this.host.assertCurrent();this.current(scope);signal?.throwIfAborted();
-   const access=this.access(scope).guard(owner,read.fence,this.clock()),authority=this.host.authorityGuard();
-   const published=await this.db.prepare(`UPDATE assistant_curator_items SET state=CASE WHEN state='indexing' THEN 'indexing' ELSE 'presented' END,source_hash=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND state IN ('pending','presented','unavailable','indexing') AND (${access.sql}) AND (${proof.guard.sql}) AND (${authority.sql}) RETURNING sequence`)
-    .bind(read.fence.source.hash,this.clock(),...this.keys(scope),runId,row.sequence,...access.values,...proof.guard.values,...authority.values).first();this.current(scope);signal?.throwIfAborted();
-   if(published){items.push({sequence:row.sequence,sourceRef:{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash},text:read.text,authorId:read.authorId,authorLabel:read.authorLabel,occurredAt:read.occurredAt,late:read.occurredAt<dayStart(calendar.day),carried:calendar.kind==='daily'&&row.sequence<=run.from_sequence,state:row.state==='indexing'?'indexing':'presented',operationIds:JSON.parse(row.operation_ids_json)});proofs.push({read,guard:proof.guard});}
+   proofs.push({read:captured,guard:proof.guard,row});
   }
+  // Register the page before releasing any body. The host uses the existing
+  // retention exposure operation, preserving every captured source fence.
+  if(proofs.length)await this.host.exposePage(runId,proofs.map(p=>p.read),signal);
+  signal?.throwIfAborted();
   await this.host.assertCurrent();this.current(scope);signal?.throwIfAborted();
   const authority=this.host.authorityGuard(),access=this.access(scope);
   // Reading a later source may have awaited external I/O. All previous
   // dependencies are rechecked in ONE final local snapshot before publication.
-  const checks=await this.db.batch<{valid:number}>([authority,...proofs.flatMap(proof=>[access.guard(owner,proof.read.fence,this.clock()),proof.guard])]
-   .map(guard=>this.db.prepare(`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE 0 END valid`).bind(...guard.values)));
-  this.current(scope);signal?.throwIfAborted();if(checks.some(check=>check.results[0]?.valid!==1))throw Error('curator_source_changed');
+  const updates=proofs.map(proof=>{
+   const local=access.guard(owner,proof.read.fence,this.clock());
+   return this.db.prepare(`UPDATE assistant_curator_items SET state=CASE WHEN state='indexing' THEN 'indexing' ELSE 'presented' END,source_hash=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND state IN ('pending','presented','unavailable','indexing') AND (${local.sql}) AND (${proof.guard.sql}) AND (${authority.sql}) RETURNING sequence`)
+    .bind(proof.read.fence.source.hash,this.clock(),...this.keys(scope),runId,proof.row.sequence,...local.values,...proof.guard.values,...authority.values);
+  });
+  const snapshot=await this.db.batch<{sequence?:number;valid?:number}>([...updates,...[authority,...proofs.flatMap(proof=>[access.guard(owner,proof.read.fence,this.clock()),proof.guard])]
+   .map(guard=>this.db.prepare(`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE 0 END valid`).bind(...guard.values))]);
+  this.current(scope);signal?.throwIfAborted();if(snapshot.slice(updates.length).some(check=>check.results[0]?.valid!==1))throw Error('curator_source_changed');
+  const items:CuratorItem[]=[];
+  for(let i=0;i<proofs.length;i++)if(snapshot[i].results.length){const {read,row}=proofs[i];items.push({sequence:row.sequence,sourceRef:{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash},text:read.text!,authorId:read.authorId,authorLabel:read.authorLabel,occurredAt:read.occurredAt,late:read.occurredAt<dayStart(calendar.day),carried:calendar.kind==='daily'&&row.sequence<=run.from_sequence,state:row.state==='indexing'?'indexing':'presented',operationIds:JSON.parse(row.operation_ids_json)});}
   return {items,...(rows.results.length>page.limit?{nextAfter:rows.results[page.limit-1].sequence}:{}),coverage:{scope:calendar.kind==='sample'?'sample_window' as const:'pinned_incremental_window' as const,state:'partial' as const,archive:'not_exhaustive' as const},window:this.public(run).window};
  }
  async acknowledge(runId:string,sequence:number,raw:z.input<typeof acknowledgement>){

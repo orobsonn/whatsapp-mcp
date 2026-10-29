@@ -12,26 +12,37 @@ const sql=(q:string,...values:(string|number|null)[])=>env.DB.prepare(q).bind(sc
 beforeEach(()=>{
  scope={installationId:crypto.randomUUID(),generation:'curator-g1',sourceEpoch:'source-e1',sourceGeneration:'source-g1'};
  now=time('2026-10-28T12:00:00Z');sources=new SourceController(env.DB,scope,owner,()=>now);
- host={assertCurrent:async()=>{},authorityGuard:()=>({sql:'1',values:[]}),verifySource:async()=>({state:'current',guard:{sql:'1',values:[]}}),expose:async()=>{}};
+ host={assertCurrent:async()=>{},authorityGuard:()=>({sql:'1',values:[]}),verifySource:async()=>({state:'current',guard:{sql:'1',values:[]}}),exposePage:async()=>{}};
  curator=new KnowledgeCurator(env.DB,()=>scope,host,()=>now);
 });
 const note=(key:string,text=key,occurredAt=now)=>sources.create({originKey:key,text,occurredAt});
 async function due(){now=time('2026-10-29T06:00:00Z');return (await curator.beginDue())!;}
 const head=async()=>await sql('SELECT COALESCE(MAX(sequence),0) head FROM assistant_source_changes WHERE installation_id=? AND generation=?').first<number>('head')??0;
 const sampleWindow=(fromSequence:number,toSequence:number,day='2026-10-28')=>({fromSequence,toSequence,day,timezone:'America/Fortaleza' as const});
+it('registers an authorized page once before publication without rechecking the entire context per original',async()=>{
+ for(let i=0;i<100;i++)await note('page evidence '+i);
+ const run=await due();let pages=0,assertions=0;
+ host.assertCurrent=async()=>{assertions++;};
+ Object.assign(host,{exposePage:async(_runId:string,reads:{id:string}[])=>{
+  pages++;expect(reads).toHaveLength(100);
+  expect(await sql("SELECT count(*) n FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND state='presented'",run.id).first('n')).toBe(0);
+ }});
+ const page=await curator.next(run.id,{limit:100});
+ expect(page.items).toHaveLength(100);expect(pages).toBe(1);expect(assertions).toBe(2);
+});
 it('stops a cancelled curator page before exposing further originals or marking them presented',async()=>{
  await note('first cancellation evidence');await note('second cancellation evidence');const run=await due(),controller=new AbortController();
  const exposed:string[]=[];let verified=0;
- host.verifySource=async()=>{verified++;return {state:'current',guard:{sql:'1',values:[]}};};
- host.expose=async(_,read)=>{exposed.push(read.id);controller.abort(new Error('curator_cancelled'));};
+ host.verifySource=async()=>{verified++;controller.abort(new Error('curator_cancelled'));return {state:'current',guard:{sql:'1',values:[]}};};
+ host.exposePage=async(_,reads)=>{exposed.push(...reads.map(read=>read.id));};
  await expect(curator.next(run.id,{limit:100},controller.signal)).rejects.toThrow('curator_cancelled');
- expect(verified).toBe(1);expect(exposed).toHaveLength(1);
+ expect(verified).toBe(1);expect(exposed).toHaveLength(0);
  expect((await curator.status(run.id)).counts).toMatchObject({pending:2,presented:0,evaluated:0});
  const alreadyAborted=AbortSignal.abort(new Error('cancelled_before_page'));
  await expect(curator.next(run.id,{},alreadyAborted)).rejects.toThrow('cancelled_before_page');
- expect(verified).toBe(1);expect(exposed).toHaveLength(1);
+ expect(verified).toBe(1);expect(exposed).toHaveLength(0);
  // A later explicit call may still read the unacknowledged originals.
- host.expose=async()=>{};expect((await curator.next(run.id)).items).toHaveLength(2);
+ host.verifySource=async()=>({state:'current',guard:{sql:'1',values:[]}});host.exposePage=async()=>{};expect((await curator.next(run.id)).items).toHaveLength(2);
 });
 it('samples only the requested canonical range without touching the daily cursor, backlog or capture gaps',async()=>{
  await note('outside before');const from=await head();await note('inside','explicit sample evidence');const to=await head();await note('outside after');
@@ -92,7 +103,7 @@ it('filters excluded and unenabled groups before page limit without exposing the
   await sql("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,tombstoned) VALUES(?,?,?,?,'message',?,?,?,1,0)",scope.sourceEpoch,scope.sourceGeneration,chat+'-message',chat,ref.id).run();
  }
  await sql("INSERT INTO assistant_conversation_policies VALUES(?,?,'excluded','private',1,'ignore',1)").run();
- const exposed:string[]=[];host.expose=async(_,read)=>{exposed.push(read.id);};const run=await due();const page=await curator.next(run.id,{limit:1});
+ const exposed:string[]=[];host.exposePage=async(_,reads)=>{exposed.push(...reads.map(read=>read.id));};const run=await due();const page=await curator.next(run.id,{limit:1});
  expect(page.items.map(i=>i.text)).toEqual(['direct useful']);expect(exposed).toEqual([direct.id]);
  expect((await curator.status(run.id)).counts.skipped_policy).toBe(2);
 });
@@ -132,7 +143,7 @@ it('binds a private curator event to a persisted window and never accepts owner/
 });
 it('rechecks all page dependencies together when a later original changes an earlier one',async()=>{
  const first=await note('earlier','must not escape after revocation');await note('later');const run=await due();
- host.expose=async(_,read)=>{if(read.id!==first.id)await sources.withdraw(first.id,1);};
+ host.exposePage=async(_,reads)=>{if(reads.some(read=>read.id!==first.id))await sources.withdraw(first.id,1);};
  await expect(curator.next(run.id)).rejects.toThrow('curator_source_changed');
 });
 it('preserves a captured but unmaterialized derivative gap until a later passage actually evaluates its canonical original',async()=>{

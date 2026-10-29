@@ -391,7 +391,11 @@ export class NativeApplicationHost {
     const fence=await this.origin.fence(read.id);if(!fence)return {state:'changed'};
     const result=await this.origin.checkContext(fence);return result.state==='current'?{state:'current',guard:this.origin.localContextGuard(fence)}:{state:result.state};
    },
-   expose:async(_runId,read)=>this.retention.exposeSource(identity,{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash}),
+   exposePage:async(_runId,reads,signal)=>{
+    const sources=reads.map(read=>JSON.parse(JSON.stringify(read.fence))),origins=[];
+    for(const read of reads){signal?.throwIfAborted();if(read.fence.source.origin!=='whatsapp')continue;const fence=await this.origin.fence(read.id);signal?.throwIfAborted();if(!fence)throw Error('conversation_exposure_proof');origins.push(fence);}
+    await this.retention.expose(identity,{sources,origins},signal);
+   },
   });
  }
  private async curatorFrame(task:TaskContext){
@@ -429,7 +433,7 @@ export class NativeApplicationHost {
    const {guard}=await this.authority(candidate);
    // Admission metadata only: this object cannot release or expose originals.
    const admission=new KnowledgeCurator(this.db,()=>this.currentScope(),{assertCurrent:async()=>{await this.authority(candidate);},authorityGuard:()=>guard,
-    verifySource:async()=>{throw Error('native_curator_admission_only');},expose:async()=>{throw Error('native_curator_admission_only');}});
+    verifySource:async()=>{throw Error('native_curator_admission_only');},exposePage:async()=>{throw Error('native_curator_admission_only');}});
    const run=await admission.beginSample(request.request),bound=await admission.bindSampleIdentity(run.id,candidate);
    const prior=await this.db.prepare(`SELECT c.tombstoned_at,e.state,e.task_ref FROM assistant_native_conversations c
     LEFT JOIN assistant_native_conversation_events e ON e.conversation_id=c.id AND e.event_id=?

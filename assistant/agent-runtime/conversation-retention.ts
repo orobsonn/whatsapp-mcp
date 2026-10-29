@@ -64,21 +64,22 @@ export class NativeConversationRetention {
   ))`,values:[...active.values,sessionId,scope.sourceEpoch,scope.sourceGeneration,...visible.values,scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration]};
  }
  private async isCurrent(sessionId:string){const guard=this.authorityGuard(sessionId);return !!await this.db.prepare(`SELECT 1 WHERE (${guard.sql})`).bind(...guard.values).first();}
- async assertCurrent(identity:ConversationIdentity):Promise<void>{
-  const id=await this.id(identity);let valid:boolean;
+ async assertCurrent(identity:ConversationIdentity,signal?:AbortSignal):Promise<void>{
+  signal?.throwIfAborted();const id=await this.id(identity);signal?.throwIfAborted();let valid:boolean;
   try{valid=await this.isCurrent(id);}catch{throw Error('conversation_context_unavailable');}
+  signal?.throwIfAborted();
   if(!valid){await this.purge(identity);throw Error('conversation_context_withdrawn');}
   // Keyset paging bounds each database call, never the retained corpus. A source
   // seen through multiple tools is observed once per assertion.
   let after='';const seen=new Set<string>();
-  for(;;){const page=await this.db.prepare(`SELECT id,origin_fence_json FROM assistant_native_context_exposures WHERE conversation_id=? AND id>? ORDER BY id LIMIT 64`).bind(id,after).all<{id:string;origin_fence_json:string|null}>();if(!page.results.length)break;
+  for(;;){signal?.throwIfAborted();const page=await this.db.prepare(`SELECT id,origin_fence_json FROM assistant_native_context_exposures WHERE conversation_id=? AND id>? ORDER BY id LIMIT 64`).bind(id,after).all<{id:string;origin_fence_json:string|null}>();signal?.throwIfAborted();if(!page.results.length)break;
    const fences:OriginFence[]=[];for(const row of page.results){after=row.id;if(!row.origin_fence_json)continue;const fence=JSON.parse(row.origin_fence_json) as OriginFence,key=JSON.stringify([fence.canonicalId,fence.revision,fence.version,fence.hash,fence.policyRevision]);if(!seen.has(key)){seen.add(key);fences.push(fence);}}
-   for(let start=0;start<fences.length;start+=8){const results=await Promise.all(fences.slice(start,start+8).map(f=>this.origin.checkContext(f)));
+   for(let start=0;start<fences.length;start+=8){signal?.throwIfAborted();const results=await Promise.all(fences.slice(start,start+8).map(f=>this.origin.checkContext(f)));signal?.throwIfAborted();
     if(results.some(r=>r.state==='changed')){await this.purge(identity);throw Error('conversation_context_withdrawn');}
     if(results.some(r=>r.state==='unavailable'))throw Error('conversation_context_unavailable');
    }
   }
-  if(!await this.isCurrent(id)){await this.purge(identity);throw Error('conversation_context_withdrawn');}
+  if(!await this.isCurrent(id)){await this.purge(identity);throw Error('conversation_context_withdrawn');}signal?.throwIfAborted();
  }
  async exposeSource(identity:ConversationIdentity,ref:SourceSelectionRef){
   const source=await this.access().read(owner,ref.id,ref.revision);if(!source||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash)throw Error('conversation_exposure_proof');
@@ -87,18 +88,24 @@ export class NativeConversationRetention {
  }
  /** Host callback invoked BEFORE returning any body or native dispatch. Source
   * refs in text/tool claims never become authority by themselves. */
- async expose(identity:ConversationIdentity,raw:ContextExposure){
-  const proof:ContextExposure=JSON.parse(JSON.stringify(raw)),id=await this.id(identity);await this.assertCurrent(identity);
+ async expose(identity:ConversationIdentity,raw:ContextExposure,signal?:AbortSignal){
+  signal?.throwIfAborted();const proof:ContextExposure=JSON.parse(JSON.stringify(raw)),id=await this.id(identity);signal?.throwIfAborted();await this.assertCurrent(identity,signal);
   for(const fence of proof.sources){sourceFence.parse(fence);if(fence.actor!=='knowledge:owner'||!fence.knowledge||!equalScope({...fence,...fence.knowledge},this.scope()))throw Error('conversation_exposure_proof');}
   if(proof.origins.some(o=>!proof.sources.some(f=>f.source.id===o.canonicalId&&f.source.revision===o.revision&&f.source.version===o.version&&f.source.origin==='whatsapp'))||proof.sources.some(f=>f.source.origin==='whatsapp'&&!proof.origins.some(o=>o.canonicalId===f.source.id&&o.revision===f.source.revision&&o.version===f.source.version)))throw Error('conversation_exposure_proof');
-  for(const fence of proof.origins){const result=await this.origin.checkContext(fence);if(result.state==='unavailable')throw Error('conversation_context_unavailable');if(result.state!=='current')throw Error('conversation_exposure_changed');}
-  for(const fence of proof.sources){const origin=proof.origins.find(o=>o.canonicalId===fence.source.id)??null,guards=[this.authorityGuard(id),this.access().guard(owner,fence,this.clock()),...(origin?[this.origin.localContextGuard(origin)]:[])];
-   const key=await bridgeHash([id,fence,origin]),result=await this.db.prepare(`INSERT INTO assistant_native_context_exposures(id,installation_id,generation,conversation_id,source_id,source_fence_json,origin_fence_json,created_at)
+  for(const fence of proof.origins){signal?.throwIfAborted();const result=await this.origin.checkContext(fence);signal?.throwIfAborted();if(result.state==='unavailable')throw Error('conversation_context_unavailable');if(result.state!=='current')throw Error('conversation_exposure_changed');}
+  for(const fence of proof.sources){signal?.throwIfAborted();const origin=proof.origins.find(o=>o.canonicalId===fence.source.id)??null,guards=[this.authorityGuard(id),this.access().guard(owner,fence,this.clock()),...(origin?[this.origin.localContextGuard(origin)]:[])];
+   const key=await bridgeHash([id,fence,origin]);signal?.throwIfAborted();
+   const result=await this.db.prepare(`INSERT INTO assistant_native_context_exposures(id,installation_id,generation,conversation_id,source_id,source_fence_json,origin_fence_json,created_at)
     SELECT ?,?,?,?,?,?,?,? WHERE ${guards.map(g=>`(${g.sql})`).join(' AND ')} ON CONFLICT DO NOTHING RETURNING id`)
     .bind(key,identity.installationId,identity.generation,id,fence.source.id,JSON.stringify(fence),origin?JSON.stringify(origin):null,this.clock(),...guards.flatMap(g=>g.values)).first();
-   if(!result){await this.assertCurrent(identity);const saved=await this.db.prepare('SELECT 1 FROM assistant_native_context_exposures WHERE id=?').bind(key).first();if(!saved)throw Error('conversation_exposure_changed');}
+   signal?.throwIfAborted();if(!result){
+    const saved=await this.db.prepare('SELECT 1 FROM assistant_native_context_exposures WHERE id=?').bind(key).first();signal?.throwIfAborted();
+    // A repeated exact exposure needs no per-item remote context traversal.
+    // The unchanged final assertion still fences the entire page before use.
+    if(!saved){await this.assertCurrent(identity,signal);throw Error('conversation_exposure_changed');}
+   }
   }
-  await this.assertCurrent(identity);
+  await this.assertCurrent(identity,signal);
  }
  /** Logical tombstone commits BEFORE abort/quiesce/physical native destruction.
   * A missing/failing port leaves explicit pending purge, never a deletion claim. */
