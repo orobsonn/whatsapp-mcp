@@ -250,6 +250,30 @@ export class KnowledgeCurator {
   await this.host.assertCurrent();this.current(scope);
   return {state:pending?'pending' as const:'reflected' as const,learned,pending};
  }
+ /** Recover accounting from existing ready receipts only. This is not another
+  * agent run, graph write or claim of exclusive authorship by this passage. */
+ async reconcileReady(runId:string){
+  const scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
+  let after='',learned=0,pending=0;
+  for(;;){
+   const operations=await this.db.prepare(`SELECT DISTINCT k.id FROM assistant_knowledge_operations k
+    JOIN assistant_curator_runs r ON r.installation_id=k.installation_id AND r.generation=k.generation AND r.id=?
+    JOIN assistant_curator_items i ON i.installation_id=r.installation_id AND i.generation=r.generation AND i.run_id=r.id AND i.state IN ('presented','indexing')
+    JOIN json_each(CASE WHEN json_valid(k.source_fences_json) THEN k.source_fences_json ELSE '{}' END,'$.sources') f
+    WHERE k.installation_id=? AND k.generation=? AND k.id>? AND k.created_at>=r.created_at AND k.client='curator' AND k.kind='remember' AND k.state='complete'
+     AND (k.error IS NULL OR k.error='outcome_uncertain') AND json_extract(CASE WHEN json_valid(k.response_json) THEN k.response_json ELSE '{}' END,'$.state')='ready'
+     AND json_extract(CASE WHEN json_valid(k.response_json) THEN k.response_json ELSE '{}' END,'$.operationId')=k.id
+     AND json_extract(f.value,'$.source.id')=i.source_id AND json_extract(f.value,'$.source.revision')=i.revision
+     AND json_extract(f.value,'$.source.version')=i.version AND json_extract(f.value,'$.source.hash')=i.source_hash ORDER BY k.id LIMIT 64`)
+    .bind(runId,...this.keys(scope),after).all<{id:string}>();this.current(scope);if(!operations.results.length)break;
+   for(const operation of operations.results){
+    after=operation.id;try{const reflected=await this.reflectReady(runId,operation.id);learned+=reflected.learned;pending+=reflected.pending;}
+    catch{pending++;}
+   }
+   await this.host.assertCurrent();this.current(scope);
+  }
+  await this.host.assertCurrent();this.current(scope);return {state:pending?'pending' as const:'reflected' as const,learned,pending};
+ }
  async status(runId:string):Promise<CuratorReceipt>{
   const scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
   const rows=await this.db.prepare('SELECT state,COUNT(*) count FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? GROUP BY state').bind(...this.keys(scope),runId).all<{state:CuratorItemState;count:number}>();

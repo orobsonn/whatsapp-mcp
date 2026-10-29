@@ -220,3 +220,17 @@ it('keeps reflection pending after original evidence is revoked',async()=>{
  expect(await curator.reflectReady(revoked.run.id,revoked.operationId)).toMatchObject({state:'pending',learned:0,pending:1});
  expect((await sql('SELECT state FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=?',revoked.operationId).first('state'))).toBe('complete');
 });
+it('reconciles an existing ready write after a mangled bookkeeping id without another memory write or daily cursor change',async()=>{
+ const from=await head();await note('recover sample','Original evidence for learning.');const to=await head(),run=await curator.beginSample({operationId:'recover-existing-ready',window:sampleWindow(from,to)}),item=(await curator.next(run.id)).items[0];
+ let writes=0;const operationId='conversation-knowledge-v1-'+ 'a'.repeat(30)+'596'+'b'.repeat(31),service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),{remember:async id=>{writes++;return {operationId:id,state:'ready'};},status:async id=>({operationId:id,state:'ready'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async id=>({operationId:id,state:'ready'})},()=>now);
+ await service.execute({kind:'remember',operationId,entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:item.sourceRef,quote:'Original evidence for learning.'}]}]});
+ await expect(curator.acknowledge(run.id,item.sequence,{state:'learned',operationIds:[operationId.replace('596','')]})).rejects.toThrow('curator_knowledge_receipt');
+ expect(await curator.reconcileReady(run.id)).toMatchObject({state:'reflected',learned:1,pending:0});expect(await curator.reconcileReady(run.id)).toMatchObject({state:'reflected',learned:0,pending:0});
+ expect((await curator.finish(run.id)).state).toBe('complete');expect(writes).toBe(1);expect(await sql('SELECT COUNT(*) n FROM assistant_curator_state WHERE installation_id=? AND generation=?').first('n')).toBe(0);
+});
+it('does not recover a ready receipt which predates the current passage',async()=>{
+ const source=await note('older learning','Original evidence for learning.'),read=(await new (await import('../assistant/access')).SourceAccess(env.DB,scope,()=>now,'knowledge').read(owner,source.id))!,ref={id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash};
+ const service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),{remember:async operationId=>({operationId,state:'ready'}),status:async operationId=>({operationId,state:'ready'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async operationId=>({operationId,state:'ready'})},()=>now);
+ await service.execute({kind:'remember',operationId:'before-current-passage',entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:ref,quote:'Original evidence for learning.'}]}]});
+ const run=await due();await curator.next(run.id);expect(await curator.reconcileReady(run.id)).toMatchObject({learned:0,pending:0});expect((await curator.status(run.id)).counts.presented).toBe(1);
+});
