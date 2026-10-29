@@ -102,3 +102,25 @@ test('an owner report completion after purge stays terminal even when its Source
  const execute=SourceController.prototype.execute,spy=vi.spyOn(SourceController.prototype,'execute').mockImplementation(async function(this:SourceController,raw){const result=await execute.call(this,raw);if((raw as {kind:string}).kind==='source.report'){sourceId=result.id;enter();await waiting;}return result;});
  try{const pending=service.execute({kind:'context.report',operationId:'late-report',text:'private delayed report'});await entered;await controller.withdraw(sourceId,1);expect(await purge(sourceId)).toMatchObject({state:'complete'});release();expect(await pending).toEqual(terminal('late-report'));expect(await operation('late-report')).toMatchObject({request_json:'{}',normalized_json:null,error:'source_purged'});}finally{spy.mockRestore();release();}
 });
+
+test('native host admission links purge owner Telegram originals and retained frames without touching another request',async()=>{
+ const a=await report('host-owner-a','private owner input A'),b=await report('host-owner-b','private owner input B');
+ const dependent=await session(a.id,false),independent=await session(b.id,false);
+ // Only the host admission retains the source association here: the source
+ // must still invalidate a frame whose event payload no longer carries it.
+ await env.DB.prepare("UPDATE assistant_native_conversation_events SET event_json=? WHERE conversation_id=?").bind(JSON.stringify({body:'private native copy A'}),dependent.id).run();
+ for(const [record,ref,updateId] of [[dependent,a,77],[independent,b,78]] as const){
+  await env.DB.batch([
+   env.DB.prepare(`INSERT INTO assistant_native_host_events(installation_id,generation,conversation_id,event_id,event_revision,request_hash,source_id,source_ref_json,original_sequence,owner_link_json,created_at) VALUES(?,?,?, ?,1,'hash',?,?,NULL,'{}',1)`).bind(context.scope.installationId,context.scope.generation,record.id,'telegram:synthetic_bot:'+updateId,ref.id,JSON.stringify(ref)),
+   env.DB.prepare(`INSERT INTO assistant_native_owner_responses(installation_id,generation,context_ref,conversation_id,request_hash,link_json,thread_id,state,created_at) VALUES(?,?,?,?, 'hash','{}',1,'attempting',1)`).bind(context.scope.installationId,context.scope.generation,'context:'+record.id,record.id),
+   env.DB.prepare(`INSERT INTO assistant_telegram_updates(installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at) VALUES(?,?,'synthetic_bot',?,?,'token','epoch','source',1,'101','101',?,1,1,?,'pending','pending',1)`).bind(context.scope.installationId,context.scope.generation,updateId,'0'.repeat(64),updateId,ref.id===a.id?'private owner input A':'private owner input B'),
+  ]);
+ }
+ await controller.withdraw(a.id,1);expect(await purge(a.id)).toMatchObject({state:'complete',nativeContexts:'tombstoned_pending_physical'});
+ expect(await env.DB.prepare('SELECT tombstoned_at FROM assistant_native_conversations WHERE id=?').bind(dependent.id).first('tombstoned_at')).toBe(200);
+ expect(await env.DB.prepare('SELECT source_ref_json,owner_link_json FROM assistant_native_host_events WHERE conversation_id=?').bind(dependent.id).first()).toEqual({source_ref_json:'{}',owner_link_json:null});
+ expect(await env.DB.prepare('SELECT state FROM assistant_native_owner_responses WHERE conversation_id=?').bind(dependent.id).first('state')).toBe('cancelled');
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=77').bind(context.scope.installationId).first()).toEqual({text:null,state:'cancelled'});
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=78').bind(context.scope.installationId).first()).toEqual({text:'private owner input B',state:'pending'});
+ expect(await env.DB.prepare('SELECT tombstoned_at FROM assistant_native_conversations WHERE id=?').bind(independent.id).first('tombstoned_at')).toBeNull();
+});
