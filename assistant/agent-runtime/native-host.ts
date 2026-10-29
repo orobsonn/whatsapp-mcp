@@ -332,6 +332,11 @@ export class NativeApplicationHost {
    if(prior&&(prior.tombstoned_at!==null||prior.state==='withdrawn'))return {state:'retired' as const,runId:run.id,sessionId:bound.sessionId,...(prior.task_ref?{taskRef:prior.task_ref}:{})};
    await this.authority(bound.identity);await this.retention.register(bound.identity);
    const curator=await this.curator(bound.identity);
+   if(prior?.task_ref){
+    await this.registered(bound.sessionId);
+    await curator.reconcileReady(run.id);
+    await curator.finish(run.id); // Accounting only; a claimed notice is not resent.
+   }
    return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
   }
   const identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
