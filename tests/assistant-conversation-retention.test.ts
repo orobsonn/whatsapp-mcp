@@ -70,6 +70,16 @@ it('suspends unavailable Reader checks without tombstoning and resumes the same 
  await expect(retention.assertCurrent(a.id)).rejects.toThrow('conversation_context_unavailable');expect(destroyed).toEqual([]);
  unavailable=false;await expect(retention.assertCurrent(a.id)).resolves.toBeUndefined();
 });
+it.each(['reader','local'] as const)('diagnoses %s proof failure without logging evidence or arbitrary exception text',async phase=>{
+ const origin=await captured(),a=await admit(),source=(await new SourceAccess(env.DB,scope,()=>100,'knowledge').read({kind:'owner'},ref.id))!;
+ await retention.expose(a.id,{sources:[source.fence],origins:[origin]});
+ const warning=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ if(phase==='reader')unavailable=true;else vi.spyOn(guard,'fence').mockRejectedValueOnce(Error('PRIVATE_SENTINEL SQL source-chat Nora leads Cedar.'));
+ await expect(retention.assertCurrent(a.id)).rejects.toThrow('conversation_context_unavailable');
+ expect(warning).toHaveBeenCalledWith('native_context_proof_diagnostic',expect.objectContaining({phase:phase==='reader'?'reader_rpc':'pre_fence_sql',reason:phase==='reader'?'reader_unavailable':'exception',sourceKind:'message'}));
+ const logged=JSON.stringify(warning.mock.calls);for(const privateValue of ['PRIVATE_SENTINEL','Nora','source-chat',ref.id])expect(logged).not.toContain(privateValue);
+ expect(destroyed).toEqual([]);
+});
 it('registers event source dependencies before native dispatch and denies unsupported WhatsApp proofs',async()=>{
  await captured();const a=await admit('chat-A','event',ref);expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM assistant_native_context_exposures WHERE conversation_id=?').bind(a.receipt.sessionId).first()).toEqual({count:1});
  const source=(await new SourceAccess(env.DB,scope,()=>100,'knowledge').read({kind:'owner'},ref.id))!;

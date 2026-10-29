@@ -31,6 +31,12 @@ export type Observation = {
   state: "available" | "withdrawn" | "blocked"; reason: string | null; watermark: number | null;
   kind: "private" | "group" | null; conversationWithdrawn?: boolean; hash: string | null; sourceVersion: number | null; content: z.infer<typeof content> | null;
 };
+export type OriginDiagnostic={phase:'pre_fence_sql'|'reader_rpc'|'snapshot_parse'|'post_fence_sql';reason:string;elapsedMs:number};
+const diagnosticReasons=new Set(['exception','reader_timeout','reader_unavailable','source_unavailable','snapshot_too_large','snapshot_identity_mismatch','snapshot_incomplete','version_mismatch','media_unavailable','message_unavailable','derivative_unavailable','derivative_without_text']);
+function originDiagnostic(report:((event:OriginDiagnostic)=>void)|undefined,phase:OriginDiagnostic['phase'],reason:string,started:number){
+ // Closed vocabulary only: never record provider exception text, IDs or bodies.
+ try{report?.({phase,reason:diagnosticReasons.has(reason)?reason:'exception',elapsedMs:Math.max(0,Date.now()-started)});}catch{/* Diagnostics cannot alter authority. */}
+}
 export type OriginFence = OriginScope & OriginRef & { canonicalId: string; revision: number; version: number;
   watermark: number; hash: string; conversationKind: "private" | "group"; policyRevision: number; policyMode: string };
 type OriginRow = { source_kind: OriginRef["sourceKind"]; source_id: string; chat_id: string; watermark: number; observation_hash: string;
@@ -64,8 +70,9 @@ export class OriginGuard {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) throw new Error("origin_reader_deadline");
     if (purpose !== "automation" && purpose !== "owner_read") throw new Error("origin_reader_purpose");
   }
-  async observe(scope: OriginScope, ref: OriginRef): Promise<Observation> {
-    const blocked = (reason: string): Observation => ({ state: "blocked", reason, watermark: null, kind: null, hash: null, sourceVersion: null, content: null });
+  async observe(scope: OriginScope, ref: OriginRef,report?:(event:OriginDiagnostic)=>void): Promise<Observation> {
+    const started=Date.now();let phase:OriginDiagnostic['phase']='reader_rpc';
+    const blocked = (reason: string): Observation => {originDiagnostic(report,phase,reason,started);return { state: "blocked", reason, watermark: null, kind: null, hash: null, sourceVersion: null, content: null };};
     let parsed: z.infer<typeof snapshot>;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -73,6 +80,7 @@ export class OriginGuard {
         this.reader.readSnapshot({ sourceKind: ref.sourceKind, sourceId: ref.sourceId, chatId: ref.chatId, sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration, secret: this.secret }),
         new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("reader_timeout")), this.timeoutMs); }),
       ]);
+      phase='snapshot_parse';
       // Own every nested field synchronously before hashing yields.
       const serialized = JSON.stringify(raw);
       if (new TextEncoder().encode(serialized).length > 32768) return blocked("snapshot_too_large");
@@ -83,6 +91,7 @@ export class OriginGuard {
       parsed.sourceId !== ref.sourceId || parsed.sourceKind !== ref.sourceKind) return blocked("snapshot_identity_mismatch");
     if (parsed.state === "blocked") {
       const known = ["reader_unavailable", "source_unavailable", "snapshot_too_large", "version_mismatch", "media_unavailable", "message_unavailable", "derivative_unavailable", "derivative_without_text"];
+      phase='reader_rpc';
       return blocked(known.includes(parsed.reason ?? "") ? parsed.reason! : "source_unavailable");
     }
     if (!Number.isSafeInteger(parsed.watermark) || !parsed.conversationKind || !parsed.access) return blocked("snapshot_incomplete");
@@ -155,19 +164,20 @@ export class OriginGuard {
   }
   /** A newer chat watermark only supersedes action intent. It does not change
    * evidence already held in a native transcript or summary. */
-  async checkContext(fence:OriginFence,isCurrent:()=>boolean=()=>true):Promise<{state:'current'|'changed'|'unavailable'}> {
+  async checkContext(fence:OriginFence,isCurrent:()=>boolean=()=>true,report?:(event:OriginDiagnostic)=>void):Promise<{state:'current'|'changed'|'unavailable'}> {
     if(!fence)return {state:'changed'};
     fence=JSON.parse(JSON.stringify(fence)) as OriginFence;
     const equal=(a:OriginFence|null)=>!!a&&sameFence({...a,watermark:fence.watermark},fence);
     if(!isCurrent()||!fence||JSON.stringify(scopeKeys(activeOrigin(this.getScope)))!==JSON.stringify(scopeKeys(fence)))return {state:'changed'};
+    const started=Date.now();let phase:OriginDiagnostic['phase']='pre_fence_sql';
     try {
       if(!equal(await this.fence(fence.canonicalId)))return {state:'changed'};
-      const observed=await this.observe(fence,fence);
+      phase='reader_rpc';const observed=await this.observe(fence,fence,report);
       if(!isCurrent()||JSON.stringify(scopeKeys(activeOrigin(this.getScope)))!==JSON.stringify(scopeKeys(fence)))return {state:'changed'};
       if(observed.state==='blocked')return {state:observed.reason==='snapshot_identity_mismatch'?'changed':'unavailable'};
       if(observed.state!=='available'||observed.hash!==fence.hash||observed.kind!==fence.conversationKind)return {state:'changed'};
-      return {state:equal(await this.fence(fence.canonicalId))&&isCurrent()?'current':'changed'};
-    } catch { return {state:'unavailable'}; }
+      phase='post_fence_sql';return {state:equal(await this.fence(fence.canonicalId))&&isCurrent()?'current':'changed'};
+    } catch { originDiagnostic(report,phase,'exception',started);return {state:'unavailable'}; }
   }
   async check(fence: OriginFence,isCurrent:()=>boolean=()=>true): Promise<boolean> {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;

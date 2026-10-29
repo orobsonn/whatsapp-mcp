@@ -66,20 +66,23 @@ export class NativeConversationRetention {
  private async isCurrent(sessionId:string){const guard=this.authorityGuard(sessionId);return !!await this.db.prepare(`SELECT 1 WHERE (${guard.sql})`).bind(...guard.values).first();}
  async assertCurrent(identity:ConversationIdentity,signal?:AbortSignal):Promise<void>{
   signal?.throwIfAborted();const id=await this.id(identity);signal?.throwIfAborted();let valid:boolean;
-  try{valid=await this.isCurrent(id);}catch{throw Error('conversation_context_unavailable');}
+  const began=Date.now(),report=(data:Record<string,unknown>)=>{try{console.warn('native_context_proof_diagnostic',data);}catch{/* No authority depends on logging. */}};
+  try{valid=await this.isCurrent(id);}catch{report({phase:'initial_context_sql',reason:'exception',elapsedMs:Date.now()-began});throw Error('conversation_context_unavailable');}
   signal?.throwIfAborted();
   if(!valid){await this.purge(identity);throw Error('conversation_context_withdrawn');}
   // Keyset paging bounds each database call, never the retained corpus. A source
   // seen through multiple tools is observed once per assertion.
-  let after='';const seen=new Set<string>();
+  let after='',pageNumber=0,started=0,completed=0;const seen=new Set<string>();
   for(;;){signal?.throwIfAborted();const page=await this.db.prepare(`SELECT id,origin_fence_json FROM assistant_native_context_exposures WHERE conversation_id=? AND id>? ORDER BY id LIMIT 64`).bind(id,after).all<{id:string;origin_fence_json:string|null}>();signal?.throwIfAborted();if(!page.results.length)break;
+   pageNumber++;
    const fences:OriginFence[]=[];for(const row of page.results){after=row.id;if(!row.origin_fence_json)continue;const fence=JSON.parse(row.origin_fence_json) as OriginFence,key=JSON.stringify([fence.canonicalId,fence.revision,fence.version,fence.hash,fence.policyRevision]);if(!seen.has(key)){seen.add(key);fences.push(fence);}}
-   for(let start=0;start<fences.length;start+=8){signal?.throwIfAborted();const results=await Promise.all(fences.slice(start,start+8).map(f=>this.origin.checkContext(f)));signal?.throwIfAborted();
+   for(let start=0;start<fences.length;start+=8){signal?.throwIfAborted();const results=await Promise.all(fences.slice(start,start+8).map(async(f,index)=>{started++;const result=await this.origin.checkContext(f,()=>!signal?.aborted,event=>report({...event,sourceKind:f.sourceKind,page:pageNumber,ordinal:start+index,started,completed,cancelled:signal?.aborted===true}));completed++;return result;}));signal?.throwIfAborted();
     if(results.some(r=>r.state==='changed')){await this.purge(identity);throw Error('conversation_context_withdrawn');}
     if(results.some(r=>r.state==='unavailable'))throw Error('conversation_context_unavailable');
    }
   }
-  if(!await this.isCurrent(id)){await this.purge(identity);throw Error('conversation_context_withdrawn');}signal?.throwIfAborted();
+  let final:boolean;try{final=await this.isCurrent(id);}catch(error){report({phase:'final_context_sql',reason:'exception',elapsedMs:Date.now()-began,started,completed});throw error;}
+  if(!final){await this.purge(identity);throw Error('conversation_context_withdrawn');}signal?.throwIfAborted();
  }
  async exposeSource(identity:ConversationIdentity,ref:SourceSelectionRef){
   const source=await this.access().read(owner,ref.id,ref.revision);if(!source||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash)throw Error('conversation_exposure_proof');
