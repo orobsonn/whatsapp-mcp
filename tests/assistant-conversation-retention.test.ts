@@ -12,6 +12,7 @@ let scope:{installationId:string;generation:string;sourceEpoch:string;sourceGene
 let ref:{id:string;revision:number;version:number;hash:string};
 let snapshot:any,unavailable:boolean,guard:OriginGuard;
 let destroyed:string[],steps:string[];
+let host:ConversationHost;
 const port:KnowledgePort={async remember(operationId:string){return {operationId,state:'ready' as const};},async status(operationId:string){return {operationId,state:'ready' as const};},async query(){return {claims:[]};},async get_entity(){return null;},async find_entities(){return {entities:[]};},async withdraw(operationId:string){return {operationId,state:'ready' as const};}};
 beforeEach(async()=>{
  vi.restoreAllMocks();
@@ -20,7 +21,7 @@ beforeEach(async()=>{
  unavailable=false;destroyed=[];steps=[];
  guard=new OriginGuard(env.DB,()=>scope,{async readSnapshot(){if(unavailable)throw Error('offline');return snapshot;}},'synthetic');
  retention=new NativeConversationRetention(env.DB,()=>scope,guard,{async abort(id){steps.push('abort');},async quiesce(id){steps.push('quiesce');},async destroy(id){steps.push('destroy');destroyed.push(id);}},()=>100);
- const host:ConversationHost={async authority(){return {ownerId:'owner',sourceEpoch:'e1',sourceGeneration:'sg1',policyRevision:1,grantRef:'host',mode:'shadow'};},async authorizeEvent(){},open(){return {async dispatch(){return {submissionId:'s',uid:'u',acceptedAt:new Date(0).toISOString()};},async read(){return {text:'synthetic',data:{},submissionId:'s'};}};},knowledge(task){return new KnowledgeService(env.DB,()=>task.knowledge,port,()=>100,undefined,guard);},retention};
+ host={async authority(){return {ownerId:'owner',sourceEpoch:'e1',sourceGeneration:'sg1',policyRevision:1,grantRef:'host',mode:'shadow'};},async authorizeEvent(){},open(){return {async dispatch(){return {submissionId:'s',uid:'u',acceptedAt:new Date(0).toISOString()};},async read(){return {text:'synthetic',data:{},submissionId:'s'};}};},knowledge(task){return new KnowledgeService(env.DB,()=>task.knowledge,port,()=>100,undefined,guard);},retention};
  runtime=new ConversationRuntime(env.DB,host,()=>100);
  const service=new KnowledgeService(env.DB,()=>({scope,client:'owner_mcp'}),port,()=>100);
  ref=(await service.execute({kind:'context.report',operationId:'report',text:'Nora leads Cedar.'})).sourceRef;
@@ -100,4 +101,46 @@ it('never claims physical deletion when the native destroy port is absent or fai
  const failing=new NativeConversationRetention(env.DB,()=>scope,guard,{async abort(){},async quiesce(){},async destroy(){throw Error('native unavailable');}},()=>100);
  expect(await failing.purge(a.id)).toEqual({state:'tombstoned',sessionId:a.receipt.sessionId});
  expect(await env.DB.prepare('SELECT state FROM assistant_native_context_purges WHERE conversation_id=?').bind(a.receipt.sessionId).first()).toEqual({state:'tombstoned'});
+});
+
+// Fault injection at statement execution, after all awaited authority checks.
+function raceAtIntentSql(kind:'read'|'insert',mutate:()=>Promise<void>){
+ let injected=false;
+ return {get injected(){return injected;},db:new Proxy(env.DB,{get(db,key){
+  if(key!=='prepare'){const value=Reflect.get(db,key);return typeof value==='function'?value.bind(db):value;}
+  return (sql:string)=>{
+   const matches=kind==='read'?sql.startsWith('SELECT id,state,request_hash AS requestHash'):sql.startsWith('INSERT INTO assistant_native_reply_intents');
+   const wrap=(statement:D1PreparedStatement):D1PreparedStatement=>new Proxy(statement,{get(statement,method){
+    if(method==='bind')return (...values:unknown[])=>wrap(statement.bind(...values));
+    const value=Reflect.get(statement,method);
+    if(matches&&method===(kind==='read'?'first':'run'))return async(...args:unknown[])=>{if(!injected){injected=true;await mutate();}return value.apply(statement,args);};
+    return typeof value==='function'?value.bind(statement):value;
+   }});
+   return wrap(db.prepare(sql));
+  };
+ }})};
+}
+async function taskFor(a:Awaited<ReturnType<typeof admit>>){
+ const stored=await env.DB.prepare('SELECT event_json FROM assistant_native_conversation_events WHERE task_ref=?').bind(a.receipt.taskRef).first<{event_json:string}>();
+ const {identity:_,...body}=JSON.parse(stored!.event_json);
+ return runtime.resolveTask(a.id,{kind:'signal',type:'assistant.conversation.incoming',attributes:{taskRef:a.receipt.taskRef},body:JSON.stringify(body)});
+}
+it.each(['proposed','approved'] as const)('denies %s status when withdrawal occurs exactly at final intent SQL',async(state)=>{
+ const a=await admit();await expose(a.id);const task=await taskFor(a),intent=await runtime.proposeReply(task,'Synthetic reply');
+ await env.DB.prepare('UPDATE assistant_native_reply_intents SET state=? WHERE id=?').bind(state,intent.id).run();
+ const race=raceAtIntentSql('read',async()=>{await new SourceController(env.DB,scope,{kind:'owner'},()=>100).withdraw(ref.id,1);});
+ const raced=new ConversationRuntime(race.db,host,()=>100);
+ await expect(raced.intentStatus(task,intent.id)).rejects.toThrow('conversation_context_withdrawn');expect(race.injected).toBe(true);
+});
+it.each(['withdraw','correction','exclusion'] as const)('does not persist an intent when %s occurs exactly at final intent SQL',async(kind)=>{
+ if(kind==='exclusion')await captured();const a=await admit('chat-A','event',ref),task=await taskFor(a);
+ const race=raceAtIntentSql('insert',async()=>{
+  const sources=new SourceController(env.DB,scope,{kind:'owner'},()=>100);
+  if(kind==='withdraw')await sources.withdraw(ref.id,1);
+  else if(kind==='correction')await sources.correctReport(ref.id,1,{text:'Corrected',occurredAt:2});
+  else await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,excluded) VALUES(?,?,'source-chat','private',1)").bind(scope.installationId,scope.generation).run();
+ });
+ const raced=new ConversationRuntime(race.db,host,()=>100);
+ await expect(raced.proposeReply(task,'Synthetic reply')).rejects.toThrow('conversation_context_withdrawn');expect(race.injected).toBe(true);
+ expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM assistant_native_reply_intents WHERE conversation_id=?').bind(a.receipt.sessionId).first()).toEqual({count:0});
 });

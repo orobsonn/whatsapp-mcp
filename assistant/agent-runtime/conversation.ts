@@ -173,17 +173,21 @@ export class ConversationRuntime {
  async proposeReply(task:TaskContext,text:string){
   await this.assertTaskCurrent(task);if(typeof text!=='string'||!text.trim())throw Error('conversation_reply_empty');
   const id='conversation-intent-v1-'+await bridgeHash(task.contextRef),hash=await bridgeHash([task.returnChannel,text]);
+  const guard=this.host.retention?.authorityGuard(task.sessionId)??{sql:'1',values:[]};
   await this.db.prepare(`INSERT INTO assistant_native_reply_intents(id,conversation_id,context_ref,watermark,request_hash,state,created_at)
    SELECT ?,?,?,?,?,CASE WHEN ?=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?) THEN 'proposed' ELSE 'superseded' END,?
-   WHERE EXISTS(SELECT 1 FROM assistant_native_conversations WHERE id=? AND tombstoned_at IS NULL) ON CONFLICT DO NOTHING`)
-   .bind(id,task.sessionId,task.contextRef,task.watermark,hash,task.watermark,task.sessionId,this.clock(),task.sessionId).run();
+   WHERE EXISTS(SELECT 1 FROM assistant_native_conversations WHERE id=? AND tombstoned_at IS NULL) AND (${guard.sql}) ON CONFLICT DO NOTHING`)
+   .bind(id,task.sessionId,task.contextRef,task.watermark,hash,task.watermark,task.sessionId,this.clock(),task.sessionId,...guard.values).run();
   const result=await this.intentStatus(task,id);if(result.requestHash!==hash)throw Error('conversation_intent_conflict');return result;
  }
  async intentStatus(task:TaskContext,id:string){
   await this.assertTaskCurrent(task);
-  const row=await this.db.prepare('SELECT id,state,request_hash AS requestHash,watermark FROM assistant_native_reply_intents WHERE id=? AND conversation_id=? AND context_ref=?')
-   .bind(id,task.sessionId,task.contextRef).first<{id:string;state:string;requestHash:string;watermark:number}>();
-  if(!row)throw Error('conversation_intent_unavailable');return immutable(row);
+  const guard=this.host.retention?.authorityGuard(task.sessionId)??{sql:'1',values:[]};
+  // The source/policy latch shares the final read snapshot. An awaited check
+  // alone cannot authorize a receipt after concurrent withdrawal/correction.
+  const row=await this.db.prepare(`SELECT id,state,request_hash AS requestHash,watermark FROM assistant_native_reply_intents WHERE id=? AND conversation_id=? AND context_ref=? AND (${guard.sql})`)
+   .bind(id,task.sessionId,task.contextRef,...guard.values).first<{id:string;state:string;requestHash:string;watermark:number}>();
+  if(!row){await this.assertTaskCurrent(task);throw Error('conversation_intent_unavailable');}return immutable(row);
  }
  /** Host invalidation hook. This denies the old epoch and drops its event bodies;
   * it does NOT claim physical Flue transcript/compaction deletion (P5). Never
