@@ -17,7 +17,7 @@ import {telegramLinkGuard} from '../assistant/telegram-auth';
 import type {TelegramApi} from '../assistant/telegram';
 const secret='synthetic-native-send-secret-at-least-32',bot='native_test_bot',key='synthetic-native-telegram-key-at-least-32';
 beforeEach(async()=>{await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
-async function fixture(group=false,text='Resposta integral\ncom <todas> as linhas & 😀. ',sourceKind:'message'|'derivative'|'media'='message'){
+async function fixture(group=false,text='Resposta integral\ncom <todas> as linhas & 😀. ',sourceKind:'message'|'derivative'|'media'='message',media?:{kind:'image'|'pdf';caption?:string|null;spoof?:boolean}){
  const scope={installationId:crypto.randomUUID(),generation:'own-g1',sourceEpoch:'e1',sourceGeneration:'g1'};let currentScope={...scope};
  let review:NativeTelegramReplyReview,sourceAttempts=0,noticeLost=false,sourceLost=false,telegramMessageId=200;
  const sourceSent:unknown[]=[];
@@ -25,13 +25,15 @@ async function fixture(group=false,text='Resposta integral\ncom <todas> as linha
   ASSISTANT_OWNER:{nativeReplyAuthorization:async(_scope:unknown,input:Parameters<NativeTelegramReplyReview['authorize']>[0])=>review.authorize(input),approvedSendAuthorization:async()=>{throw Error('legacy_human_proof_forbidden');}} as unknown as Env['ASSISTANT_OWNER']};
  const address=group?'120363999999999999-group':'5585999999999';
  const {items}=await upsertDirectoryPage(e,{epoch:'e1',generation:'g1'},{items:[{externalId:address,kind:group?'group':'individual',name:'Nome <da conversa>'}],complete:true});const chatId=items[0]!.id;
- const received='*_Nina:_*\nVocê pode <confirmar> & responder? 😀';
+ const content:{kind:string;text?:string|null;messageId:string;messageVersion:number;fromMe?:boolean;authorId?:string;media?:{id:string;version:number;hash:string;size:number;mime:string}}=media&&!media.spoof?{kind:media.kind,...(sourceKind==='media'?{}:{text:media.caption??null}),authorId:'nina',fromMe:false,messageId:'source-message',messageVersion:1,media:{id:'media-one',version:1,hash:'a'.repeat(64),size:100,mime:media.kind==='image'?'image/jpeg':'application/pdf'}}:{kind:'text',text:media?.spoof?JSON.stringify({kind:media.kind,media:{url:'https://private.invalid/secret'}}):'*_Nina:_*\nVocê pode <confirmar> & responder? 😀',messageId:'source-message',messageVersion:1};
+ const received=typeof content.text==='string'?content.text:JSON.stringify(content);
  const incoming=(id:string,fromMe=false)=>ingestEvent(e,{epoch:'e1',generation:'g1'},{chatExternalId:address,chatKind:group?'group':'individual',externalId:id,authorExternalId:group?'5585777777777':undefined,authorName:'Nina',fromMe,kind:'text',text:received,timestamp:Date.now()});
  await incoming('source-incoming');
  const activity=await conversationActivity(e,chatId);if(activity.state!=='available')throw Error('fixture_activity');const trigger=activity.latestIncomingOriginalSequence;
  const ref0=await new SourceController(env.DB,scope,{kind:'owner'}).createReport({originKey:'synthetic-context',text:received,authorLabel:'Nina <informada>',occurredAt:Date.now()});
- const snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:'e1',sourceGeneration:'g1',sourceKind,sourceId:'source-message',chatId,sourceVersion:1,watermark:1,conversationKind:group?'group':'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:received,messageId:'source-message',messageVersion:1}};
- const origin=new OriginGuard(env.DB,()=>scope,{readSnapshot:async()=>snapshot},secret),observed=await origin.observe(scope,{sourceKind,sourceId:'source-message',chatId});
+ const snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:'e1',sourceGeneration:'g1',sourceKind,sourceId:'source-message',chatId,sourceVersion:1,watermark:1,conversationKind:group?'group':'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content};
+ const parent={...snapshot,sourceKind:'message',content:{...content,text:media?.caption??null}};
+ const origin=new OriginGuard(env.DB,()=>scope,{readSnapshot:async q=>sourceKind==='media'&&q.sourceKind==='message'?parent:snapshot},secret),observed=await origin.observe(scope,{sourceKind,sourceId:'source-message',chatId});
  await env.DB.batch([
   env.DB.prepare("UPDATE assistant_sources SET origin='whatsapp',conversation_id=? WHERE installation_id=? AND generation=? AND id=?").bind(chatId,scope.installationId,scope.generation,ref0.id),
   env.DB.prepare('INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,?,\'available\')').bind(scope.installationId,scope.generation,'e1','g1',chatId,group?'group':'private'),
@@ -56,7 +58,7 @@ async function fixture(group=false,text='Resposta integral\ncom <todas> as linha
  const host:NativeTelegramReplyReviewHost={db:env.DB,scope,getScope:()=>currentScope,botInstance:bot,key,api,actions,contextReader:t=>readNativeReplyReviewContext(env.DB,scope,origin,t),authorityGuard:()=>telegramLinkGuard(fence)};
  review=new NativeTelegramReplyReview(host);
  const callback=(button=0,updateId=100)=>({update_id:updateId,callback_query:{id:'query-'+updateId,from:{id:101,is_bot:false},chat_instance:'transport-chat',data:messages[0].buttons[0][button].callback_data,message:{message_id:messages[0].messageId,date:messages[0].date,message_thread_id:42,chat:{id:101,type:'private'}}}});
- return {review,host,actions,intentId,task,proposal,ref,scope,e,api,messages,sourceSent,address,chatId,origin,retention,snapshot,callback,admit,incoming,received,text,
+ return {review,host,actions,intentId,task,proposal,ref,scope,e,api,messages,sourceSent,address,chatId,origin,retention,snapshot,parent,callback,admit,incoming,received,text,
   dispatch:()=>review.dispatch(intentId,'native-notice-1'),attempts:()=>sourceAttempts,loseNotice:()=>{noticeLost=true;},loseSource:()=>{sourceLost=true;},replaceScope:()=>{currentScope={...scope,sourceGeneration:'replaced'};},
   revokeLink:()=>env.DB.prepare("UPDATE assistant_telegram_links SET revision=revision+1,state='revoked',user_id=NULL,chat_id=NULL,activation_cut=NULL WHERE installation_id=?").bind(scope.installationId).run()};
 }
@@ -79,6 +81,22 @@ describe('native owner Telegram review, real D1/Source action and fake providers
  it('does not approve raw media as a ready received text even if an adapter supplies a text field',async()=>{
   const f=await fixture(false,'resposta','media');
   await expect(f.dispatch()).rejects.toThrow('native_review_context_changed');expect(f.messages).toHaveLength(0);expect(f.attempts()).toBe(0);
+ });
+ it.each(['image','pdf'] as const)('reviews authenticated %s metadata without presenting metadata JSON as original text',async kind=>{
+  const f=await fixture(false,'Pode me esclarecer esse anexo?','media',{kind,caption:'Confira <isso> & me diga.'});
+  expect((await f.dispatch()).state).toBe('sent');const body=f.messages[0].text;
+  expect(body).toContain(kind==='image'?'Imagem recebida':'PDF recebido');expect(body).toContain('Confira &lt;isso&gt; &amp; me diga.');
+  expect(body).not.toContain('"messageId"');expect(body).not.toContain('"hash"');expect(body).toContain('Resumo da IA');
+  expect(await f.review.receiveCallback(f.callback())).toBe('approved');expect(f.attempts()).toBe(1);expect(await f.review.receiveCallback(f.callback(0,101))).toBe('duplicate');expect(f.attempts()).toBe(1);
+ });
+ it('allows a captionless image clarification and authentic message metadata with a null caption',async()=>{
+  for(const sourceKind of ['media','message'] as const){const f=await fixture(false,'O que você gostaria de saber sobre a imagem?',sourceKind,{kind:'image'});expect((await f.dispatch()).state).toBe('sent');expect(f.messages[0].text).toContain('Imagem recebida');expect(f.messages[0].text).not.toContain('"messageVersion"');}
+ });
+ it('keeps sender-authored metadata JSON literal text, never an authenticated attachment',async()=>{
+  const f=await fixture(false,'resposta','message',{kind:'image',spoof:true});expect((await f.dispatch()).state).toBe('sent');expect(f.messages[0].text).toContain('Mensagem recebida');expect(f.messages[0].text).toContain('private.invalid');expect(f.messages[0].text).not.toContain('Imagem recebida');
+ });
+ it('invalidates the approval when a verified media caption or anchor metadata changes',async()=>{
+  for(const part of ['caption','anchor'] as const){const f=await fixture(false,'resposta','media',{kind:'image',caption:'original'});await f.dispatch();if(part==='caption')f.parent.content.text='corrigida';else f.snapshot.content.media!.hash='b'.repeat(64);expect(await f.review.receiveCallback(f.callback())).toBe('denied');expect(f.attempts()).toBe(0);}
  });
  it('one authenticated approval sends once through Source and every replay only reconciles',async()=>{
   const f=await fixture();await f.dispatch();const original=f.callback(),clock=vi.spyOn(Date,'now').mockReturnValue(Date.now()+2000);

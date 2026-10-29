@@ -249,6 +249,24 @@ describe('native application composition on real D1 and Source reads',()=>{
   const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).not.toContain('Contexto do projeto.');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
   expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'accepted'}});expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(1);
  });
+ it.each(['healthy','abort','revoke'] as const)('curator notice separates remote preflight from transport and honors %s cancellation',async mode=>{
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(receipt.state!=='admitted'&&receipt.state!=='uncertain')throw Error('fixture_curator');
+  const task=await latestTask(host,receipt.taskRef),curator=(await host.frame(task)).curator!,controller=new AbortController();
+  let release!:()=>void,entered!:()=>void,calls=0;const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;}),original=host.runtime.assertTaskCurrent.bind(host.runtime);
+  vi.spyOn(host.runtime,'assertTaskCurrent').mockImplementation(async current=>{await original(current);if(++calls===2){entered();await gate;}});
+  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+  try{
+   const pending=curator.finish({},controller.signal);await started;
+   if(mode==='healthy')await vi.advanceTimersByTimeAsync(10001);else if(mode==='abort')controller.abort();else f.own.ROUTINES_PAUSED='true';
+   release();const result=await pending;
+   expect(result).toMatchObject({notice:{state:mode==='healthy'?'accepted':'uncertain'}});expect(fetch).toHaveBeenCalledTimes(mode==='healthy'?1:0);
+   f.own.ROUTINES_PAUSED='false';expect(await curator.finish({})).toMatchObject({notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(mode==='healthy'?1:0);
+  }finally{release();vi.useRealTimers();}
+ });
  it('keeps recurrence off without a sample even when curator capability is available, before creating identity or a daily run',async()=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';const host=f.host(),identity=vi.spyOn(host,'identity');
   expect(await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'))).toEqual({state:'disabled'});expect(identity).not.toHaveBeenCalled();

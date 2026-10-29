@@ -17,7 +17,7 @@ const seedSchema=v.strictObject({version:v.literal(1),installationId:v.string(),
 export type ConversationApplicationFrame={reads:ConversationReadCapabilities;
  media:{read(ref:unknown):Promise<unknown>};
  tasks?:NativeTaskCapabilities;
- curator?:{curator:KnowledgeCurator;runId:string;finish(input:{needsHelp?:boolean}):Promise<unknown>};
+ curator?:{curator:KnowledgeCurator;runId:string;finish(input:{needsHelp?:boolean},signal?:AbortSignal):Promise<unknown>};
  effects:{reply(input:unknown):Promise<unknown>;respondOwner(text:string):Promise<unknown>;askOwner(question:string):Promise<unknown>;calendarChange(mutation:unknown):Promise<unknown>}};
 export type ConversationResolver=(env:Record<string,unknown>,sessionId:string,delivery:DeliveredMessage)=>Promise<{
  runtime:ConversationRuntime;
@@ -90,7 +90,7 @@ export function ConversationRuntimeAgent(){
  const privateCurator=seed.channel==='telegram'&&isCuratorPrincipal(seed.principalOrChatId);
  if(privateCurator){
   useCuratorTools(async()=>{const binding=await application(),curator=binding.curator;if(!curator)throw Error('native_curator_denied');
-   return {...curator,finish:(input:{needsHelp?:boolean})=>completeOperation(binding,()=>curator.finish(input))};
+   return {...curator,finish:(input:{needsHelp?:boolean},signal?:AbortSignal)=>completeOperation(binding,()=>curator.finish(input,signal))};
   });
  }else if(seed.channel==='whatsapp'){
   useTool({name:'propose_reply',description:'Decida responder com o texto exato ou ficar em silêncio nesta conversa do WhatsApp. Inclua um resumo curto do contexto quando ajudar a revisão. O servidor escolhe se haverá revisão humana; esta ferramenta não concede autorização para envio autônomo.',

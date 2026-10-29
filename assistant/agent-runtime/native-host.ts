@@ -401,12 +401,12 @@ export class NativeApplicationHost {
  private async curatorFrame(task:TaskContext){
   const latest=task.cohort.at(-1);if(!latest||latest.author.kind!=='system'||!latest.eventId.startsWith('curator-run:'))throw Error('native_curator_denied');
   const curator=await this.curator(task.identity),runId=latest.eventId.slice(12);
-  return {curator,runId,finish:async(input:{needsHelp?:boolean})=>{
-   await this.runtime.assertTaskCurrent(task);const receipt=await curator.finish(runId,input);
-   const notice=await this.curatorSummary(task,curator,receipt);return {...receipt,notice};
+  return {curator,runId,finish:async(input:{needsHelp?:boolean},signal?:AbortSignal)=>{
+   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();const receipt=await curator.finish(runId,input);signal?.throwIfAborted();
+   const notice=await this.curatorSummary(task,curator,receipt,signal);return {...receipt,notice};
   }};
  }
- private async curatorSummary(task:TaskContext,curator:KnowledgeCurator,receipt:CuratorReceipt){
+ private async curatorSummary(task:TaskContext,curator:KnowledgeCurator,receipt:CuratorReceipt,signal?:AbortSignal){
   if(!receipt.shouldNotify)return {state:'not_required'};
   const fence=await nativeOwnerFence(this.env,this.currentScope()),link=telegramLinkGuard(fence);
   const topic=await this.db!.prepare(`SELECT thread_id FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND link_revision=? AND slot='summaries' AND state='ready' AND fence_json=? AND (${link.sql})`)
@@ -417,8 +417,23 @@ export class NativeApplicationHost {
   const heading=receipt.kind==='sample'?'AMOSTRA DA MEMÓRIA':'REVISÃO DA MEMÓRIA',scope=receipt.kind==='sample'?`\n\nSomente a janela (${receipt.window.fromSequence}, ${receipt.window.toSequence}] compõe esta amostra. Este ensaio não ativa a rotina diária.`:'';
   const text=`${receipt.state==='complete'?'✅':'⏳'} <b>${heading} — ${telegramText(receipt.window.day)}</b>\n\n${c.evaluated+c.learned} fontes avaliadas; ${c.learned} fontes com aprendizado confirmado.\n${pending} pendências${receipt.needsHelp?' — preciso da sua ajuda':''}.${scope}`;
   try{
-   const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{
-    await this.runtime.assertTaskCurrent(task);const now=await nativeOwnerFence(this.env,this.currentScope());if(JSON.stringify(now)!==JSON.stringify(fence))throw Error('native_owner_link_changed');
+   // Remote dependency checks may exceed the transport's ten-second deadline.
+   // Complete them first; cancellation still prevents any subsequent fetch.
+   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();
+   const taskGuard:AccessGuard={sql:`NOT EXISTS(SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS(
+    SELECT 1 FROM assistant_native_conversation_events e WHERE e.task_ref=json_extract(expected.value,'$.ref') AND e.sequence=json_extract(expected.value,'$.sequence')
+     AND e.conversation_id=? AND e.authority_json=? AND e.state<>'withdrawn' AND e.event_json IS NOT NULL))`,
+    values:[JSON.stringify(task.cohort.map(e=>({ref:e.taskRef,sequence:e.sequence}))),task.sessionId,JSON.stringify(task.authority)]};
+   const fetcher:typeof fetch=(input,init)=>{
+    signal?.throwIfAborted();const signals=[signal,init?.signal].filter((s):s is AbortSignal=>!!s);
+    return globalThis.fetch(input,{...init,...(signals.length?{signal:AbortSignal.any(signals)}:{})});
+   };
+   const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,fetcher,async()=>{
+    signal?.throwIfAborted();const {authority,guard}=await this.authority(task.identity);
+    if(JSON.stringify(authority)!==JSON.stringify(task.authority))throw Error('native_authority_changed');
+    const now=await nativeOwnerFence(this.env,this.currentScope());if(JSON.stringify(now)!==JSON.stringify(fence))throw Error('native_owner_link_changed');
+    const final=joinGuards(guard,link,taskGuard,this.retention.authorityGuard(task.sessionId));
+    if(!await jsonStatement(this.db,`SELECT 1 WHERE (${final.sql})`,final.values).first())throw Error('native_task_changed');signal?.throwIfAborted();
    },'HTML');
    await api.send(fence.chatId,topic,text,[]);await curator.settleNotice(receipt.id,'accepted');return {state:'accepted'};
   }catch{await curator.settleNotice(receipt.id,'uncertain');return {state:'uncertain'};}

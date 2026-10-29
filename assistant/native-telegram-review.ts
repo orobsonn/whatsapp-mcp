@@ -10,7 +10,8 @@ import { nativeReplyAuthorizationRequest, type NativeReplyAuthorization } from '
 import { actionDigest } from '../src/send-envelope';
 const ns='installation_id=? AND generation=? AND bot_instance=?',positive=z.number().int().positive().safe(),id=z.string().min(1).max(256);
 const callbackSchema=z.object({update_id:z.number().int().nonnegative().safe(),callback_query:z.object({id,from:z.object({id:positive,is_bot:z.literal(false)}).passthrough(),chat_instance:id,data:z.string().regex(/^n_[A-Za-z0-9_-]{43}$/),message:z.object({message_id:positive,date:positive,message_thread_id:positive,chat:z.object({id:positive,type:z.literal('private')}).passthrough()}).passthrough()}).strict()}).strict();
-export type NativeReplyReviewContext={source:SourceRead;origin:OriginFence;guard:AccessGuard};
+type ReceivedMedia={kind:'image'|'pdf';caption?:string|null};
+export type NativeReplyReviewContext={source:SourceRead;origin:OriginFence;guard:AccessGuard;media?:ReceivedMedia};
 export type NativeTelegramReplyReviewHost={db:D1Database;scope:OriginScope;getScope:()=>OriginScope;botInstance:string;key:string;api:TelegramApi;actions:NativeReplyActions;
  /** Host-authenticated current Source/Origin proof, never a model argument. */
  contextReader:(task:TaskContext)=>Promise<NativeReplyReviewContext>;
@@ -29,14 +30,35 @@ export async function readNativeReplyReviewContext(db:D1Database,scope:OriginSco
  const ref=lastSource(task);if(!ref)throw Error('native_review_context_unavailable');
  const access=new SourceAccess(db,scope,Date.now,'knowledge'),source=await access.read({kind:'owner'},ref.id,ref.revision),fence=await origin.fence(ref.id);
  if(!source||!fence||(await origin.checkContext(fence)).state!=='current')throw Error('native_review_context_unavailable');
- return {source,origin:fence,guard:combine(access.guard({kind:'owner'},source.fence,Date.now()),origin.localContextGuard(fence))};
+ let media:ReceivedMedia|undefined;
+ // Text which happens to contain JSON is still text. Attachment kinds come
+ // exclusively from the authenticated Source observation, bound to this body.
+ const observed=await origin.observe(scope,fence),content=observed.content;
+ if(observed.state!=='available'||observed.hash!==fence.hash||!content||source.text!==(typeof content.text==='string'?content.text:JSON.stringify(content)))throw Error('native_review_context_unavailable');
+ if((fence.sourceKind==='message'||fence.sourceKind==='media')&&(content.kind==='image'||content.kind==='pdf')){
+  media={kind:content.kind};
+  if(fence.sourceKind==='message')media.caption=content.text;
+  else if(content.messageId&&content.media){
+   const parent=await origin.observe(scope,{sourceKind:'message',sourceId:content.messageId,chatId:fence.chatId}),p=parent.content;
+   if(parent.state==='available'&&p&&p.kind===content.kind&&p.messageId===content.messageId&&p.messageVersion===content.messageVersion
+    &&p.fromMe===content.fromMe&&p.authorId===content.authorId&&p.authorName===content.authorName
+    &&p.media?.id===content.media.id&&p.media.version===content.media.version&&p.media.hash===content.media.hash)media.caption=p.text;
+  }
+ }
+ return {source,origin:fence,guard:combine(access.guard({kind:'owner'},source.fence,Date.now()),origin.localContextGuard(fence)),...(media?{media}:{})};
 }
 /** Entire response and summary are shown, or there is no approve button.
  * Only the received message may have an explicitly labelled excerpt. */
-export function nativeReplyPreview(target:{name:string;address:string;kind:string},text:string,received:{text:string;authorLabel:string|null},summary:string):string|null{
+export function nativeReplyPreview(target:{name:string;address:string;kind:string},text:string,received:{text:string;authorLabel:string|null;media?:ReceivedMedia},summary:string):string|null{
  const prefix=`💬 <b>Sugestão de resposta</b>\n\n<b>Conversa:</b> ${escape(target.name)}\n${escape(target.address)}${target.kind==='group'?' · Grupo':''}\n\n`;
  const suffix=`${summary?`\n\n🧭 <b>Resumo da IA</b>\n${escape(summary)}`:''}\n\n✍️ <b>Resposta sugerida</b>\n${html(text)}\n\n<i>Aprovar envia esta resposta ao WhatsApp.</i>`;
  const author=received.authorLabel?`<b>Autor informado:</b> ${escape(received.authorLabel)}\n`:'';
+ if(received.media){
+  const attachment=received.media.kind==='image'?'🖼️ <b>Imagem recebida</b>':'📄 <b>PDF recebido</b>';
+  const caption=received.media.caption?`\n<b>Legenda:</b> ${escape(received.media.caption)}`:'';
+  const body=prefix+attachment+'\n'+author+'<i>O anexo não é exibido nesta prévia.</i>'+caption+suffix;
+  return bytes(body)<=4096?body:null;
+ }
  const limit=Math.min(1000,4096-bytes(prefix+suffix+author+'📩 <b>Mensagem recebida (trecho)</b>\n…')-24);
  if(limit<Math.min(80,bytes(escape(received.text))))return null;
  let excerpt='';for(const point of received.text){if(bytes(escape(excerpt+point))>limit)break;excerpt+=point;}
@@ -68,11 +90,11 @@ export class NativeTelegramReplyReview {
  }
  private async context(task:TaskContext){
   const proof=await this.host.contextReader(task),ref=lastSource(task),source=proof.source,f=source.fence.source,o=proof.origin;
-  if(!ref||source.id!==ref.id||f.id!==ref.id||f.revision!==ref.revision||f.version!==ref.version||f.hash!==ref.hash||f.origin!=='whatsapp'||f.conversationId!==task.returnChannel.id||!source.text?.trim()
+  if(!ref||source.id!==ref.id||f.id!==ref.id||f.revision!==ref.revision||f.version!==ref.version||f.hash!==ref.hash||f.origin!=='whatsapp'||f.conversationId!==task.returnChannel.id||(!proof.media&&!source.text?.trim())
    ||source.fence.installationId!==this.host.scope.installationId||source.fence.generation!==this.host.scope.generation
-   ||o.canonicalId!==ref.id||o.revision!==ref.revision||o.version!==ref.version||o.chatId!==task.returnChannel.id||!['message','derivative'].includes(o.sourceKind)||JSON.stringify(scopeKeys(o))!==JSON.stringify(scopeKeys(this.host.scope)))throw Error('native_review_context_changed');
+   ||o.canonicalId!==ref.id||o.revision!==ref.revision||o.version!==ref.version||o.chatId!==task.returnChannel.id||!(proof.media?['message','media']:['message','derivative']).includes(o.sourceKind)||JSON.stringify(scopeKeys(o))!==JSON.stringify(scopeKeys(this.host.scope)))throw Error('native_review_context_changed');
   if(!proof.guard?.sql||!Array.isArray(proof.guard.values)||!await this.sql(`SELECT 1 WHERE ${proof.guard.sql}`,...proof.guard.values).first())throw Error('native_review_context_changed');
-  return {received:{sourceRef:ref,text:source.text,authorLabel:source.authorLabel},guard:proof.guard,origin:o};
+  return {received:{sourceRef:ref,text:proof.media?'':source.text!,authorLabel:source.authorLabel,...(proof.media?{media:proof.media}:{})},guard:proof.guard,origin:o};
  }
  private async snapshot(intentId:string){
   const review=await this.host.actions.review(intentId);if(review.task.authority.mode!=='approval'||!review.prepared)throw Error('native_review_not_approval');
