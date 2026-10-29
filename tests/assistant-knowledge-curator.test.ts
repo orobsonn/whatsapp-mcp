@@ -19,6 +19,40 @@ const note=(key:string,text=key,occurredAt=now)=>sources.create({originKey:key,t
 async function due(){now=time('2026-10-29T06:00:00Z');return (await curator.beginDue())!;}
 const head=async()=>await sql('SELECT COALESCE(MAX(sequence),0) head FROM assistant_source_changes WHERE installation_id=? AND generation=?').first<number>('head')??0;
 const sampleWindow=(fromSequence:number,toSequence:number,day='2026-10-28')=>({fromSequence,toSequence,day,timezone:'America/Fortaleza' as const});
+it('acknowledges a page with constant context checks and explicit per-item refusals',async()=>{
+ for(let i=0;i<50;i++)await note('ack page '+i);
+ const run=await due(),page=await curator.next(run.id,{limit:100});let checks=0;host.assertCurrent=async()=>{checks++;};
+ const items=page.items.map((item,i)=>({sequence:item.sequence,state:i===20?'learned' as const:'evaluated' as const,operationIds:i===20?['missing-receipt']:[]}));
+ const result=await curator.acknowledgePage(run.id,items);
+ expect(checks).toBe(2);expect(result.items.filter(i=>i.outcome==='recorded')).toHaveLength(49);
+ expect(result.items[20]).toMatchObject({sequence:page.items[20].sequence,outcome:'refused',reason:'curator_knowledge_receipt'});
+ expect((await curator.status(run.id)).counts).toMatchObject({evaluated:49,presented:1,learned:0});
+ checks=0;await expect(curator.acknowledgePage(run.id,[items[0],items[0]])).rejects.toThrow('curator_acknowledgement_page');expect(checks).toBe(0);
+ await expect(curator.acknowledge(run.id,items[0].sequence,{sequence:items[1].sequence,state:'evaluated'} as never)).rejects.toThrow();
+});
+it('does not let a page acknowledgement overwrite a concurrently reflected learning receipt',async()=>{
+ await note('concurrent learned evidence');const run=await due(),item=(await curator.next(run.id)).items[0];
+ const fence=(await new (await import('../assistant/access')).SourceAccess(env.DB,scope,()=>now,'knowledge').read(owner,item.sourceRef.id))!.fence;
+ await sql("INSERT INTO assistant_knowledge_operations(installation_id,generation,id,kind,client,request_hash,request_json,source_fences_json,state,response_json,created_at,updated_at) VALUES(?,?,?,'remember','curator',?,'{}',?,'complete',?,1,1)",'page-learn-op','a'.repeat(64),JSON.stringify({sources:[fence],origins:[]}),JSON.stringify({operationId:'page-learn-op',state:'ready'})).run();
+ let reflected=false;host.verifySource=async()=>{if(!reflected){reflected=true;expect((await curator.reflectReady(run.id,'page-learn-op')).learned).toBe(1);}return {state:'current',guard:{sql:'1',values:[]}};};
+ const result=await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'evaluated'}]);
+ expect(result.items[0].outcome).toBe('refused');expect((await curator.status(run.id)).counts.learned).toBe(1);
+});
+it('cancels a page acknowledgement before any item is recorded',async()=>{
+ await note('cancel first');await note('cancel last');const run=await due(),page=await curator.next(run.id),controller=new AbortController();let checks=0;
+ host.verifySource=async()=>{if(++checks===2)controller.abort(new Error('ack_page_cancelled'));return {state:'current',guard:{sql:'1',values:[]}};};
+ await expect(curator.acknowledgePage(run.id,page.items.map(item=>({sequence:item.sequence,state:'evaluated'})),controller.signal)).rejects.toThrow('ack_page_cancelled');
+ expect((await curator.status(run.id)).counts).toMatchObject({presented:2,evaluated:0});
+});
+it('checks the global authority for every acknowledgement when the first source is revoked during the last proof',async()=>{
+ const first=await note('first page authority');await note('last page authority');const run=await due(),page=await curator.next(run.id);
+ const access=new (await import('../assistant/access')).SourceAccess(env.DB,scope,()=>now,'knowledge'),fence=(await access.read(owner,first.id))!.fence;
+ host.authorityGuard=()=>access.guard(owner,fence,now);
+ host.verifySource=async read=>{if(read.id!==first.id)await sources.withdraw(first.id,1);return {state:'current',guard:{sql:'1',values:[]}};};
+ const result=await curator.acknowledgePage(run.id,page.items.map(item=>({sequence:item.sequence,state:'evaluated'})));
+ expect(result.items.every(item=>item.outcome==='refused')).toBe(true);
+ expect(await sql("SELECT count(*) n FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND state='evaluated'",run.id).first('n')).toBe(0);
+});
 it('registers an authorized page once before publication without rechecking the entire context per original',async()=>{
  for(let i=0;i<100;i++)await note('page evidence '+i);
  const run=await due();let pages=0,assertions=0;

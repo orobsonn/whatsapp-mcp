@@ -180,7 +180,7 @@ it('tombstones an old epoch without resurrecting it on replay and permits a fres
 it('mounts native knowledge, research and host-bound effects without administrative grants',async()=>{
  const a=await admit(),mounted=render(a);expect(hooks.models).toEqual([['openai/gpt-6-luna',expect.objectContaining({thinkingLevel:'low',compaction:expect.any(Object)})]]);
  expect(mounted.tools.map(t=>t.name)).toEqual(expect.arrayContaining(['knowledge_query','knowledge_entities','knowledge_remember','knowledge_status','archive_search','archive_read','github_resolve','github_list','github_read','calendar_availability','propose_reply','ask_owner']));
- for(const name of ['curator_next','curator_acknowledge','curator_finish','calendar_change','respond_owner'])expect(mounted.tools.map(t=>t.name)).not.toContain(name);
+ for(const name of ['curator_next','curator_acknowledge','curator_acknowledge_page','curator_finish','calendar_change','respond_owner'])expect(mounted.tools.map(t=>t.name)).not.toContain(name);
  await mounted.starts[0]();
  expect(()=>v.parse(mounted.tools[2].input,{...remembered({id:'source',revision:1,version:1,hash:'a'.repeat(64)}),origin:'owner_report'})).toThrow();
  conversationDriver(a.receipt.sessionId);expect(hooks.opened).toEqual([a.receipt.sessionId]);
