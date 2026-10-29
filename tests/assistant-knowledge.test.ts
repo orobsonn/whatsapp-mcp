@@ -188,3 +188,9 @@ it('denies cross-client status reconciliation without invoking native cleanup un
  expect(await service.execute({kind:'status',operationId:command.operationId})).toMatchObject({state:'source_corrected',cleanup:{state:'ready'}});
  expect(cleanup).toBe(1);
 });
+it.each(['person','project'] as const)('maps the entities command entityKind %s to the native kind filter',async(entityKind)=>{
+ const inputs:Parameters<KnowledgePort['find_entities']>[0][]=[];
+ port.find_entities=async input=>{inputs.push(input);return {entities:[]};};
+ expect(await service.execute({kind:'entities',entityKind,query:'Cedar',after:'cursor',limit:7})).toMatchObject({entities:[]});
+ expect(inputs).toEqual([{kind:entityKind,query:'Cedar',after:'cursor',limit:7}]);
+});

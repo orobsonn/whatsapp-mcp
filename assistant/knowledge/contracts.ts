@@ -28,7 +28,7 @@ export const knowledgeCommand=z.discriminatedUnion('kind',[
  z.object({kind:z.literal('context.correct'),operationId:id,sourceId:id,expectedRevision:z.number().int().positive(),text:z.string().min(1),occurredAt:z.number().int().nonnegative().safe().optional()}).strict(),
  knowledgeRemember.extend({kind:z.literal('remember')}),
  knowledgeQuery.extend({kind:z.literal('query')}),
- knowledgeEntityQuery.extend({kind:z.literal('entities')}),
+ knowledgeEntityQuery.omit({kind:true}).extend({kind:z.literal('entities'),entityKind:knowledgeEntityKind.optional()}),
  z.object({kind:z.literal('status'),operationId:id}).strict(),
  z.object({kind:z.literal('withdraw'),operationId:id,sourceRef}).strict(),
 ]);

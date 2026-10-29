@@ -134,7 +134,7 @@ export class KnowledgeService {
    return {claims,...(page.nextCursor?{nextCursor:page.nextCursor}:{}),coverage:{scope:'native_candidate_page',state:partial||claims.length!==page.claims.length?'partial':'complete',archive:'not_exhaustive'}};
   }
   if(command.kind==='entities'){
-   const {kind:_,...input}=command,page=await this.port.find_entities(input);this.current(c);const entities=[],proofs:Snapshot[]=[];let partial=page.coverage?.state==='partial';
+   const {kind:_,entityKind,...input}=command,page=await this.port.find_entities({...input,...(entityKind?{kind:entityKind}:{})});this.current(c);const entities=[],proofs:Snapshot[]=[];let partial=page.coverage?.state==='partial';
    for(const entity of page.entities){const visible=await this.entityVisible(c,entity.id);if(visible){entities.push(entity);proofs.push(visible.proof);partial ||= visible.partial;}}
    await this.pageSnapshot(c,proofs);
    return {entities,...(page.nextCursor?{nextCursor:page.nextCursor}:{}),coverage:{scope:'native_candidate_page',state:partial||entities.length!==page.entities.length?'partial':'complete',archive:'not_exhaustive'}};
