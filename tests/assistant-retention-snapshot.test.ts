@@ -28,31 +28,58 @@ beforeEach(async () => {
 });
 afterEach(async () => { await env.DB.prepare("UPDATE assistant_retention_installation_gate SET state='idle' WHERE installation_id=?").bind(scope.installationId).run(); });
 const note = () => new SourceController(env.DB, scope, owner).create({ originKey: "source", text: "Synthetic canonical body", occurredAt: 1 });
+async function frozen(operationId: string) {
+  expect(await env.DB.prepare("SELECT state,operation_id,generation,target_generation FROM assistant_retention_installation_gate WHERE installation_id=?")
+    .bind(scope.installationId).first()).toMatchObject({ state: "quiescing", operation_id: operationId, generation: scope.generation, target_generation: null });
+  expect(await authority.snapshotReceipt(operationId)).toBeNull();
+}
+async function exporting(operationId: string, service = producer) {
+  let result = await service.execute({ kind: "snapshot.begin", operationId });
+  for (let page = 0; result.state === "preparing" && page < 1000; page++) {
+    await frozen(operationId); result = await service.execute({ kind: "snapshot.advance", operationId });
+  }
+  expect(result.state).toBe("exporting"); return result;
+}
+// Financial custody has its own bounded cursor. Resume the same candidate,
+// keeping canonical execution frozen until the final external seal exists.
+async function seal(operationId: string, service = producer) {
+  let result = await service.execute({ kind: "snapshot.seal", operationId });
+  for (let page = 0; !("manifest" in result) && page < 1000; page++) {
+    expect(result.state).toBe("checking_finance"); await frozen(operationId);
+    result = await service.execute({ kind: "snapshot.advance", operationId });
+  }
+  if (!("manifest" in result)) throw new Error("test_seal"); return result;
+}
 async function pages(operationId = "snapshot", service = producer) {
-  let begin = await service.execute({ kind: "snapshot.begin", operationId }); for(let i=0;begin.state === "preparing" && i<1000;i++)begin=await service.execute({kind:"snapshot.advance",operationId}); if (!("index" in begin)) throw new Error("test_begin");
+  const begin = await exporting(operationId, service); if (!("index" in begin)) throw new Error("test_begin");
   const packets: SnapshotPacket[] = []; let index = 0, cursor: string | null = null;
   for (;;) { const result = await service.execute({ kind: "snapshot.page", operationId, index, cursor }); if (!("packet" in result)) throw new Error("test_page"); packets.push(result.packet); index++; cursor = result.packet.page.nextCursor ?? null; if (!cursor) break; if (index > 30) throw new Error("test_page_capacity"); }
   return packets;
 }
 async function sealed(operationId = "snapshot") {
-  const packets = await pages(operationId), result = await producer.execute({ kind: "snapshot.seal", operationId });
-  if (!("manifest" in result)) throw new Error("test_seal"); return { packets, manifest: result.manifest };
+  const packets = await pages(operationId), result = await seal(operationId);
+  return { packets, manifest: result.manifest };
 }
 test("real producer creates a sealed canonical artifact accepted offline, excluding operational latches and preserving all financial generations", async () => {
   await note(); const old = new InferenceBudget(env.DB, { ...scope, generation: "old", period: "old-period" }); await old.configure(100); await old.reserve("uncertain-old", "a".repeat(64), 40); await old.uncertain("uncertain-old");
+  await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'old','session','epoch','turn','uncertain-old','old-period',?,'synthetic-price',40,'uncertain',NULL,NULL,NULL)")
+    .bind(scope.installationId, "a".repeat(64)).run();
   const { packets, manifest } = await sealed(), verifier = new SnapshotVerifier(manifest), records = [];
   for (const packet of packets) records.push(...await verifier.accept(packet));
   expect(await verifier.finish()).toMatchObject({ state: "integrity_verified", authority: "unchecked" });
   expect(await authority.snapshotReceipt("snapshot")).toMatchObject({ state: "sealed_snapshot", seal: manifest.seal });
   expect(records.some(row => row.table === "assistant_budget_reservations" && row.value.generation === "old" && row.value.state === "uncertain")).toBe(true);
+  expect(records.some(row => row.table === "assistant_native_model_receipts" && row.value.generation === "old" && row.value.state === "uncertain")).toBe(true);
   expect(records.some(row => row.table === "assistant_source_versions" && row.value.original_text === "Synthetic canonical body")).toBe(true);
-  expect(manifest.tables.some(table => /episodes|job_|model_receipts|telegram|oauth/.test(table))).toBe(false);
+  expect(manifest.tables).toContain("assistant_native_model_receipts");
+  expect(manifest.tables.some(table => /episodes|job_|telegram|oauth/.test(table) || table === "assistant_model_receipts")).toBe(false);
+  expect((await old.status()).committed).toBe(40);
   expect(await env.DB.prepare("SELECT state FROM assistant_retention_installation_gate WHERE installation_id=?").bind(scope.installationId).first("state")).toBe("idle");
 });
 test("every canonical table has INSERT/UPDATE/DELETE freeze triggers, while owner withdrawal stays admissible", async () => {
   const source = await note(), before = (await new SourceAccess(env.DB, scope).read(owner, source.id))!;
   await env.DB.prepare("INSERT INTO assistant_projects VALUES(?,?,'project','Synthetic project')").bind(scope.installationId, scope.generation).run();
-  await producer.execute({ kind: "snapshot.begin", operationId: "freeze" });
+  await exporting("freeze");
   const triggers = (await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'retention_freeze_*'").all<{ name: string }>()).results.map(row => row.name);
   for (const table of canonicalSnapshotTables) for (const action of ["insert", "update", "delete"]) expect(triggers).toContain(`retention_freeze_${table}_${action}`);
   expect(await new SourceAccess(env.DB, scope).read(owner, source.id)).toBeNull();
@@ -80,7 +107,7 @@ test("pagination emits every canonical row with exact page replay and no body ca
   ]);
   const packets = await pages("paged"); expect(packets.length).toBeGreaterThan(3);
   const replay = await producer.execute({ kind: "snapshot.page", operationId: "paged", index: 0, cursor: null }); expect(replay).toMatchObject({ packet: packets[0] });
-  const result = await producer.execute({ kind: "snapshot.seal", operationId: "paged" }); if (!("manifest" in result)) throw new Error("test_seal");
+  const result = await seal("paged");
   const verifier = new SnapshotVerifier(result.manifest); let sources = 0;
   for (const packet of packets) sources += (await verifier.accept(packet)).filter(row => row.table === "assistant_sources").length;
   await verifier.finish(); expect(sources).toBe(80);
@@ -94,7 +121,7 @@ test("page transaction ACK loss and external seal ACK loss reconcile the origina
   const db = { prepare: env.DB.prepare.bind(env.DB), batch: async (statements: D1PreparedStatement[]) => { const result = await batch(statements); if (fail && statements.length === 2) { fail = false; throw new Error("synthetic page ACK lost"); } return result; } } as D1Database;
   const service = new SnapshotProducer(db, scope, owner, authority, () => 100); const packets = await pages("ack", service); expect(packets).toHaveLength(1); expect(fail).toBe(false);
   expect(await env.DB.prepare("SELECT page_index FROM assistant_retention_snapshot_sessions WHERE installation_id=? AND operation_id='ack'").bind(scope.installationId).first("page_index")).toBe(1);
-  store.failure = "ack"; const result = await service.execute({ kind: "snapshot.seal", operationId: "ack" }); expect(result).toMatchObject({ state: "sealed" });
+  store.failure = "ack"; const result = await seal("ack", service); expect(result).toMatchObject({ state: "sealed" });
   expect(await service.execute({ kind: "snapshot.seal", operationId: "ack" })).toEqual(result);
 });
 test("only a fresh generation can be reserved outside D1 and lost ACK never allocates another ticket", async () => {
@@ -114,7 +141,12 @@ test("financial inventory resumes past one bounded page and detects movement wit
   const first=await producer.execute({kind:"snapshot.begin",operationId:"financial-pages"});expect(first.state).toBe("preparing");
   const cursor=JSON.parse((await env.DB.prepare("SELECT financial_cursor FROM assistant_retention_snapshot_sessions WHERE installation_id=? AND operation_id='financial-pages'").bind(scope.installationId).first<string>("financial_cursor"))!);
   expect(cursor.counts.assistant_budget_reservations).toBe(128);
-  const restarted=new SnapshotProducer(env.DB,scope,owner,authority,()=>100),next=await restarted.execute({kind:"snapshot.advance",operationId:"financial-pages"});expect(next.state).toBe("exporting");
+  const restarted=new SnapshotProducer(env.DB,scope,owner,authority,()=>100); let next=await restarted.execute({kind:"snapshot.advance",operationId:"financial-pages"});
+  for(let page=0;next.state==="preparing"&&page<1000;page++){
+    await frozen("financial-pages");expect((await budget.status()).committed).toBe(300);
+    next=await restarted.execute({kind:"snapshot.advance",operationId:"financial-pages"});
+  }
+  expect(next.state).toBe("exporting");
   const done=JSON.parse((await env.DB.prepare("SELECT financial_cursor FROM assistant_retention_snapshot_sessions WHERE installation_id=? AND operation_id='financial-pages'").bind(scope.installationId).first<string>("financial_cursor"))!);expect(done.counts.assistant_budget_reservations).toBe(300);expect(done.done).toBe(true);
   expect((await budget.status()).committed).toBe(300);await restarted.execute({kind:"snapshot.cancel",operationId:"financial-pages"});
 });
