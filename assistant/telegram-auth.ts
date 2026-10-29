@@ -56,6 +56,9 @@ function snapshot(input: unknown) {
   };
   return { value: parsed.data, raw: canonical(raw) };
 }
+/** Correlation adapters compare the exact provider update to its already
+ * authenticated inbox receipt. This hash does not itself authenticate anyone. */
+export async function telegramUpdateHash(input:unknown):Promise<string|null>{const copy=snapshot(input);return copy?bridgeHash(copy.raw):null;}
 /** Host-only capability. Instantiated by the authenticated named MCP binding or
  * secret-verified webhook; never attached to the model's tools/runtime context. */
 export class TelegramLink {

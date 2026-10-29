@@ -5,7 +5,7 @@ import { scopeKeys, type OriginFence, type OriginGuard, type OriginScope } from 
 import { telegramLinkGuard, type TelegramLinkFence } from './telegram-auth';
 import type { TelegramApi } from './telegram';
 import type { NativeReplyActions } from './agent-runtime/conversation-actions';
-import type { TaskContext } from './agent-runtime/conversation';
+import { conversationReplyAnchor,type TaskContext } from './agent-runtime/conversation';
 import { nativeReplyAuthorizationRequest, type NativeReplyAuthorization } from '../src/native-reply-contract';
 import { actionDigest } from '../src/send-envelope';
 const ns='installation_id=? AND generation=? AND bot_instance=?',positive=z.number().int().positive().safe(),id=z.string().min(1).max(256);
@@ -22,7 +22,7 @@ const combine=(...guards:AccessGuard[]):AccessGuard=>({sql:guards.map(g=>`(${g.s
 const escape=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 const html=(s:string)=>escape(s).replace(/^\*_([^\r\n_*]{1,160}:)_\*(?=\r?\n)/u,'<b><i>$1</i></b>');
 const bytes=(s:string)=>new TextEncoder().encode(s).length;
-const lastSource=(task:TaskContext)=>task.cohort.filter(e=>e.kind==='incoming').at(-1)?.sourceRef;
+const lastSource=(task:TaskContext)=>conversationReplyAnchor(task)?.sourceRef;
 /** Real archive/Origin reader for factories. Observation hashes and source body
  * hashes have distinct semantics and are checked against their own fences. */
 export async function readNativeReplyReviewContext(db:D1Database,scope:OriginScope,origin:OriginGuard,task:TaskContext):Promise<NativeReplyReviewContext>{

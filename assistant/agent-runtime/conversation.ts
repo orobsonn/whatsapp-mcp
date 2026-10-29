@@ -11,11 +11,13 @@ export const conversationIdentity=z.object({version:z.literal(1),installationId:
  channel:z.enum(['whatsapp','telegram']),principalOrChatId:label,contextEpoch:label}).strict();
 export type ConversationIdentity=Readonly<z.infer<typeof conversationIdentity>>;
 export type ConversationScope=Pick<ConversationIdentity,'installationId'|'generation'>;
+const replyToSchema=z.object({taskRef:label,sourceRef}).strict();
 const eventSchema=z.object({identity:conversationIdentity,eventId:label,revision:integer.positive(),
  kind:z.enum(['incoming','owner_manual','correction','withdrawal','action_result','approval','discard','clarification']),
  author:z.object({kind:z.enum(['owner','person','system']),id:label}).strict(),occurredAt:integer,
  body:z.string(),sourceRef:sourceRef.optional(),threadId:label.optional(),
- actionState:z.enum(['proposed','discarded','approved','attempted','accepted','delivered']).optional()}).strict();
+ actionState:z.enum(['proposed','discarded','approved','attempted','accepted','delivered']).optional(),
+ replyTo:replyToSchema.optional()}).strict().refine(e=>!e.replyTo||(e.kind==='clarification'&&e.identity.channel==='whatsapp'&&e.author.kind==='owner'),{message:'conversation_reply_anchor_denied'});
 type DeepReadonly<T>=T extends object?{readonly [K in keyof T]:DeepReadonly<T[K]>}:T;
 declare const verified:unique symbol;
 export type HostConversationEvent=z.infer<typeof eventSchema>;
@@ -47,7 +49,15 @@ export type TaskContext=DeepReadonly<{
   * authenticated transport by the action host. A topic never identifies a DO. */
  watermark:number;returnChannel:{channel:ConversationIdentity['channel'];id:string;threadId?:string};authority:ConversationAuthority;
  knowledge:KnowledgeContext;
+ /** Host-verified direct causal anchor. This is not a consumed event from an
+  * older native response, and never broadens the current cohort watermark. */
+ replyTo?:z.infer<typeof replyToSchema>;
 }>;
+export function conversationReplyAnchor(task:TaskContext):{taskRef:string;sourceRef:z.infer<typeof sourceRef>}|undefined{
+ if(task.replyTo)return task.replyTo;
+ const incoming=[...task.cohort].reverse().find(e=>e.kind==='incoming');
+ return incoming?.sourceRef?{taskRef:incoming.taskRef,sourceRef:incoming.sourceRef}:undefined;
+}
 export type ConversationDeliveryReceipt={sessionId:string;taskRef:string;state:'admitted'|'uncertain';receipt?:DispatchReceipt};
 export type ConversationHandle=Pick<AgentInstanceHandle,'dispatch'|'read'>;
 export interface ConversationHost {
@@ -61,6 +71,8 @@ export interface ConversationHost {
  /** Same P1 service and knowledge space used by MCP; the supplied immutable
   * context is conversation_agent, even when an event was authored by owner. */
  knowledge(context:TaskContext):Promise<KnowledgeService>|KnowledgeService;
+ /** Host role after authenticating the private session; never model input. */
+ knowledgeClient?(identity:ConversationIdentity):'conversation_agent'|'curator';
 }
 
 function signal(row:EventRow):DeliveredMessage{
@@ -69,7 +81,7 @@ function signal(row:EventRow):DeliveredMessage{
  return {kind:'signal',type:'assistant.conversation.'+event.kind,attributes:{taskRef:row.task_ref},
   body:JSON.stringify({eventId:event.eventId,revision:event.revision,kind:event.kind,author:event.author,
    occurredAt:event.occurredAt,body:event.body,...(event.sourceRef?{sourceRef:event.sourceRef}:{}),
-   ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{})})};
+   ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{}),...(event.replyTo?{replyTo:event.replyTo}:{})})};
 }
 /** Native intake may reorder JSON object keys. The envelope still has exactly
  * the host's fields and values; the body remains the exact original string. */
@@ -96,9 +108,16 @@ export class ConversationRuntime {
   const row=await this.db.prepare('SELECT * FROM assistant_native_conversation_events WHERE task_ref=?').bind(taskRef).first<EventRow>();
   if(!row||row.state==='withdrawn'||!row.event_json)throw Error('conversation_delivery_denied');return row;
  }
+ private async replyAnchor(event:HostConversationEvent,sessionId:string,before?:number){
+  if(!event.replyTo)return;
+  const row=await this.event(event.replyTo.taskRef),anchor=eventSchema.parse(JSON.parse(row.event_json!));
+  if(row.conversation_id!==sessionId||await address(anchor.identity)!==sessionId||anchor.kind!=='incoming'||anchor.author.kind!=='person'||!anchor.sourceRef
+   ||JSON.stringify(anchor.sourceRef)!==JSON.stringify(event.replyTo.sourceRef)||(before!==undefined&&row.sequence>=before))throw Error('conversation_reply_anchor_denied');
+ }
  async deliverConversation(event:VerifiedConversationEvent):Promise<ConversationDeliveryReceipt>{
   const parsed=eventSchema.parse(event),identity=immutable(parsed.identity),sessionId=await address(identity);
   await this.host.authorizeEvent(immutable(parsed) as VerifiedConversationEvent);
+  await this.replyAnchor(parsed,sessionId);
   const authority=authoritySchema.parse(await this.host.authority(identity)),requestHash=await bridgeHash(parsed),taskRef='conversation-task-v1-'+await bridgeHash([sessionId,parsed.eventId,parsed.revision]);
   await this.db.prepare(`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`)
    .bind(sessionId,identity.installationId,identity.generation,JSON.stringify(identity),this.clock()).run();
@@ -106,6 +125,7 @@ export class ConversationRuntime {
   const currentAuthority=await this.current(identity);
   if(JSON.stringify(currentAuthority)!==JSON.stringify(authority))throw Error('conversation_authority_changed');
   if(parsed.sourceRef)await this.host.retention?.exposeSource(identity,parsed.sourceRef);
+  if(parsed.replyTo)await this.host.retention?.exposeSource(identity,parsed.replyTo.sourceRef);
   // Admission and supersession share one D1 transaction. Replaying an older
   // event cannot supersede an intent based on a newer watermark.
   await this.db.batch([
@@ -116,6 +136,7 @@ export class ConversationRuntime {
     AND watermark<(SELECT sequence FROM assistant_native_conversation_events WHERE task_ref=? AND request_hash=?)`).bind(sessionId,taskRef,requestHash),
   ]);
   const row=await this.event(taskRef);
+  await this.replyAnchor(parsed,sessionId,row.sequence);
   if(row.request_hash!==requestHash)throw Error('conversation_event_conflict');
   if(row.receipt_json)return {sessionId,taskRef,state:'admitted',receipt:JSON.parse(row.receipt_json)};
   // A lost native ACK is retried only with the SAME idempotency key and exact
@@ -144,6 +165,7 @@ export class ConversationRuntime {
   if(delivery.kind!=='signal'||!delivery.attributes?.taskRef)throw Error('conversation_delivery_denied');
   const cursor=await this.event(delivery.attributes.taskRef);
   if(cursor.conversation_id!==sessionId||!sameDelivery(signal(cursor),delivery))throw Error('conversation_delivery_denied');
+  const cursorInput=eventSchema.parse(JSON.parse(cursor.event_json!));await this.replyAnchor(cursorInput,sessionId,cursor.sequence);
   const refs=consumedTaskRefs?[...consumedTaskRefs]:[cursor.task_ref];
   if(!refs.length||refs.at(-1)!==cursor.task_ref||new Set(refs).size!==refs.length)throw Error('conversation_cohort_denied');
   const rows=[];for(const ref of refs){const row=await this.event(ref);if(row.conversation_id!==sessionId||row.sequence>(cursor.sequence)||rows.length&&row.sequence<=rows[rows.length-1].sequence)throw Error('conversation_cohort_denied');rows.push(row);}
@@ -154,7 +176,7 @@ export class ConversationRuntime {
   const cursorEvent=cohort[cohort.length-1];
   return immutable({contextRef,identity,sessionId,ownerId:authority.ownerId,taskRef:cursor.task_ref,cohort,watermark:cursor.sequence,
    returnChannel:{channel:identity.channel,id:identity.principalOrChatId,...(identity.channel==='telegram'&&cursorEvent.threadId?{threadId:cursorEvent.threadId}:{})},authority,
-   knowledge:{scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:'conversation_agent' as const}});
+   knowledge:{scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:this.host.knowledgeClient?.(identity)??'conversation_agent'},...(cursorInput.replyTo?{replyTo:cursorInput.replyTo}:{})});
  }
  async assertTaskCurrent(task:TaskContext){
   await this.host.retention?.assertCurrent(task.identity);
