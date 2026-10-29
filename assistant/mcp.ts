@@ -52,6 +52,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  nativeReplyAuthorization?(expected:OwnerAffinity,input:import('../src/native-reply-contract').NativeReplyAuthorizationRequest):Promise<import('../src/native-reply-contract').NativeReplyAuthorization>;
   approvedSendAuthorization(expected: OwnerAffinity, input: {secret:string;approvalId:string;actionId:string;hash:string}): Promise<import('../src/approved-send-contract').ApprovedSendAuthorization>;
   installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
   retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;

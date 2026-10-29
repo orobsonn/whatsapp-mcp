@@ -12,6 +12,7 @@ import {
   approvedSendPrepareInput, approvedSendExecuteInput, approvedSendStatusInput, approvedSendEnvelope, approvedSendActivityFence,
   type ApprovedSendScope, type ApprovedSendPrepared, type ApprovedSendReceipt, type ApprovedSendActuatorRPC,
 } from "./approved-send-contract";
+import { nativeReplyExecuteInput, nativeReplyAuthorization, type NativeReplyExecutionAuthority, type NativeReplyActuatorRPC } from './native-reply-contract';
 const ns = "s.installation_id=? AND s.generation=? AND s.source_epoch=? AND s.source_generation=?";
 const keys = (scope: ApprovedSendScope) => [scope.installationId, scope.generation, scope.sourceEpoch, scope.sourceGeneration];
 const targetSchema = z.object({ chatId: z.string(), name: z.string(), address: z.string(), kind: z.enum(["individual", "group"]) }).strict();
@@ -64,10 +65,21 @@ export async function approvedSendStatus(raw: Env, input: unknown): Promise<Appr
   return receipt(await mapped(env, q.scope, "action_id", q.actionId));
 }
 export async function executeApprovedSend(raw: Env, input: unknown, provider?: SendProvider): Promise<ApprovedSendReceipt> {
-  const q = approvedSendExecuteInput.parse(input), env = await authenticate(raw, q.secret, q.scope);
+  const q = approvedSendExecuteInput.parse(input);
+  return executePreparedSend(raw,q,provider);
+}
+/** Named native capability uses the SAME mapping, Source action and provider claim. */
+export async function executeNativeReply(raw:Env,input:unknown,provider?:SendProvider):Promise<ApprovedSendReceipt>{
+  const q=nativeReplyExecuteInput.parse(input);
+  return executePreparedSend(raw,q,provider);
+}
+type ExecutionRequest={secret:string;scope:ApprovedSendScope;actionId:string}&({approvalId:string;authority?:never}|{authority:NativeReplyExecutionAuthority;approvalId?:never});
+async function executePreparedSend(raw:Env,q:ExecutionRequest,provider?:SendProvider):Promise<ApprovedSendReceipt>{
+  const env = await authenticate(raw, q.secret, q.scope);
   const saved = await mapped(env, q.scope, "action_id", q.actionId);
   // Even a revoked/expired approval can safely reconcile the same completed/uncertain attempt.
   if (!["proposed", "approved"].includes(saved.status)) return receipt(saved);
+  if(q.authority?.kind==='autonomous_policy' && raw.ASSISTANT_NATIVE_AUTONOMOUS_ENABLED!=='true')throw new AppError('native_autonomous_disabled',403);
   if (saved.envelope_json === "{}" || saved.expires_at <= Date.now()) throw new AppError("approved_send_expired", 409);
   const envelope = approvedSendEnvelope.parse(JSON.parse(saved.envelope_json));
   if (await actionDigest(envelope) !== saved.hash) throw new AppError("approved_send_conflict", 409);
@@ -76,8 +88,9 @@ export async function executeApprovedSend(raw: Env, input: unknown, provider?: S
   const activity=conversationActivityGuard(env,envelope.chatId,approvedSendActivityFence.parse(JSON.parse(saved.activity_json)));
   const selected = await resolveSendEnvelope(env, envelope), local = sendEnvelopeGuard(selected), connection = await runtimeConnectionGuard(env);
   const owner = env.ASSISTANT_OWNER;
-  if (!owner?.approvedSendAuthorization) throw new AppError("approved_send_unavailable", 503);
-  await executeAction(env, saved.action_id, provider ?? new ZapiClient(env), { confirmed: true, hash: saved.hash }, {
+  if (!owner || (q.authority ? !owner.nativeReplyAuthorization : !owner.approvedSendAuthorization)) throw new AppError("approved_send_unavailable", 503);
+  await executeAction(env, saved.action_id, provider ?? new ZapiClient(env), undefined, {
+    ...(q.authority?{authorizationKind:q.authority.kind==='autonomous_policy'?'autonomous_policy' as const:'native_human_approval' as const}:{}),
     beforeClaim: async (snapshot) => {
       // This callback runs after provider.status(), immediately before Source's sole attempt claim.
       // Check the actual cached send snapshot as well as current SQL state: an A→B→A
@@ -85,19 +98,28 @@ export async function executeApprovedSend(raw: Env, input: unknown, provider?: S
       if (snapshot.chat.id !== target.chatId || snapshot.chat.name !== target.name || snapshot.chat.external_id !== target.address || snapshot.chat.kind !== target.kind || snapshot.chat.epoch !== q.scope.sourceEpoch || snapshot.chat.generation !== q.scope.sourceGeneration || canonicalEnvelope(snapshot.envelope) !== canonicalEnvelope(envelope))
         throw new AppError("approved_send_changed", 409);
       await authenticate(raw, q.secret, q.scope);
-      const proof = authorizationSchema.safeParse(await owner.approvedSendAuthorization(q.scope, { secret: q.secret, approvalId: q.approvalId, actionId: q.actionId, hash: saved.hash }));
-      const now = Date.now();
-      if (!proof.success || proof.data.actionId !== q.actionId || proof.data.hash !== saved.hash || proof.data.approvalId !== q.approvalId || proof.data.expiresAt <= now || proof.data.expiresAt > now + 10000) throw new AppError("approved_send_denied", 403);
+      const now = Date.now();let expiresAt:number;
+      if(q.authority){
+        if(q.authority.kind==='autonomous_policy' && raw.ASSISTANT_NATIVE_AUTONOMOUS_ENABLED!=='true')throw new AppError('native_autonomous_disabled',403);
+        const proof=nativeReplyAuthorization.safeParse(await owner.nativeReplyAuthorization!(q.scope,{secret:q.secret,actionId:q.actionId,hash:saved.hash,authority:q.authority}));
+        if(!proof.success||!proof.data.authorized||proof.data.actionId!==q.actionId||proof.data.hash!==saved.hash||JSON.stringify(proof.data.authority)!==JSON.stringify(q.authority)||proof.data.expiresAt<=now||proof.data.expiresAt>now+10000)throw new AppError('native_reply_denied',403);
+        expiresAt=proof.data.expiresAt;
+      }else{
+        const proof = authorizationSchema.safeParse(await owner.approvedSendAuthorization(q.scope, { secret: q.secret, approvalId: q.approvalId, actionId: q.actionId, hash: saved.hash }));
+        if (!proof.success || proof.data.actionId !== q.actionId || proof.data.hash !== saved.hash || proof.data.approvalId !== q.approvalId || proof.data.expiresAt <= now || proof.data.expiresAt > now + 10000) throw new AppError("approved_send_denied", 403);
+        expiresAt=proof.data.expiresAt;
+      }
       const mapping = `EXISTS(SELECT 1 FROM approved_sends s WHERE ${ns} AND s.action_id=? AND s.hash=? AND s.target_json=? AND s.activity_json=?)`;
       const exactTarget = "EXISTS(SELECT 1 FROM chats WHERE id=? AND epoch=? AND generation=? AND name=? AND external_id=? AND kind=?)";
-      return { sql: `(${connection.sql}) AND (${local.sql}) AND (${mapping}) AND (${exactTarget}) AND (${activity.sql}) AND ?>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)`, values: [...connection.values, ...local.values, ...keys(q.scope), q.actionId, saved.hash, saved.target_json,saved.activity_json, target.chatId, q.scope.sourceEpoch, q.scope.sourceGeneration, target.name, target.address, target.kind,...activity.values, proof.data.expiresAt] };
+      return { sql: `(${connection.sql}) AND (${local.sql}) AND (${mapping}) AND (${exactTarget}) AND (${activity.sql}) AND ?>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)`, values: [...connection.values, ...local.values, ...keys(q.scope), q.actionId, saved.hash, saved.target_json,saved.activity_json, target.chatId, q.scope.sourceEpoch, q.scope.sourceGeneration, target.name, target.address, target.kind,...activity.values, expiresAt] };
     },
   });
   return receipt(await mapped(env, q.scope, "action_id", q.actionId));
 }
 /** Named private capability only. The model cannot choose a provider, URL or execution guard. */
-export class ApprovedSendActuator extends WorkerEntrypoint<Env> implements ApprovedSendActuatorRPC {
+export class ApprovedSendActuator extends WorkerEntrypoint<Env> implements ApprovedSendActuatorRPC, NativeReplyActuatorRPC {
   prepare(input: unknown) { return prepareApprovedSend(this.env, input); }
   execute(input: unknown) { return executeApprovedSend(this.env, input); }
+  executeNative(input:unknown){return executeNativeReply(this.env,input);}
   status(input: unknown) { return approvedSendStatus(this.env, input); }
 }

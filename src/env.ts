@@ -32,6 +32,7 @@ export interface Env extends AuthorityEnv {
   WEBHOOK_SECRET?: string;
   ASSISTANT_READER_SECRET?: string;
   ASSISTANT_APPROVED_SEND_SECRET?: string;
+  ASSISTANT_NATIVE_AUTONOMOUS_ENABLED?: string;
   ASSISTANT_OWNER?: OwnerAssistantRPC;
   ASSISTANT_INGRESS?: Pick<Fetcher, "fetch">;
   ASSISTANT_BRIDGE_SECRET?: string;

@@ -17,6 +17,8 @@ export interface SendProvider {
 }
 /** Trusted host code only; never deserialize a guard from a tool/RPC argument. */
 export interface ActionExecutionGuard {
+  /** Host-only audit classification, not caller-attested confirmation. */
+  authorizationKind?: "native_human_approval" | "autonomous_policy";
   beforeClaim(snapshot: { chat: Readonly<ChatRow>; envelope: Readonly<SendEnvelope> }): Promise<{ sql: string; values: (string | number | null)[] }>;
 }
 export interface ApprovalProof {
@@ -205,7 +207,9 @@ export async function executeAction(
   const extra = hostGuard ? await hostGuard.beforeClaim({ chat, envelope }) : { sql: "1", values: [] };
   // The Telegram path records approval only together with its authorized attempt.
   // A failed proof/guard leaves the proposed action's audit trail untouched.
-  const approvedFields = hostGuard ? ",approved_at=?,approval_channel='telegram_owner'" : "";
+  const autonomous = hostGuard?.authorizationKind === "autonomous_policy";
+  const approvedFields = !hostGuard ? "" : autonomous ? ",approval_channel='native_autonomous_policy'"
+    : hostGuard.authorizationKind === "native_human_approval" ? ",approved_at=?,approval_channel='native_telegram_owner'" : ",approved_at=?,approval_channel='telegram_owner'";
   const approvedState = hostGuard ? "status IN ('proposed','approved')" : "status='approved'";
   const attemptedAt = Date.now();
   // A single conditional write owns the sole external attempt. A crash after it is uncertain.
@@ -214,7 +218,7 @@ export async function executeAction(
   )
     .bind(
       attemptedAt,
-      ...(hostGuard ? [attemptedAt] : []),
+      ...(hostGuard && !autonomous ? [attemptedAt] : []),
       id,
       a.epoch,
       a.generation,
