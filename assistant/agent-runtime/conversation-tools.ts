@@ -1,4 +1,4 @@
-import { useTool } from '@flue/runtime';
+import { useTool,type ToolRunEnvelope } from '@flue/runtime';
 import * as v from 'valibot';
 import { bridgeHash } from '../ingress';
 import { knowledgeCommand, knowledgeQuery, knowledgeRemember } from '../knowledge/contracts';
@@ -13,16 +13,17 @@ const pagination={after:v.optional(id),limit:v.optional(v.pipe(v.number(),v.inte
 const evidence=v.strictObject({sourceRef:v.strictObject({id,revision:integer,version:integer,hash:v.pipe(v.string(),v.regex(/^[a-f0-9]{64}$/))}),quote:v.optional(v.pipe(v.string(),v.minLength(1)))});
 const relation=v.strictObject({subjectId:id,predicate:name,objectId:id,classification,
  validFrom:v.optional(v.string()),validUntil:v.optional(v.string()),evidence:v.pipe(v.array(evidence),v.minLength(1))});
+type ToolValue=ToolRunEnvelope<undefined>['output'];
 export type ConversationToolBinding={runtime:ConversationRuntime;task:TaskContext;
  /** Optional host callback closes over this exact private-curator run/task. */
- onKnowledgeReady?:(operationId:string)=>Promise<unknown>};
+ onKnowledgeReady?:(operationId:string)=>Promise<ToolValue>};
 /** The resolver closes over this native render's delivery. It may resolve a
  * host-recorded consumed cohort, but must never read a mutable "active task". */
 export function useConversationKnowledgeTools(resolve:()=>Promise<ConversationToolBinding>){
- async function output(binding:ConversationToolBinding,result:unknown,operationId?:string){
+ async function output(binding:ConversationToolBinding,result:ToolValue,operationId?:string){
   await binding.runtime.assertTaskCurrent(binding.task);
   if(!operationId||!binding.onKnowledgeReady||!result||typeof result!=='object'||!('state' in result)||result.state!=='ready')return {output:result};
-  let accounting:unknown;
+  let accounting:ToolValue;
   try{accounting=await binding.onKnowledgeReady(operationId);}
   catch{accounting={state:'pending',reason:'curator_receipt_pending'};}
   // A bookkeeping failure does not undo a real graph write. Revocation is a
