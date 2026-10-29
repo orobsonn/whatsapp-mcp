@@ -4,7 +4,8 @@ export const nativeConversationChildTables = new Set(["assistant_native_conversa
 /** Host-only freshness check over every installation-scoped assistant table.
  * An old generation containing only project/control metadata is still used. */
 export async function namespaceOccupied(db: D1Database, scope: SourceScope) {
-  const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors','assistant_retention_runtime_hold') ORDER BY name LIMIT 129").all<{ name: string }>()).results;
+  // Fixed external-content FTS tables are derived; unknown tables still deny.
+  const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors','assistant_retention_runtime_hold') AND name NOT IN ('assistant_archive_text','assistant_archive_text_data','assistant_archive_text_idx','assistant_archive_text_docsize','assistant_archive_text_config') ORDER BY name LIMIT 129").all<{ name: string }>()).results;
   if (tables.length > 128 || tables.some(row => !/^assistant_[a-z0-9_]+$/.test(row.name))) throw new Error("restore_schema_unsupported");
   const metadata = await db.batch(tables.map(row => db.prepare(`PRAGMA table_info("${row.name}")`)));
   if (metadata.some((result, index) => { const columns = new Set(result.results.map(row => (row as { name: string }).name)); return nativeConversationChildTables.has(tables[index].name) ? !columns.has("conversation_id") || !tables.some(row => row.name === "assistant_native_conversations") : !columns.has("installation_id") || !columns.has("generation") || tables[index].name === "assistant_native_conversations" && !columns.has("id"); })) throw new Error("restore_schema_unsupported");

@@ -33,7 +33,9 @@ export class AssistantExport {
   private async catalog() {
     // The archive Worker has two transport tables using this prefix. They belong
     // to its source namespace, never to the assistant's restorable DB catalog.
-    const catalogRows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors') ORDER BY name LIMIT 129")
+    // The fixed archive FTS index and its shadows are rebuilt from canonical
+    // versions and must never be exported or restored as source authority.
+    const catalogRows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors','assistant_archive_text','assistant_archive_text_data','assistant_archive_text_idx','assistant_archive_text_docsize','assistant_archive_text_config') ORDER BY name LIMIT 129")
       .all<{ name: string; sql: string }>()).results;
     if (catalogRows.length > 128 || catalogRows.some(row => !/^assistant_[a-z0-9_]+$/.test(row.name) || /WITHOUT\s+ROWID/i.test(row.sql))) throw new Error("export_schema_unsupported");
     const rows = this.purpose === "all" ? catalogRows : catalogRows.filter(row => canonicalSnapshotTables.has(row.name) || financialTables.has(row.name));
