@@ -82,8 +82,12 @@ async function buffered(response:Response,limit:number,signal:AbortSignal){
  * No durable response replay: a known completed retry is explicit and blocked. */
 export function createConversationProvider(config:ConversationProviderOptions):Provider<'openai-responses'>{
  if(!config.apiKey)throw Error('native_model_key_missing');
- const native=openaiProvider(),model=native.getModels().find(m=>m.id===MODEL);
- if(!model||model.baseUrl!=='https://api.openai.com/v1')throw Error('native_model_catalog_missing');
+ const native=openaiProvider(),catalog=native.getModels().find(m=>m.id===MODEL);
+ if(!catalog||catalog.baseUrl!=='https://api.openai.com/v1')throw Error('native_model_catalog_missing');
+ // The installed catalog and consumer model views are mutable. Keep a private
+ // deep snapshot and close monetary ceilings over validated numeric values.
+ const model=structuredClone(catalog),contextWindow=model.contextWindow,maxTokens=model.maxTokens;
+ positive(contextWindow);positive(maxTokens);
  function options(original:StreamOptions|SimpleStreamOptions|undefined){
   // Calling the resolver now captures the instrument's async-local operation.
   const hostPromise=Promise.resolve(config.resolveHost());
@@ -96,7 +100,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     const host=await hostPromise;
     if(![...keys(host),host.scope.period].every(validId))throw Error('native_model_identity_invalid');
     for(const n of [host.maxOutputTokens,host.maxRequestBytes,host.maxResponseBytes,host.timeoutMs])positive(n);
-    if(host.maxOutputTokens<16||host.maxOutputTokens>model!.maxTokens)throw Error('native_model_invalid_limit');
+    if(host.maxOutputTokens<16||host.maxOutputTokens>maxTokens)throw Error('native_model_invalid_limit');
     const p=payload as Record<string,unknown>;
     if(!p||p.model!==MODEL||p.stream!==true||p.store===true||p.background===true||(p.service_tier!==undefined&&p.service_tier!=='default')||(p.tools!==undefined&&(!Array.isArray(p.tools)||p.tools.some(t=>!t||t.type!=='function'))))throw Error('native_model_payload_denied');
     // The default tier is required for the pinned conservative tariff.
@@ -111,7 +115,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     const operationKey='native:'+await hash(stable(keys(host)));
     // Full installed context is a conservative input ceiling (also images,
     // tool declarations and protocol overhead); no reduced history/corpus cap.
-    const ceiling=Math.ceil(model!.contextWindow*.25+(p.max_output_tokens as number)*.75);
+    const ceiling=Math.ceil(contextWindow*.25+(p.max_output_tokens as number)*.75);
     await current(config.db,host);
     const reservation=await host.budget.reserve(operationKey,requestHash,ceiling);
     const existing=await conversationModelReceipt(config.db,host);
@@ -158,7 +162,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
   };
  }
  return {id:native.id,name:native.name,baseUrl:native.baseUrl,
-  auth:{apiKey:{name:'Host admission',resolve:async()=>({auth:{}})}},getModels:()=>[model],
+  auth:{apiKey:{name:'Host admission',resolve:async()=>({auth:{}})}},getModels:()=>[structuredClone(model)],
   stream:(requested,context,opts)=>{
    if(requested.id!==MODEL||requested.provider!==native.id||requested.api!==model.api||requested.baseUrl!==model.baseUrl)throw Error('native_model_denied');
    return native.stream(model,context,options(opts));

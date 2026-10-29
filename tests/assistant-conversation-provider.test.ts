@@ -2,6 +2,7 @@ import {env} from 'cloudflare:test';
 import {beforeEach,it,expect} from 'vitest';
 import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/agent-runtime/conversation-provider';
 import {InferenceBudget} from '../assistant/budget';
+import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
 
 const key='sk-synthetic-native-only-never-a-real-credential';
@@ -102,4 +103,19 @@ it('unpriced provider-hosted tools and provider storage are rejected before rese
  const p=provider();for(const samplingParams of [{tools:[{type:'web_search'}]},{store:true},{service_tier:'priority'}]){
   const result=await p.streamSimple(p.getModels()[0],context(),{samplingParams} as any).result();expect(result.stopReason).toBe('error');
  }expect(calls).toBe(0);expect((await budget.status()).committed).toBe(0);
+});
+
+it('catalog views cannot shrink the paid reservation ceiling or mutate installed native metadata',async()=>{
+ const installed=openaiProvider().getModels().find(m=>m.id==='gpt-6-luna')!,original=structuredClone(installed),p=provider(),view=p.getModels()[0];
+ try{
+  view.contextWindow=1;view.maxTokens=1_000_000;view.cost.input=0;
+  if(view.cost.tiers?.[0])view.cost.tiers[0].input=0;
+  const result=await run(p);
+  expect((await conversationModelReceipt(env.DB,host))?.ceiling_units).toBe(Math.ceil(original.contextWindow*.25+64*.75));
+  expect(result.result.stopReason,result.result.errorMessage).toBe('stop');
+  if(view.inputLimits)view.inputLimits.maxRequestBytes=1;
+  expect(installed).toEqual(original);expect(p.getModels()[0]).toEqual(original);
+  host.turnId='catalog-output-limit';host.maxOutputTokens=original.maxTokens+1;
+  expect((await run(p)).result.stopReason).toBe('error');expect(calls).toBe(1);
+ }finally{Object.assign(installed,original);}
 });
