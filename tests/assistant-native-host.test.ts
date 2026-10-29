@@ -76,6 +76,12 @@ describe('native application composition on real D1 and Source reads',()=>{
   const a=await host.receiveCapture(incoming.sequence),b=await host.receiveCapture(incoming.sequence);expect(a).toEqual(b);expect(transport.dispatch).toHaveBeenCalledTimes(1);
   const task=await latestTask(host,a.taskRef!);expect(task.cohort[0]).toMatchObject({kind:'action_result',author:{kind:'system',id:'own-device-unattributed'}});
  });
+ it.each([['conversation_exposure_proof','conversation_exposure_proof'],['private diagnostic that must never be persisted','native_admission_unavailable']])('records a bounded admission gap instead of leaving a failed capture pending: %s',async(message,gap)=>{
+  const f=await fixture(),input=await f.append('Mensagem sintética para diagnóstico'),host=f.host();
+  vi.spyOn(host.runtime,'deliverConversation').mockRejectedValueOnce(Error(message));
+  await expect(host.receiveCapture(input.sequence)).rejects.toThrow(message);
+  expect(await env.DB.prepare('SELECT state,last_gap FROM assistant_native_capture_intake WHERE installation_id=? AND sequence=?').bind(f.scope.installationId,input.sequence).first()).toEqual({state:'unavailable',last_gap:gap});
+ });
  it('does not analyze a default group, honors explicit group permission, and preserves group participant identity',async()=>{
   const f=await fixture(),group=await f.append('Mensagem do grupo','120363999999999999-group',true),host=f.host();expect((await host.receiveCapture(group.sequence)).state).toBe('excluded');expect(transport.dispatch).not.toHaveBeenCalled();
   await env.DB.prepare(`INSERT INTO assistant_conversation_policies VALUES(?,?,?,'group',0,'respond',1)`).bind(f.scope.installationId,f.scope.generation,group.chatId).run();

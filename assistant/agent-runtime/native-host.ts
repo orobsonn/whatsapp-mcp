@@ -29,6 +29,12 @@ import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
 
 const owner={kind:'owner'} as const;
+// Only server-defined codes enter durable diagnostics. Provider errors, source
+// content, URLs and arbitrary exception messages never become stored gaps.
+const captureAdmissionGaps=new Set(['native_event_denied','native_event_source_changed','native_event_origin_changed',
+ 'native_authority_denied','native_disabled','native_conversation_denied','conversation_authority_changed',
+ 'conversation_context_withdrawn','conversation_context_unavailable','conversation_exposure_proof','conversation_exposure_changed',
+ 'conversation_event_conflict','conversation_delivery_denied','conversation_reply_anchor_denied']);
 /** Request-local composition root. No active task/session/actor is stored in a
  * module or a mutable shared pointer. Every tool resolves its immutable frame. */
 export class NativeApplicationHost {
@@ -149,7 +155,11 @@ export class NativeApplicationHost {
   const actionState=status&&['delivered','read'].includes(status)?'delivered' as const:status&&['accepted','sent'].includes(status)?'accepted' as const:undefined;
   const event=verifiedConversationEvent({identity,eventId:'capture:'+row.source_kind+':'+row.source_id,revision:source.fence.source.revision,kind:input.authorship.kind==='external'?'incoming':'action_result',author,
    occurredAt:typeof content.occurredAt==='number'?content.occurredAt:typeof content.receivedAt==='number'?content.receivedAt:Date.now(),body,sourceRef:ref,...(actionState?{actionState}:{})});
-  const result=await this.admit(event,input.originalSequence);return finish(result.state,null,result.taskRef);
+  try{const result=await this.admit(event,input.originalSequence);return finish(result.state,null,result.taskRef);}
+  catch(error){
+   const code=error instanceof Error&&captureAdmissionGaps.has(error.message)?error.message:'native_admission_unavailable';
+   await finish('unavailable',code);throw error;
+  }
  }
  async receiveTelegram(updateId:number,raw?:unknown){
   const fence=await nativeOwnerFence(this.env,this.currentScope()),activation=await nativeTelegramActivation(this.env,this.currentScope(),fence),link=joinGuards(telegramLinkGuard(fence),activation.guard);
