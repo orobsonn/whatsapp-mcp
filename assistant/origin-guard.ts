@@ -118,7 +118,10 @@ export class OriginGuard {
   }
   /** Local half of the same fence snapshot, for a host-owned D1 effect latch.
    * A fresh remote check is still required immediately before that transaction. */
-  localGuard(expected:OriginFence):AccessGuard {
+  localGuard(expected:OriginFence):AccessGuard { return this.expectedGuard(expected,false); }
+  /** Context validity ignores activity alone; action freshness still uses localGuard. */
+  localContextGuard(expected:OriginFence):AccessGuard { return this.expectedGuard(expected,true); }
+  private expectedGuard(expected:OriginFence,context:boolean):AccessGuard {
     const scope=activeOrigin(this.getScope);
     if(!expected||JSON.stringify(scopeKeys(scope))!==JSON.stringify(scopeKeys(expected)))return {sql:'0',values:[]};
     const query=this.fenceQuery(scope,expected.canonicalId);
@@ -126,9 +129,9 @@ export class OriginGuard {
       AND (observed.policy_kind IS NULL OR observed.policy_kind=observed.kind)
       AND (observed.policy_mode<>'ignore'${this.purpose === "owner_read" ? " OR observed.kind='group'" : ""})
       AND observed.source_kind IS ? AND observed.source_id IS ? AND observed.chat_id IS ? AND observed.observation_hash IS ?
-      AND observed.revision IS ? AND observed.current_version IS ? AND observed.chat_watermark IS ?
+      AND observed.revision IS ? AND observed.current_version IS ? ${context ? "" : "AND observed.chat_watermark IS ?"}
       AND observed.kind IS ? AND observed.policy_revision IS ? AND observed.policy_mode IS ?)`,
-      values:[...query.values,expected.sourceKind,expected.sourceId,expected.chatId,expected.hash,expected.revision,expected.version,expected.watermark,expected.conversationKind,expected.policyRevision,expected.policyMode]};
+      values:[...query.values,expected.sourceKind,expected.sourceId,expected.chatId,expected.hash,expected.revision,expected.version,...(context?[]:[expected.watermark]),expected.conversationKind,expected.policyRevision,expected.policyMode]};
   }
   private fenceRow(scope: OriginScope, canonicalId: string, row: OriginRow | null): OriginFence | null {
     if (!row || row.access_state !== "available" || !row.kind || (row.policy_kind !== null && row.policy_kind !== row.kind)
@@ -149,6 +152,22 @@ export class OriginGuard {
     const rows = await this.db.batch<OriginRow>(canonicalIds.map(id => this.fenceStatement(scope, id)));
     if (rows.length !== canonicalIds.length) throw new Error("origin_fence_batch_result");
     return rows.map((row, index) => this.fenceRow(scope, canonicalIds[index], row.results[0] ?? null));
+  }
+  /** A newer chat watermark only supersedes action intent. It does not change
+   * evidence already held in a native transcript or summary. */
+  async checkContext(fence:OriginFence,isCurrent:()=>boolean=()=>true):Promise<{state:'current'|'changed'|'unavailable'}> {
+    if(!fence)return {state:'changed'};
+    fence=JSON.parse(JSON.stringify(fence)) as OriginFence;
+    const equal=(a:OriginFence|null)=>!!a&&sameFence({...a,watermark:fence.watermark},fence);
+    if(!isCurrent()||!fence||JSON.stringify(scopeKeys(activeOrigin(this.getScope)))!==JSON.stringify(scopeKeys(fence)))return {state:'changed'};
+    try {
+      if(!equal(await this.fence(fence.canonicalId)))return {state:'changed'};
+      const observed=await this.observe(fence,fence);
+      if(!isCurrent()||JSON.stringify(scopeKeys(activeOrigin(this.getScope)))!==JSON.stringify(scopeKeys(fence)))return {state:'changed'};
+      if(observed.state==='blocked')return {state:observed.reason==='snapshot_identity_mismatch'?'changed':'unavailable'};
+      if(observed.state!=='available'||observed.hash!==fence.hash||observed.kind!==fence.conversationKind)return {state:'changed'};
+      return {state:equal(await this.fence(fence.canonicalId))&&isCurrent()?'current':'changed'};
+    } catch { return {state:'unavailable'}; }
   }
   async check(fence: OriginFence,isCurrent:()=>boolean=()=>true): Promise<boolean> {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;

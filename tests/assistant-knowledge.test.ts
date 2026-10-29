@@ -152,10 +152,10 @@ it('preserves partial native query coverage even when every candidate is visible
 });
 
 it('checks the origin local guard after a successful remote check before writing knowledge',async()=>{
- const {ref,guard}=await captured(),check=guard.check;let checks=0;
- vi.spyOn(guard,'check').mockImplementation(async function(this:OriginGuard,fence){
+ const {ref,guard}=await captured(),check=guard.checkContext;let checks=0;
+ vi.spyOn(guard,'checkContext').mockImplementation(async function(this:OriginGuard,fence){
   const valid=await check.call(this,fence);
-  if(++checks===2)await env.DB.prepare('UPDATE assistant_origin_conversations SET watermark=2 WHERE installation_id=? AND generation=?').bind(context.scope.installationId,context.scope.generation).run();
+  if(++checks===2)await env.DB.prepare("UPDATE assistant_source_origins SET observation_hash='changed' WHERE installation_id=? AND generation=?").bind(context.scope.installationId,context.scope.generation).run();
   return valid;
  });
  expect(await service.execute(remember(ref))).toMatchObject({state:'partial',error:'evidence_changed'});
@@ -193,4 +193,10 @@ it.each(['person','project'] as const)('maps the entities command entityKind %s 
  port.find_entities=async input=>{inputs.push(input);return {entities:[]};};
  expect(await service.execute({kind:'entities',entityKind,query:'Cedar',after:'cursor',limit:7})).toMatchObject({entities:[]});
  expect(inputs).toEqual([{kind:entityKind,query:'Cedar',after:'cursor',limit:7}]);
+});
+
+it('preserves remember replay and status when only chat activity advances',async()=>{
+ const {ref,snapshot}=await captured(),command=remember(ref);expect(await service.execute(command)).toMatchObject({state:'ready'});
+ snapshot.watermark=2;await env.DB.prepare('UPDATE assistant_origin_conversations SET watermark=2 WHERE installation_id=?').bind(context.scope.installationId).run();
+ expect(await service.execute(command)).toMatchObject({state:'ready'});expect(await service.execute({kind:'status',operationId:command.operationId})).toMatchObject({state:'ready'});expect(writes).toHaveLength(1);
 });

@@ -4,6 +4,7 @@ import { bridgeHash } from '../ingress';
 import { sourceRef } from '../source-proof-contract';
 import type { KnowledgeContext } from '../knowledge/contracts';
 import type { KnowledgeService } from '../knowledge/service';
+import type { NativeConversationRetention } from './conversation-retention';
 
 const label=z.string().min(1).max(256), integer=z.number().int().nonnegative().safe();
 export const conversationIdentity=z.object({version:z.literal(1),installationId:label,generation:label,
@@ -50,6 +51,8 @@ export type TaskContext=DeepReadonly<{
 export type ConversationDeliveryReceipt={sessionId:string;taskRef:string;state:'admitted'|'uncertain';receipt?:DispatchReceipt};
 export type ConversationHandle=Pick<AgentInstanceHandle,'dispatch'|'read'>;
 export interface ConversationHost {
+ /** Host-only native context registry. Required by production wiring. */
+ retention?:NativeConversationRetention;
  /** Current authenticated owner/source/policy authority. Must fail closed for
   * restore, withdrawn sources, replaced generations or disabled channels. */
  authority(identity:ConversationIdentity):Promise<ConversationAuthority>;
@@ -87,8 +90,10 @@ export class ConversationRuntime {
   const authority=authoritySchema.parse(await this.host.authority(identity)),requestHash=await bridgeHash(parsed),taskRef='conversation-task-v1-'+await bridgeHash([sessionId,parsed.eventId,parsed.revision]);
   await this.db.prepare(`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`)
    .bind(sessionId,identity.installationId,identity.generation,JSON.stringify(identity),this.clock()).run();
+  await this.host.retention?.register(identity);
   const currentAuthority=await this.current(identity);
   if(JSON.stringify(currentAuthority)!==JSON.stringify(authority))throw Error('conversation_authority_changed');
+  if(parsed.sourceRef)await this.host.retention?.exposeSource(identity,parsed.sourceRef);
   // Admission and supersession share one D1 transaction. Replaying an older
   // event cannot supersede an intent based on a newer watermark.
   await this.db.batch([
@@ -105,6 +110,7 @@ export class ConversationRuntime {
   // payload. Flue2.3 owns admission dedupe, including concurrent dispatches.
   if(JSON.stringify(await this.current(identity))!==row.authority_json)throw Error('conversation_authority_changed');
   await this.db.prepare("UPDATE assistant_native_conversation_events SET state='dispatching' WHERE task_ref=? AND state IN ('pending','uncertain')").bind(taskRef).run();
+  await this.host.retention?.assertCurrent(identity);
   const request:AgentHandleDispatchRequest={message:signal(row),initialData:identity,idempotencyKey:taskRef};
   try{
    const receipt=await this.host.open(sessionId).dispatch(request);
@@ -139,6 +145,7 @@ export class ConversationRuntime {
    knowledge:{scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:'conversation_agent' as const}});
  }
  async assertTaskCurrent(task:TaskContext){
+  await this.host.retention?.assertCurrent(task.identity);
   const authority=await this.current(task.identity);
   if(task.sessionId!==await address(task.identity)||JSON.stringify(authority)!==JSON.stringify(task.authority))throw Error('conversation_authority_changed');
   const refs=task.cohort.map(event=>event.taskRef),contextRef='conversation-context-v1-'+await bridgeHash([task.sessionId,refs,authority]);
@@ -147,13 +154,17 @@ export class ConversationRuntime {
   const row=await this.event(task.taskRef),resolved=await this.resolveTask(task.identity,signal(row),refs);
   if(JSON.stringify(resolved)!==JSON.stringify(task))throw Error('conversation_task_denied');
  }
- async knowledge(task:TaskContext){await this.assertTaskCurrent(task);return this.host.knowledge(task);}
+ async knowledge(task:TaskContext){await this.assertTaskCurrent(task);const knowledge=await this.host.knowledge(task);
+  return this.host.retention?knowledge.withExposure(proof=>this.host.retention!.expose(task.identity,proof)):knowledge;
+ }
  async read(taskRef:string,options?:Parameters<AgentInstanceHandle['read']>[1]){
   const row=await this.event(taskRef),event=eventSchema.parse(JSON.parse(row.event_json!));
   if(JSON.stringify(await this.current(event.identity))!==row.authority_json)throw Error('conversation_authority_changed');
   if(!row.receipt_json)return {state:'uncertain' as const,taskRef};
+  await this.host.retention?.assertCurrent(event.identity);
   const reply=await this.host.open(row.conversation_id).read(JSON.parse(row.receipt_json),options);
   if(JSON.stringify(await this.current(event.identity))!==row.authority_json)throw Error('conversation_authority_changed');
+  await this.host.retention?.assertCurrent(event.identity);
   return {state:'settled' as const,taskRef,reply};
  }
  /** Minimal intent boundary for the future action host. No outgoing effect.
@@ -178,6 +189,7 @@ export class ConversationRuntime {
   * it does NOT claim physical Flue transcript/compaction deletion (P5). Never
   * pass a model-selected identity here or reuse a tombstoned epoch. */
  async tombstone(identity:ConversationIdentity){
+  if(this.host.retention){await this.host.retention.purge(identity);return;}
   const id=await address(conversationIdentity.parse(identity));
   await this.db.batch([
    this.db.prepare(`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at,tombstoned_at) VALUES(?,?,?,?,?,?)

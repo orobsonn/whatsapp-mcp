@@ -5,7 +5,8 @@ import type {SourceRetirementGuard} from '../retention-authority';
 import {bridgeHash} from '../ingress';
 import type {OriginGuard,OriginFence} from '../origin-guard';
 type Row={id:string;kind:string;client:KnowledgeContext['client'];request_hash:string;normalized_json:string|null;source_fences_json:string|null;state:string;response_json:string|null;created_at:number;request_json:string};
-type Snapshot={sources:SourceFence[];origins:OriginFence[]};
+export type KnowledgeExposure={sources:SourceFence[];origins:OriginFence[]};
+type Snapshot=KnowledgeExposure;
 type ControlPlan={sourceCommand:SourceCommand;previousRef?:{id:string;revision:number;version:number;hash:string};cleanupId?:string;sourceHash?:string};
 type Visible={claim:VerifiedKnowledgeClaim;proof:Snapshot};
 const owner={kind:'owner'} as const;
@@ -15,7 +16,10 @@ const copy=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
  * the authenticated host; graph candidates never grant source access. */
 export class KnowledgeService {
  constructor(private readonly db:D1Database,private readonly getContext:()=>KnowledgeContext,private readonly port:KnowledgePort,
-  private readonly clock=Date.now,private readonly retirement?:SourceRetirementGuard,private readonly origin?:OriginGuard){}
+  private readonly clock=Date.now,private readonly retirement?:SourceRetirementGuard,private readonly origin?:OriginGuard,private readonly expose?:(proof:KnowledgeExposure)=>Promise<void>){}
+ /** Host wrapper intercepts evidence before any tool result is released. */
+ withExposure(expose:(proof:KnowledgeExposure)=>Promise<void>){return new KnowledgeService(this.db,this.getContext,this.port,this.clock,this.retirement,this.origin,async proof=>{await this.expose?.(proof);await expose(proof);});}
+ private async release(proof:Snapshot){if(this.expose)await this.expose(copy(proof));}
  private context(){const c=copy(this.getContext());if(Object.values(c.scope).some(v=>typeof v!=='string'||!v)||!['owner_mcp','owner_telegram','conversation_agent','curator'].includes(c.client))throw Error('knowledge_context');return c;}
  private current(c:KnowledgeContext){if(scopeKey(this.getContext())!==scopeKey(c))throw Error('knowledge_scope_changed');}
  private keys(c:KnowledgeContext){return [c.scope.installationId,c.scope.generation];}
@@ -28,7 +32,7 @@ export class KnowledgeService {
   let originFence:OriginFence|undefined;
   if(result.fence.source.origin==='whatsapp'){
    if(!this.origin)throw Error('knowledge_origin_unavailable');const fence=await this.origin.fence(ref.id);
-   if(!fence||!await this.origin.check(fence))throw Error('knowledge_source_unavailable');this.current(c);originFence=fence;
+   if(!fence||(await this.origin.checkContext(fence)).state!=='current')throw Error('knowledge_source_unavailable');this.current(c);originFence=fence;
   }
   return {...result,...(originFence?{originFence}:{})};
  }
@@ -48,8 +52,8 @@ export class KnowledgeService {
   * be revoked and subsequent reads must obtain a new snapshot. */
  private async validSnapshot(c:KnowledgeContext,proof:Snapshot){
   for(const fence of proof.sources)if(fence.source.origin==='whatsapp'&&!proof.origins.some(o=>o.canonicalId===fence.source.id&&o.revision===fence.source.revision&&o.version===fence.source.version))return false;
-  for(const fence of proof.origins){if(!this.origin||!await this.origin.check(fence))return false;this.current(c);}
-  const access=this.access(c),now=this.clock(),guards=[...proof.sources.map(f=>access.guard(owner,f,now)),...proof.origins.map(f=>this.origin!.localGuard(f))];
+  for(const fence of proof.origins){if(!this.origin||(await this.origin.checkContext(fence)).state!=='current')return false;this.current(c);}
+  const access=this.access(c),now=this.clock(),guards=[...proof.sources.map(f=>access.guard(owner,f,now)),...proof.origins.map(f=>this.origin!.localContextGuard(f))];
   this.current(c);if(!guards.length)return true;
   const rows=await this.db.batch<{valid:number}>(guards.map(g=>this.db.prepare(`SELECT CASE WHEN (${g.sql}) THEN 1 ELSE 0 END AS valid`).bind(...g.values)));
   this.current(c);return rows.length===guards.length&&rows.every(r=>r.results[0]?.valid===1);
@@ -99,6 +103,7 @@ export class KnowledgeService {
   const result=await this.port.status(id);this.current(c);
   if(result.state==='not_found')return {operationId:id,state:row.state==='accepted'?'accepted':'uncertain'};
   if(!await this.validFences(c,row.source_fences_json))return {operationId:id,state:'partial',error:'evidence_changed'};
+  await this.release(this.snapshot(row.source_fences_json!));
   return this.complete(c,id,result);
  }
  private async visible(c:KnowledgeContext,raw:KnowledgeClaim):Promise<Visible|null>{
@@ -131,12 +136,14 @@ export class KnowledgeService {
    const {kind:_,...input}=command,page=await this.port.query(input);this.current(c);const claims:VerifiedKnowledgeClaim[]=[],proofs:Snapshot[]=[];let partial=page.coverage?.state==='partial';
    for(const claim of page.claims){const current=await this.visible(c,claim);if(current){claims.push(current.claim);proofs.push(current.proof);partial ||= current.claim.supportGroups.length!==claim.supportGroups.length;}}
    await this.pageSnapshot(c,proofs);
+   await this.release({sources:proofs.flatMap(p=>p.sources),origins:proofs.flatMap(p=>p.origins)});
    return {claims,...(page.nextCursor?{nextCursor:page.nextCursor}:{}),coverage:{scope:'native_candidate_page',state:partial||claims.length!==page.claims.length?'partial':'complete',archive:'not_exhaustive'}};
   }
   if(command.kind==='entities'){
    const {kind:_,entityKind,...input}=command,page=await this.port.find_entities({...input,...(entityKind?{kind:entityKind}:{})});this.current(c);const entities=[],proofs:Snapshot[]=[];let partial=page.coverage?.state==='partial';
    for(const entity of page.entities){const visible=await this.entityVisible(c,entity.id);if(visible){entities.push(entity);proofs.push(visible.proof);partial ||= visible.partial;}}
    await this.pageSnapshot(c,proofs);
+   await this.release({sources:proofs.flatMap(p=>p.sources),origins:proofs.flatMap(p=>p.origins)});
    return {entities,...(page.nextCursor?{nextCursor:page.nextCursor}:{}),coverage:{scope:'native_candidate_page',state:partial||entities.length!==page.entities.length?'partial':'complete',archive:'not_exhaustive'}};
   }
   if(command.kind==='status')return this.status(c,command.operationId);
@@ -149,7 +156,7 @@ export class KnowledgeService {
   else{
    const aliases=new Map<string,string>(),entities:NativeKnowledgeWrite['entities']=[];proof={sources:[],origins:[]};
    for(const input of command.entities){if(aliases.has(input.key))throw Error('knowledge_entity_alias');
-    let entity;if('ref'in input){entity=await this.port.get_entity(input.ref);this.current(c);if(!entity||!await this.entityVisible(c,input.ref))throw Error('knowledge_entity_unavailable');}
+    let entity;if('ref'in input){entity=await this.port.get_entity(input.ref);this.current(c);const visible=await this.entityVisible(c,input.ref);if(!entity||!visible)throw Error('knowledge_entity_unavailable');proof.sources.push(...visible.proof.sources);proof.origins.push(...visible.proof.origins);}
     else{entity={id:'entity-'+await bridgeHash(['knowledge-entity-v1',c.scope,command.operationId,input.key]),kind:input.kind,name:input.name};this.current(c);}
     aliases.set(input.key,entity.id);entities.push(entity);
    }
@@ -166,7 +173,8 @@ export class KnowledgeService {
   if(!await this.claim(c,command.operationId))return this.status(c,command.operationId);
   try{const result=await this.port.remember(command.operationId,normalized);this.current(c);
    if(!await this.validSnapshot(c,proof))return this.complete(c,command.operationId,{operationId:command.operationId,state:'partial',error:'evidence_changed'});
+   await this.release(proof);
    return this.complete(c,command.operationId,result);
-  }catch(error){if(error instanceof Error&&error.message==='knowledge_scope_changed')throw error;return this.uncertain(c,command.operationId);}
+  }catch(error){if(error instanceof Error&&(error.message==='knowledge_scope_changed'||error.message.startsWith('conversation_')))throw error;return this.uncertain(c,command.operationId);}
  }
 }
