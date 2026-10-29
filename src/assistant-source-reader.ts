@@ -6,6 +6,7 @@ import { assertActive, currentFence, safeEqual } from "./core";
 import { resolveRuntimeEnv } from "./connection";
 import {readRecipientEnvelope} from './assistant-recipient-reader';
 import {readCaptureConversationSearch} from './assistant-search-reader';
+import {readNativeCaptureInput} from './native-input-reader';
 
 const MAX_BYTES = 32768;
 const id = z.string().min(1).max(256);
@@ -173,6 +174,7 @@ export async function readCaptureStreamHead(rawEnv: Env,input:unknown) {
 
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
+  readNativeInput(input:unknown){return readNativeCaptureInput(this.env,input);}
   readConversationActivity(input:unknown){return readConversationActivity(this.env,input);}
   streamHead(input:unknown){return readCaptureStreamHead(this.env,input);}
   searchConversations(input: unknown) { return readCaptureConversationSearch(this.env, input); }
