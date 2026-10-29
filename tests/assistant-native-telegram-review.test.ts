@@ -51,11 +51,11 @@ async function fixture(group=false,text='Resposta integral\ncom <todas> as linha
  const fence={...scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
  await env.DB.prepare("INSERT INTO assistant_telegram_links(installation_id,generation,bot_instance,source_epoch,source_generation,revision,state,user_id,chat_id,activation_cut) VALUES(?,?,?,?,?,1,'active','101','101',?)").bind(scope.installationId,scope.generation,bot,'e1','g1',Date.now()).run();
  for(const [i,slot] of ['general','summaries','pending','missions'].entries())await env.DB.prepare("INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,?,?,'ready',?)").bind(scope.installationId,scope.generation,bot,slot,JSON.stringify(fence),40+i).run();
- const messages:{chat:string;thread:number|null;text:string;buttons:{text:string;callback_data:string}[][];messageId:number}[]=[];
- const api:TelegramApi={inspect:vi.fn(async()=>true),createTopic:vi.fn(async()=>{throw Error('must_reuse_existing_topics');}),send:vi.fn(async(chat,thread,text,buttons)=>{const messageId=telegramMessageId++;messages.push({chat,thread,text,buttons,messageId});if(noticeLost)throw Error('telegram_timeout');return messageId;}),answer:vi.fn(async()=>{})};
+ const messages:{chat:string;thread:number|null;text:string;buttons:{text:string;callback_data:string}[][];messageId:number;date:number}[]=[];
+ const api:TelegramApi={inspect:vi.fn(async()=>true),createTopic:vi.fn(async()=>{throw Error('must_reuse_existing_topics');}),send:vi.fn(async(chat,thread,text,buttons)=>{const messageId=telegramMessageId++;messages.push({chat,thread,text,buttons,messageId,date:Math.floor(Date.now()/1000)});if(noticeLost)throw Error('telegram_timeout');return messageId;}),answer:vi.fn(async()=>{})};
  const host:NativeTelegramReplyReviewHost={db:env.DB,scope,getScope:()=>currentScope,botInstance:bot,key,api,actions,contextReader:t=>readNativeReplyReviewContext(env.DB,scope,origin,t),authorityGuard:()=>telegramLinkGuard(fence)};
  review=new NativeTelegramReplyReview(host);
- const callback=(button=0,updateId=100)=>({update_id:updateId,callback_query:{id:'query-'+updateId,from:{id:101,is_bot:false},chat_instance:'transport-chat',data:messages[0].buttons[0][button].callback_data,message:{message_id:messages[0].messageId,date:Math.floor(Date.now()/1000),message_thread_id:42,chat:{id:101,type:'private'}}}});
+ const callback=(button=0,updateId=100)=>({update_id:updateId,callback_query:{id:'query-'+updateId,from:{id:101,is_bot:false},chat_instance:'transport-chat',data:messages[0].buttons[0][button].callback_data,message:{message_id:messages[0].messageId,date:messages[0].date,message_thread_id:42,chat:{id:101,type:'private'}}}});
  return {review,host,actions,intentId,task,proposal,ref,scope,e,api,messages,sourceSent,address,chatId,origin,retention,snapshot,callback,admit,incoming,received,text,
   dispatch:()=>review.dispatch(intentId,'native-notice-1'),attempts:()=>sourceAttempts,loseNotice:()=>{noticeLost=true;},loseSource:()=>{sourceLost=true;},replaceScope:()=>{currentScope={...scope,sourceGeneration:'replaced'};},
   revokeLink:()=>env.DB.prepare("UPDATE assistant_telegram_links SET revision=revision+1,state='revoked',user_id=NULL,chat_id=NULL,activation_cut=NULL WHERE installation_id=?").bind(scope.installationId).run()};
@@ -81,9 +81,12 @@ describe('native owner Telegram review, real D1/Source action and fake providers
   await expect(f.dispatch()).rejects.toThrow('native_review_context_changed');expect(f.messages).toHaveLength(0);expect(f.attempts()).toBe(0);
  });
  it('one authenticated approval sends once through Source and every replay only reconciles',async()=>{
-  const f=await fixture();await f.dispatch();expect(await f.review.receiveCallback(f.callback())).toBe('approved');expect(f.attempts()).toBe(1);
+  const f=await fixture();await f.dispatch();const original=f.callback(),clock=vi.spyOn(Date,'now').mockReturnValue(Date.now()+2000);
+  let replay:ReturnType<typeof f.callback>;try{replay=f.callback();}finally{clock.mockRestore();}
+  expect(replay!).toEqual(original);
+  expect(await f.review.receiveCallback(original)).toBe('approved');expect(f.attempts()).toBe(1);
   expect(f.messages[1].text).toContain('Aceito pelo WhatsApp');expect(f.messages[1].text).toContain('entrega ainda não foi confirmada');
-  expect(await f.review.receiveCallback(f.callback())).toBe('duplicate');expect(await f.review.receiveCallback(f.callback(0,101))).toBe('duplicate');expect(f.attempts()).toBe(1);expect(f.messages).toHaveLength(2);
+  expect(await f.review.receiveCallback(replay!)).toBe('duplicate');expect(await f.review.receiveCallback(f.callback(0,101))).toBe('duplicate');expect(f.attempts()).toBe(1);expect(f.messages).toHaveLength(2);
   const status=await f.review.status((await f.dispatch()).id);expect(status.result.status).toBe('accepted');
   expect(await env.DB.prepare('SELECT approval_channel FROM actions WHERE id=?').bind(f.proposal.prepared!.actionId).first<string>('approval_channel')).toBe('native_telegram_owner');
  });
