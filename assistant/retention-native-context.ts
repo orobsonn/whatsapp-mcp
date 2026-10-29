@@ -45,8 +45,14 @@ export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
   if(has('native_host_events')&&has('telegram_updates'))mutations.push(`UPDATE assistant_telegram_updates AS t SET text=NULL,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE ${namespace('t')}
    AND EXISTS(SELECT 1 FROM assistant_native_host_events h WHERE ${namespace('h')} AND h.source_id=?4 AND h.event_id='telegram:'||t.bot_instance||':'||t.update_id) AND ${gate}`);
   if(has('native_help_questions')&&has('telegram_updates'))mutations.push(`UPDATE assistant_telegram_updates AS t SET text=NULL,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE ${namespace('t')}
-   AND EXISTS(SELECT 1 FROM assistant_native_help_replies r JOIN assistant_native_help_questions q ON q.id=r.question_id AND q.installation_id=r.installation_id AND q.generation=r.generation AND q.bot_instance=r.bot_instance
-    WHERE ${namespace('r')} AND r.bot_instance=t.bot_instance AND r.update_id=t.update_id AND (q.source_id=?4 OR q.clarification_source_id=?4)) AND ${gate}`);
+   AND (EXISTS(SELECT 1 FROM assistant_native_help_replies r JOIN assistant_native_help_questions q ON q.id=r.question_id AND q.installation_id=r.installation_id AND q.generation=r.generation AND q.bot_instance=r.bot_instance
+    WHERE ${namespace('r')} AND r.bot_instance=t.bot_instance AND r.update_id=t.update_id AND (q.source_id=?4 OR q.clarification_source_id=?4))
+    OR EXISTS(SELECT 1 FROM assistant_native_help_questions q WHERE ${namespace('q')} AND (q.source_id=?4 OR q.clarification_source_id=?4)
+     AND q.bot_instance=t.bot_instance AND q.message_id=t.reply_to_message_id AND q.thread_id=t.thread_id
+     AND t.reply_to_chat_id=json_extract(${valid('q.link_json')},'$.chatId') AND (t.reply_to_thread_id IS NULL OR t.reply_to_thread_id=q.thread_id)
+     AND t.user_id=json_extract(${valid('q.link_json')},'$.userId') AND t.chat_id=json_extract(${valid('q.link_json')},'$.chatId')
+     AND t.source_epoch=json_extract(${valid('q.link_json')},'$.sourceEpoch') AND t.source_generation=json_extract(${valid('q.link_json')},'$.sourceGeneration')
+     AND t.link_revision=json_extract(${valid('q.link_json')},'$.linkRevision'))) AND ${gate}`);
   if(has('curator_items'))mutations.push(`UPDATE assistant_curator_items AS i SET state='withdrawn',source_hash=NULL,operation_ids_json='[]',updated_at=?5 WHERE ${namespace('i')} AND i.source_id=?4 AND ${gate}`);
   if(has('curator_capture_gaps'))mutations.push(`UPDATE assistant_curator_capture_gaps AS g SET state='withdrawn' WHERE ${namespace('g')} AND EXISTS(SELECT 1 FROM assistant_source_origins o WHERE ${namespace('o')} AND o.canonical_id=?4 AND o.source_kind=g.source_kind AND o.source_id=g.source_id) AND ${gate}`);
   return mutations;

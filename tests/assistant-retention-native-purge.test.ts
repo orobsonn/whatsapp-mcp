@@ -142,3 +142,18 @@ test.each(['anchor','clarification'] as const)('purges native help copies and ex
  expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=89').bind(context.scope.installationId).first()).toEqual({text:null,state:'cancelled'});
  expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=90').bind(context.scope.installationId).first()).toEqual({text:'unrelated owner input',state:'pending'});
 });
+
+test('purges an authenticated quoted owner reply even if help correlation had not run before the crash',async()=>{
+ const anchor=await report('pending-help-anchor','private original question'),dependent=await session(anchor.id,false),question=crypto.randomUUID();
+ const link={sourceEpoch:'epoch',sourceGeneration:'source',linkRevision:1,userId:'101',chatId:'101'};
+ await env.DB.prepare(`INSERT INTO assistant_native_help_questions(installation_id,generation,bot_instance,id,conversation_id,context_ref,task_json,anchor_task_ref,source_id,source_ref_json,original_sequence,question_text,request_hash,link_json,credential_hash,thread_id,state,message_id,created_at,updated_at)
+  VALUES(?,?,'synthetic_bot',?,?,?,'{}','anchor-task',?,?,1,'private help question','hash',?,'hash',42,'sent',501,1,1)`)
+  .bind(context.scope.installationId,context.scope.generation,question,dependent.id,'context:'+question,anchor.id,JSON.stringify(anchor),JSON.stringify(link)).run();
+ for(const [updateId,threadId] of [[91,42],[92,43]] as const)await env.DB.prepare(`INSERT INTO assistant_telegram_updates(installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at,reply_to_message_id,reply_to_chat_id,reply_to_thread_id)
+  VALUES(?,?,'synthetic_bot',?,?,'token','epoch','source',1,'101','101',?,1,?,'private uncaught owner reply','pending','pending',1,501,'101',42)`)
+  .bind(context.scope.installationId,context.scope.generation,updateId,'0'.repeat(64),updateId,threadId).run();
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_help_replies WHERE installation_id=?').bind(context.scope.installationId).first('n')).toBe(0);
+ await controller.withdraw(anchor.id,1);expect(await purge(anchor.id)).toMatchObject({state:'complete'});
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=91').bind(context.scope.installationId).first()).toEqual({text:null,state:'cancelled'});
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=92').bind(context.scope.installationId).first()).toEqual({text:'private uncaught owner reply',state:'pending'});
+});
