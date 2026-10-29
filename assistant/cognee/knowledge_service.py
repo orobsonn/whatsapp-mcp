@@ -19,6 +19,7 @@ import threading
 
 
 MAX_BODY = 262144
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 METHODS = frozenset(('remember', 'status', 'query', 'withdraw', 'get_entity', 'find_entities'))
 
 
@@ -229,8 +230,8 @@ class KnowledgeHandler(BaseHTTPRequestHandler):
         value = {'ok': False, 'error': error} if error else {
             'ok': True, 'namespace': self.server.service.namespace, 'result': result}
         try:
-            body = json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False).encode('ascii')
-            if len(body) > MAX_BODY: raise ValueError('response_too_large')
+            body = json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+            if len(body) > MAX_RESPONSE_BYTES: raise ValueError('response_too_large')
         except (TypeError, ValueError, RecursionError):
             status, body = 503, b'{"ok":false,"error":"response_unavailable"}'
         try:

@@ -40,6 +40,7 @@ class OfflineStore:
     def __init__(self, root, namespace, graph, vector):
         self.events = []
         self.receipts = {}
+        self.query_result = None
 
     async def initialize(self):
         self.events.append(('initialize', id(asyncio.get_running_loop()), threading.get_ident()))
@@ -55,6 +56,7 @@ class OfflineStore:
         return self.receipts.get(operationId, {'operationId': operationId, 'state': 'not_found'})
 
     async def query(self, input):
+        if self.query_result is not None: return self.query_result
         return {'claims': [], 'received': input}
 
     async def get_entity(self, id):
@@ -208,6 +210,23 @@ class HTTPContract(unittest.TestCase):
                 result = self.request(method=method, path=path, body=b'')
                 self.assertEqual(result[0], status)
                 self.assertFalse(result[1]['ok'])
+
+    def test_response_budget_preserves_large_evidence_but_refuses_over_four_mib(self):
+        result = {'claims': [{'evidence': [{'quote': 'x' * 300000}]}]}
+        self.service.store.query_result = result
+        status, envelope = self.call('query', {'limit': 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(envelope, {'ok': True, 'namespace': NS, 'result': result})
+        # Native byte pagination measures UTF-8, so accents must not expand into
+        # six-byte ASCII escapes and unexpectedly overflow the transport budget.
+        result = {'claims': [{'evidence': [{'quote': 'ç' * 800000}]}]}
+        self.service.store.query_result = result
+        status, envelope = self.call('query', {'limit': 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(envelope['result'], result)
+        self.service.store.query_result = {'claims': [{'evidence': [{'quote': 'x' * (4 * 1024 * 1024)}]}]}
+        self.assertEqual(self.call('query', {'limit': 1}),
+                         (503, {'ok': False, 'error': 'response_unavailable'}))
 
     def test_backend_failure_does_not_expose_exception_or_retry_mutation(self):
         self.assertEqual(self.call('remember', {'operationId': 'raises', 'input': WRITE}),

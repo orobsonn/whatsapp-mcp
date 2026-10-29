@@ -95,13 +95,19 @@ mutação. Consultar `status` com o mesmo `operationId` para reconciliar. Outras
 exceções retornam `503` com `service_unavailable`. Falhas de validação e transporte
 usam `{ok:false,error:<codigo_fixo>}`.
 
-Cada chamada tem limite técnico de 262144 bytes no corpo e na resposta, timeout
+Cada chamada tem limite técnico de 262144 bytes no corpo de entrada e de 4 MiB
+na resposta JSON serializada em UTF-8, compatível com o cliente TypeScript e com
+o cálculo de bytes do store nativo, sem expansão de acentos em escapes ASCII. Os limites são
+independentes: uma consulta pode retornar mais bytes de evidência que a escrita
+de uma única fonte, inclusive os suportes completos de cada afirmação. Há timeout
 de leitura inativa de 5 segundos e conexão fechada após a resposta. Não há
 streaming, chunked, compressão ou `Expect`; `Content-Length` duplicado, ambíguo,
 negativo ou ausente é rejeitado antes do corpo. Chaves JSON duplicadas e valores
 não finitos são rejeitados. Os limites são por chamada: não há limite deste
 wrapper sobre tamanho do acervo ou quantidade histórica de operações. A paginação
-nativa continua obrigatória; erro de resposta grande não implica truncamento.
+nativa continua obrigatória; resposta acima de 4 MiB retorna `503` com código
+fixo `response_unavailable`, sem remover quotes, premissas ou grupos de suporte.
+O wrapper não trunca nem inventa cursor; a paginação semântica pertence ao store.
 
 As relações retornadas continuam candidatas. O host é responsável por SourceAccess,
 revisão/retirada, permissões, resolução de entidade, origem e revalidação dos
