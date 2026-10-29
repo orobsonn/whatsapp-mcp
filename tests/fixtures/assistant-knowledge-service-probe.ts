@@ -11,7 +11,9 @@ export async function runKnowledgeServiceProof(db:D1Database,token:string){
   namespace:{installationId:context.scope.installationId,generation:'knowledge-v1'},operationalGeneration:context.scope.generation,client:context.client};
  const service=()=>new KnowledgeService(db,()=>context,new HttpKnowledgePort(config));
  const text='Synthetic Nora leads synthetic Cedar.';
- async function report(id:string){const result=await service().execute({kind:'context.report',operationId:id,text});
+ // A retired source origin remains retired across operational generations.
+ // Each independent synthetic run supplies genuinely new report operations.
+ async function report(id:string){const result=await service().execute({kind:'context.report',operationId:run+':'+id,text});
   if(result.state!=='recorded')throw Error('synthetic_report_failed');return result.sourceRef as Ref;}
  const a=await report('a'),b=await report('b'),c=await report('c');
  const first:KnowledgeCommand={kind:'remember',operationId:'joint',entities:[{key:'nora',kind:'person',name:'Synthetic Nora '+run},{key:'cedar',kind:'project',name:'Synthetic Cedar '+run}],
