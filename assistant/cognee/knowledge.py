@@ -12,7 +12,7 @@ Native graph nodes/edges hold semantics; SQLite holds only operation receipts,
 expected native IDs and source withdrawal fences. No embeddings/LLM are invoked.
 """
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timezone
 import fcntl
 import hashlib
@@ -84,10 +84,15 @@ class NativeKnowledgeStore:
         self._lock = asyncio.Lock()
         self._initialized = False
 
+    @contextmanager
     def _db(self):
         connection = sqlite3.connect(self.database, timeout=30)
-        connection.execute('PRAGMA synchronous=FULL')
-        return connection
+        try:
+            connection.execute('PRAGMA synchronous=FULL')
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @asynccontextmanager
     async def _writer(self):
@@ -390,9 +395,21 @@ class NativeKnowledgeStore:
             {'id': self._id('entity', id)})
         if not rows: return None
         item = json.loads(rows[0][0])
-        if not (await self.query({'entityId': id, 'limit': 1}))['claims']:
+        if not await self._entity_has_complete_claim(id):
             return None
         return {'id': item['external_id'], 'kind': item['kind'], 'name': rows[0][1]}
+
+    async def _entity_has_complete_claim(self, entity_id):
+        # A partial candidate page is not absence. Advance only this entity's
+        # native claim cursor until an independently verified group is found.
+        cursor = None
+        while True:
+            query = {'entityId': entity_id, 'limit': 1}
+            if cursor is not None: query['after'] = cursor
+            page = await self.query(query)
+            if page['claims']: return True
+            cursor = page.get('nextCursor')
+            if cursor is None: return False
 
     async def find_entities(self, input):
         await self.initialize()
@@ -423,7 +440,7 @@ class NativeKnowledgeStore:
         entities = []
         for _, properties, name in rows[:limit]:
             item = json.loads(properties)
-            if not (await self.query({'entityId': item['external_id'], 'limit': 1}))['claims']:
+            if not await self._entity_has_complete_claim(item['external_id']):
                 continue
             entities.append({'id': item['external_id'], 'kind': item['kind'], 'name': name})
         page = {'entities': entities, 'coverage': self._coverage(len(rows[:limit]), len(entities))}

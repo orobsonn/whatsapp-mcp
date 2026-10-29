@@ -76,17 +76,14 @@ class NativeKnowledgeContract(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(set(page['claims'][0]['origins']), {'owner_report', 'agent_derived'})
                 # Close and read from a new interpreter: no in-memory registry can satisfy it.
                 await backend.close()
-                process = await asyncio.create_subprocess_exec(sys.executable, __file__, 'read', str(root),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                out, err = await asyncio.wait_for(process.communicate(), 90)
-                self.assertEqual(process.returncode, 0, err.decode()[-3000:])
-                self.assertIn(b'independent_process_read_ok', out)
-                # Cognee's process caches are intentionally not reused after close.
-                process = await asyncio.create_subprocess_exec(sys.executable, __file__, 'continue', str(root),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                out, err = await asyncio.wait_for(process.communicate(), 90)
-                self.assertEqual(process.returncode, 0, err.decode()[-3000:])
-                self.assertIn(b'native_removal_temporal_partial_ok', out)
+                for stage, marker in (('read', b'independent_process_read_ok'),
+                                      ('continue', b'native_removal_temporal_partial_ok'),
+                                      ('lookup', b'native_lookup_continuation_ok')):
+                    process = await asyncio.create_subprocess_exec(sys.executable, __file__, stage, str(root),
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    out, err = await asyncio.wait_for(process.communicate(), 90)
+                    self.assertEqual(process.returncode, 0, err.decode()[-3000:])
+                    self.assertIn(marker, out)
             finally:
                 if not getattr(graph, '_permanently_closed', False):
                     await backend.close()
@@ -194,8 +191,32 @@ async def continue_contract(root):
         await backend.close()
 
 
+async def lookup_contract(root):
+    root.mkdir(parents=True, exist_ok=True)
+    backend = CogneeBackend(root); await backend.initialize()
+    graph = backend.engine.graph
+    store = NativeKnowledgeStore(root, {**NS, 'generation': 'lookup-only'}, graph, backend.engine.vector)
+    await store.initialize()
+    try:
+        records = []
+        for index, predicate in enumerate(('first', 'second')):
+            receipt = await store.remember(predicate, request(REFS[index], predicate=predicate))
+            assert receipt['state'] == 'ready'
+            records.append((receipt, REFS[index]))
+        broken, ref = min(records, key=lambda item: item[0]['claimIds'][0])
+        await graph.remove_node_source_refs([broken['evidenceIds'][0]], [store._ref_key(ref)])
+        page = await store.query({'entityId': 'person:a', 'limit': 1})
+        assert page['claims'] == [] and page['nextCursor'] and page['coverage']['state'] == 'partial'
+        assert await store.get_entity('person:a') == request()['entities'][0]
+        assert (await store.find_entities({'query': 'Nora'}))['entities'] == [request()['entities'][0]]
+        print('native_lookup_continuation_ok')
+    finally:
+        await backend.close()
+
+
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] in ('read', 'continue'):
-        asyncio.run((independent_read if sys.argv[1] == 'read' else continue_contract)(Path(sys.argv[2])))
+    modes = {'read': independent_read, 'continue': continue_contract, 'lookup': lookup_contract}
+    if len(sys.argv) > 1 and sys.argv[1] in modes:
+        asyncio.run(modes[sys.argv[1]](Path(sys.argv[2])))
     else:
         unittest.main()
