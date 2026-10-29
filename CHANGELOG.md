@@ -4,30 +4,37 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
-## [0.52.0] - 2026-10-28
+## [0.52.0] - 2026-10-29
 
 ### Added
-- Grupos podem entrar no piloto de sugestões por seleção explícita, política `respond` e corte próprio de ativação, sem processar o histórico anterior. A revisão identifica o grupo e conserva aprovação humana para enviar.
-- Prévia no Telegram inclui mensagem recebida, resumo breve opcional da IA e resposta integral em blocos separados; apenas a resposta vai ao WhatsApp.
-- Descoberta de conversas privadas capturadas, com o corte inicial preservado e caminho direto dos originais do manifesto para análise e revisão.
-- Revisão de sugestões do WhatsApp no Telegram com destino e texto integral, aprovação explícita para enviar e descarte sem envio. Botões antigos de simulação mantêm seu significado.
-- Actuator privado reutiliza ações Source, com preparo idempotente, tentativa única e reconciliação por recibo. Credenciais WhatsApp permanecem no Source.
-- Piloto proativo por conversas e watermark Source, com contexto imutável de até três fontes/8KiB e revalidação nos callbacks Flue. Não drena backlog nem FUP anterior.
+- Sessões contínuas nativas do Flue por conversa WhatsApp e uma sessão do dono no Telegram entre tópicos. A IA escolhe ferramentas, consulta originais e conhecimento, aprende relações e pode responder, silenciar ou pedir orientação.
+- Cognee compartilhado entre bots, curador e GPT pelo MCP existente `assistente_memoria`, com entidades, relações, evidências e operações idempotentes de consulta, ensino, correção e retirada.
+- Curador nativo incremental com janela civil America/Fortaleza, decisões de aprendizado da IA, recibos por fonte e resumo privado. Rotina habilitada para03:00; transição de resumo diário para somente erros/ajuda exige confirmação posterior do dono.
+- Sugestões WhatsApp no Telegram mostram destinatário, mensagem ou tipo do anexo recebido, legenda verificável, resumo da IA e resposta integral. A aprovação vale somente para aquele texto/destino; descarte não envia.
+- Conversas individuais são analisadas por padrão com exclusões persistentes; grupos entram por inclusão explícita e podem receber sugestões relevantes sem menção. Leitura autorizada de outra conversa não concede permissão para participar dela.
+- Ferramentas nativas GitHub somente leitura, Calendar com títulos e gestão autorizada de eventos próprios únicos, além de missões/retornos explicitamente vinculados à sessão do dono. Agendamento não executa o backlog legado de FUP.
+
+### Changed
+- O contexto fixo de três textos/8KiB foi substituído por busca e leitura paginadas escolhidas pelo agente, com continuidade/compaction nativas. Paginação operacional não é limite total do acervo.
+- Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
 
 ### Fixed
-- Assinaturas de nome do WhatsApp são formatadas na prévia Telegram, com escape HTML e original preservado. A orientação de resposta considera encerramentos sem pedido pendente.
-- Manifestos privados podem publicar respostas sem citações produzidas pelo modelo; contexto e origem seguem conferidos pelo host e citações fornecidas seguem validadas.
-- Mensagem posterior invalida sugestões anteriores, inclusive áudio ou texto acima do limite; o claim confere o watermark observado.
-- Callback privado autenticado pode registrar a relação telefone/LID, criando somente metadados ausentes. Contradição bloqueia a automação também no novo telefone sem desativar captura nem envios manuais.
-- Claim final confere o destino efetivamente usado, inclusive mudança A→B→A durante consultas assíncronas, além de conexão, envelope e expiração.
-- Callback aceita metadados reais do Telegram e usa apenas os campos canônicos para autenticação/deduplicação. Perda da resposta do Source consulta a mesma ação, sem repetir envio.
-- Retenção redige cópias de conteúdo/destinatário preservando tombstones de idempotência.
-- Resposta já capturada do dono impede nova sugestão ou envio, inclusive entre telefone e LID ligados por prova do provedor. A atividade é verificada antes da inferência, revisão e claim final; históricos, IDs e destinos não são mesclados.
-- Relações com prova contraditória são bloqueadas; captura ou política restritiva em qualquer membro impede a automação. A sequência original da resposta permanece como metadado após edição/exclusão.
-- Novas análises têm prazos compatíveis com preparação/runtime; tentativas vencidas são preservadas e deixam de reter a próxima mensagem, sem repetir chamada paga. Dúvidas agora publicam aviso no Telegram sem botão de envio; resposta livre ainda não retoma a análise automaticamente.
+- Recebimento confirma o registro durável antes da admissão nativa, com recuperação da ponte sem confundir ACK com processamento pela IA.
+- Primeira identidade de cada entrada Telegram e canal do dono são fixados atomicamente; replay anterior à retirada não reabre contexto removido. Falha de turno do SDK não descarta a próxima entrada válida.
+- Correção/retirada de fontes invalida uso e aprovação em contextos dependentes, incluindo histórico/compaction. Purga preserva recibos mínimos, custos e tombstones de idempotência.
+- Resposta manual, entrada nova, alteração de destino/autorização ou prova telefone/LID contraditória invalidam propostas. Source conserva preparo idempotente, claim único e reconciliação de aceito/entregue/incerto, sem repetir efeitos incertos.
+- Prévia de imagens/PDFs usa observação Source autenticada; metadados e interpretação visual não são exibidos como citação literal. Assinaturas de nome e conteúdo recebido são escapados corretamente no Telegram.
+- Curadoria confirma páginas em uma chamada com resultados por item, conserva recusas/pendências e evita chamadas paralelas redundantes. Prazo total artificial de120s foi retirado; cancelamento e proteção operacional nativa permanecem.
+- Aviso do curador conclui a revisão remota antes do prazo de transporte Telegram, conserva a verificação local final de todas as dependências e impede envio tardio depois de cancelamento ou pausa.
 
 ### Validation
-- Mensagem privada real produziu sugestão no Telegram e o dono gostou do texto, mas já havia respondido pelo LID; ação antiga cancelada sem tentativa. Prova do provedor confirmou o vínculo; a homologação do envio aprovado e a release pública continuam vinculadas à issue146. Resposta autônoma, extração automática de missões, FUP e diário permanecem fora da primeira ativação do piloto.
+- MCP real criou relações consultadas pelo bot; correção e retirada foram verificadas em nova resposta e os dados fictícios foram limpos. Curador escolheu cinco relações legítimas posteriormente consultadas pelo MCP. Evidências158 e160.
+- Bot real explicou código GitHub, consultou títulos/horários, criou/editou/excluiu o mesmo evento Calendar com leitura independente no Google e enviou lembrete confirmado pelo dono. Evidências161,165 e166.
+- Janela real de1499 alterações terminou com114 conteúdos avaliados e38 indisponíveis, mantendo cobertura parcial. Aviso isolado aceito pelo Telegram; primeira execução diária admitida pelo agendador, ainda em processamento. Nenhum aprendizado foi inventado para preencher o ensaio. Custos medidos e projeção separados de fatura reconciliada. Evidências167,169 e170.
+
+### Notes
+- Marco ainda em homologação, sem tag/release0.52.0. Envio WhatsApp após aprovação real, primeira rotina diária e CI do SHA final continuam critérios de aceite; o estado atualizado fica na issue146.
+- Respostas autônomas permanecem desligadas. Aceito pelo provedor não equivale a entregue/lido. Contratação de infraestrutura não foi autorizada por esta implementação.
 
 ## [0.51.0] - 2026-10-28
 

@@ -91,7 +91,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 - [ ] Implementar consulta nativa das entidades/arestas/evidências, owner/revogação antes do ranking e releitura dos originais selecionados. Remover montagem obrigatória de todos os sourceIDs em um payload; não usar pós-filtro de top-k como substituto de acesso.
 - [ ] Substituir manifesto JSON e listas completas de fontes/operações por metadados persistentes consultáveis. Versionar mutações do grafo, inclusive nova aresta sem nova fonte. Retirar caps128/256/64 e varredura completa de grafo; medir operação sobre corpus acima dos tetos antigos.
 - [ ] Reutilizar ingestão/proveniência nativa do Cognee. Configurar auto-improve explicitamente para não disparar curadoria completa a cada remember; diário faz enriquecimento escolhido e verificável.
-- [ ] Expor operações pelo **MCP atual** do assistente, usando a autenticação/RPC existentes. Não expor SQL, Cypher livre, URLs arbitrárias, escolha do dono, credenciais ou operações de infraestrutura. Fixar o mesmo espaço de conhecimento usado pelos bots.
+- [x] Expor operações pelo **MCP atual** do assistente, usando a autenticação/RPC existentes. Não expor SQL, Cypher livre, URLs arbitrárias, escolha do dono, credenciais ou operações de infraestrutura. Fixar o mesmo espaço de conhecimento usado pelos bots.
 - [ ] Cobrir correção concorrente, duas operações diferentes da mesma relação, nomes iguais de pessoas diferentes, payload repetido, prompt injection no texto e dado retirado. Provar fonte fornecida pelo GPT rotulada corretamente.
 - [ ] Rodar testes dirigidos e tipos; registrar SHA/evidências. Commit funcional somente após prova do percurso, sem release própria por tarefa.
 
@@ -123,9 +123,9 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 **Interfaces:** `askOwner(task: TaskContext, question): Promise<QuestionReceipt>`; `resumeQuestion(verifiedOwnerReply): Promise<ConversationDeliveryReceipt>`; wrappers de leitura reutilizam conectores existentes. Pergunta/tarefa/revisão/topicId permanecem correlacionados.
 
 - [ ] Testar A09: falta de dado gera pergunta; resposta posterior do dono retoma exatamente a tarefa, inclusive outro tópico; novo evento exige reavaliação; “sim” sem vínculo não autoriza efeito antigo.
-- [ ] Conectar ferramentas GitHub de resolução, pesquisa e leitura no SHA pertinente, com credencial somente leitura já autorizada; resposta explica a pergunta, não apenas mostra trechos.
-- [ ] Reutilizar Calendar com títulos e consulta de disponibilidade. Mudanças seguem autorização própria; preservar limites atuais de eventos únicos próprios/sem convidados até ampliar explicitamente o escopo.
-- [ ] Reutilizar missões/retornos autorizados como eventos para a mesma sessão; materializar somente tarefas atuais, sem executar backlog/FUP legado por mudança de scheduler.
+- [x] Conectar ferramentas GitHub de resolução, pesquisa e leitura no SHA pertinente, com credencial somente leitura já autorizada; resposta explica a pergunta, não apenas mostra trechos.
+- [x] Reutilizar Calendar com títulos e consulta de disponibilidade. Mudanças seguem autorização própria; preservar limites atuais de eventos únicos próprios/sem convidados até ampliar explicitamente o escopo.
+- [x] Reutilizar missões/retornos autorizados como eventos para a mesma sessão; materializar somente tarefas atuais, sem executar backlog/FUP legado por mudança de scheduler.
 - [ ] Verificar áudio/transcrição, referência a imagem/PDF pendentes e falha externa: perguntar ou informar indisponibilidade quando necessário, sem fingir interpretação não executada.
 - [ ] Testar divulgação apropriada de resultado privado sem encaminhamento automático das fontes. Registrar fontes usadas, não raciocínio interno.
 - [ ] Rodar testes dirigidos correspondentes e tipos; registrar limites de produto restantes e correções.
@@ -141,7 +141,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 - [ ] Agente escolhe informações/conexões úteis e usa as mesmas ferramentas; configurar improve e evidência por estágio. Não considerar execução noop ou parcial como cobertura diária completa.
 - [ ] Aplicar lotes/custos/prioridade fechados na medição; consultas interativas continuam atendidas. Curador não recebe ferramentas de envio ou escrita externa.
 - [ ] Testar repetir o mesmo disparo e concorrer com remember do bot/MCP; uma relação reúne suportes e uma operação incerta é reconciliada.
-- [ ] Só após validar e apresentar custo recorrente, configurar para03:00 America/Fortaleza o disparo nativo da plataforma para a sessão curadora. Isso é parte da implementação futura, não uma automação Codex criada agora.
+- [x] Só após validar e apresentar custo recorrente, configurar para03:00 America/Fortaleza o disparo nativo da plataforma para a sessão curadora. Isso é parte da implementação futura, não uma automação Codex criada agora.
 
 ## P5 — Modos de ação e migração sem perda
 
@@ -160,7 +160,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 
 **Arquivos:** evidências sanitizadas em `docs/construcao-assistente/evidencias/`; roteiro operacional, `CHANGELOG.md`, versões/lock e documentação de instalação, somente no marco concluído.
 
-- [ ] Provar primeiro MCP do assistente→gravação de conhecimento→consulta independente do grafo→outra sessão Flue utiliza relação e original. Usar casos sintéticos antes de fontes privadas necessárias ao ensaio humano.
+- [x] Provar primeiro MCP do assistente→gravação de conhecimento→consulta independente do grafo→outra sessão Flue utiliza relação e original. Usar casos sintéticos antes de fontes privadas necessárias ao ensaio humano.
 - [ ] Provar mensagem real→busca escolhida pela IA→sugestão útil contextualizada→aprovação real→uma tentativa Source→consequência observada no provedor. Repetir botão sem duplicar e observar descarte/silêncio apropriados.
 - [ ] Provar curadoria acrescentando relação legítima e GPT consultando o resultado. Corrigir/retirar uma fonte e repetir a pergunta na sessão com histórico anterior.
 - [ ] Executar carga/recuperação da amostra dimensionada acima dos limites antigos, com crescimento de conhecimento, consultas durante escrita e restauração sem perda/recobrança não autorizada.
