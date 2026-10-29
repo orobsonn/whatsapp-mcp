@@ -7,6 +7,15 @@ export { CogneeContainer, CogneeBroker } from "./container";
 export default {
   async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
+      if(env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'){
+        if(env.ROUTINES_PAUSED!=='true'){
+          const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+          await new NativeApplicationHost(env).tick();
+        }
+        // One inference path per input. Legacy materialization and native
+        // canonical intake share the same capture store, never duplicate jobs.
+        return;
+      }
       if (env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
         const { tickOwnerDialogues } = await import("./telegram-dialogue-runtime");
         await tickOwnerDialogues(env);

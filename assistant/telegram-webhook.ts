@@ -33,6 +33,10 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
     const input = await read(request);
     if (input && typeof input === "object" && "callback_query" in input) {
       const data=(input as {callback_query?:{data?:unknown}}).callback_query?.data;
+      if(typeof data==='string'&&data.startsWith('n_')){
+        const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+        return reply(await(await new NativeApplicationHost(env).review()).receiveCallback(input));
+      }
       if(typeof data==='string'&&data.startsWith('w_')){
         const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
         const sender=await createTelegramApprovedSendReview(env,{installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!});
@@ -42,7 +46,10 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
       return reply(await review.receiveCallback(input));
     }
     const outcome = await link.receive(input);
-    if (outcome === "pending" && env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
+    if(outcome==='pending'&&env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'){
+      const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+      await new NativeApplicationHost(env).receiveTelegram((input as {update_id:number}).update_id);
+    }else if (outcome === "pending" && env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
       const { TelegramDialogueHost } = await import("./telegram-dialogue-runtime");
       await new TelegramDialogueHost(env).start((input as { update_id: number }).update_id);
     }

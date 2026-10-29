@@ -68,6 +68,13 @@ export async function receiveCapture(request: Request, env: AssistantEnv): Promi
       .bind(...keys, event.sequence).first<{ metadata_hash: string }>();
     if (!stored || stored.metadata_hash !== hash) return reply({ error: "bridge_conflict" }, 409);
     // This is a persistent transport receipt; no canonical source was applied.
+    // Native inference runs in its own durable session. A downstream admission
+    // gap cannot erase the already committed capture receipt or trigger a
+    // second legacy brain; the native intake worker reconciles it later.
+    if(env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'&&env.ROUTINES_PAUSED!=='true'){
+      try{const {NativeApplicationHost}=await import('./agent-runtime/native-host');await new NativeApplicationHost(env).receiveCapture(event.sequence);}
+      catch{/* Durable capture inbox remains the retry source. */}
+    }
     return reply({ sequence: event.sequence, metadataHash: stored.metadata_hash, state: "received" });
   } catch (error) {
     return reply({ error: "bridge_unavailable" }, error instanceof InputError ? error.status : error instanceof SyntaxError ? 400 : 503);

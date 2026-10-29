@@ -18,6 +18,15 @@ export interface AssistantEnv {
   OPERATIONAL_GENERATION?: string;
   OPENAI_API_KEY?: string;
   FLUE_EPISODES_ENABLED?: string;
+  /** Staged OFF by default; no native provider or ingress is admitted otherwise. */
+  NATIVE_CONVERSATIONS_MODE?: string;
+  ASSISTANT_NATIVE_AUTONOMOUS_ENABLED?: string;
+  /** Reconciled historical charges outside this DB, including uncertain costs. */
+  NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD?: string;
+  NATIVE_CONTEXT_ADMIN_SECRET?: string;
+  /** Explicit cut of the verified Source stream at native activation. */
+  NATIVE_CAPTURE_START_AFTER_SEQUENCE?: string;
+  FLUE_CONVERSATION_RUNTIME_AGENT?: {idFromName(name:string):DurableObjectId;get(id:DurableObjectId):DurableObjectStub & {eraseNativeContext(secret:string,sessionId:string):Promise<void>}};
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;
   TELEGRAM_SUMMARIES_ENABLED?: string;

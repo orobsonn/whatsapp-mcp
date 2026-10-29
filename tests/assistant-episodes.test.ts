@@ -435,7 +435,7 @@ export default {async fetch(request,env){
 `);
   const config = join(scratch, "vite.config.mts");
   writeFileSync(config, `import {defineConfig} from 'vite';import {flue,flueWorkerConfig} from '@flue/vite';import {cloudflare} from '@cloudflare/vite-plugin';
-export default defineConfig({root:${JSON.stringify(scratch)},envDir:false,plugins:[flue({target:'cloudflare',app:${JSON.stringify(join(scratch,"app.ts"))},cloudflare:${JSON.stringify(join(root,"assistant/cloudflare.ts"))},agents:${JSON.stringify(join(root,"assistant/agent-runtime/profiles.ts"))},providers:[],tracing:false}),cloudflare({configPath:${JSON.stringify(join(scratch,"wrangler.jsonc"))},config:flueWorkerConfig(),persistState:false})],build:{outDir:${JSON.stringify(join(scratch,"dist"))},emptyOutDir:true}});`);
+export default defineConfig({root:${JSON.stringify(scratch)},envDir:false,plugins:[flue({target:'cloudflare',app:${JSON.stringify(join(scratch,"app.ts"))},cloudflare:${JSON.stringify(join(root,"assistant/cloudflare.ts"))},agents:${JSON.stringify(join(root,"assistant/agent-runtime/entry.ts"))},providers:[],tracing:false}),cloudflare({configPath:${JSON.stringify(join(scratch,"wrangler.jsonc"))},config:flueWorkerConfig(),persistState:false})],build:{outDir:${JSON.stringify(join(scratch,"dist"))},emptyOutDir:true}});`);
   execFileSync(process.execPath, [join(root, "node_modules/vite/bin/vite.js"), "build", "--config", config], { cwd: root, stdio: "pipe" });
   artifact = findConfig(join(scratch, "dist"));
   // Source helpers import the Workers OAuth runtime. Execute them in workerd,

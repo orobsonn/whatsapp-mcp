@@ -183,6 +183,11 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
     return (await createTelegramApprovedSendReview(this.env,scope)).authorize(input);
   }
+  async nativeReplyAuthorization(expected:OwnerAffinity,input:import('../src/native-reply-contract').NativeReplyAuthorizationRequest){
+    this.#affinity(expected);
+    const {NativeApplicationHost}=await import('./agent-runtime/native-host'),host=new NativeApplicationHost(this.env);
+    return input.authority.kind==='human_approval'?(await host.review()).authorize(input):host.actions().authorize(input);
+  }
   async ownerOnce(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);
     return new OwnerOnce(this.env, scope).execute(command);

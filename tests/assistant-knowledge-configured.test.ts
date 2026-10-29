@@ -1,6 +1,6 @@
 import {env} from 'cloudflare:test';
 import {afterEach,expect,it,vi} from 'vitest';
-import {configuredKnowledge} from '../assistant/knowledge/configured';
+import {configuredKnowledge,configuredKnowledgeService} from '../assistant/knowledge/configured';
 import {OriginGuard,type SnapshotReader} from '../assistant/origin-guard';
 import {SourceAccess} from '../assistant/access';
 import {SourceController} from '../assistant/sources';
@@ -8,6 +8,19 @@ import type {AssistantEnv} from '../assistant/env';
 import type {KnowledgeCommand,KnowledgeClaim} from '../assistant/knowledge/contracts';
 
 afterEach(()=>vi.restoreAllMocks());
+it('keeps configuration and restore checks after native exposure wrappers are composed',async()=>{
+ const scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'sg1'};
+ const settings:AssistantEnv={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,
+  KNOWLEDGE_SERVICE_URL:'https://synthetic.invalid/knowledge',KNOWLEDGE_SERVICE_TOKEN:'synthetic-knowledge-token'.repeat(3),KNOWLEDGE_SPACE_GENERATION:'knowledge-v1'};
+ const transport=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{
+  const body=JSON.parse(String(init?.body));
+  await env.DB.prepare('INSERT INTO assistant_retention_runtime_hold(installation_id,target_generation,active,operation_id,created_at) VALUES(?,?,1,?,1)').bind(scope.installationId,scope.generation,'synthetic-hold').run();
+  return Response.json({ok:true,namespace:body.namespace,result:{claims:[],coverage:{scope:'native_candidate_page',state:'complete',candidates:0,returned:0}}});
+ });
+ const service=configuredKnowledgeService(settings,scope,'conversation_agent').withExposure(async()=>{}).withExposure(async()=>{});
+ await expect(service.execute({kind:'query'})).rejects.toThrow('restore_runtime_paused');expect(transport).toHaveBeenCalledTimes(1);
+ settings.KNOWLEDGE_SPACE_GENERATION='replaced';await expect(service.execute({kind:'query'})).rejects.toThrow('knowledge_configuration_changed');expect(transport).toHaveBeenCalledTimes(1);
+});
 it('configured knowledge reads opted-in observe groups while keeping default/excluded groups private',async()=>{
  const scope={installationId:crypto.randomUUID(),generation:'g1',sourceEpoch:'e1',sourceGeneration:'sg1'},owner={kind:'owner'} as const;
  const text='Nora leads Cedar.',chatId='synthetic-observe-group';
