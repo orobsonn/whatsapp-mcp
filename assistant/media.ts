@@ -8,7 +8,9 @@ import type { CaptureMediaResult } from "../src/assistant-media-reader";
 import { admitMedia, type MediaAdmission, type PdfAdmissionReader } from "./media-admission";
 import { MEDIA_MODEL_CONFIG, mediaPayload, mediaOutput, mediaUsage, type MediaModelPort } from "./media-model";
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
-import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
+import { retentionExecutionGuard } from "./retention-execution";
+import {compactStatement} from './d1-statement';
+import {sqlAnd} from './sql-conjunction';
 export interface MediaReader { readBoundedMedia(input: { secret: string; sourceEpoch: string; sourceGeneration: string; chatId: string; mediaId: string; expectedMessageVersion: number; expectedMediaVersion: number; expectedBlobHash: string }): Promise<CaptureMediaResult> }
 type Options = { origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; pdfParser?: PdfAdmissionReader; timeoutMs?: number;
  accessPurpose?:'archive'|'knowledge';assertAuthority?:()=>Promise<void>;authorityGuard?:()=>AccessGuard;modelGuard?:()=>AccessGuard };
@@ -114,8 +116,14 @@ export class MediaContext {
     try {
       // A withdrawal after admission must still prevent sending its body.
       if (!await this.fresh(actor, parent, origin)) { await this.budget.settle(key, requestHash, 0); return pending("media_origin_changed", key); }
-      await assertRetentionExecution(this.db, this.scope);
-      const spend=this.options.modelGuard?.();if(spend&&!await this.sql(`SELECT 1 WHERE (${spend.sql})`,...spend.values).first())return pending('media_budget_unavailable',key);
+      // Source/Origin, native context, restore and spend must share this LAST
+      // local snapshot. An earlier awaited fresh() does not authorize upload
+      // after a withdrawal committed during a later budget/restore query.
+      const finalGuards=[this.access.guard(actor,parent.fence,this.clock()),this.options.origin.localGuard(origin),
+        this.options.authorityGuard?.(),retentionExecutionGuard(this.scope),this.options.modelGuard?.()].filter((g):g is AccessGuard=>g!==undefined);
+      const allowed=await compactStatement(this.db,`SELECT 1 WHERE ${sqlAnd(finalGuards.map(g=>`(${g.sql})`))}`,finalGuards.flatMap(g=>g.values)).first();
+      if(!allowed)return pending('media_authority_changed',key);
+      // No further await between this snapshot and the provider invocation.
       const result = await Promise.race([this.options.model({ body, signal: abort.signal }), new Promise<never>((_, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("media_timeout")); }, this.timeout); })]);
       if (typeof result.body !== "string" || new TextEncoder().encode(result.body).length > 262144 || result.status !== 200) throw 0;
       const parsed: unknown = JSON.parse(result.body); knownActual = mediaUsage(parsed);

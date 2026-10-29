@@ -95,6 +95,27 @@ it('native media honors the global spend latch after reservation without a model
  expect(await new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'0',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending'});
  expect(port).not.toHaveBeenCalled();expect((await budget.status()).committed).toBe(530000);
 });
+it.each(['source','context'] as const)('does not upload media when its %s is retired inside the final spend-query await',async subject=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ if(subject==='context')await env.DB.prepare(`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at) VALUES('media-context-test',?,?,?,1)`)
+  .bind(scope.installationId,scope.generation,JSON.stringify({version:1,...scope,channel:'whatsapp',principalOrChatId:'chat',contextEpoch:'context-test'})).run();
+ const authority=()=>subject==='context'?{sql:`EXISTS(SELECT 1 FROM assistant_native_conversations WHERE id=? AND tombstoned_at IS NULL)`,values:['media-context-test']}:{sql:'1',values:[]};
+ const prepare=env.DB.prepare.bind(env.DB);let withdrew=false;
+ const db={prepare:(sql:string)=>{
+  const statement=prepare(sql);if(!sql.startsWith('SELECT 1 WHERE')||!sql.includes('native-final-spend-test'))return statement;
+  const wrap=(current:D1PreparedStatement):D1PreparedStatement=>new Proxy(current,{get(value,key){
+   if(key==='bind')return(...args:unknown[])=>wrap(value.bind(...args));
+   if(key==='first')return async(...args:Parameters<D1PreparedStatement['first']>)=>{withdrew=true;
+    if(subject==='source')await new SourceController(env.DB,scope,owner).withdraw(sourceId,1);
+    else await env.DB.prepare(`UPDATE assistant_native_conversations SET tombstoned_at=2 WHERE id='media-context-test'`).run();
+    return value.first(...args);
+   };
+   const member=Reflect.get(value,key,value);return typeof member==='function'?member.bind(value):member;
+  }});return wrap(statement);
+ },batch:env.DB.batch.bind(env.DB)} as D1Database;
+ expect(await new MediaContext(db,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:authority,modelGuard:()=>({sql:'1 /* native-final-spend-test */',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending'});
+ expect(withdrew).toBe(true);expect(port).not.toHaveBeenCalled();
+});
 it('native media releases derived observations with the original binary parent and reuses them without inference',async()=>{
  await new InferenceBudget(env.DB,scope).configure(600000);const assert=vi.fn(async()=>{});
  const native=new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:assert,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
