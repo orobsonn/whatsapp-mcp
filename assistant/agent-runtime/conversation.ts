@@ -12,12 +12,15 @@ export const conversationIdentity=z.object({version:z.literal(1),installationId:
 export type ConversationIdentity=Readonly<z.infer<typeof conversationIdentity>>;
 export type ConversationScope=Pick<ConversationIdentity,'installationId'|'generation'>;
 const replyToSchema=z.object({taskRef:label,sourceRef}).strict();
+export const nativeTaskWorkRef=z.object({kind:z.enum(['mission','follow_up']),bindingId:label,occurrenceId:label,id:label,version:integer.positive(),dueAt:integer}).strict();
 const eventSchema=z.object({identity:conversationIdentity,eventId:label,revision:integer.positive(),
- kind:z.enum(['incoming','owner_manual','correction','withdrawal','action_result','approval','discard','clarification']),
+ kind:z.enum(['incoming','owner_manual','correction','withdrawal','action_result','approval','discard','clarification','mission_due','fup_due']),
  author:z.object({kind:z.enum(['owner','person','system']),id:label}).strict(),occurredAt:integer,
  body:z.string(),sourceRef:sourceRef.optional(),threadId:label.optional(),
  actionState:z.enum(['proposed','discarded','approved','attempted','accepted','delivered']).optional(),
- replyTo:replyToSchema.optional()}).strict().refine(e=>!e.replyTo||(e.kind==='clarification'&&e.identity.channel==='whatsapp'&&e.author.kind==='owner'),{message:'conversation_reply_anchor_denied'});
+ replyTo:replyToSchema.optional(),workRef:nativeTaskWorkRef.optional()}).strict()
+ .refine(e=>!e.replyTo||(e.kind==='clarification'&&e.identity.channel==='whatsapp'&&e.author.kind==='owner'),{message:'conversation_reply_anchor_denied'})
+ .refine(e=>['mission_due','fup_due'].includes(e.kind)?!!e.workRef&&!!e.sourceRef&&e.identity.channel==='telegram'&&e.author.kind==='system'&&e.author.id==='native-task-host'&&e.workRef.kind===(e.kind==='mission_due'?'mission':'follow_up'):!e.workRef,{message:'native_task_event_denied'});
 type DeepReadonly<T>=T extends object?{readonly [K in keyof T]:DeepReadonly<T[K]>}:T;
 declare const verified:unique symbol;
 export type HostConversationEvent=z.infer<typeof eventSchema>;
@@ -44,7 +47,7 @@ type EventRow={sequence:number;conversation_id:string;event_id:string;revision:n
  event_json:string|null;authority_json:string;state:string;receipt_json:string|null};
 export type TaskContext=DeepReadonly<{
  contextRef:string;identity:ConversationIdentity;sessionId:string;ownerId:string;taskRef:string;
- cohort:{taskRef:string;eventId:string;revision:number;sequence:number;kind:HostConversationEvent['kind'];occurredAt:number;author:HostConversationEvent['author'];threadId?:string;sourceRef?:z.infer<typeof sourceRef>}[];
+ cohort:{taskRef:string;eventId:string;revision:number;sequence:number;kind:HostConversationEvent['kind'];occurredAt:number;author:HostConversationEvent['author'];threadId?:string;sourceRef?:z.infer<typeof sourceRef>;workRef?:z.infer<typeof nativeTaskWorkRef>}[];
  /** WhatsApp canonical chat, or Telegram owner principal resolved to its own
   * authenticated transport by the action host. A topic never identifies a DO. */
  watermark:number;returnChannel:{channel:ConversationIdentity['channel'];id:string;threadId?:string};authority:ConversationAuthority;
@@ -52,6 +55,7 @@ export type TaskContext=DeepReadonly<{
  /** Host-verified direct causal anchor. This is not a consumed event from an
   * older native response, and never broadens the current cohort watermark. */
  replyTo?:z.infer<typeof replyToSchema>;
+ workRef?:z.infer<typeof nativeTaskWorkRef>;
 }>;
 export function conversationReplyAnchor(task:TaskContext):{taskRef:string;sourceRef:z.infer<typeof sourceRef>}|undefined{
  if(task.replyTo)return task.replyTo;
@@ -73,6 +77,8 @@ export interface ConversationHost {
  knowledge(context:TaskContext):Promise<KnowledgeService>|KnowledgeService;
  /** Host role after authenticating the private session; never model input. */
  knowledgeClient?(identity:ConversationIdentity):'conversation_agent'|'curator';
+ /** Current host domain authority for a system wake, including after admission. */
+ assertTask?(task:TaskContext):Promise<void>;
 }
 
 function signal(row:EventRow):DeliveredMessage{
@@ -81,7 +87,7 @@ function signal(row:EventRow):DeliveredMessage{
  return {kind:'signal',type:'assistant.conversation.'+event.kind,attributes:{taskRef:row.task_ref},
   body:JSON.stringify({eventId:event.eventId,revision:event.revision,kind:event.kind,author:event.author,
    occurredAt:event.occurredAt,body:event.body,...(event.sourceRef?{sourceRef:event.sourceRef}:{}),
-   ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{}),...(event.replyTo?{replyTo:event.replyTo}:{})})};
+   ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{}),...(event.replyTo?{replyTo:event.replyTo}:{}),...(event.workRef?{workRef:event.workRef}:{})})};
 }
 /** Native intake may reorder JSON object keys. The envelope still has exactly
  * the host's fields and values; the body remains the exact original string. */
@@ -171,12 +177,12 @@ export class ConversationRuntime {
   const rows=[];for(const ref of refs){const row=await this.event(ref);if(row.conversation_id!==sessionId||row.sequence>(cursor.sequence)||rows.length&&row.sequence<=rows[rows.length-1].sequence)throw Error('conversation_cohort_denied');rows.push(row);}
   const authority=await this.current(identity);
   if(rows.some(row=>row.authority_json!==JSON.stringify(authority)))throw Error('conversation_authority_changed');
-  const cohort=rows.map(row=>{const event=eventSchema.parse(JSON.parse(row.event_json!));return {taskRef:row.task_ref,eventId:row.event_id,revision:row.revision,sequence:row.sequence,kind:event.kind,occurredAt:event.occurredAt,author:event.author,...(event.threadId?{threadId:event.threadId}:{}),...(event.sourceRef?{sourceRef:event.sourceRef}:{})};});
+  const cohort=rows.map(row=>{const event=eventSchema.parse(JSON.parse(row.event_json!));return {taskRef:row.task_ref,eventId:row.event_id,revision:row.revision,sequence:row.sequence,kind:event.kind,occurredAt:event.occurredAt,author:event.author,...(event.threadId?{threadId:event.threadId}:{}),...(event.sourceRef?{sourceRef:event.sourceRef}:{}),...(event.workRef?{workRef:event.workRef}:{})};});
   const contextRef='conversation-context-v1-'+await bridgeHash([sessionId,refs,authority]);
   const cursorEvent=cohort[cohort.length-1];
   return immutable({contextRef,identity,sessionId,ownerId:authority.ownerId,taskRef:cursor.task_ref,cohort,watermark:cursor.sequence,
    returnChannel:{channel:identity.channel,id:identity.principalOrChatId,...(identity.channel==='telegram'&&cursorEvent.threadId?{threadId:cursorEvent.threadId}:{})},authority,
-   knowledge:{scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:this.host.knowledgeClient?.(identity)??'conversation_agent'},...(cursorInput.replyTo?{replyTo:cursorInput.replyTo}:{})});
+   knowledge:{scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:this.host.knowledgeClient?.(identity)??'conversation_agent'},...(cursorInput.replyTo?{replyTo:cursorInput.replyTo}:{}),...(cursorInput.workRef?{workRef:cursorInput.workRef}:{})});
  }
  async assertTaskCurrent(task:TaskContext){
   await this.host.retention?.assertCurrent(task.identity);
@@ -187,6 +193,12 @@ export class ConversationRuntime {
   // Re-read admitted events, rather than trusting model-provided context fields.
   const row=await this.event(task.taskRef),resolved=await this.resolveTask(task.identity,signal(row),refs);
   if(JSON.stringify(resolved)!==JSON.stringify(task))throw Error('conversation_task_denied');
+  await this.host.assertTask?.(task);
+ }
+ /** Host-only rehydration of a cursor already observed by the native hook.
+  * The provider obtains these refs from trusted consumption receipts. */
+ async resolveStoredTask(identity:ConversationIdentity,taskRef:string,consumedTaskRefs?:readonly string[]){
+  const row=await this.event(taskRef);return this.resolveTask(identity,signal(row),consumedTaskRefs);
  }
  async knowledge(task:TaskContext){await this.assertTaskCurrent(task);const knowledge=await this.host.knowledge(task);
   return this.host.retention?knowledge.withExposure(proof=>this.host.retention!.expose(task.identity,proof)):knowledge;

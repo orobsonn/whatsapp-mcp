@@ -27,7 +27,8 @@ import {KnowledgeCurator,isCuratorPrincipal,type CuratorReceipt} from '../knowle
 import {nativeMediaCapability} from './native-media';
 import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
-import {compactStatement} from '../d1-statement';
+import {NativeTasks,isNativeTaskDue} from './native-tasks';
+import {compactStatement,jsonStatement} from '../d1-statement';
 
 const owner={kind:'owner'} as const;
 type NativeOwnerInput={text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string;native_identity_json:string|null;native_activation_key:string|null};
@@ -51,7 +52,7 @@ export class NativeApplicationHost {
   this.runtime=new ConversationRuntime(this.db!,{retention:this.retention,authority:async identity=>(await this.authority(identity)).authority,
    knowledgeClient:identity=>isCuratorPrincipal(identity.principalOrChatId)?'curator':'conversation_agent',
    authorizeEvent:event=>this.authorizeEvent(event),open:openNativeConversation,
-   knowledge:task=>configuredKnowledgeService(env,this.currentScope(),task.knowledge.client)});
+   knowledge:task=>configuredKnowledgeService(env,this.currentScope(),task.knowledge.client),assertTask:async task=>{await this.tasks().guardForTask(task);}});
  }
  currentScope(){
   const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET];
@@ -73,6 +74,7 @@ export class NativeApplicationHost {
   await this.authority(identity);await this.retention.assertCurrent(identity);return identity;
  }
  private async authorizeEvent(event:VerifiedConversationEvent){
+  if(isNativeTaskDue(event)){await this.tasks().authorizeEvent(event);return;}
   if(isCuratorPrincipal(event.identity.principalOrChatId)){
    const {authority}=await this.authority(event.identity);await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
   }
@@ -95,9 +97,9 @@ export class NativeApplicationHost {
   * persisted matching hash is not created by native initialData or tool args. */
  private async admit(event:VerifiedConversationEvent,originalSequence:number|null,ownerLink:unknown=null,admissionGuard?:AccessGuard,activationKey:string|null=null){
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch),authority=await this.authority(event.identity),guard=admissionGuard?joinGuards(authority.guard,admissionGuard):authority.guard;
-  await this.db!.prepare(`INSERT INTO assistant_native_host_events(installation_id,generation,conversation_id,event_id,event_revision,request_hash,source_id,source_ref_json,original_sequence,owner_link_json,created_at,telegram_activation_key)
-   SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT DO NOTHING`)
-   .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision,await bridgeHash(event),event.sourceRef!.id,JSON.stringify(event.sourceRef),originalSequence,ownerLink?JSON.stringify(ownerLink):null,Date.now(),activationKey,...guard.values).run();
+  await compactStatement(this.db,`INSERT INTO assistant_native_host_events(installation_id,generation,conversation_id,event_id,event_revision,request_hash,source_id,source_ref_json,original_sequence,owner_link_json,created_at,telegram_activation_key)
+   SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT DO NOTHING`,
+   [this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision,await bridgeHash(event),event.sourceRef!.id,JSON.stringify(event.sourceRef),originalSequence,ownerLink?JSON.stringify(ownerLink):null,Date.now(),activationKey,...guard.values]).run();
   return this.runtime.deliverConversation(event);
  }
  /** Capture metadata is already stored by the secret-authenticated bridge.
@@ -292,20 +294,41 @@ export class NativeApplicationHost {
    AND NOT EXISTS(SELECT 1 FROM assistant_native_conversations c WHERE c.installation_id=u.installation_id AND c.generation=u.generation AND c.identity_json=u.native_identity_json AND c.tombstoned_at IS NOT NULL) ORDER BY update_id LIMIT 5`)
    .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,activation.cutSecond,activation.activatedAt).all<{update_id:number}>();
   for(const row of ownerUpdates.results)try{outcomes.push(await this.receiveTelegram(row.update_id));}catch{outcomes.push({state:'unavailable'});}
-  await this.sweepRetiredContexts();const curator=await this.dispatchCurator();return {state:'ticked',outcomes,curator};
+  await this.sweepRetiredContexts();
+  const tasks=await this.tasks().dispatchDue((event,guard,activationKey,fence)=>this.admit(verifiedConversationEvent(event),null,fence,guard,activationKey));
+  const curator=await this.dispatchCurator();return {state:'ticked',outcomes,tasks,curator};
  }
- async modelHost(sessionId:string,turnId:string):Promise<ConversationProviderHost>{
+ async modelHost(sessionId:string,turnId:string,submissionId?:string):Promise<ConversationProviderHost>{
   const identity=await this.registered(sessionId),period=new Date().toISOString().slice(0,10),scope={installationId:this.scope.installationId,generation:this.scope.generation,period};
   const budget=new InferenceBudget(this.db!,scope);await budget.status(); // no implicit configuration/reset
   nativeGlobalBudgetGuard(this.env);
   const {authority,guard}=await this.authority(identity);
+  // Capture an immutable cursor for THIS model operation from host-observed
+  // consumption, never the most recently QUEUED message. A later join cannot
+  // relabel a paid call that began for a now-revoked scheduled task.
+  let observedTask:TaskContext|undefined,workGuard:AccessGuard={sql:'1',values:[]};
+  if(identity.channel==='telegram'&&!isCuratorPrincipal(identity.principalOrChatId)){
+   if(!submissionId)throw Error('native_model_consumption_unobserved');
+   const consumed=await this.db.prepare(`SELECT task_ref FROM assistant_native_consumed_inputs WHERE installation_id=? AND generation=? AND conversation_id=? AND submission_id=? ORDER BY sequence`)
+    .bind(this.scope.installationId,this.scope.generation,sessionId,submissionId).all<{task_ref:string}>();
+   const refs=consumed.results.map(r=>r.task_ref);if(!refs.length)throw Error('native_model_consumption_unobserved');
+   observedTask=await this.runtime.resolveStoredTask(identity,refs.at(-1)!,refs);workGuard=await this.tasks().guardForTask(observedTask);
+  }
   const sessionGrant:AccessGuard={sql:`EXISTS(SELECT 1 FROM assistant_native_conversation_events WHERE conversation_id=? AND state<>'withdrawn' AND authority_json=? AND sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?))`,values:[sessionId,JSON.stringify(authority),sessionId]};
-  const authorityGuard=()=>joinGuards(guard,this.retention.authorityGuard(sessionId),sessionGrant);
+  const authorityGuard=()=>joinGuards(guard,this.retention.authorityGuard(sessionId),sessionGrant,workGuard);
   return {scope,sessionId,contextEpoch:identity.contextEpoch,turnId,budget,globalBudgetGuard:()=>nativeGlobalBudgetGuard(this.env),authorityGuard,
-   assertAuthority:async()=>{await this.registered(sessionId);if(JSON.stringify((await this.authority(identity)).authority)!==JSON.stringify(authority))throw Error('native_authority_changed');},
+   assertAuthority:async()=>{await this.registered(sessionId);if(JSON.stringify((await this.authority(identity)).authority)!==JSON.stringify(authority))throw Error('native_authority_changed');if(observedTask)await this.runtime.assertTaskCurrent(observedTask);},
    maxOutputTokens:8192,maxRequestBytes:8*1024*1024,maxResponseBytes:16*1024*1024,timeoutMs:90000};
  }
- async resolve(sessionId:string,delivery:DeliveredMessage){const identity=await this.registered(sessionId);await this.runtime.resolveTask(identity,delivery);return {runtime:this.runtime,frame:(task:TaskContext)=>this.frame(task)};}
+ async resolve(sessionId:string,delivery:DeliveredMessage,submissionId?:string){const identity=await this.registered(sessionId);await this.runtime.resolveTask(identity,delivery);return {runtime:this.runtime,frame:(task:TaskContext)=>this.frame(task),consumed:(task:TaskContext)=>this.recordConsumed(task,submissionId)};}
+ async recordConsumed(task:TaskContext,submissionId?:string){
+  if(task.identity.channel!=='telegram'||isCuratorPrincipal(task.identity.principalOrChatId))return;
+  if(!submissionId||submissionId.length>256)throw Error('native_model_consumption_unobserved');
+  await this.runtime.assertTaskCurrent(task);
+  await this.db.prepare(`INSERT INTO assistant_native_consumed_inputs(installation_id,generation,conversation_id,submission_id,task_ref,sequence)
+   VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`).bind(this.scope.installationId,this.scope.generation,task.sessionId,submissionId,task.taskRef,task.watermark).run();
+ }
+ tasks(){return new NativeTasks({db:this.db,env:this.env,scope:this.currentScope(),runtime:this.runtime,retention:this.retention,origin:this.origin,authorityGuard:task=>this.actionAuthority(task)});}
  private async actionAuthority(task:TaskContext){await this.runtime.assertTaskCurrent(task);const {authority,guard}=await this.authority(task.identity);if(JSON.stringify(authority)!==JSON.stringify(task.authority))throw Error('native_authority_changed');return guard;}
  actions(){
   const source=this.env.WHATSAPP_APPROVED_SEND as NativeReplyActuatorRPC|undefined,secret=this.env.WHATSAPP_APPROVED_SEND_SECRET;
@@ -338,7 +361,8 @@ export class NativeApplicationHost {
   const curator=isCuratorPrincipal(task.identity.principalOrChatId)?await this.curatorFrame(task):undefined;
   const media=nativeMediaCapability({env:this.env,task,runtime:this.runtime,retention:this.retention,origin:this.origin,getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId),modelGuard:()=>nativeGlobalBudgetGuard(this.env)});
   const calendar=createNativeCalendarCapability({db:this.db!,env:this.env,scope:this.scope,getScope:()=>this.currentScope(),task,assertCurrent:()=>this.runtime.assertTaskCurrent(task),authorityGuard:async()=>joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId)),ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),expose:proof=>this.retention.expose(task.identity,proof)});
-  return {reads,media,...(curator?{curator}:{}),effects:{reply:async(input:unknown)=>{
+  const tasks=this.tasks();
+  return {reads,media,...(curator?{curator}:{}),tasks:{query:(input:unknown)=>tasks.query(task,input),save:(input:unknown)=>tasks.save(task,input),setState:(input:unknown)=>tasks.setState(task,input),adopt:(input:unknown)=>tasks.adopt(task,input)},effects:{reply:async(input:unknown)=>{
    if(task.returnChannel.channel!=='whatsapp')throw Error('native_reply_channel_denied');
    const actions=this.actions(),result=await actions.propose(task,input);
    if(result.authority?.kind==='human_approval'&&result.intent)return {...result,review:await(await this.review()).dispatch(result.intent.id,'native-intent:'+result.intent.id)};
@@ -435,17 +459,19 @@ export class NativeApplicationHost {
   const hash=await bridgeHash([fence,thread,rendered]);
   const prior=await this.db!.prepare(`SELECT request_hash,state,message_id FROM assistant_native_owner_responses WHERE context_ref=?`).bind(task.contextRef).first<{request_hash:string;state:string;message_id:number|null}>();
   if(prior){if(prior.request_hash!==hash)throw Error('native_owner_response_conflict');return {state:prior.state,messageId:prior.message_id};}
-  const guard=joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId),telegramLinkGuard(fence));
-  const claim=await this.db!.prepare(`INSERT INTO assistant_native_owner_responses(installation_id,generation,context_ref,conversation_id,request_hash,link_json,thread_id,state,created_at)
-   SELECT ?,?,?,?,?,?,?,'attempting',? WHERE (${guard.sql}) ON CONFLICT DO NOTHING RETURNING state`)
-   .bind(this.scope.installationId,this.scope.generation,task.contextRef,task.sessionId,hash,JSON.stringify(fence),thread,Date.now(),...guard.values).first();
+  const workGuard=await this.tasks().guardForTask(task);
+  const guard=joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId),telegramLinkGuard(fence),workGuard);
+  const claim=await jsonStatement(this.db,`INSERT INTO assistant_native_owner_responses(installation_id,generation,context_ref,conversation_id,request_hash,link_json,thread_id,state,created_at)
+   SELECT ?,?,?,?,?,?,?,'attempting',? WHERE (${guard.sql}) ON CONFLICT DO NOTHING RETURNING state`,
+   [this.scope.installationId,this.scope.generation,task.contextRef,task.sessionId,hash,JSON.stringify(fence),thread,Date.now(),...guard.values]).first();
   if(!claim)throw Error('native_owner_response_claim_denied');
   try{
    await this.runtime.assertTaskCurrent(task);const latest=await nativeOwnerFence(this.env,this.scope);if(JSON.stringify(latest)!==JSON.stringify(fence))throw Error('native_owner_link_changed');
-   const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{await this.runtime.assertTaskCurrent(task);},'HTML');
+   const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{await this.runtime.assertTaskCurrent(task);if(!await jsonStatement(this.db,`SELECT 1 WHERE (${guard.sql})`,guard.values).first())throw Error('native_task_changed');},'HTML');
    const messageId=await api.send(fence.chatId,thread,rendered,[]);
    await this.db!.prepare(`UPDATE assistant_native_owner_responses SET state='sent',message_id=? WHERE context_ref=? AND state='attempting'`).bind(messageId,task.contextRef).run();
-   return {state:'sent',messageId};
+   let taskAccounting='recorded';try{await this.tasks().notified(task);}catch{taskAccounting='pending';}
+   return {state:'sent',messageId,taskAccounting};
   }catch{await this.db!.prepare(`UPDATE assistant_native_owner_responses SET state='uncertain' WHERE context_ref=? AND state='attempting'`).bind(task.contextRef).run();return {state:'uncertain'};}
  }
 }

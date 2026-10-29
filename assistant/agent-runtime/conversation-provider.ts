@@ -4,6 +4,7 @@ import type {SimpleStreamOptions,StreamOptions} from '@earendil-works/pi-ai';
 import {InferenceBudget,type BudgetScope} from '../budget';
 import type {AccessGuard} from '../access';
 import {retentionExecutionGuard} from '../retention-execution';
+import {jsonStatement} from '../d1-statement';
 
 export const NATIVE_MODEL_PRICE_VERSION='pi-ai-1.1.0-gpt-6-luna-upper-input025-output075-v1';
 const ENDPOINT='https://api.openai.com/v1/responses',MODEL='gpt-6-luna';
@@ -46,7 +47,7 @@ function guard(host:ConversationProviderHost):AccessGuard{
 }
 async function current(db:D1Database,host:ConversationProviderHost){
  await host.assertAuthority();const g=guard(host);
- if(!await db.prepare(`SELECT 1 WHERE ${g.sql}`).bind(...g.values).first())throw Error('native_model_authority_denied');
+ if(!await jsonStatement(db,`SELECT 1 WHERE ${g.sql}`,g.values).first())throw Error('native_model_authority_denied');
 }
 function usage(sse:string){
  let found:{input:number;output:number}|undefined;
@@ -132,10 +133,10 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      const body=init?.body??(input instanceof Request?await input.text():undefined);
      if(url!==ENDPOINT||method!=='POST'||typeof body!=='string'||stable(JSON.parse(body))!==a.body)throw Error('native_model_transport_denied');
      await current(config.db,host);const g=guard(host);
-     const claim=await config.db.prepare(`INSERT INTO assistant_native_model_receipts
+     const claim=await jsonStatement(config.db,`INSERT INTO assistant_native_model_receipts
       (installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state)
-      SELECT ?,?,?,?,?,?,?,?,?,?,'attempting' WHERE ${g.sql} ON CONFLICT DO NOTHING RETURNING state`)
-      .bind(...keys(host),operationKey,host.scope.period,requestHash,NATIVE_MODEL_PRICE_VERSION,ceiling,...g.values).first();
+      SELECT ?,?,?,?,?,?,?,?,?,?,'attempting' WHERE ${g.sql} ON CONFLICT DO NOTHING RETURNING state`,
+      [...keys(host),operationKey,host.scope.period,requestHash,NATIVE_MODEL_PRICE_VERSION,ceiling,...g.values]).first();
      if(!claim)throw Error('native_model_claim_denied');claimed=true;
      // Repeat runtime authority immediately at the irreversible boundary. The
      // SQL claim also closes owner restore/hold and global-budget races.

@@ -2,7 +2,7 @@
  * same D1 batch as the exact source purge grant; no native destroy is claimed. */
 // 0040 FTS/shadow tables are derived: deleting canonical source_versions
 // invokes the fixed per-document trigger, preserving every unrelated document.
-export const nativeRetentionTables = new Set(`knowledge_operations native_conversations native_conversation_events native_reply_intents native_context_channels native_context_exposures native_context_purges native_reply_actions native_telegram_reviews native_telegram_callbacks native_host_events native_capture_intake native_owner_responses native_host_state native_help_questions native_help_replies curator_state curator_runs curator_items curator_capture_gaps curator_notices archive_text archive_text_data archive_text_idx archive_text_docsize archive_text_config`.split(' ').map(name=>'assistant_'+name));
+export const nativeRetentionTables = new Set(`knowledge_operations native_conversations native_conversation_events native_reply_intents native_context_channels native_context_exposures native_context_purges native_reply_actions native_telegram_reviews native_telegram_callbacks native_host_events native_capture_intake native_owner_responses native_host_state native_help_questions native_help_replies native_task_bindings native_task_occurrences native_consumed_inputs curator_state curator_runs curator_items curator_capture_gaps curator_notices archive_text archive_text_data archive_text_idx archive_text_docsize archive_text_config`.split(' ').map(name=>'assistant_'+name));
 const namespace=(alias:string)=>`${alias}.installation_id=?1 AND ${alias}.generation=?2`;
 const refs=(kind:string)=>`SELECT id FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3 AND kind='${kind}'`;
 const valid=(json:string)=>`CASE WHEN json_valid(${json}) THEN ${json} ELSE '{}' END`;
@@ -19,7 +19,7 @@ const knowledgeSource=`json_extract(${valid('k.request_json')},'$.sourceId')=?4
  OR EXISTS(SELECT 1 FROM assistant_sources s WHERE ${namespace('s')} AND s.id=?4 AND s.origin='owner_report' AND s.origin_key='knowledge-report:'||k.id)`;
 export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
  const has=(name:string)=>catalog.has('assistant_'+name),native=has('native_conversations');
- const groups=[['native_conversations','native_conversation_events','native_reply_intents'],['native_context_channels','native_context_exposures','native_context_purges'],['native_host_events','native_capture_intake','native_owner_responses','native_host_state'],['native_help_questions','native_help_replies'],['curator_state','curator_runs','curator_items','curator_capture_gaps','curator_notices']];
+ const groups=[['native_conversations','native_conversation_events','native_reply_intents'],['native_context_channels','native_context_exposures','native_context_purges'],['native_host_events','native_capture_intake','native_owner_responses','native_host_state'],['native_help_questions','native_help_replies'],['native_task_bindings','native_task_occurrences','native_consumed_inputs'],['curator_state','curator_runs','curator_items','curator_capture_gaps','curator_notices']];
  if(groups.some(group=>group.some(has)&&!group.every(has)) || (has('native_context_exposures')||has('native_reply_actions')||has('native_telegram_reviews')||has('native_host_events')||has('native_help_questions'))&&!native || has('native_telegram_reviews')!==has('native_telegram_callbacks'))throw Error('native_context_schema_incomplete');
  const collections:{kind:string;query:string}[]=[];
  if(native)collections.push({kind:'native_context',query:`SELECT c.id FROM assistant_native_conversations c WHERE ${namespace('c')} AND (
@@ -29,6 +29,7 @@ export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
   ${has('native_help_questions')?`OR EXISTS(SELECT 1 FROM assistant_native_help_questions q WHERE ${namespace('q')} AND q.conversation_id=c.id AND (q.source_id=?4 OR q.clarification_source_id=?4))`:''}
   ${has('native_telegram_reviews')?`OR EXISTS(SELECT 1 FROM assistant_native_telegram_reviews r WHERE ${namespace('r')} AND r.conversation_id=c.id AND r.context_source_id=?4)`:''})`});
  if(has('knowledge_operations'))collections.push({kind:'knowledge_operation',query:`SELECT k.id FROM assistant_knowledge_operations k WHERE ${namespace('k')} AND (${knowledgeSource})`});
+ if(has('native_task_bindings'))collections.push({kind:'native_task_binding',query:`SELECT b.id FROM assistant_native_task_bindings b WHERE ${namespace('b')} AND (json_extract(${valid('b.source_ref_json')},'$.id')=?4 OR json_extract(${valid('b.authorization_ref_json')},'$.id')=?4)`});
  return {collections,mutations(gate:string){
   // The root tombstone invalidates frames/effects before clearing their bodies.
   // 0041/0042 triggers remove reply payload/review authority on this same write.
@@ -55,6 +56,11 @@ export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
      AND t.link_revision=json_extract(${valid('q.link_json')},'$.linkRevision'))) AND ${gate}`);
   if(has('curator_items'))mutations.push(`UPDATE assistant_curator_items AS i SET state='withdrawn',source_hash=NULL,operation_ids_json='[]',updated_at=?5 WHERE ${namespace('i')} AND i.source_id=?4 AND ${gate}`);
   if(has('curator_capture_gaps'))mutations.push(`UPDATE assistant_curator_capture_gaps AS g SET state='withdrawn' WHERE ${namespace('g')} AND EXISTS(SELECT 1 FROM assistant_source_origins o WHERE ${namespace('o')} AND o.canonical_id=?4 AND o.source_kind=g.source_kind AND o.source_id=g.source_id) AND ${gate}`);
+  if(has('native_task_bindings')){
+   mutations.push(`UPDATE assistant_native_task_occurrences AS o SET state='invalidated' WHERE ${namespace('o')} AND o.binding_id IN (${refs('native_task_binding')}) AND ${gate}`);
+   mutations.push(`DELETE FROM assistant_native_task_bindings AS b WHERE ${namespace('b')} AND b.id IN (${refs('native_task_binding')}) AND ${gate}`);
+   mutations.push(`DELETE FROM assistant_native_consumed_inputs AS i WHERE ${namespace('i')} AND i.conversation_id IN (${refs('native_context')}) AND ${gate}`);
+  }
   return mutations;
  }};
 }
