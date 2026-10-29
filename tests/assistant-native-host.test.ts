@@ -187,7 +187,7 @@ describe('native application composition on real D1 and Source reads',()=>{
  it('keeps daily curation disabled by default and gives an enabled curator its private native session/client',async()=>{
   const f=await fixture();expect(await f.host().dispatchCurator()).toEqual({state:'disabled'});expect(transport.dispatch).not.toHaveBeenCalled();
   f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-evidence',text:'Nora participa do projeto Cedar.',occurredAt:1});
-  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(typeof receipt.taskRef!=='string')throw Error('fixture_curator');
+  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(receipt.state!=='admitted'&&receipt.state!=='uncertain')throw Error('fixture_curator');
   const task=await latestTask(host,receipt.taskRef);expect(task.identity.principalOrChatId).toBe('curator:101');expect(task.knowledge.client).toBe('curator');expect(task.authority.mode).toBe('shadow');expect(task.cohort[0].author).toEqual({kind:'system',id:'curator-host'});expect(task.cohort[0].sourceRef).toBeUndefined();
   const frame=await host.frame(task);expect(frame.curator).toBeDefined();const page=await frame.curator!.curator.next(frame.curator!.runId);expect(page.items).toHaveLength(1);expect(page.items[0].text).toBe('Nora participa do projeto Cedar.');
   await expect(frame.effects.reply({decision:'respond',text:'Terceiro'})).rejects.toThrow('native_reply_channel_denied');
@@ -198,7 +198,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-source',text:'Contexto do projeto.',occurredAt:1});
   const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
   await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
-  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(typeof receipt.taskRef!=='string')throw Error('fixture_curator');
+  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(receipt.state!=='admitted'&&receipt.state!=='uncertain')throw Error('fixture_curator');
   const task=await latestTask(host,receipt.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
   const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).not.toContain('Contexto do projeto.');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
   expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'accepted'}});expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(1);
@@ -217,7 +217,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   const to=await env.DB.prepare('SELECT MAX(sequence) n FROM assistant_source_changes WHERE installation_id=? AND generation=?').bind(f.scope.installationId,f.scope.generation).first<number>('n');
   f.own.NATIVE_CURATOR_SAMPLE_REQUEST=JSON.stringify({operationId:'curator-real-sample-1',window:{fromSequence:to!-1,toSequence:to,day:'2026-10-29',timezone:'America/Fortaleza'}});
   const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};await env.DB.prepare("INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)").bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
-  const host=f.host(),a=await host.dispatchCurator(),b=await host.dispatchCurator();expect(a).toEqual(b);expect(transport.dispatch).toHaveBeenCalledTimes(1);if(typeof a.taskRef!=='string')throw Error('fixture_sample');
+  const host=f.host(),a=await host.dispatchCurator(),b=await host.dispatchCurator();expect(a).toEqual(b);expect(transport.dispatch).toHaveBeenCalledTimes(1);if(a.state!=='admitted'&&a.state!=='uncertain')throw Error('fixture_sample');
   const task=await latestTask(host,a.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);expect(page.items).toHaveLength(1);expect(page.coverage.scope).toBe('sample_window');
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_curator_state WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(0);
   await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
@@ -228,7 +228,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='false';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'sample-retire-source',text:'Amostra a retirar.',occurredAt:1});
   const to=await env.DB.prepare('SELECT MAX(sequence) n FROM assistant_source_changes WHERE installation_id=? AND generation=?').bind(f.scope.installationId,f.scope.generation).first<number>('n');
   const request={operationId:'sample-stable-retired',window:{fromSequence:to!-1,toSequence:to,day:'2026-10-29',timezone:'America/Fortaleza'}};f.own.NATIVE_CURATOR_SAMPLE_REQUEST=JSON.stringify(request);
-  const host=f.host(),first=await host.dispatchCurator();if(typeof first.taskRef!=='string')throw Error('fixture_sample');const task=await latestTask(host,first.taskRef);
+  const host=f.host(),first=await host.dispatchCurator();if(first.state!=='admitted'&&first.state!=='uncertain')throw Error('fixture_sample');const task=await latestTask(host,first.taskRef);
   await host.retention.purge(task.identity);
   expect(await f.host().dispatchCurator()).toEqual({state:'retired',runId:task.cohort[0].eventId.slice(12),sessionId:first.sessionId,taskRef:first.taskRef});expect(transport.dispatch).toHaveBeenCalledTimes(1);
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
@@ -251,7 +251,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   }});
   const a=f.host(),first=a.dispatchCurator();await stopped;
   try{
-   const b=f.host(),winner=await b.dispatchCurator();if(typeof winner.taskRef!=='string')throw Error('fixture_sample');const task=await latestTask(b,winner.taskRef),runId=task.cohort[0].eventId.slice(12),curator=await b.curator(task.identity);
+   const b=f.host(),winner=await b.dispatchCurator();if(winner.state!=='admitted'&&winner.state!=='uncertain')throw Error('fixture_sample');const task=await latestTask(b,winner.taskRef),runId=task.cohort[0].eventId.slice(12),curator=await b.curator(task.identity);
    await expect(curator.event(runId,{...task.identity,contextEpoch:'different-epoch'},'101')).rejects.toThrow('curator_sample_binding_denied');
    await expect(env.DB.prepare('UPDATE assistant_curator_runs SET native_session_id=? WHERE installation_id=? AND generation=? AND id=?').bind('replacement',f.scope.installationId,f.scope.generation,runId).run()).rejects.toThrow('curator_sample_binding_immutable');
    await b.retention.purge(task.identity);resume();
