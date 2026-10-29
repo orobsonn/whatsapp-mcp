@@ -124,3 +124,21 @@ test('native host admission links purge owner Telegram originals and retained fr
  expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=78').bind(context.scope.installationId).first()).toEqual({text:'private owner input B',state:'pending'});
  expect(await env.DB.prepare('SELECT tombstoned_at FROM assistant_native_conversations WHERE id=?').bind(independent.id).first('tombstoned_at')).toBeNull();
 });
+
+test.each(['anchor','clarification'] as const)('purges native help copies and exact Telegram reply when its %s source is removed',async which=>{
+ const anchor=await report('help-anchor','private original question'),clarification=await report('help-owner','private owner clarification');
+ const dependent=await session(anchor.id,false),question=crypto.randomUUID();
+ await env.DB.prepare(`INSERT INTO assistant_native_help_questions(installation_id,generation,bot_instance,id,conversation_id,context_ref,task_json,anchor_task_ref,source_id,source_ref_json,original_sequence,question_text,request_hash,link_json,credential_hash,thread_id,state,message_id,owner_update_id,clarification_source_id,clarification_ref_json,created_at,updated_at)
+  VALUES(?,?,'synthetic_bot',?,?,?,'{"body":"private task"}','anchor-task',?,?,1,'private help question','hash','{}','hash',42,'answered',501,89,?,?,1,1)`)
+  .bind(context.scope.installationId,context.scope.generation,question,dependent.id,'help-context:'+question,anchor.id,JSON.stringify(anchor),clarification.id,JSON.stringify(clarification)).run();
+ await env.DB.prepare(`INSERT INTO assistant_native_help_replies(installation_id,generation,bot_instance,update_id,question_id,payload_hash,reply_to_message_id,link_json,created_at) VALUES(?,?,'synthetic_bot',89,?,'hash',501,'{}',1)`)
+  .bind(context.scope.installationId,context.scope.generation,question).run();
+ for(const [updateId,text] of [[89,'private owner clarification'],[90,'unrelated owner input']] as const)await env.DB.prepare(`INSERT INTO assistant_telegram_updates(installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at) VALUES(?,?,'synthetic_bot',?,?,'token','epoch','source',1,'101','101',?,1,42,?,'pending','pending',1)`)
+  .bind(context.scope.installationId,context.scope.generation,updateId,'0'.repeat(64),updateId,text).run();
+ const removed=which==='anchor'?anchor:clarification;await controller.withdraw(removed.id,1);
+ expect(await purge(removed.id)).toMatchObject({state:'complete',nativeContexts:'tombstoned_pending_physical'});
+ expect(await env.DB.prepare('SELECT task_json,source_ref_json,question_text,clarification_ref_json,state FROM assistant_native_help_questions WHERE id=?').bind(question).first())
+  .toEqual({task_json:'{}',source_ref_json:'{}',question_text:null,clarification_ref_json:null,state:'cancelled'});
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=89').bind(context.scope.installationId).first()).toEqual({text:null,state:'cancelled'});
+ expect(await env.DB.prepare('SELECT text,state FROM assistant_telegram_updates WHERE installation_id=? AND update_id=90').bind(context.scope.installationId).first()).toEqual({text:'unrelated owner input',state:'pending'});
+});
