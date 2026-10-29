@@ -17,7 +17,7 @@ import {telegramLinkGuard} from '../assistant/telegram-auth';
 import type {TelegramApi} from '../assistant/telegram';
 const secret='synthetic-native-send-secret-at-least-32',bot='native_test_bot',key='synthetic-native-telegram-key-at-least-32';
 beforeEach(async()=>{await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
-async function fixture(group=false,text='Resposta integral\ncom <todas> as linhas & 😀. '){
+async function fixture(group=false,text='Resposta integral\ncom <todas> as linhas & 😀. ',sourceKind:'message'|'derivative'|'media'='message'){
  const scope={installationId:crypto.randomUUID(),generation:'own-g1',sourceEpoch:'e1',sourceGeneration:'g1'};let currentScope={...scope};
  let review:NativeTelegramReplyReview,sourceAttempts=0,noticeLost=false,sourceLost=false,telegramMessageId=200;
  const sourceSent:unknown[]=[];
@@ -30,12 +30,12 @@ async function fixture(group=false,text='Resposta integral\ncom <todas> as linha
  await incoming('source-incoming');
  const activity=await conversationActivity(e,chatId);if(activity.state!=='available')throw Error('fixture_activity');const trigger=activity.latestIncomingOriginalSequence;
  const ref0=await new SourceController(env.DB,scope,{kind:'owner'}).createReport({originKey:'synthetic-context',text:received,authorLabel:'Nina <informada>',occurredAt:Date.now()});
- const snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:'e1',sourceGeneration:'g1',sourceKind:'message',sourceId:'source-message',chatId,sourceVersion:1,watermark:1,conversationKind:group?'group':'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:received,messageId:'source-message',messageVersion:1}};
- const origin=new OriginGuard(env.DB,()=>scope,{readSnapshot:async()=>snapshot},secret),observed=await origin.observe(scope,{sourceKind:'message',sourceId:'source-message',chatId});
+ const snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:'e1',sourceGeneration:'g1',sourceKind,sourceId:'source-message',chatId,sourceVersion:1,watermark:1,conversationKind:group?'group':'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:received,messageId:'source-message',messageVersion:1}};
+ const origin=new OriginGuard(env.DB,()=>scope,{readSnapshot:async()=>snapshot},secret),observed=await origin.observe(scope,{sourceKind,sourceId:'source-message',chatId});
  await env.DB.batch([
   env.DB.prepare("UPDATE assistant_sources SET origin='whatsapp',conversation_id=? WHERE installation_id=? AND generation=? AND id=?").bind(chatId,scope.installationId,scope.generation,ref0.id),
   env.DB.prepare('INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,?,\'available\')').bind(scope.installationId,scope.generation,'e1','g1',chatId,group?'group':'private'),
-  env.DB.prepare("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,observation_hash,tombstoned) VALUES(?,?,?,?,'message','source-message',?,?,1,?,0)").bind(scope.installationId,scope.generation,'e1','g1',chatId,ref0.id,observed.hash),
+  env.DB.prepare("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,observation_hash,tombstoned) VALUES(?,?,?,?,?,'source-message',?,?,1,?,0)").bind(scope.installationId,scope.generation,'e1','g1',sourceKind,chatId,ref0.id,observed.hash),
  ]);
  if(group)await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind,group_mode,revision) VALUES(?,?,?,'group','respond',1)").bind(scope.installationId,scope.generation,chatId).run();
  const source=(await new SourceAccess(env.DB,scope,Date.now,'knowledge').read({kind:'owner'},ref0.id))!;
@@ -67,6 +67,18 @@ describe('native owner Telegram review, real D1/Source action and fake providers
   expect(f.messages[0].buttons[0].map(b=>b.text)).toEqual(['✅ Aprovar e enviar','❌ Descartar']);expect(f.messages[0].buttons[0][0].callback_data).toMatch(/^n_[\w-]{43}$/);expect(f.api.createTopic).not.toHaveBeenCalled();
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_telegram_topics WHERE installation_id=?').bind(f.scope.installationId).first<number>('n')).toBe(4);
   const row=await env.DB.prepare('SELECT * FROM assistant_native_telegram_reviews WHERE installation_id=?').bind(f.scope.installationId).first();expect(JSON.stringify(row)).not.toContain(f.received);expect(JSON.stringify(row)).not.toContain(f.text);
+ });
+ it('reviews verified ready transcriptions and preserves the actual derivative origin through approval',async()=>{
+  const f=await fixture(false,'Resposta ao áudio transcrito.','derivative');
+  expect((await f.dispatch()).state).toBe('sent');
+  expect(f.messages[0].text).toContain('Você pode &lt;confirmar&gt; &amp; responder?');
+  expect(await env.DB.prepare("SELECT json_extract(origin_fence_json,'$.sourceKind') kind FROM assistant_native_context_exposures WHERE conversation_id=? AND source_id=?").bind(f.task.sessionId,f.ref.id).first('kind')).toBe('derivative');
+  expect(await f.review.receiveCallback(f.callback())).toBe('approved');
+  expect(f.attempts()).toBe(1);expect(f.sourceSent).toMatchObject([{text:'Resposta ao áudio transcrito.'}]);
+ });
+ it('does not approve raw media as a ready received text even if an adapter supplies a text field',async()=>{
+  const f=await fixture(false,'resposta','media');
+  await expect(f.dispatch()).rejects.toThrow('native_review_context_changed');expect(f.messages).toHaveLength(0);expect(f.attempts()).toBe(0);
  });
  it('one authenticated approval sends once through Source and every replay only reconciles',async()=>{
   const f=await fixture();await f.dispatch();expect(await f.review.receiveCallback(f.callback())).toBe('approved');expect(f.attempts()).toBe(1);

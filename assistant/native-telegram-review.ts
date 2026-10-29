@@ -70,7 +70,7 @@ export class NativeTelegramReplyReview {
   const proof=await this.host.contextReader(task),ref=lastSource(task),source=proof.source,f=source.fence.source,o=proof.origin;
   if(!ref||source.id!==ref.id||f.id!==ref.id||f.revision!==ref.revision||f.version!==ref.version||f.hash!==ref.hash||f.origin!=='whatsapp'||f.conversationId!==task.returnChannel.id||!source.text?.trim()
    ||source.fence.installationId!==this.host.scope.installationId||source.fence.generation!==this.host.scope.generation
-   ||o.canonicalId!==ref.id||o.revision!==ref.revision||o.version!==ref.version||o.chatId!==task.returnChannel.id||o.sourceKind!=='message'||JSON.stringify(scopeKeys(o))!==JSON.stringify(scopeKeys(this.host.scope)))throw Error('native_review_context_changed');
+   ||o.canonicalId!==ref.id||o.revision!==ref.revision||o.version!==ref.version||o.chatId!==task.returnChannel.id||!['message','derivative'].includes(o.sourceKind)||JSON.stringify(scopeKeys(o))!==JSON.stringify(scopeKeys(this.host.scope)))throw Error('native_review_context_changed');
   if(!proof.guard?.sql||!Array.isArray(proof.guard.values)||!await this.sql(`SELECT 1 WHERE ${proof.guard.sql}`,...proof.guard.values).first())throw Error('native_review_context_changed');
   return {received:{sourceRef:ref,text:source.text,authorLabel:source.authorLabel},guard:proof.guard,origin:o};
  }
@@ -85,9 +85,9 @@ export class NativeTelegramReplyReview {
   const exposure:AccessGuard={sql:`EXISTS(SELECT 1 FROM assistant_native_context_exposures e WHERE e.conversation_id=? AND e.source_id=?
    AND json_extract(e.source_fence_json,'$.source.id')=e.source_id AND json_extract(e.source_fence_json,'$.source.origin')='whatsapp'
    AND json_extract(e.source_fence_json,'$.source.revision')=? AND json_extract(e.source_fence_json,'$.source.version')=? AND json_extract(e.source_fence_json,'$.source.hash')=?
-   AND json_extract(e.origin_fence_json,'$.canonicalId')=e.source_id AND json_extract(e.origin_fence_json,'$.sourceKind')='message'
+   AND json_extract(e.origin_fence_json,'$.canonicalId')=e.source_id AND json_extract(e.origin_fence_json,'$.sourceKind')=?
    AND json_extract(e.origin_fence_json,'$.sourceId')=? AND json_extract(e.origin_fence_json,'$.chatId')=? AND json_extract(e.origin_fence_json,'$.hash')=?)`,
-   values:[review.task.sessionId,ref.id,ref.revision,ref.version,ref.hash,context.origin.sourceId,context.origin.chatId,context.origin.hash]};
+   values:[review.task.sessionId,ref.id,ref.revision,ref.version,ref.hash,context.origin.sourceKind,context.origin.sourceId,context.origin.chatId,context.origin.hash]};
   if(!await this.sql(`SELECT 1 WHERE ${exposure.sql}`,...exposure.values).first())throw Error('native_review_untracked_context');
   return {review,body:{received:context.received,text:review.text,summary:review.summary,target:prepared.target},guard:combine(review.guard,exposure),contextGuard:exposure};
  }
