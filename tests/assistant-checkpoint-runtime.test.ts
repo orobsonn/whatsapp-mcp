@@ -67,7 +67,7 @@ export class Probe extends DurableObject {
 }
 export default {fetch(request,env){return env.PROBE.get(env.PROBE.idFromName('synthetic')).fetch(request)}};
 `);
-  execFileSync(join(root, "node_modules/esbuild/bin/esbuild"), [app, "--bundle", "--format=esm", "--external:cloudflare:workers", "--outfile=" + join(scratch, "app.mjs")], { cwd: root, stdio: "pipe" });
+  execFileSync(join(root, "node_modules/esbuild/bin/esbuild"), [app, "--bundle", "--format=esm", "--external:cloudflare:workers", "--external:node:async_hooks", "--outfile=" + join(scratch, "app.mjs")], { cwd: root, stdio: "pipe" });
   worker = start();
 });
 afterAll(async () => { await worker?.dispose(); rmSync(scratch, { recursive: true, force: true }); expect(external).toBe(0); });
