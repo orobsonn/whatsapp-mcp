@@ -131,7 +131,10 @@ Responda em português brasileiro, com linguagem natural. No WhatsApp escreva em
 }
 ConversationRuntimeAgent.agentName='conversation-runtime';
 ConversationRuntimeAgent.initialData=seedSchema;
-ConversationRuntimeAgent.durability={maxAttempts:1,timeoutMs:120000};
+// Research and daily curation may legitimately take more than two minutes.
+// Keep the SDK's native operational deadline and our single-attempt policy;
+// inference and external effects retain their own durable budgets/receipts.
+ConversationRuntimeAgent.durability={maxAttempts:1};
 
 /** Explicit opt-in driver. Existing legacy install/profiles/provider are
  * untouched; do not expose this agent until budget and P5 guards are wired. */

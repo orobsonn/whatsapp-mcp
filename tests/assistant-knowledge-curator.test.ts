@@ -19,6 +19,20 @@ const note=(key:string,text=key,occurredAt=now)=>sources.create({originKey:key,t
 async function due(){now=time('2026-10-29T06:00:00Z');return (await curator.beginDue())!;}
 const head=async()=>await sql('SELECT COALESCE(MAX(sequence),0) head FROM assistant_source_changes WHERE installation_id=? AND generation=?').first<number>('head')??0;
 const sampleWindow=(fromSequence:number,toSequence:number,day='2026-10-28')=>({fromSequence,toSequence,day,timezone:'America/Fortaleza' as const});
+it('stops a cancelled curator page before exposing further originals or marking them presented',async()=>{
+ await note('first cancellation evidence');await note('second cancellation evidence');const run=await due(),controller=new AbortController();
+ const exposed:string[]=[];let verified=0;
+ host.verifySource=async()=>{verified++;return {state:'current',guard:{sql:'1',values:[]}};};
+ host.expose=async(_,read)=>{exposed.push(read.id);controller.abort(new Error('curator_cancelled'));};
+ await expect(curator.next(run.id,{limit:100},controller.signal)).rejects.toThrow('curator_cancelled');
+ expect(verified).toBe(1);expect(exposed).toHaveLength(1);
+ expect((await curator.status(run.id)).counts).toMatchObject({pending:2,presented:0,evaluated:0});
+ const alreadyAborted=AbortSignal.abort(new Error('cancelled_before_page'));
+ await expect(curator.next(run.id,{},alreadyAborted)).rejects.toThrow('cancelled_before_page');
+ expect(verified).toBe(1);expect(exposed).toHaveLength(1);
+ // A later explicit call may still read the unacknowledged originals.
+ host.expose=async()=>{};expect((await curator.next(run.id)).items).toHaveLength(2);
+});
 it('samples only the requested canonical range without touching the daily cursor, backlog or capture gaps',async()=>{
  await note('outside before');const from=await head();await note('inside','explicit sample evidence');const to=await head();await note('outside after');
  const run=await curator.beginSample({operationId:'sample-explicit-range',window:sampleWindow(from,to)});

@@ -156,34 +156,35 @@ export class KnowledgeCurator {
     .bind(...keys,run.id,...keys,scope.sourceEpoch,scope.sourceGeneration)]:[]),
   ]);this.current(scope);
  }
- async next(runId:string,input:{after?:number;limit?:number}={}){
-  const page=z.object({after:z.number().int().nonnegative().safe().default(0),limit:z.number().int().min(1).max(100).default(20)}).strict().parse(input),scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
+ async next(runId:string,input:{after?:number;limit?:number}={},signal?:AbortSignal){
+  signal?.throwIfAborted();
+  const page=z.object({after:z.number().int().nonnegative().safe().default(0),limit:z.number().int().min(1).max(100).default(20)}).strict().parse(input),scope=this.scope();await this.host.assertCurrent();signal?.throwIfAborted();const run=await this.run(scope,runId);signal?.throwIfAborted();await this.refresh(scope,run);signal?.throwIfAborted();
   const visible=this.access(scope).ownerRows(),calendar=runCalendar(run);
   // The policy relation is inside the query before LIMIT. Excluded source IDs
   // and bodies cannot consume a visible page or escape to the native model.
   const rows=await this.db.prepare(`SELECT i.* FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.sequence>? AND i.state IN ('pending','presented','unavailable','indexing') ORDER BY i.sequence LIMIT ?`)
-   .bind(...visible.values,...this.keys(scope),runId,page.after,page.limit+1).all<ItemRow>();this.current(scope);
+   .bind(...visible.values,...this.keys(scope),runId,page.after,page.limit+1).all<ItemRow>();this.current(scope);signal?.throwIfAborted();
   const items:CuratorItem[]=[],proofs:{read:SourceRead;guard:AccessGuard}[]=[];
   for(const row of rows.results.slice(0,page.limit)){
-   const read=await this.access(scope).read(owner,row.source_id,row.revision);this.current(scope);if(!read||read.fence.source.version!==row.version||read.text===null)continue;
-   const proof=await this.host.verifySource(read);this.current(scope);
+   signal?.throwIfAborted();const read=await this.access(scope).read(owner,row.source_id,row.revision);this.current(scope);signal?.throwIfAborted();if(!read||read.fence.source.version!==row.version||read.text===null)continue;
+   const proof=await this.host.verifySource(read);this.current(scope);signal?.throwIfAborted();
    if(proof.state!=='current'){
     await this.db.prepare("UPDATE assistant_curator_items SET state=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND state IN ('pending','presented','unavailable','indexing')")
-     .bind(proof.state==='changed'?'superseded':'unavailable',this.clock(),...this.keys(scope),runId,row.sequence).run();continue;
+     .bind(proof.state==='changed'?'superseded':'unavailable',this.clock(),...this.keys(scope),runId,row.sequence).run();signal?.throwIfAborted();continue;
    }
-   await this.host.expose(runId,read);await this.host.assertCurrent();this.current(scope);
+   await this.host.expose(runId,read);signal?.throwIfAborted();await this.host.assertCurrent();this.current(scope);signal?.throwIfAborted();
    const access=this.access(scope).guard(owner,read.fence,this.clock()),authority=this.host.authorityGuard();
    const published=await this.db.prepare(`UPDATE assistant_curator_items SET state=CASE WHEN state='indexing' THEN 'indexing' ELSE 'presented' END,source_hash=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND state IN ('pending','presented','unavailable','indexing') AND (${access.sql}) AND (${proof.guard.sql}) AND (${authority.sql}) RETURNING sequence`)
-    .bind(read.fence.source.hash,this.clock(),...this.keys(scope),runId,row.sequence,...access.values,...proof.guard.values,...authority.values).first();this.current(scope);
+    .bind(read.fence.source.hash,this.clock(),...this.keys(scope),runId,row.sequence,...access.values,...proof.guard.values,...authority.values).first();this.current(scope);signal?.throwIfAborted();
    if(published){items.push({sequence:row.sequence,sourceRef:{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash},text:read.text,authorId:read.authorId,authorLabel:read.authorLabel,occurredAt:read.occurredAt,late:read.occurredAt<dayStart(calendar.day),carried:calendar.kind==='daily'&&row.sequence<=run.from_sequence,state:row.state==='indexing'?'indexing':'presented',operationIds:JSON.parse(row.operation_ids_json)});proofs.push({read,guard:proof.guard});}
   }
-  await this.host.assertCurrent();this.current(scope);
+  await this.host.assertCurrent();this.current(scope);signal?.throwIfAborted();
   const authority=this.host.authorityGuard(),access=this.access(scope);
   // Reading a later source may have awaited external I/O. All previous
   // dependencies are rechecked in ONE final local snapshot before publication.
   const checks=await this.db.batch<{valid:number}>([authority,...proofs.flatMap(proof=>[access.guard(owner,proof.read.fence,this.clock()),proof.guard])]
    .map(guard=>this.db.prepare(`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE 0 END valid`).bind(...guard.values)));
-  this.current(scope);if(checks.some(check=>check.results[0]?.valid!==1))throw Error('curator_source_changed');
+  this.current(scope);signal?.throwIfAborted();if(checks.some(check=>check.results[0]?.valid!==1))throw Error('curator_source_changed');
   return {items,...(rows.results.length>page.limit?{nextAfter:rows.results[page.limit-1].sequence}:{}),coverage:{scope:calendar.kind==='sample'?'sample_window' as const:'pinned_incremental_window' as const,state:'partial' as const,archive:'not_exhaustive' as const},window:this.public(run).window};
  }
  async acknowledge(runId:string,sequence:number,raw:z.input<typeof acknowledgement>){
