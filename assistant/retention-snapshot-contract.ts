@@ -5,7 +5,7 @@ export { buildSnapshotMembership, verifySnapshotMembership, appendSnapshotFronti
 const digest = z.string().regex(/^[a-f0-9]{64}$/), integer = z.number().int().nonnegative().safe();
 const label = z.string().min(1).max(256).refine(value => value.trim() === value && !/[\x00-\x1f\x7f]/.test(value));
 export const snapshotNamespace = z.object({ installationId: label, generation: label }).strict();
-export const financialTables = new Set(["assistant_budget_accounts", "assistant_budget_reservations"]);
+export const financialTables = new Set(["assistant_budget_accounts", "assistant_budget_reservations", "assistant_native_model_receipts"]);
 /** Canonical records and their original attribution. Operational effect latches,
  * model/media/canonical-extraction derivations and attempt latches, relation
  * batches and all Owner context support/proof/status sidecars, jobs,

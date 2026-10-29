@@ -117,7 +117,7 @@ export class CanonicalRestore {
   }
   private async pair(manifest: SnapshotManifest, pair: RestoreSourcePair) {
     const header = await this.verified(manifest, pair.header), source = header.value;
-    if (header.table !== "assistant_sources" || !["owner_note", "whatsapp", "owner_request"].includes(String(source.origin)) || typeof source.origin_key !== "string" || typeof source.id !== "string" || !["active", "withdrawn"].includes(String(source.status))) throw new Error("restore_source_header");
+    if (header.table !== "assistant_sources" || !["owner_note", "owner_report", "whatsapp", "owner_request"].includes(String(source.origin)) || typeof source.origin_key !== "string" || typeof source.id !== "string" || !["active", "withdrawn"].includes(String(source.status))) throw new Error("restore_source_header");
     // Restore audit history, never the operational turn/checkpoint/authority.
     if (source.origin === "owner_request" && (source.audience !== "owner" || source.conversation_id !== null || source.project_id !== null || source.status === "active" && source.current_version !== 1)) throw new Error("restore_owner_request_header");
     positive.parse(source.revision);
@@ -184,6 +184,11 @@ export class CanonicalRestore {
     const row = await this.sql(`SELECT rowid AS __live_row,* FROM ${record.table} WHERE ${fields.map(field => `${field}=?`).join(" AND ")}`, ...fields.map(field => value[field] as string)).first<Record<string, unknown>>();
     if (!row || row.__live_row !== record.row) return false;
     if (record.table === "assistant_budget_accounts") return row.cap_units === value.cap_units && !(value.blocked === 1 && row.blocked !== 1);
+    if (record.table === "assistant_native_model_receipts") {
+      if (!["session_id", "context_epoch", "turn_id", "period", "request_hash", "price_version", "ceiling_units"].every(field => row[field] === value[field])) return false;
+      if (value.state === "complete") return row.state === "complete" && ["input_tokens", "output_tokens", "actual_units"].every(field => row[field] === value[field]);
+      return (value.state === "uncertain" ? ["uncertain", "complete"] : ["attempting", "uncertain", "complete"]).includes(String(row.state));
+    }
     return ["period", "request_hash", "ceiling_units"].every(field => row[field] === value[field]) && (value.state === "settled" ? row.state === "settled" && row.actual_units === value.actual_units : value.state === "uncertain" ? ["uncertain", "settled"].includes(String(row.state)) : ["reserved", "uncertain", "settled"].includes(String(row.state)));
   }
   private async apply(operationId: string, proven: ProvenRestoreRow, pair?: RestoreSourcePair) {
@@ -243,7 +248,7 @@ export class CanonicalRestore {
         statements.push(this.sql(`INSERT INTO assistant_retention_quarantines SELECT ?,?,?,?,?,?,?,?,?,?,1,'snapshot_reproof_required',? WHERE EXISTS(SELECT 1 FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND table_name='restore_row_admission' AND action='insert') ON CONFLICT DO NOTHING`, ...this.keys(), kind, await bridgeHash(key), fields.source ?? null, fields.provider ?? null, fields.address ?? null, fields.mandate ?? null, fields.conversation ?? null, fields.version, manifest.seal, ...this.keys(), attempt));
       };
       if (header?.value.origin === "whatsapp") await quarantine("origin_source", [sourceId], { source: sourceId!, version: Number(header.value.revision) });
-      if (header?.value.origin === "owner_note" && header.value.audience !== "owner" && pair) {
+      if ((header?.value.origin === "owner_note" || header?.value.origin === "owner_report") && header.value.audience !== "owner" && pair) {
         await quarantine("source_authorization", [sourceId], { source: sourceId!, version: Number(header.value.revision) });
         await write("assistant_retention_restored_work", { installation_id: this.target.installationId, generation: this.target.generation, kind: "source_authorization", id: sourceId, version: header.value.revision, source_id: sourceId,
           snapshot_seal: manifest.seal, source_generation: manifest.namespace.generation, original_command_id: null,
@@ -276,7 +281,8 @@ export class CanonicalRestore {
     if (gate.mutation_revision !== progress.mutation || gate.financial_revision !== progress.financial) return this.restartFinal(operationId, session);
     const missingLive = await this.sql(`SELECT 1 FROM assistant_retention_restore_rows r WHERE r.installation_id=? AND r.generation=? AND r.operation_id=? AND r.state='financial_live_verified'
       AND ((r.table_name='assistant_budget_accounts' AND NOT EXISTS(SELECT 1 FROM assistant_budget_accounts a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))
-        OR (r.table_name='assistant_budget_reservations' AND NOT EXISTS(SELECT 1 FROM assistant_budget_reservations a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))) LIMIT 1`, ...this.keys(), operationId).first();
+        OR (r.table_name='assistant_budget_reservations' AND NOT EXISTS(SELECT 1 FROM assistant_budget_reservations a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))
+        OR (r.table_name='assistant_native_model_receipts' AND NOT EXISTS(SELECT 1 FROM assistant_native_model_receipts a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))) LIMIT 1`, ...this.keys(), operationId).first();
     const missingFinancial = !!progress.missing || !!missingLive, pending = await this.sql("SELECT 1 FROM assistant_capture_inbox WHERE installation_id=? AND application_state<>'applied' AND operation IN ('withdraw','access') LIMIT 1", this.target.installationId).first();
     const epoch = await this.sql("SELECT 1 FROM assistant_source_origins WHERE installation_id=? AND generation=? AND (source_epoch<>? OR source_generation<>?) LIMIT 1", ...this.keys(), this.capture.sourceEpoch, this.capture.sourceGeneration).first();
     if (pending || epoch) return { state: "blocked", reason: pending ? "capture_withdrawal_catchup_required" : "capture_epoch_reproof_required", execution: "inactive", finance: missingFinancial ? "missing_live_history" : "preserved_live_all_generations" };
@@ -521,7 +527,8 @@ export class CanonicalRestore {
       AND NOT EXISTS(SELECT 1 FROM assistant_budget_accounts WHERE installation_id=? AND generation=? AND blocked=1)
       AND NOT EXISTS(SELECT 1 FROM assistant_retention_restore_rows r WHERE r.installation_id=? AND r.generation=? AND r.operation_id=? AND (r.state='financial_missing'
         OR (r.table_name='assistant_budget_accounts' AND NOT EXISTS(SELECT 1 FROM assistant_budget_accounts a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))
-        OR (r.table_name='assistant_budget_reservations' AND NOT EXISTS(SELECT 1 FROM assistant_budget_reservations a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))))`;
+        OR (r.table_name='assistant_budget_reservations' AND NOT EXISTS(SELECT 1 FROM assistant_budget_reservations a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))
+        OR (r.table_name='assistant_native_model_receipts' AND NOT EXISTS(SELECT 1 FROM assistant_native_model_receipts a WHERE a.installation_id=r.installation_id AND a.rowid=r.source_row))))`;
     const values = [...this.keys(), input.expectedSeal, session.snapshot_seal, session.ticket_hash, ...this.keys(), input.operationId, session.token, savedProgress,
       this.target.installationId, input.operationId, this.target.generation, this.target.installationId, gate.financial_revision,
       this.target.installationId, this.target.installationId, ticket.currentGeneration, this.target.installationId,

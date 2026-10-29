@@ -1,7 +1,7 @@
 import { buildSnapshotMembership } from "./retention-membership";
 import { verifyManifest, type SnapshotManifest, type SnapshotRecord } from "./retention-snapshot-contract";
 import { restoreRecord, type RestoreSourcePair } from "./retention-restore-contract";
-const order = `assistant_projects assistant_project_revisions assistant_people assistant_sources assistant_source_versions assistant_source_admissions assistant_origin_conversations assistant_source_origins assistant_origin_versions assistant_conversation_policies assistant_policy_versions assistant_mandates assistant_mandate_actions assistant_mandate_sources assistant_provider_identities assistant_project_memberships assistant_missions assistant_mission_versions assistant_follow_ups assistant_fup_provenance assistant_retention_restored_work assistant_budget_accounts assistant_budget_reservations`.split(" ");
+const order = `assistant_projects assistant_project_revisions assistant_people assistant_sources assistant_source_versions assistant_source_admissions assistant_origin_conversations assistant_source_origins assistant_origin_versions assistant_conversation_policies assistant_policy_versions assistant_mandates assistant_mandate_actions assistant_mandate_sources assistant_provider_identities assistant_project_memberships assistant_missions assistant_mission_versions assistant_follow_ups assistant_fup_provenance assistant_retention_restored_work assistant_budget_accounts assistant_budget_reservations assistant_native_model_receipts`.split(" ");
 /** Offline planning over an integrity-verified bundle; this is not authority,
  * generation allocation or permission to activate a runtime. */
 export async function planCanonicalRestore(rawManifest: unknown, input: SnapshotRecord[]) {

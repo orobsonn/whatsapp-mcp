@@ -195,3 +195,37 @@ test("source reproof never regresses the chat watermark when a later source appl
  service=new CanonicalRestore(env.DB,scope,target.generation,owner,authority,sourceRetirementGuard(scope.installationId,retirement),capture,()=>200,new OriginGuard(env.DB,()=>({...target,...capture}),advanced,secret),{reader:advanced,secret});await restore(plan);await finish();await service.execute({kind:"restore.release",operationId:"restore"});await service.execute({kind:"restore.catchup",operationId:"restore"});await new OwnerControl(env.DB,{...target,...capture},owner,()=>200).execute({kind:"policy.put",operationId:"fresh-policy",id:"chat",expectedRevision:1,conversationKind:"private"});inject=true;
  await service.execute({kind:"restore.reprove_source",operationId:"restore",sourceId:proof,revision:1}).catch(()=>null);expect(inject).toBe(false);expect(await env.DB.prepare("SELECT watermark FROM assistant_origin_conversations WHERE installation_id=? AND generation=? AND chat_id='chat'").bind(target.installationId,target.generation).first("watermark")).toBe(2);
 });
+test('MCP reported context survives restore with its origin and historical sharing quarantine',async()=>{
+ const report=await new SourceController(env.DB,scope,owner,()=>100,sourceRetirementGuard(scope.installationId,retirement)).createReport({originKey:'mcp-context',text:'Synthetic provided context',audience:'public',occurredAt:1});
+ const conversation=crypto.randomUUID();await env.DB.prepare("INSERT INTO assistant_native_conversations VALUES(?,?,?,'{}',NULL,1)").bind(conversation,scope.installationId,scope.generation).run();
+ await env.DB.prepare("INSERT INTO assistant_native_conversation_events(conversation_id,event_id,revision,task_ref,request_hash,event_json,authority_json,created_at) VALUES(?,'event',1,?,'hash','{\"private\":true}','{}',1)").bind(conversation,crypto.randomUUID()).run();
+ await env.DB.prepare("INSERT INTO assistant_native_reply_intents VALUES(?,?,?,1,'hash','approved',1)").bind(crypto.randomUUID(),conversation,crypto.randomUUID()).run();
+ await env.DB.prepare("INSERT INTO assistant_knowledge_operations VALUES(?,?,'operation','write','mcp','hash','{\"private\":true}',NULL,NULL,'accepted',NULL,NULL,1,1)").bind(scope.installationId,scope.generation).run();
+ const plan=await bundle();expect(plan.steps.some(step=>['assistant_native_conversations','assistant_native_conversation_events','assistant_native_reply_intents','assistant_knowledge_operations'].includes(step.record.table))).toBe(false);await restore(plan);await finish();await service.execute({kind:'restore.release',operationId:'restore'});
+ const archived=await new SourceAccess(env.DB,target).read(owner,report.id);
+ expect(archived?.fence.source.origin).toBe('owner_report');
+ const memory=await new SourceAccess(env.DB,{...target,...capture},()=>200,'knowledge').read(owner,report.id);
+ expect(memory?.fence.knowledge?.sharingQuarantined).toBe(true);
+ const guest={kind:'interlocutor',provider:'whatsapp',address,conversationId:'chat',conversationKind:'private',action:'reply_text'} as const;
+ expect(await new SourceAccess(env.DB,target).read(guest,report.id)).toBeNull();
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=? AND generation=?").bind(target.installationId,target.generation).first('n')).toBe(0);
+ expect(await env.DB.prepare("SELECT state FROM assistant_native_reply_intents WHERE conversation_id=?").bind(conversation).first('state')).toBe('approved');
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_knowledge_operations WHERE installation_id=? AND generation=?").bind(target.installationId,target.generation).first('n')).toBe(0);
+});
+test.each([false,true])('native financial custody preserves historical receipts and blocks missing live receipts (%s)',async(missing)=>{
+ await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId).run();
+ const plan=await bundle();expect(plan.steps.filter(step=>step.record.table==='assistant_native_model_receipts').map(step=>step.record.value.generation)).toEqual(['historic']);
+ if(!missing) await env.DB.prepare("UPDATE assistant_native_model_receipts SET state='complete',input_tokens=2,output_tokens=3,actual_units=4 WHERE installation_id=?").bind(scope.installationId).run();
+ await restore(plan);
+ if(missing) await env.DB.prepare("DELETE FROM assistant_native_model_receipts WHERE installation_id=?").bind(scope.installationId).run();
+ expect(await finish()).toMatchObject(missing?{state:'budget_blocked',financial:'missing_live_history'}:{state:'inactive_complete',financial:'preserved_live_all_generations'});
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_native_model_receipts WHERE installation_id=? AND generation=?").bind(target.installationId,target.generation).first('n')).toBe(0);
+ if(!missing) expect(await env.DB.prepare("SELECT generation,period,state,actual_units FROM assistant_native_model_receipts WHERE installation_id=?").bind(scope.installationId).first()).toMatchObject({generation:'historic',period:'historic-period',state:'complete',actual_units:4});
+});
+test('native financial custody rejects changed completed usage instead of importing snapshot money',async()=>{
+ await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'complete',2,3,4)").bind(scope.installationId).run();
+ const plan=await bundle();
+ await env.DB.prepare("UPDATE assistant_native_model_receipts SET actual_units=3 WHERE installation_id=?").bind(scope.installationId).run();
+ await restore(plan);expect(await finish()).toMatchObject({state:'budget_blocked',financial:'missing_live_history'});
+ expect(await env.DB.prepare("SELECT actual_units FROM assistant_native_model_receipts WHERE installation_id=?").bind(scope.installationId).first('actual_units')).toBe(3);
+});
