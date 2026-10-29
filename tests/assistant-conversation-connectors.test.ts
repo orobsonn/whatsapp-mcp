@@ -6,10 +6,12 @@ import {ConversationArchive} from '../assistant/knowledge/archive';
 import {createConversationReadCapabilities} from '../assistant/agent-runtime/conversation-connectors';
 let scope:OriginScope,sources:SourceController,archive:ConversationArchive;
 const owner={kind:'owner'} as const;
+// Explicit synthetic host boundary; production supplies its native epoch guard.
+const publication=()=>({getScope:()=>scope,authorityGuard:()=>({sql:'1',values:[] as (string|number|null)[]})});
 beforeEach(()=>{
  scope={installationId:crypto.randomUUID(),generation:'g',sourceEpoch:'e',sourceGeneration:'sg'};
  sources=new SourceController(env.DB,scope,owner,()=>100);
- archive=new ConversationArchive(env.DB,scope,{fence:async()=>null,checkContext:async()=>({state:'unavailable'})},async()=>{},async()=>{});
+ archive=new ConversationArchive(env.DB,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{},async()=>{},publication());
 });
 async function note(text:string,i:number){return sources.create({originKey:'note-'+i,text,occurredAt:i});}
 it('search pages beyond old corpus limits and reads exact original ranges',async()=>{
@@ -45,14 +47,14 @@ it('literal search input cannot inject MATCH grammar and changed references deny
 });
 it('exposure callback runs before any archive output and may block a concurrent withdrawal',async()=>{
  const source=await note('Cedar promise',1);
- const guarded=new ConversationArchive(env.DB,scope,{fence:async()=>null,checkContext:async()=>({state:'unavailable'})},async()=>{},async proof=>{
+ const guarded=new ConversationArchive(env.DB,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{},async proof=>{
   expect(proof.sources[0].source.id).toBe(source.id);await sources.withdraw(source.id,1);
- });
+ },publication());
  await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');
 });
 it('GitHub and Calendar missing configuration remain pending instead of empty',async()=>{
  const task={knowledge:{scope},identity:{...scope},contextRef:'ctx'} as any;
- const reads=createConversationReadCapabilities({env:{DB:env.DB} as any,task,origin:{fence:async()=>null,checkContext:async()=>({state:'unavailable'})},assertCurrent:async()=>{},expose:async()=>{}});
+ const reads=createConversationReadCapabilities({...publication(),env:{DB:env.DB} as any,task,origin:{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},assertCurrent:async()=>{},expose:async()=>{}});
  expect(await reads.github.resolve({repository:'repo'})).toMatchObject({state:'pending_configuration'});
  expect(await reads.calendar.availability({start:'2026-10-29T08:00:00-03:00',end:'2026-10-29T09:00:00-03:00',timeZone:'America/Fortaleza'})).toMatchObject({state:'pending_configuration'});
 });
@@ -64,7 +66,7 @@ async function configuredHost(expose:Parameters<typeof createConversationReadCap
  const settings={DB:env.DB,GITHUB_READ_TOKEN:'synthetic-secret-token',GITHUB_READ_OWNER:JSON.stringify({...descriptor,owner:'synthetic-owner',ownerId:101}),
   CALENDAR_READ_CALENDARS:JSON.stringify([{...descriptor,id:'primary',calendarId:'primary'}]),CALENDAR_OAUTH_CONFIGURATION_VERSION:'1',CALENDAR_OAUTH_SECRET_EPOCH:'synthetic-epoch',
   CALENDAR_OAUTH:{idFromName:()=>({}),get:()=>({token:async()=>({state:'ready',accessToken:'synthetic-calendar-token',expiresAt:Date.now()+60000})})}} as any;
- return {authorization,settings,options:{env:settings,task,origin:{fence:async()=>null,checkContext:async()=>({state:'unavailable' as const})},assertCurrent:async()=>{},expose}};
+ return {authorization,settings,options:{...publication(),env:settings,task,origin:{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable' as const})},assertCurrent:async()=>{},expose}};
 }
 it('GitHub explores real reader list/read at host-observed SHA with only fixed readonly endpoints',async()=>{
  const f=await configuredHost(),requests:Request[]=[],proofs:any[]=[],sha='a'.repeat(40),blob='b'.repeat(40),text='export const answer = 42;';
@@ -128,8 +130,8 @@ it('a final external origin withdrawal denies the selected original before tool 
  await env.DB.prepare("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,'private','available')").bind(scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,'direct').run();
  await env.DB.prepare("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,tombstoned) VALUES(?,?,?,?,'message','external','direct',?,1,0)").bind(scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,source.id).run();
  let current=true;
- const origin={fence:async()=>({...scope,canonicalId:source.id,sourceKind:'message' as const,sourceId:'external',chatId:'direct',revision:1,version:1,watermark:1,hash:'a'.repeat(64),conversationKind:'private' as const,policyRevision:0,policyMode:'attend'}),checkContext:async()=>({state:current?'current' as const:'changed' as const})};
- const guarded=new ConversationArchive(env.DB,scope,origin,async()=>{},async proof=>{expect(proof.origins).toHaveLength(1);current=false;});
+ const origin={fence:async()=>({...scope,canonicalId:source.id,sourceKind:'message' as const,sourceId:'external',chatId:'direct',revision:1,version:1,watermark:1,hash:'a'.repeat(64),conversationKind:'private' as const,policyRevision:0,policyMode:'attend'}),localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:current?'current' as const:'changed' as const})};
+ const guarded=new ConversationArchive(env.DB,scope,origin,async()=>{},async proof=>{expect(proof.origins).toHaveLength(1);current=false;},publication());
  await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_origin_unavailable');
 });
 it('an explicitly observed group is searchable through the real policy view and OriginGuard',async()=>{
@@ -144,6 +146,61 @@ it('an explicitly observed group is searchable through the real policy view and 
   env.DB.prepare("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,observation_hash,tombstoned) VALUES(?,?,?,?,'message','group-message','included-group',?,1,?,0)").bind(scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,source.id,observation.hash),
  ]);
  expect(await env.DB.prepare('SELECT effective_mode FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=?').bind(scope.installationId,scope.generation,'included-group').first<string>('effective_mode')).toBe('observe');
- const enabled=new ConversationArchive(env.DB,scope,guard,async()=>{},async proof=>{expect(proof.origins[0].canonicalId).toBe(source.id);});
+ const enabled=new ConversationArchive(env.DB,scope,guard,async()=>{},async proof=>{expect(proof.origins[0].canonicalId).toBe(source.id);},publication());
  expect((await enabled.search({query:'Cedar'})).items.map(item=>item.sourceRef.id)).toEqual([source.id]);
+});
+
+it('archive final host callback cannot withdraw an earlier selected source and still publish snippets',async()=>{
+ const first=await note('Cedar first',2);await note('Cedar second',1);let exposed=false,mutated=false;
+ const guarded=new ConversationArchive(env.DB,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{
+  if(exposed&&!mutated){mutated=true;await sources.withdraw(first.id,1);}
+ },async()=>{exposed=true;},publication());
+ await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');expect(mutated).toBe(true);
+});
+it('archive rechecks all selected sources after the last remote origin check changes an earlier source',async()=>{
+ const first=await note('Cedar first',2),second=await sources.create({originKey:'last-remote',text:'Cedar second',occurredAt:1,conversationId:'last-remote'});
+ let exposed=false,mutated=false;
+ const snapshot={observation:'capture_snapshot',state:'available',sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:'message',sourceId:'last-message',chatId:'last-remote',sourceVersion:1,watermark:1,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false},content:{kind:'text',text:'Cedar second',messageId:'last-message',messageVersion:1}};
+ const guard=new OriginGuard(env.DB,()=>scope,{readSnapshot:async()=>{if(exposed&&!mutated){mutated=true;await sources.withdraw(first.id,1);}return snapshot;}},'synthetic-secret');
+ const observation=await guard.observe(scope,{sourceKind:'message',sourceId:'last-message',chatId:'last-remote'});
+ await env.DB.batch([
+  env.DB.prepare("UPDATE assistant_sources SET origin='whatsapp' WHERE installation_id=? AND generation=? AND id=?").bind(scope.installationId,scope.generation,second.id),
+  env.DB.prepare("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,'private','available')").bind(scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,'last-remote'),
+  env.DB.prepare("INSERT INTO assistant_source_origins(installation_id,generation,source_epoch,source_generation,source_kind,source_id,chat_id,canonical_id,watermark,observation_hash,tombstoned) VALUES(?,?,?,?,'message','last-message','last-remote',?,1,?,0)").bind(scope.installationId,scope.generation,scope.sourceEpoch,scope.sourceGeneration,second.id,observation.hash),
+ ]);
+ const guarded=new ConversationArchive(env.DB,scope,guard,async()=>{},async()=>{exposed=true;},publication());
+ await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');expect(mutated).toBe(true);
+});
+it('Calendar multiple grants are checked together after the last host callback before provider titles return',async()=>{
+ const f=await configuredHost(),second=await sources.create({originKey:'calendar-second-grant',text:'Synthetic readonly secondary calendar authorization',occurredAt:1,projectId:'project'});
+ f.settings.CALENDAR_READ_CALENDARS=JSON.stringify([...JSON.parse(f.settings.CALENDAR_READ_CALENDARS),{id:'second',calendarId:'second',projectId:'project',version:1,authorization:{sourceId:second.id,revision:1}}]);
+ let exposed=false,mutated=false;
+ const reads=createConversationReadCapabilities({...f.options,assertCurrent:async()=>{if(exposed&&!mutated){mutated=true;await sources.withdraw(f.authorization.id,1);}},expose:async()=>{exposed=true;},request:async()=>Response.json({items:[{status:'confirmed',summary:'Cedar stale meeting',start:{dateTime:'2026-10-29T08:00:00-03:00'},end:{dateTime:'2026-10-29T08:30:00-03:00'}}]})});
+ await expect(reads.calendar.availability({start:'2026-10-29T08:00:00-03:00',end:'2026-10-29T09:00:00-03:00',timeZone:'America/Fortaleza'})).rejects.toThrow('connector_source_changed');expect(mutated).toBe(true);
+});
+it('archive denies a live source-scope change while the final database snapshot returns',async()=>{
+ await note('Cedar current body',1);
+ const db={prepare:env.DB.prepare.bind(env.DB),batch:async(statements:D1PreparedStatement[])=>{const result=await env.DB.batch(statements);scope={...scope,sourceEpoch:'replaced-epoch'};return result;}} as unknown as D1Database;
+ const guarded=new ConversationArchive(db,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{},async()=>{},publication());
+ await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');
+});
+it.each(['hold','generation'])('archive final publication enforces restore execution %s after the last host await',async state=>{
+ await note('Cedar current body',1);let exposed=false,changed=false;
+ const guarded=new ConversationArchive(env.DB,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{
+  if(exposed&&!changed){changed=true;
+   if(state==='hold')await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,1)").bind(scope.installationId).run();
+   else await env.DB.prepare("INSERT INTO assistant_retention_active_generation VALUES(?,'next','seal','ticket','command',1)").bind(scope.installationId).run();
+  }
+ },async()=>{exposed=true;},publication());
+ await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');expect(changed).toBe(true);
+});
+it('archive final snapshot denies a tombstoned native epoch even when every source stays current',async()=>{
+ await note('Cedar current body',1);let exposed=false;
+ const epoch='synthetic-host-epoch';
+ await env.DB.prepare('INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at) VALUES(?,?,?,?,1)').bind(epoch,scope.installationId,scope.generation,'{}').run();
+ const boundary={getScope:()=>scope,authorityGuard:()=>({sql:'EXISTS(SELECT 1 FROM assistant_native_conversations WHERE id=? AND installation_id=? AND generation=? AND tombstoned_at IS NULL)',values:[epoch,scope.installationId,scope.generation]})};
+ const guarded=new ConversationArchive(env.DB,scope,{fence:async()=>null,localContextGuard:()=>({sql:'1',values:[]}),checkContext:async()=>({state:'unavailable'})},async()=>{
+  if(exposed)await env.DB.prepare('UPDATE assistant_native_conversations SET tombstoned_at=1 WHERE id=?').bind(epoch).run();
+ },async()=>{exposed=true;},boundary);
+ await expect(guarded.search({query:'Cedar'})).rejects.toThrow('archive_source_changed');
 });

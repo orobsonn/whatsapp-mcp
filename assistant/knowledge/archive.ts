@@ -1,12 +1,12 @@
 import {z} from 'zod';
-import {SourceAccess,type AccessRow,type SourceFence,type SourceRead} from '../access';
+import {SourceAccess,type AccessRow,type SourceRead} from '../access';
 import {sourceRef} from '../source-proof-contract';
 import {bridgeHash} from '../ingress';
 import {decodeCursor,encodeCursor} from '../connectors/read-only';
-import type {OriginFence,OriginGuard,OriginScope} from '../origin-guard';
+import type {OriginScope} from '../origin-guard';
+import {assertReadExposureCurrent,type ReadPublicationBoundary,type ContextOriginReader,type ReadExposure} from './read-exposure';
+export type {ReadPublicationBoundary,ContextOriginReader,ReadExposure} from './read-exposure';
 
-export type ReadExposure={sources:SourceFence[];origins:OriginFence[]};
-export type ContextOriginReader=Pick<OriginGuard,'fence'|'checkContext'>;
 const searchInput=z.object({query:z.string().min(1).max(512),cursor:z.string().max(4096).optional(),limit:z.number().int().min(1).max(50).default(20)}).strict();
 const rangeInput=z.object({sourceRef,offset:z.number().int().nonnegative().safe().default(0),limit:z.number().int().min(1).max(8192).default(8192)}).strict();
 const owner={kind:'owner'} as const;
@@ -17,7 +17,7 @@ const ref=(read:SourceRead)=>({id:read.id,revision:read.fence.source.revision,ve
 export class ConversationArchive {
  private readonly access:SourceAccess;
  constructor(private readonly db:D1Database,private readonly scope:OriginScope,private readonly origin:ContextOriginReader,
-  private readonly assertCurrent:()=>Promise<void>,private readonly expose:(proof:ReadExposure)=>Promise<void>,private readonly clock=Date.now){
+  private readonly assertCurrent:()=>Promise<void>,private readonly expose:(proof:ReadExposure)=>Promise<void>,private readonly publication:ReadPublicationBoundary,private readonly clock=Date.now){
   this.scope=Object.freeze({...scope});this.access=new SourceAccess(db,this.scope,clock,'knowledge');
  }
  private async release(reads:SourceRead[]){
@@ -30,11 +30,9 @@ export class ConversationArchive {
    proof.origins.push(fence);
   }
   await this.assertCurrent();await this.expose(proof);
-  // Host callback may await a registry write. Recheck after it before releasing
-  // any selected body, including empty/error exposure of a read result.
-  for(const read of reads)if(!await this.access.revalidate(owner,read.fence))throw Error('archive_source_changed');
   for(const fence of proof.origins)if((await this.origin.checkContext(fence)).state!=='current')throw Error('archive_origin_unavailable');
   await this.assertCurrent();
+  await assertReadExposureCurrent(this.db,this.scope,this.access,this.origin,proof,this.publication,'archive_source_changed');
  }
  async search(raw:unknown){
   const input=searchInput.parse(raw);await this.assertCurrent();
