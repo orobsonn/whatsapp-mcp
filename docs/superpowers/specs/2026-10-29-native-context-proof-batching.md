@@ -28,10 +28,10 @@ O prazo do lote deve considerar medição real; não supor que um lote de64 font
 
 ## Implementação e provas necessárias
 
-- [ ] Extrair contrato/normalizador compartilhado e comprovar digest idêntico ao caminho atual: campos opcionais/null, todos os kinds, derivados, legenda, limite de bytes e versões distintas.
-- [ ] Compartilhar projeção/consulta do leitor Source; implementar batch autenticado/hash-only, com configuração desativada/rotacionada durante o hash bloqueando a prova.
-- [ ] Implementar fences Own set-based e correspondência explícita; respostas reordenadas, duplicadas, ausentes ou extras não podem produzir prova corrente indevida.
-- [ ] Integrar ao scan de retenção sem mudar purga, recibos, sessões ou autoridade; testar retirada da primeira fonte durante o último lote e cancelamento sem purga/publicação tardia.
+- [x] Extrair contrato/normalizador compartilhado e comprovar digest idêntico ao caminho atual: campos opcionais/null, todos os kinds, derivados, legenda, limite de bytes e versões distintas.
+- [x] Compartilhar projeção/consulta do leitor Source; implementar batch autenticado/hash-only, com configuração desativada/rotacionada durante o hash bloqueando a prova.
+- [x] Implementar fences Own set-based e correspondência explícita; respostas reordenadas, duplicadas, ausentes ou extras não podem produzir prova corrente indevida.
+- [x] Integrar ao scan de retenção sem mudar purga, recibos, sessões ou autoridade; testar retirada da primeira fonte durante o último lote e cancelamento sem purga/publicação tardia.
 - [ ] Tipos/build e testes dirigidos; revisão adversarial do diff. Não repetir suítes pesadas sem mudança/falha nova.
 - [ ] Verificar a base Source publicada e preservar trabalho/configuração mais recentes. Publicar Source primeiro com bindings existentes e readback da capacidade; publicar Own depois, sem ampliar superfície pública.
 - [ ] Comparar os mesmos166 fences na Cloudflare: resultado, duração e número de RPCs, sem nova inferência nem conteúdo nos logs. Registrar CPU/memória quando disponíveis e não transformar ausência de métrica em custo zero.
