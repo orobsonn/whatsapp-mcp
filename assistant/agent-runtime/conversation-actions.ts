@@ -81,8 +81,10 @@ export class NativeReplyActions {
  /** Exact native proposal for the authenticated owner review adapter. Names,
   * received content and Source references must still be resolved by its host. */
  async review(intentId:string){
-  const row=await this.row(intentId),{task}=await this.current(row);
-  return {intentId,task,text:row.text,summary:row.summary,prepared:row.prepared_json?JSON.parse(row.prepared_json) as ApprovedSendPrepared:null};
+  const row=await this.row(intentId),{task,guard}=await this.current(row);
+  const prepared=row.prepared_json?JSON.parse(row.prepared_json) as ApprovedSendPrepared:null;
+  if(prepared&&JSON.stringify(approvedSendActivityFence.parse(await this.host.activity(task)))!==JSON.stringify(prepared.activity))throw Error('native_reply_activity_changed');
+  return {intentId,task,guard,text:row.text,summary:row.summary,prepared};
  }
  async prepare(intentId:string):Promise<ApprovedSendPrepared>{
   const row=await this.row(intentId),{task}=await this.current(row),authority=authorizeReply(task,{id:intentId},this.host.autonomousEnabled?.()===true);
