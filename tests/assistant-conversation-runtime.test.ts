@@ -130,6 +130,20 @@ it('rejects forged native deliveries, changed grants and a model-mutated TaskCon
  await expect(runtime.assertTaskCurrent(task)).rejects.toThrow('conversation_authority_changed');
  await expect(taskFor(a)).rejects.toThrow('conversation_authority_changed');
 });
+it('accepts native signal key normalization while denying changed or additional delivery fields',async()=>{
+ const a=await admit(),original=a.request.message as Extract<DeliveredMessage,{kind:'signal'}>;
+ // Flue normalizes the object into this property order at native intake.
+ const normalized={kind:original.kind,type:original.type,body:original.body,attributes:{...original.attributes}};
+ expect((await runtime.resolveTask(identity,normalized)).taskRef).toBe(a.receipt.taskRef);
+ for(const forged of [
+  {...normalized,body:normalized.body+' '},
+  {...normalized,attributes:{taskRef:'not-the-admitted-event'}},
+  {...normalized,attributes:{...normalized.attributes,grantRef:'admin'}},
+  {...normalized,grantRef:'admin'},
+  {...normalized,tagName:'owner'},
+  {kind:normalized.kind,type:normalized.type,attributes:normalized.attributes},
+ ])await expect(runtime.resolveTask(identity,forged as DeliveredMessage)).rejects.toThrow();
+});
 it.each(['incoming','owner_manual'] as const)('new %s supersedes a pending reply, while replaying an old input does not supersede a newer intent',async(kind)=>{
  const a=await admit(),task=await taskFor(a),intent=await runtime.proposeReply(task,'Synthetic reply');expect(intent.state).toBe('proposed');
  const b=await admit({eventId:'event-2',kind,author:{kind:kind==='owner_manual'?'owner':'person',id:'person-B'}});

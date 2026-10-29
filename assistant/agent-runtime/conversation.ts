@@ -71,6 +71,18 @@ function signal(row:EventRow):DeliveredMessage{
    occurredAt:event.occurredAt,body:event.body,...(event.sourceRef?{sourceRef:event.sourceRef}:{}),
    ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{})})};
 }
+/** Native intake may reorder JSON object keys. The envelope still has exactly
+ * the host's fields and values; the body remains the exact original string. */
+function sameDelivery(expected:DeliveredMessage,actual:DeliveredMessage){
+ if(expected.kind!=='signal'||actual.kind!=='signal')return false;
+ const keys=Object.keys(expected),actualKeys=Object.keys(actual);
+ if(keys.length!==actualKeys.length||keys.some(key=>!Object.hasOwn(actual,key)))return false;
+ if(expected.type!==actual.type||expected.body!==actual.body||expected.tagName!==actual.tagName)return false;
+ const left=expected.attributes,right=actual.attributes;
+ if(!left||!right)return left===right;
+ const attributeKeys=Object.keys(left);
+ return attributeKeys.length===Object.keys(right).length&&attributeKeys.every(key=>Object.hasOwn(right,key)&&left[key]===right[key]);
+}
 /** Durable admission around native Flue. This class does not send messages,
  * install providers, register public routes, or grant model spending. */
 export class ConversationRuntime {
@@ -131,7 +143,7 @@ export class ConversationRuntime {
   const identity=conversationIdentity.parse(raw),sessionId=await address(identity);
   if(delivery.kind!=='signal'||!delivery.attributes?.taskRef)throw Error('conversation_delivery_denied');
   const cursor=await this.event(delivery.attributes.taskRef);
-  if(cursor.conversation_id!==sessionId||JSON.stringify(signal(cursor))!==JSON.stringify(delivery))throw Error('conversation_delivery_denied');
+  if(cursor.conversation_id!==sessionId||!sameDelivery(signal(cursor),delivery))throw Error('conversation_delivery_denied');
   const refs=consumedTaskRefs?[...consumedTaskRefs]:[cursor.task_ref];
   if(!refs.length||refs.at(-1)!==cursor.task_ref||new Set(refs).size!==refs.length)throw Error('conversation_cohort_denied');
   const rows=[];for(const ref of refs){const row=await this.event(ref);if(row.conversation_id!==sessionId||row.sequence>(cursor.sequence)||rows.length&&row.sequence<=rows[rows.length-1].sequence)throw Error('conversation_cohort_denied');rows.push(row);}
