@@ -91,6 +91,19 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect(await losing).toMatchObject({state:'retired',sessionId:task.sessionId});expect(transport.dispatch).toHaveBeenCalledTimes(1);
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
  });
+ it('concurrent distinct owner updates choose the same live session before either inbox binding is sealed',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Primeiro pedido sintético concorrente',43);await f.ownerUpdate(2,'Segundo pedido sintético concorrente',44);const a=f.host(),b=f.host();
+  let release!:()=>void,arrived=0;const gate=new Promise<void>(resolve=>release=resolve);
+  for(const host of [a,b]){const current=host.retention.currentIdentity.bind(host.retention);let first=true;
+   vi.spyOn(host.retention,'currentIdentity').mockImplementation(async(...args)=>{const value=await current(...args);if(first){first=false;expect(value).toBeNull();if(++arrived===2)release();await gate;}return value;});}
+  const outcomes=await Promise.allSettled([a.receiveTelegram(1),b.receiveTelegram(2)]);
+  expect(outcomes.map(result=>result.status)).toEqual(['fulfilled','fulfilled']);
+  const results=outcomes.map(result=>(result as PromiseFulfilledResult<Awaited<ReturnType<typeof a.receiveTelegram>>>).value);
+  expect(results.map(result=>result.state)).toEqual(['admitted','admitted']);expect(results[0].sessionId).toBe(results[1].sessionId);
+  expect(transport.dispatch).toHaveBeenCalledTimes(2);
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+  expect((await latestTask(a,results[0].taskRef)).sessionId).toBe((await latestTask(b,results[1].taskRef)).sessionId);
+ });
  it('is off by default and cannot grant autonomous mode through a transcript or a lone mode flag',()=>{
   expect(nativeMode({})).toBe('off');expect(()=>nativeMode({NATIVE_CONVERSATIONS_MODE:'autonomous'})).toThrow('native_autonomous_disabled');
  });

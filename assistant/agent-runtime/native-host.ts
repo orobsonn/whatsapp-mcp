@@ -27,6 +27,7 @@ import {KnowledgeCurator,isCuratorPrincipal,type CuratorReceipt} from '../knowle
 import {nativeMediaCapability} from './native-media';
 import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
+import {compactStatement} from '../d1-statement';
 
 const owner={kind:'owner'} as const;
 type NativeOwnerInput={text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string;native_identity_json:string|null;native_activation_key:string|null};
@@ -170,14 +171,39 @@ export class NativeApplicationHost {
  }
  private async bindTelegramInput(updateId:number,row:NativeOwnerInput,fence:TelegramLinkFence,activation:Awaited<ReturnType<typeof nativeTelegramActivation>>,seed?:ConversationIdentity){
   if(!row.native_identity_json){
-   const candidate=seed??await this.historicalTelegramIdentity('telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId)
-    ??await this.retention.currentIdentity('telegram',fence.userId)
-    ??conversationIdentity.parse({version:1,installationId:this.scope.installationId,generation:this.scope.generation,channel:'telegram',principalOrChatId:fence.userId,contextEpoch:crypto.randomUUID()});
+   const historical=seed??await this.historicalTelegramIdentity('telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId);
+   const observed=historical??await this.retention.currentIdentity('telegram',fence.userId);
+   if(observed)await this.authority(observed);
+   const candidate=historical??conversationIdentity.parse({version:1,installationId:this.scope.installationId,generation:this.scope.generation,channel:'telegram',principalOrChatId:fence.userId,contextEpoch:crypto.randomUUID()});
    const {guard}=await this.authority(candidate),link=joinGuards(guard,telegramLinkGuard(fence),activation.guard);
-   await this.db.prepare(`UPDATE assistant_telegram_updates SET native_identity_json=?,native_activation_key=?
-    WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND payload_hash=?
-    AND native_identity_json IS NULL AND message_date>? AND received_at>=? AND outcome='pending' AND state='pending' AND (${link.sql})`)
-    .bind(JSON.stringify(candidate),activation.key,this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,row.payload_hash,activation.cutSecond,activation.activatedAt,...link.values).run();
+   const eligible={sql:`t.installation_id=? AND t.generation=? AND t.bot_instance=? AND t.update_id=? AND t.source_epoch=? AND t.source_generation=? AND t.link_revision=? AND t.user_id=? AND t.chat_id=? AND t.payload_hash=?
+    AND t.native_identity_json IS NULL AND t.message_date>? AND t.received_at>=? AND t.outcome='pending' AND t.state='pending' AND (${link.sql})`,
+    values:[this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,row.payload_hash,activation.cutSecond,activation.activatedAt,...link.values]};
+   if(historical){
+    // A host-only or retired receipt already fixed the old epoch. Never adopt
+    // the live channel in its place, even if this inbox predates the binding.
+    await compactStatement(this.db,`UPDATE assistant_telegram_updates AS t SET native_identity_json=?,native_activation_key=? WHERE ${eligible.sql}`,[JSON.stringify(historical),activation.key,...eligible.values]).run();
+   }else{
+    const sessionId=await conversationAddress(candidate,'telegram',fence.userId,candidate.contextEpoch);
+    const live={sql:`SELECT c.identity_json FROM assistant_native_context_channels ch JOIN assistant_native_conversations c ON c.id=ch.conversation_id
+     WHERE ch.installation_id=? AND ch.generation=? AND ch.channel='telegram' AND ch.principal_id=? AND c.tombstoned_at IS NULL`,values:[this.scope.installationId,this.scope.generation,fence.userId]};
+    // Allocate the shared owner channel and seal this inbox in ONE transaction.
+    // Distinct new updates adopt its winner; an already bound old update cannot
+    // allocate even an empty epoch if its first caller resumes after a purge.
+    await this.db.batch([
+     compactStatement(this.db,`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at)
+      SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM assistant_telegram_updates t WHERE ${eligible.sql}) AND NOT EXISTS(${live.sql}) ON CONFLICT DO NOTHING`,
+      [sessionId,this.scope.installationId,this.scope.generation,JSON.stringify(candidate),Date.now(),...eligible.values,...live.values]),
+     compactStatement(this.db,`INSERT INTO assistant_native_context_channels(installation_id,generation,channel,principal_id,conversation_id)
+      SELECT ?,?,'telegram',?,? WHERE EXISTS(SELECT 1 FROM assistant_native_conversations c WHERE c.id=? AND c.tombstoned_at IS NULL)
+       AND EXISTS(SELECT 1 FROM assistant_telegram_updates t WHERE ${eligible.sql})
+      ON CONFLICT(installation_id,generation,channel,principal_id) DO UPDATE SET conversation_id=excluded.conversation_id
+      WHERE assistant_native_context_channels.conversation_id=excluded.conversation_id OR EXISTS(SELECT 1 FROM assistant_native_conversations old WHERE old.id=assistant_native_context_channels.conversation_id AND old.tombstoned_at IS NOT NULL)`,
+      [this.scope.installationId,this.scope.generation,fence.userId,sessionId,sessionId,...eligible.values]),
+     compactStatement(this.db,`UPDATE assistant_telegram_updates AS t SET native_identity_json=(${live.sql}),native_activation_key=?
+      WHERE ${eligible.sql} AND EXISTS(${live.sql})`,[...live.values,activation.key,...eligible.values,...live.values]),
+    ]);
+   }
   }
   const saved=await this.db.prepare(`SELECT native_identity_json,native_activation_key FROM assistant_telegram_updates
    WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND payload_hash=?`)
@@ -231,8 +257,8 @@ export class NativeApplicationHost {
   const ref={id:source.fence.source.id,revision:source.fence.source.revision,version:source.fence.source.version,hash:source.fence.source.hash};
   const resumed=await help.resume(updateId,ref);if(resumed.state==='resumed'||resumed.state==='pending')return resumed.receipt!;
   const identity=await this.bindTelegramInput(updateId,row,fence,activation),replay=await this.replayTelegramInput(identity,updateId,row,fence,activation);if(replay)return replay;
-  // The inbox winner was sealed BEFORE registration. A losing caller never
-  // falls back to a fresh epoch after another caller purges that winner.
+  // Registration is idempotent: the inbox and shared channel already chose
+  // the same winner atomically, or a historical receipt fixed this old epoch.
   await this.retention.register(identity);
   const event=verifiedConversationEvent({identity,eventId:'telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId,revision:1,kind:'incoming',author:{kind:'owner',id:fence.userId},occurredAt:row.message_date*1000,body:row.text,sourceRef:ref,...(row.thread_id?{threadId:String(row.thread_id)}:{})});
   return this.admit(event,null,fence,activation.guard,activation.key);
