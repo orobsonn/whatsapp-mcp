@@ -9,7 +9,7 @@ import {configuredKnowledgeService} from '../knowledge/configured';
 import {ConversationRuntime,conversationIdentity,conversationAddress,conversationReplyAnchor,verifiedConversationEvent,type ConversationIdentity,type VerifiedConversationEvent,type TaskContext} from './conversation';
 import {NativeConversationRetention} from './conversation-retention';
 import {nativeContextDestroyPort,openNativeConversation} from './native-transport';
-import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence} from './native-policy';
+import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence,nativeTelegramActivation} from './native-policy';
 import type {ConversationProviderHost} from './conversation-provider';
 import {createConversationReadCapabilities} from './conversation-connectors';
 import {NativeReplyActions} from './conversation-actions';
@@ -69,9 +69,13 @@ export class NativeApplicationHost {
    const {authority}=await this.authority(event.identity);await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
   }
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch);
-  const row=await this.db!.prepare(`SELECT request_hash,source_ref_json FROM assistant_native_host_events WHERE installation_id=? AND generation=? AND conversation_id=? AND event_id=? AND event_revision=?`)
-   .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision).first<{request_hash:string;source_ref_json:string}>();
+  const row=await this.db!.prepare(`SELECT request_hash,source_ref_json,telegram_activation_key FROM assistant_native_host_events WHERE installation_id=? AND generation=? AND conversation_id=? AND event_id=? AND event_revision=?`)
+   .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision).first<{request_hash:string;source_ref_json:string;telegram_activation_key:string|null}>();
   if(!row||row.request_hash!==await bridgeHash(event)||!event.sourceRef||row.source_ref_json!==JSON.stringify(event.sourceRef))throw Error('native_event_denied');
+  if(event.identity.channel==='telegram'){
+   const activation=await nativeTelegramActivation(this.env,this.currentScope(),await nativeOwnerFence(this.env,this.currentScope()));
+   if(row.telegram_activation_key!==activation.key)throw Error('native_telegram_cut_denied');
+  }
   const source=await new SourceAccess(this.db!,this.scope,Date.now,'knowledge').read(owner,event.sourceRef.id,event.sourceRef.revision);
   if(!source||source.fence.source.version!==event.sourceRef.version||source.fence.source.hash!==event.sourceRef.hash||source.text!==event.body)throw Error('native_event_source_changed');
   if(source.fence.source.origin==='whatsapp'){
@@ -81,11 +85,11 @@ export class NativeApplicationHost {
  }
  /** Only canonical provider/owner adapters call this after authentication. A
   * persisted matching hash is not created by native initialData or tool args. */
- private async admit(event:VerifiedConversationEvent,originalSequence:number|null,ownerLink:unknown=null){
-  const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch),{guard}=await this.authority(event.identity);
-  await this.db!.prepare(`INSERT INTO assistant_native_host_events(installation_id,generation,conversation_id,event_id,event_revision,request_hash,source_id,source_ref_json,original_sequence,owner_link_json,created_at)
-   SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT DO NOTHING`)
-   .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision,await bridgeHash(event),event.sourceRef!.id,JSON.stringify(event.sourceRef),originalSequence,ownerLink?JSON.stringify(ownerLink):null,Date.now(),...guard.values).run();
+ private async admit(event:VerifiedConversationEvent,originalSequence:number|null,ownerLink:unknown=null,admissionGuard?:AccessGuard,activationKey:string|null=null){
+  const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch),authority=await this.authority(event.identity),guard=admissionGuard?joinGuards(authority.guard,admissionGuard):authority.guard;
+  await this.db!.prepare(`INSERT INTO assistant_native_host_events(installation_id,generation,conversation_id,event_id,event_revision,request_hash,source_id,source_ref_json,original_sequence,owner_link_json,created_at,telegram_activation_key)
+   SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT DO NOTHING`)
+   .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision,await bridgeHash(event),event.sourceRef!.id,JSON.stringify(event.sourceRef),originalSequence,ownerLink?JSON.stringify(ownerLink):null,Date.now(),activationKey,...guard.values).run();
   return this.runtime.deliverConversation(event);
  }
  /** Capture metadata is already stored by the secret-authenticated bridge.
@@ -148,9 +152,9 @@ export class NativeApplicationHost {
   const result=await this.admit(event,input.originalSequence);return finish(result.state,null,result.taskRef);
  }
  async receiveTelegram(updateId:number,raw?:unknown){
-  const fence=await nativeOwnerFence(this.env,this.currentScope()),link=telegramLinkGuard(fence);
-  const row=await this.db!.prepare(`SELECT text,message_id,message_date,thread_id,payload_hash FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND outcome='pending' AND state='pending' AND (${link.sql})`)
-   .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,...link.values).first<{text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string}>();
+  const fence=await nativeOwnerFence(this.env,this.currentScope()),activation=await nativeTelegramActivation(this.env,this.currentScope(),fence),link=joinGuards(telegramLinkGuard(fence),activation.guard);
+  const row=await this.db!.prepare(`SELECT text,message_id,message_date,thread_id,payload_hash FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_date>? AND received_at>=? AND outcome='pending' AND state='pending' AND (${link.sql})`)
+   .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,activation.cutSecond,activation.activatedAt,...link.values).first<{text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string}>();
   if(!row||typeof row.text!=='string')throw Error('native_owner_input_denied');
   // Quote correlation is part of the authenticated durable inbox, not the
   // lifetime of this webhook request. Record it BEFORE canonical Source work
@@ -166,7 +170,7 @@ export class NativeApplicationHost {
   const resumed=await help.resume(updateId,ref);if(resumed.state==='resumed'||resumed.state==='pending')return resumed.receipt!;
   const identity=await this.identity('telegram',fence.userId);
   const event=verifiedConversationEvent({identity,eventId:'telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId,revision:1,kind:'incoming',author:{kind:'owner',id:fence.userId},occurredAt:row.message_date*1000,body:row.text,sourceRef:ref,...(row.thread_id?{threadId:String(row.thread_id)}:{})});
-  return this.admit(event,null,fence);
+  return this.admit(event,null,fence,activation.guard,activation.key);
  }
  async sweepRetiredContexts(limit=20){
   const keys=[this.scope.installationId,this.scope.generation];
@@ -190,10 +194,11 @@ export class NativeApplicationHost {
    AND (n.state IS NULL OR n.state NOT IN ('admitted','excluded','withdrawn','metadata_only','superseded','before_activation'))
    ORDER BY COALESCE(n.updated_at,0),i.sequence LIMIT 10`).bind(...scopeKeys(this.scope),Number(cut)).all<{sequence:number}>();
   const outcomes=[];for(const row of capture.results)try{outcomes.push(await this.receiveCapture(row.sequence));}catch{outcomes.push({state:'unavailable'});}
-  const ownerUpdates=await this.db!.prepare(`SELECT update_id FROM assistant_telegram_updates u WHERE installation_id=? AND generation=? AND bot_instance=? AND outcome='pending' AND state='pending'
+  const fence=await nativeOwnerFence(this.env,this.currentScope()),activation=await nativeTelegramActivation(this.env,this.currentScope(),fence);
+  const ownerUpdates=await this.db!.prepare(`SELECT update_id FROM assistant_telegram_updates u WHERE installation_id=? AND generation=? AND bot_instance=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_date>? AND received_at>=? AND outcome='pending' AND state='pending'
    AND NOT EXISTS(SELECT 1 FROM assistant_native_help_questions q WHERE q.installation_id=u.installation_id AND q.generation=u.generation AND q.bot_instance=u.bot_instance AND q.owner_update_id=u.update_id AND q.state='resumed')
    AND NOT EXISTS(SELECT 1 FROM assistant_native_host_events e JOIN assistant_native_conversation_events n ON n.conversation_id=e.conversation_id AND n.event_id=e.event_id AND n.revision=e.event_revision WHERE e.installation_id=u.installation_id AND e.generation=u.generation AND e.event_id='telegram:'||u.bot_instance||':'||u.update_id AND n.state='admitted') ORDER BY update_id LIMIT 5`)
-   .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!).all<{update_id:number}>();
+   .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,activation.cutSecond,activation.activatedAt).all<{update_id:number}>();
   for(const row of ownerUpdates.results)try{outcomes.push(await this.receiveTelegram(row.update_id));}catch{outcomes.push({state:'unavailable'});}
   await this.sweepRetiredContexts();const curator=await this.dispatchCurator();return {state:'ticked',outcomes,curator};
  }

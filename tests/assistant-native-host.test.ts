@@ -32,6 +32,11 @@ async function fixture(){
   CAPTURE_READER:{readSnapshot:q=>readCaptureSnapshot(source,q),readNativeInput:q=>readNativeCaptureInput(source,q),readConversationActivity:q=>readConversationActivity(source,q)}};
  await env.DB.prepare(`INSERT INTO assistant_telegram_links(installation_id,generation,bot_instance,source_epoch,source_generation,revision,state,user_id,chat_id,activation_cut) VALUES(?,?,?,?,?,1,'active','101','101',0)`)
   .bind(scope.installationId,scope.generation,bot,'e1','g1').run();
+ const activate=async(activatedAt:number,extra:Record<string,unknown>={})=>{
+  const cut={version:1,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,botInstance:bot,linkRevision:1,userId:'101',chatId:'101',activatedAt,...extra};
+  await env.DB.prepare('INSERT INTO assistant_native_host_state(installation_id,generation,telegram_activation_json) VALUES(?,?,?) ON CONFLICT(installation_id,generation) DO UPDATE SET telegram_activation_json=excluded.telegram_activation_json').bind(scope.installationId,scope.generation,JSON.stringify(cut)).run();
+ };
+ await activate(1);
  const append=async(text:string,address='5585999999999',group=false,fromMe=false)=>{
   const {items}=await upsertDirectoryPage(source,{epoch:'e1',generation:'g1'},{items:[{externalId:address,kind:group?'group':'individual',name:'Pessoa sintética'}],complete:true});const chatId=items[0].id;
   const before=await env.DB.prepare('SELECT COALESCE(MAX(sequence),0) n FROM assistant_capture_changes').first<number>('n')??0;
@@ -48,7 +53,7 @@ async function fixture(){
   const raw={update_id:updateId,message:{message_id:updateId+100,date:Math.floor(Date.now()/1000),from:{id:101,is_bot:false},chat:{id:101,type:'private'},text,message_thread_id:threadId,...(replyTo?{reply_to_message:{message_id:replyTo,chat:{id:101,type:'private'},message_thread_id:threadId}}:{})}};
   expect(await new TelegramLink(env.DB,scope,bot,own.TELEGRAM_WEBHOOK_SECRET!).receive(raw)).toBe('pending');return raw;
  };
- return {scope,source,own,append,ownerUpdate,host:()=>new NativeApplicationHost(own)};
+ return {scope,source,own,append,ownerUpdate,activate,host:()=>new NativeApplicationHost(own)};
 }
 async function latestTask(host:NativeApplicationHost,taskRef:string){const delivery=transport.deliveries.get(taskRef);if(!delivery)throw Error('fixture_delivery');
  const row=await env.DB.prepare('SELECT identity_json FROM assistant_native_conversations WHERE id=(SELECT conversation_id FROM assistant_native_conversation_events WHERE task_ref=?)').bind(taskRef).first<{identity_json:string}>();return host.runtime.resolveTask(JSON.parse(row!.identity_json),delivery);}
@@ -111,11 +116,56 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect(taskA.sessionId).toBe(taskB.sessionId);expect(taskA.returnChannel.threadId).toBe('40');expect(taskB.returnChannel.threadId).toBe('43');expect(taskB.cohort[0].author).toEqual({kind:'owner',id:'101'});
   const source=await env.DB.prepare('SELECT origin,original_text FROM assistant_sources s JOIN assistant_source_versions v ON v.installation_id=s.installation_id AND v.generation=s.generation AND v.source_id=s.id AND v.version=s.current_version WHERE s.id=?').bind(taskB.cohort[0].sourceRef!.id).first();expect(source).toEqual({origin:'owner_report',original_text:'Pergunta no tópico B'});
  });
+ it('never turns a legacy pending owner request into a new native command, including a delayed retry',async()=>{
+  const f=await fixture(),cut=Math.floor(Date.now()/1000)-10;
+  await f.ownerUpdate(1,'Pedido antigo ainda pendente',43);
+  await env.DB.prepare('UPDATE assistant_telegram_updates SET message_date=?,received_at=? WHERE installation_id=? AND update_id=1').bind(cut-60,(cut-60)*1000,f.scope.installationId).run();
+  await f.activate(cut*1000);
+  await expect(f.host().receiveTelegram(1)).rejects.toThrow('native_owner_input_denied');
+  expect(transport.dispatch).not.toHaveBeenCalled();
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_sources WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(0);
+  // A retry received now does not make its old message date a new command.
+  await env.DB.prepare('UPDATE assistant_telegram_updates SET received_at=? WHERE installation_id=? AND update_id=1').bind(Date.now(),f.scope.installationId).run();
+  await expect(f.host().receiveTelegram(1)).rejects.toThrow('native_owner_input_denied');
+  await f.ownerUpdate(2,'Pedido realmente novo',43);
+  expect(await f.host().receiveTelegram(2)).toMatchObject({state:'admitted'});
+ });
+ it('requires a Telegram activation cut and excludes old pending rows before cron pagination',async()=>{
+  const f=await fixture(),cut=Math.floor(Date.now()/1000)-10;
+  await env.DB.prepare('UPDATE assistant_native_host_state SET telegram_activation_json=NULL WHERE installation_id=?').bind(f.scope.installationId).run();
+  await f.ownerUpdate(1,'Pedido antigo',43);
+  await expect(f.host().receiveTelegram(1)).rejects.toThrow('native_telegram_cut_unconfigured');
+  await f.activate(cut*1000);
+  for(let id=2;id<=6;id++)await f.ownerUpdate(id,'Outra pendência legada',43);
+  await env.DB.prepare('UPDATE assistant_telegram_updates SET message_date=?,received_at=? WHERE installation_id=?').bind(cut-60,(cut-60)*1000,f.scope.installationId).run();
+  await f.ownerUpdate(7,'Novo pedido depois do corte',43);
+  await f.host().tick();
+  expect(transport.dispatch).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare('SELECT event_id FROM assistant_native_conversation_events WHERE conversation_id IN (SELECT id FROM assistant_native_conversations WHERE installation_id=?)').bind(f.scope.installationId).first('event_id')).toBe('telegram:'+bot+':7');
+ });
+ it('binds the cut to the exact owner link and revokes an earlier admitted authority when it changes',async()=>{
+  const f=await fixture();await f.ownerUpdate(91,'Pedido atual',43);const host=f.host(),receipt=await host.receiveTelegram(91),task=await latestTask(host,receipt.taskRef);
+  await f.activate(Date.now()-5000,{linkRevision:2});
+  await expect(f.host().receiveTelegram(91)).rejects.toThrow('native_telegram_cut_denied');
+  await f.activate(Date.now()-5000);
+  await expect(host.runtime.assertTaskCurrent(task)).rejects.toThrow('native_authority_denied');
+  await host.retention.purge(task.identity);
+  // Smaller update IDs remain valid when Telegram restarts their sequence.
+  await f.ownerUpdate(3,'Pedido posterior com ID menor',43);
+  expect(await f.host().receiveTelegram(3)).toMatchObject({state:'admitted'});
+ });
  it('sends an owner answer once to the authenticated last topic with safe legible formatting',async()=>{
   const f=await fixture();await f.ownerUpdate(1,'Pergunta',43);const host=f.host(),receipt=await host.receiveTelegram(1),task=await latestTask(host,receipt.taskRef);
   const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:43,parse_mode:'HTML'});expect(body.text).toBe('✅ <b>Pronto</b>\n\nTexto &lt;seguro&gt;.');return Response.json({ok:true,result:{message_id:99,message_thread_id:43,chat:{id:101,type:'private'}}});});
   expect(await host.respondOwner(task,'✅ **Pronto**\n\nTexto <seguro>.')).toMatchObject({state:'sent',messageId:99});
   expect(await host.respondOwner(task,'✅ **Pronto**\n\nTexto <seguro>.')).toMatchObject({state:'sent',messageId:99});expect(fetch).toHaveBeenCalledTimes(1);
+ });
+ it('preserves the exact authenticated owner link used by Calendar after native activation',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Crie um evento de validação amanhã.',43);
+  const host=f.host(),receipt=await host.receiveTelegram(1),task=await latestTask(host,receipt.taskRef),frame=await host.frame(task);
+  // This fixture has no Google credential. Reaching the honest configuration
+  // result proves actual ingress and Calendar agree on the owner's authority.
+  expect(await frame.effects.calendarChange({verb:'create',summary:'Validação sintética',start:'2026-11-01T09:00:00-03:00',end:'2026-11-01T09:30:00-03:00'})).toEqual({state:'pending_configuration',dependency:'calendar_write_owned'});
  });
  it('keeps an uncertain Telegram effect and never retries it; source withdrawal blocks the old native context',async()=>{
   const f=await fixture();await f.ownerUpdate(1,'Pergunta',43);const host=f.host(),receipt=await host.receiveTelegram(1),task=await latestTask(host,receipt.taskRef);

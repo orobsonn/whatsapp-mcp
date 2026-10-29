@@ -8,10 +8,12 @@ export default {
   async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
       if(env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'){
-        if(env.ROUTINES_PAUSED!=='true'){
-          const {NativeApplicationHost}=await import('./agent-runtime/native-host');
-          await new NativeApplicationHost(env).tick();
-        }
+        const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+        const host=new NativeApplicationHost(env);
+        // Pausing inference/effects must not strand physical cleanup of an
+        // already tombstoned native context. This path never admits input.
+        if(env.ROUTINES_PAUSED==='true')await host.sweepRetiredContexts();
+        else await host.tick();
         // One inference path per input. Legacy materialization and native
         // canonical intake share the same capture store, never duplicate jobs.
         return;

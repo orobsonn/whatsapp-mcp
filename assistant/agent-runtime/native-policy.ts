@@ -4,8 +4,9 @@ import {telegramLinkGuard,type TelegramLinkFence} from '../telegram-auth';
 import {retentionExecutionGuard} from '../retention-execution';
 import type {AccessGuard} from '../access';
 import {bridgeHash} from '../ingress';
-import type {ConversationAuthority,ConversationIdentity} from './conversation';
+import {conversationAddress,type ConversationAuthority,type ConversationIdentity} from './conversation';
 import {isCuratorPrincipal} from '../knowledge/curator';
+import {z} from 'zod';
 
 export type NativeMode='off'|'shadow'|'approval'|'autonomous';
 export function nativeMode(env:AssistantEnv):NativeMode {
@@ -22,19 +23,42 @@ export async function nativeOwnerFence(env:AssistantEnv,scope:OriginScope):Promi
  if(!row)throw Error('native_owner_unlinked');
  return {...scope,botInstance:env.TELEGRAM_BOT_INSTANCE!,linkRevision:row.revision,userId:row.user_id,chatId:row.chat_id};
 }
+const activationSchema=z.object({version:z.literal(1),sourceEpoch:z.string(),sourceGeneration:z.string(),botInstance:z.string(),linkRevision:z.number().int().positive(),userId:z.string(),chatId:z.string(),activatedAt:z.number().int().positive().safe()}).strict();
+/** A one-time migration boundary, not an age limit on normal conversations.
+ * Persist and replace only under the operational execution hold. Telegram
+ * update IDs can restart after inactivity; message dates and receipt time are
+ * therefore both checked. The ambiguous boundary second is never admitted. */
+export async function nativeTelegramActivation(env:AssistantEnv,scope:OriginScope,fence:TelegramLinkFence){
+ const raw=await env.DB!.prepare('SELECT telegram_activation_json FROM assistant_native_host_state WHERE installation_id=? AND generation=?')
+  .bind(scope.installationId,scope.generation).first<string>('telegram_activation_json');
+ if(!raw)throw Error('native_telegram_cut_unconfigured');
+ let cut:z.infer<typeof activationSchema>;try{cut=activationSchema.parse(JSON.parse(raw));}catch{throw Error('native_telegram_cut_unconfigured');}
+ for(const key of ['sourceEpoch','sourceGeneration','botInstance','linkRevision','userId','chatId'] as const)if(cut[key]!==fence[key])throw Error('native_telegram_cut_denied');
+ const guard:AccessGuard={sql:'EXISTS(SELECT 1 FROM assistant_native_host_state WHERE installation_id=? AND generation=? AND telegram_activation_json=?)',values:[scope.installationId,scope.generation,raw]};
+ return {key:await bridgeHash(['native-telegram-activation-v1',scope,cut]),guard,activatedAt:cut.activatedAt,cutSecond:Math.floor(cut.activatedAt/1000)};
+}
 /** Current host authority has no dependency on transcript claims, mentions or
  * owner-looking message signatures. A readable group is not a reply grant. */
 export async function nativeAuthority(env:AssistantEnv,identity:ConversationIdentity):Promise<{authority:ConversationAuthority;guard:AccessGuard}>{
  const scope=nativeScope(env),mode=nativeMode(env);
  if(!env.DB||mode==='off'||env.ROUTINES_PAUSED==='true'||identity.installationId!==scope.installationId||identity.generation!==scope.generation)throw Error('native_disabled');
  const fence=await nativeOwnerFence(env,scope),owner=telegramLinkGuard(fence),restore=retentionExecutionGuard(scope);
- let revision=fence.linkRevision,policy='owner',replyMode=mode;let channel:AccessGuard;
+ let revision=fence.linkRevision,policy='owner',replyMode=mode,activationKey:string|null=null;let channel:AccessGuard;
  if(identity.channel==='telegram'){
   if(isCuratorPrincipal(identity.principalOrChatId)){
    if(env.NATIVE_CURATOR_ENABLED!=='true'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_principal_denied');
    replyMode='shadow';policy='private_curator';
   }else if(identity.principalOrChatId!==fence.userId)throw Error('native_principal_denied');
-  channel={sql:'1',values:[]};
+  if(isCuratorPrincipal(identity.principalOrChatId))channel={sql:'1',values:[]};
+  else{
+   const activation=await nativeTelegramActivation(env,scope,fence),sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch);
+   // Also fence an event admitted while the operator's cut changes: a later
+   // authority read cannot relabel its old host receipt with the new grant.
+   channel=joinGuards(activation.guard,{sql:`NOT EXISTS(SELECT 1 FROM assistant_native_conversation_events e
+    LEFT JOIN assistant_native_host_events h ON h.conversation_id=e.conversation_id AND h.event_id=e.event_id AND h.event_revision=e.revision
+    WHERE e.conversation_id=? AND e.sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=e.conversation_id)
+    AND (h.telegram_activation_key IS NULL OR h.telegram_activation_key<>?))`,values:[sessionId,activation.key]});activationKey=activation.key;
+  }
  }else{
   const row=await env.DB.prepare(`SELECT o.kind,o.access_state,COALESCE(p.revision,0) revision,
    CASE WHEN p.kind IS NOT NULL AND p.kind<>o.kind THEN 'ignore' ELSE COALESCE(p.effective_mode,CASE WHEN o.kind='private' THEN 'attend' ELSE 'ignore' END) END mode
@@ -52,7 +76,7 @@ export async function nativeAuthority(env:AssistantEnv,identity:ConversationIden
  }
  const guard=joinGuards(owner,restore,channel);
  if(!await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first())throw Error('native_authority_denied');
- const grantRef=await bridgeHash(['native-authority-v1',scope,identity.channel,identity.principalOrChatId,fence.userId,fence.linkRevision,revision,policy]);
+ const grantRef=await bridgeHash(['native-authority-v1',scope,identity.channel,identity.principalOrChatId,fence.userId,fence.linkRevision,revision,policy,...(activationKey?[activationKey]:[])]);
  return {authority:{ownerId:fence.userId,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,policyRevision:revision,grantRef,mode:replyMode},guard};
 }
 /** Existing period accounts must be configured operationally beforehand. The
