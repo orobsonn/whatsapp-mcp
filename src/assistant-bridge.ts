@@ -6,6 +6,8 @@ export async function deliverCaptureChanges(env: Env): Promise<number> {
   if (!env.ASSISTANT_INGRESS || !env.ASSISTANT_BRIDGE_SECRET || env.ASSISTANT_BRIDGE_SECRET.length < 32 ||
       !env.ASSISTANT_INSTALLATION_ID || !env.ASSISTANT_GENERATION) return 0;
   assertActive(env);
+  const configuredPage=env.ASSISTANT_BRIDGE_BATCH_SIZE??'10',pageSize=Number(configuredPage);
+  if(!/^\d+$/.test(configuredPage)||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)throw Error('bridge_page_configuration');
   const keys = [env.INSTALLATION_EPOCH, env.CONNECTION_GENERATION, env.ASSISTANT_INSTALLATION_ID, env.ASSISTANT_GENERATION];
   const scope = "epoch=? AND generation=? AND installation_id=? AND target_generation=?";
   await env.DB.prepare(`INSERT INTO assistant_bridge_cursors(epoch,generation,installation_id,target_generation)
@@ -15,8 +17,8 @@ export async function deliverCaptureChanges(env: Env): Promise<number> {
   if (!row) throw new Error("bridge_cursor_missing");
   let cursor = row.acknowledged_sequence, delivered = 0;
   const events = await env.DB.prepare(`SELECT sequence,chat_id,source_id,source_kind,operation,recorded_at
-    FROM assistant_capture_changes WHERE epoch=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 10`)
-    .bind(env.INSTALLATION_EPOCH, env.CONNECTION_GENERATION, cursor)
+    FROM assistant_capture_changes WHERE epoch=? AND generation=? AND sequence>? ORDER BY sequence LIMIT ?`)
+    .bind(env.INSTALLATION_EPOCH, env.CONNECTION_GENERATION, cursor,pageSize)
     .all<{ sequence: number; chat_id: string; source_id: string; source_kind: string; operation: string; recorded_at: number }>();
   for (const item of events.results) {
     const event = captureMetadata.parse({ protocol: 1, installationId: env.ASSISTANT_INSTALLATION_ID,

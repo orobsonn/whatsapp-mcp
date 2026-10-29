@@ -36,6 +36,8 @@ export interface Env extends AuthorityEnv {
   ASSISTANT_OWNER?: OwnerAssistantRPC;
   ASSISTANT_INGRESS?: Pick<Fetcher, "fetch">;
   ASSISTANT_BRIDGE_SECRET?: string;
+  /** Host-only metadata page size for controlled catch-up; not a corpus limit. */
+  ASSISTANT_BRIDGE_BATCH_SIZE?: string;
   ASSISTANT_INSTALLATION_ID?: string;
   ASSISTANT_GENERATION?: string;
   /** Advertise only after the Own knowledge capability is configured/verified. */

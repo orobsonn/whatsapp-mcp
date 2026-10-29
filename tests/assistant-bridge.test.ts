@@ -69,6 +69,13 @@ it("delivers at most ten events and advances only acknowledged metadata", async 
     .toEqual({ read_sequence: events[9].sequence, applied_sequence: 0 });
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
+it('drains a larger configured metadata page without losing the remaining cursor',async()=>{
+ const events=await seed(101),configured={...sender(),ASSISTANT_BRIDGE_BATCH_SIZE:'100'};
+ expect(await deliverCaptureChanges(configured)).toBe(100);
+ expect(await env.DB.prepare('SELECT acknowledged_sequence FROM assistant_bridge_cursors').first('acknowledged_sequence')).toBe(events[99].sequence);
+ expect(await deliverCaptureChanges(configured)).toBe(1);
+ expect(await count('assistant_capture_inbox')).toBe(101);
+});
 
 it("replays the same event key after a lost acknowledgement", async () => {
   await seed(); let loseAck = true; const keys: number[] = [];
