@@ -10,11 +10,14 @@ import type { KnowledgePort, NativeKnowledgeWrite } from '../assistant/knowledge
 // binding; protocol/persistence of real Flue+Pi is covered by the separate P0
 // Miniflare probe, not asserted by these fake handles.
 const hooks=vi.hoisted(()=>({tools:[] as {name:string;input:v.GenericSchema;run:(ctx:{data:unknown;toolCallId:string})=>Promise<{output:unknown}>}[],
- starts:[] as (()=>Promise<void>)[],models:[] as unknown[][],seed:{} as unknown,delivery:{} as DeliveredMessage,name:'',opened:[] as string[]}));
+ starts:[] as (()=>Promise<void>)[],responseStarts:[] as ((ctx:{metadata:Record<string,unknown>})=>unknown)[],
+ state:new Map<string,unknown>(),models:[] as unknown[][],seed:{} as unknown,delivery:{} as DeliveredMessage,name:'',opened:[] as string[]}));
 vi.mock('@flue/runtime',()=>({
  init:(_agent:unknown,options:{id:string})=>{hooks.opened.push(options.id);return {};},
  useInitialData:()=>hooks.seed,useDelivery:()=>hooks.delivery,useModel:(...args:unknown[])=>hooks.models.push(args),
  useTool:(tool:typeof hooks.tools[number])=>hooks.tools.push(tool),useAgentStart:(start:()=>Promise<void>)=>hooks.starts.push(start),
+ usePersistentState:(name:string,initial:unknown)=>{const store=hooks.state;return [store.get(name)??initial,(next:unknown)=>store.set(name,typeof next==='function'?next(store.get(name)??initial):next)];},
+ useResponseStart:(start:typeof hooks.responseStarts[number])=>hooks.responseStarts.push(start),useResponseFinish:()=>{},
 }));
 vi.mock('@flue/runtime/cloudflare',()=>({getCloudflareContext:()=>({env:{}}),getDurableObjectIdentity:()=>({name:hooks.name,className:'FlueConversationRuntimeAgent'})}));
 import { ConversationRuntimeAgent, configureConversationResolver, conversationDriver } from '../assistant/agent-runtime/conversation-profiles';
@@ -60,7 +63,13 @@ async function taskFor(admitted:Awaited<ReturnType<typeof admit>>,cohort?:readon
 }
 function render(admitted:Awaited<ReturnType<typeof admit>>){
  hooks.seed=admitted.value.identity;hooks.delivery=admitted.request.message as DeliveredMessage;hooks.name=admitted.receipt.sessionId;
- hooks.tools=[];hooks.starts=[];ConversationRuntimeAgent();return {tools:[...hooks.tools],starts:[...hooks.starts]};
+ // Each legacy fake render is a separate response fixture, with its own state
+ // buffer. Run its real intake callbacks before invoking any mounted tool.
+ hooks.tools=[];hooks.starts=[];hooks.responseStarts=[];hooks.state=new Map();ConversationRuntimeAgent();
+ for(const start of hooks.responseStarts)start({metadata:{}});
+ const starts=[...hooks.starts];let started:Promise<void>|undefined;
+ const ensureStarted=()=>started??=Promise.all(starts.map(start=>start())).then(()=>{});
+ return {tools:hooks.tools.map(tool=>({...tool,run:async(ctx:Parameters<typeof tool.run>[0])=>{await ensureStarted();return tool.run(ctx);}})),starts:[ensureStarted]};
 }
 async function source(){
  const knowledge=new KnowledgeService(env.DB,()=>({scope:{installationId:identity.installationId,generation:identity.generation,sourceEpoch:authority.sourceEpoch,sourceGeneration:authority.sourceGeneration},client:'owner_mcp'}),knowledgePort,()=>100);
