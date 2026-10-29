@@ -4,6 +4,7 @@ const scope={installationId:label,generation:label},originScope={sourceEpoch:lab
 export const sourceRef = z.object({ id: label, revision: version, version, hash }).strict();
 export const sourceFence = z.object({ ...scope, ...originScope, actor: z.string().max(2048),
   source: sourceRef.extend({ audience: z.enum(["owner", "restricted", "public"]), origin: label, conversationId: label.nullable(), projectId: label.nullable() }).strict(),
+  knowledge: z.object({sourceEpoch:label,sourceGeneration:label,policyRevision:time,sharingQuarantined:z.boolean()}).strict().optional(),
   policy: z.object({ conversationId: label, kind: label, revision: time, mode: label }).strict().nullable(),
   identity: z.object({ personId: label, proofId: label, proofRevision: version }).strict().nullable(),
   mandate: z.object({ id: label, version, expiresAt: time, action: label }).strict().nullable(),

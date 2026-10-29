@@ -1,3 +1,4 @@
+import {knowledgeSourcePolicy} from './knowledge/source-policy';
 import {relationAudience,ownerContextStamp} from './relation-visibility';
 import type { Audience, SourceScope } from "./sources";
 export type TrustedActor = Readonly<{ kind: "owner" }> | Readonly<{ kind: "extractor" }> | Readonly<{
@@ -7,6 +8,7 @@ export type TrustedActor = Readonly<{ kind: "owner" }> | Readonly<{ kind: "extra
 }>;
 export type SourceFence = {
   installationId: string; generation: string; actor: string;
+  knowledge?: { sourceEpoch: string; sourceGeneration: string; policyRevision: number; sharingQuarantined: boolean };
   source: { id: string; revision: number; version: number; hash: string; audience: Audience; origin: string; conversationId: string | null; projectId: string | null };
   policy: { conversationId: string; kind: string; revision: number; mode: string } | null;
   identity: { personId: string; proofId: string; proofRevision: number } | null;
@@ -17,7 +19,7 @@ export type AccessRow = {
   id: string; revision: number; version: number; content_hash: string; audience: Audience; origin: string;
   conversation_id: string | null; project_id: string | null; original_text: string | null;
   author_id: string | null; author_label: string | null; occurred_at: number;
-  policy_revision?: number; policy_mode?: string;
+  policy_revision?: number; policy_mode?: string; analysis_policy_revision?: number; sharing_quarantined?: number;
   person_id?: string; proof_source_id?: string; proof_source_revision?: number;
   mandate_version?: number; mandate_expires_at?: number;
 };
@@ -28,6 +30,12 @@ export function normalizeSourceRefs(refs: SourceSelectionRef[]): SourceSelection
   if (!Array.isArray(refs) || refs.length < 1 || refs.length > 3 || refs.some(ref => !ref || Object.keys(ref).sort().join(',') !== 'hash,id,revision,version'
     || typeof ref.id !== 'string' || !ref.id.length || ref.id.length > 256 || !Number.isSafeInteger(ref.revision) || ref.revision < 1 || !Number.isSafeInteger(ref.version) || ref.version < 1 || typeof ref.hash !== 'string' || !/^[a-f0-9]{64}$/.test(ref.hash)) || new Set(refs.map(ref => ref.id)).size !== refs.length) throw Error('retrieval_source_refs');
   return refs.map(({id,revision,version,hash}) => ({id,revision,version,hash})).sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+// Fence fields survive typed parsing/storage in different property orders.
+function orderedFence(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderedFence);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(key => [key,orderedFence((value as Record<string,unknown>)[key])]));
+  return value;
 }
 const actorKey = (actor: Exclude<TrustedActor, { kind: "extractor" }>) => actor.kind === "owner" ? "owner"
   : JSON.stringify([actor.provider, actor.address, actor.conversationId, actor.conversationKind, actor.action, actor.mandateId ?? null]);
@@ -41,13 +49,15 @@ const versionJoin = `JOIN assistant_source_versions v ON v.installation_id=s.ins
 export class SourceAccess {
   private readonly scope: SourceScope;
   private readonly metadataOrigin?:{sourceEpoch:string;sourceGeneration:string};
-  constructor(private readonly db: D1Database, scope: SourceScope, private readonly clock = Date.now) {
+  constructor(private readonly db: D1Database, scope: SourceScope, private readonly clock = Date.now, private readonly purpose: "archive" | "knowledge" = "archive") {
     if (!scope.installationId || !scope.generation) throw new Error("invalid_source_scope");
+    if (!["archive","knowledge"].includes(purpose)) throw new Error("invalid_source_purpose");
     this.scope = Object.freeze({ installationId: scope.installationId, generation: scope.generation });
     const origin=scope as SourceScope & {sourceEpoch?:unknown;sourceGeneration?:unknown};if(typeof origin.sourceEpoch==='string'&&origin.sourceEpoch.length&&typeof origin.sourceGeneration==='string'&&origin.sourceGeneration.length)this.metadataOrigin=Object.freeze({sourceEpoch:origin.sourceEpoch,sourceGeneration:origin.sourceGeneration});
+    if(purpose === "knowledge" && !this.metadataOrigin) throw new Error("knowledge_origin_unconfigured");
   }
   private current(actor: TrustedActor, id: string | null, expectedRevision: number | undefined, now: number, operational = false): AccessGuard | null {
-    if (actor.kind === "extractor") return null;
+    if (actor.kind === "extractor" || (this.purpose === "knowledge" && actor.kind !== "owner")) return null;
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) return null;
     const keys = [this.scope.installationId, this.scope.generation, ...(id === null ? [] : [id]), expectedRevision ?? null, expectedRevision ?? null];
     const current = `s.installation_id=? AND s.generation=?${id === null ? '' : ' AND s.id=?'} AND (? IS NULL OR s.revision=?) AND s.status='active'
@@ -58,7 +68,10 @@ export class SourceAccess {
     if (actor.kind === "owner") {
       // Operational requests remain available only by exact ID to trusted
       // owner audit/model admission. They are never factual context inventory.
-      return { sql: `SELECT ${sourceColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}${id === null && !operational ? " AND s.origin<>'owner_request'" : ""}`, values: keys };
+      const knowledge = this.purpose === "knowledge" ? knowledgeSourcePolicy(this.metadataOrigin!) : null;
+      const knowledgeColumns = knowledge ? `,COALESCE((SELECT kp.revision FROM assistant_conversation_policies kp WHERE kp.installation_id=s.installation_id AND kp.generation=s.generation AND kp.conversation_id=s.conversation_id),0) AS analysis_policy_revision,
+        EXISTS(SELECT 1 FROM assistant_retention_quarantines kq WHERE kq.installation_id=s.installation_id AND kq.generation=s.generation AND kq.kind='source_authorization' AND kq.source_id=s.id AND kq.active=1) AS sharing_quarantined` : "";
+      return { sql: `SELECT ${sourceColumns}${knowledgeColumns} FROM assistant_sources s ${versionJoin} WHERE ${current}${id === null && !operational ? " AND s.origin<>'owner_request'" : ""}${knowledge ? ` AND (${knowledge.sql})` : ""}`, values: [...keys,...(knowledge?.values ?? [])] };
     } else {
       // Select the latest mandate before testing its state, dates or permissions.
       return { sql: `SELECT ${sourceColumns},COALESCE(p.revision,0) AS policy_revision,
@@ -119,11 +132,13 @@ export class SourceAccess {
   }
   fromRow(actor: TrustedActor, row: AccessRow): SourceRead {
     if (actor.kind === "extractor") throw new Error("source_access_denied");
+    if (this.purpose === "knowledge" && (!Number.isSafeInteger(row.analysis_policy_revision) || ![0,1].includes(row.sharing_quarantined!))) throw new Error("knowledge_projection_missing");
     const needsMandate = actor.kind === "interlocutor" && row.audience === "restricted"
       && !(row.origin === "whatsapp" && row.conversation_id === actor.conversationId);
     const fence: SourceFence = {
       ...this.scope,
-      actor: actorKey(actor),
+      actor: this.purpose === "knowledge" ? `knowledge:${actorKey(actor)}` : actorKey(actor),
+      ...(this.purpose === "knowledge" ? {knowledge:{...this.metadataOrigin!,policyRevision:row.analysis_policy_revision!,sharingQuarantined:row.sharing_quarantined===1}} : {}),
       source: { id: row.id, revision: row.revision, version: row.version, hash: row.content_hash, audience: row.audience,
         origin: row.origin, conversationId: row.conversation_id, projectId: row.project_id },
       policy: actor.kind === "owner" ? null : { conversationId: actor.conversationId, kind: actor.conversationKind, revision: row.policy_revision!, mode: row.policy_mode! },
@@ -142,7 +157,7 @@ export class SourceAccess {
     const privateScope=!!control.sourceEpoch&&!!control.sourceGeneration;let query = this.current(actor, null, undefined, now);const relations=relationAudience(privateScope?actor:{kind:'extractor'},'b',this.ownerRows(now));
     if (!query) return { sql: "SELECT NULL AS id,NULL AS fingerprint WHERE 0", values: [] };
     if (control.sourceRefs !== undefined) query = {sql:`SELECT selected.* FROM (${query.sql}) selected JOIN json_each(?) ref ON selected.id=json_extract(ref.value,'$.id') AND selected.revision=json_extract(ref.value,'$.revision') AND selected.version=json_extract(ref.value,'$.version') AND selected.content_hash=json_extract(ref.value,'$.hash')`,values:[...query.values,JSON.stringify(normalizeSourceRefs(control.sourceRefs))]};
-    const authority = actor.kind === "owner" ? "'owner'" : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
+    const authority = actor.kind === "owner" ? (this.purpose === "knowledge" ? "json_array('knowledge',analysis_policy_revision,sharing_quarantined)" : "'owner'") : "json_array(policy_revision,policy_mode,person_id,proof_source_id,proof_source_revision,mandate_version,mandate_expires_at)";
     const keys = [this.scope.installationId, this.scope.generation],ownerMeta=actor.kind==='owner'&&privateScope?ownerContextStamp(this.scope,this.ownerRows(now),control):null;
     return { sql: `WITH visible AS (${query.sql}),${ownerMeta?`owner_context_stamp AS MATERIALIZED(${ownerMeta.sql}),`:""} facts AS (
       SELECT visible.*,${ownerMeta?`(SELECT value FROM owner_context_stamp) owner_catalog_state,(SELECT json_group_array(json_array(m.id,m.revision,m.state,m.project_id,m.objective,p.name,r.revision)) FROM assistant_missions m LEFT JOIN assistant_projects p ON p.installation_id=m.installation_id AND p.generation=m.generation AND p.id=m.project_id LEFT JOIN assistant_project_revisions r ON r.installation_id=p.installation_id AND r.generation=p.generation AND r.project_id=p.id WHERE m.installation_id=? AND m.generation=? AND m.source_id=visible.id AND m.source_revision=visible.revision) owner_mission_state,`:""}
@@ -175,13 +190,19 @@ export class SourceAccess {
   guard(actor: TrustedActor, fence: SourceFence, now: number): AccessGuard {
     const deny: AccessGuard = { sql: "0", values: [] };
     if (actor.kind === "extractor" || fence.installationId !== this.scope.installationId
-      || fence.generation !== this.scope.generation || fence.actor !== actorKey(actor)) return deny;
+      || fence.generation !== this.scope.generation || fence.actor !== (this.purpose === "knowledge" ? `knowledge:${actorKey(actor)}` : actorKey(actor))) return deny;
     const source = fence.source;
     const query = this.current(actor, source.id, source.revision, now);
     if (!query) return deny;
     const columns = ["id", "revision", "version", "content_hash", "audience", "origin", "conversation_id", "project_id"];
     const values: (string | number | null)[] = [source.id, source.revision, source.version, source.hash,
       source.audience, source.origin, source.conversationId, source.projectId];
+    if(this.purpose === "knowledge") {
+      const k=fence.knowledge;
+      if(!k || k.sourceEpoch!==this.metadataOrigin!.sourceEpoch || k.sourceGeneration!==this.metadataOrigin!.sourceGeneration
+        || !Number.isSafeInteger(k.policyRevision) || k.policyRevision<0 || typeof k.sharingQuarantined!=="boolean") return deny;
+      columns.push("analysis_policy_revision","sharing_quarantined");values.push(k.policyRevision,Number(k.sharingQuarantined));
+    } else if(fence.knowledge) return deny;
     const needsMandate = actor.kind === "interlocutor" && source.audience === "restricted"
       && !(source.origin === "whatsapp" && source.conversationId === actor.conversationId);
     if (actor.kind === "owner") {
@@ -202,6 +223,6 @@ export class SourceAccess {
   async revalidate(actor: TrustedActor, fence: SourceFence) {
     if (fence.installationId !== this.scope.installationId || fence.generation !== this.scope.generation) return false;
     const read = await this.read(actor, fence.source.id, fence.source.revision);
-    return !!read && JSON.stringify(read.fence) === JSON.stringify(fence);
+    return !!read && JSON.stringify(orderedFence(read.fence)) === JSON.stringify(orderedFence(fence));
   }
 }

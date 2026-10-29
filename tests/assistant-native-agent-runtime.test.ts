@@ -33,6 +33,7 @@ import {init,setProvider,getAgentInstance} from '@flue/runtime';
 import {getCloudflareContext} from '@flue/runtime/cloudflare';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import {NativeProof} from './agents';
+import {runKnowledgePolicyProof} from ${JSON.stringify(join(root,'tests/fixtures/assistant-knowledge-policy-probe.ts'))};
 const native=openaiProvider();
 const base=native.getModels().find(m=>m.id==='gpt-6-luna'); if(!base)throw Error('native_model_missing');
 const model={...base,contextWindow:2048,maxTokens:256};
@@ -54,6 +55,7 @@ function options(original){let reserved=false; return {...original,apiKey:'synth
 setProvider({...native,auth:{apiKey:{name:'Synthetic only',resolve:async()=>({auth:{apiKey:'synthetic-not-a-credential'}})}},getModels:()=>[model],stream:(m,c,o)=>native.stream(m,c,options(o)),streamSimple:(m,c,o)=>native.streamSimple(m,c,options(o))});
 export default {async fetch(request,env){if(env.DEPLOYED_PROBE==='true'&&(!env.PROBE_BEARER||request.headers.get('Authorization')!=='Bearer '+env.PROBE_BEARER))return new Response(null,{status:403});const {id,message,receipt,action,grant}=await request.json();
  if(action==='bootstrap'){for(const sql of ['CREATE TABLE IF NOT EXISTS proof_events(id INTEGER PRIMARY KEY,kind TEXT,detail TEXT)','CREATE TABLE IF NOT EXISTS proof_claims(request TEXT PRIMARY KEY)','CREATE TABLE IF NOT EXISTS proof_tombstones(id TEXT PRIMARY KEY)'])await env.DB.prepare(sql).run();return Response.json({state:'ready',data:'synthetic-only'});}
+ if(action==='knowledge-policy')return Response.json(await runKnowledgePolicyProof(env.DB));
  if(action==='events')return Response.json(await env.DB.prepare('SELECT kind,detail FROM proof_events ORDER BY id').all());
  if(action==='deny'||action==='timeout'){await env.DB.prepare('INSERT INTO proof_events(kind,detail) VALUES(?,?)').bind(action,'synthetic-only').run();return Response.json({state:'configured'});}
  if(action==='clear-flags'){await env.DB.prepare("DELETE FROM proof_events WHERE kind IN ('deny','timeout')").run();return Response.json({state:'configured'});}
