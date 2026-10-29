@@ -11,9 +11,14 @@ const querySchema = z.object({
 }).strict();
 export type NativeCaptureInputQuery = z.infer<typeof querySchema>;
 type Identity = Omit<NativeCaptureInputQuery, "secret">;
+export type NativeCaptureAuthorship = { kind: "external" }
+  | { kind: "assistant_action"; action: { id: string; status: string } }
+  | { kind: "own_device_unattributed" };
 export type NativeCaptureInput = ({ observation: "native_capture_input" } & Identity & {
   state: "available"; conversationKind: "private" | "group"; captureState: "enabled";
   originalMessageId: string; originalSequence: number; fromMe: boolean;
+  /** Device direction alone is never evidence of a human author or approval. */
+  authorship: NativeCaptureAuthorship;
   authorId: string | null; authorLabel: string | null;
   text: string | null; textState: "ready" | "pending" | "unavailable";
   sourceVersion: number | null; watermark: number;
@@ -57,11 +62,38 @@ export async function readNativeCaptureInput(raw: Env, input: unknown): Promise<
       .bind(fence.epoch, fence.generation, query.chatId, content.messageId).first<number>("original_sequence");
   } catch { return unavailable("source_unavailable"); }
   if (!Number.isSafeInteger(originalSequence) || originalSequence! < 1) return unavailable("original_sequence_unknown");
+  const observeAuthorship = async (): Promise<NativeCaptureAuthorship | null> => {
+    if (!content.fromMe) return { kind: "external" };
+    // Provider identifiers stay inside this join. Scope and uniqueness are
+    // required; equal text, author labels and timestamps prove no correlation.
+    const row = await env.DB.prepare(`SELECT m.from_me,COUNT(a.id) match_count,
+      CASE WHEN COUNT(a.id)=1 AND length(MIN(a.id)) BETWEEN 1 AND 256 THEN MIN(a.id) END action_id,
+      CASE WHEN COUNT(a.id)=1 AND length(MIN(a.status)) BETWEEN 1 AND 64 THEN MIN(a.status) END action_status
+      FROM messages m LEFT JOIN actions a ON a.epoch=m.epoch AND a.generation=m.generation AND a.chat_id=m.chat_id
+        AND m.external_id<>'' AND (a.provider_message_id=m.external_id OR a.provider_zaap_id=m.external_id)
+      WHERE m.id=? AND m.chat_id=? AND m.epoch=? AND m.generation=? GROUP BY m.id,m.from_me`)
+      .bind(content.messageId, query.chatId, fence.epoch, fence.generation)
+      .first<{ from_me: number; match_count: number; action_id: string | null; action_status: string | null }>();
+    if (!row || row.from_me !== 1) return null;
+    if (row.match_count === 1 && id.safeParse(row.action_id).success
+        && z.string().min(1).max(64).safeParse(row.action_status).success)
+      return { kind: "assistant_action", action: { id: row.action_id!, status: row.action_status! } };
+    return { kind: "own_device_unattributed" };
+  };
+  let authorship: NativeCaptureAuthorship | null;
+  try { authorship = await observeAuthorship(); } catch { return unavailable("source_unavailable"); }
+  if (!authorship) return unavailable("source_changed");
   // A lookup and snapshot span awaits. Re-read every content/version/access pin,
   // including authors and direction whose updates need not advance a watermark.
   const after = await readCaptureSnapshot(raw, query);
   if (after.state !== "available") return unavailable(after.reason ?? "source_unavailable", after.state);
   if (JSON.stringify(snapshot) !== JSON.stringify(after)) return unavailable("source_changed");
+  // Actions settle asynchronously after provider acceptance. Recheck exact
+  // attribution/status across the proof; a late or ambiguous receipt is never
+  // promoted into human authorship. Unknown device input stays unattributed.
+  let finalAuthorship: NativeCaptureAuthorship | null;
+  try { finalAuthorship = await observeAuthorship(); } catch { return unavailable("source_unavailable"); }
+  if (JSON.stringify(authorship) !== JSON.stringify(finalAuthorship)) return unavailable("source_changed");
   const current = await resolveRuntimeEnv(raw);
   if (raw.ASSISTANT_READER_SECRET !== secret || !await safeEqual(secret, query.secret)) throw new Error("reader_denied");
   try { assertActive(current); } catch { return unavailable("reader_unavailable"); }
@@ -70,7 +102,7 @@ export async function readNativeCaptureInput(raw: Env, input: unknown): Promise<
   const text = typeof content.text === "string" ? content.text : null;
   const result: NativeCaptureInput = { observation: "native_capture_input", ...identity, state: "available",
     conversationKind: snapshot.conversationKind, captureState: "enabled", originalMessageId: content.messageId,
-    originalSequence: originalSequence!, fromMe: content.fromMe,
+    originalSequence: originalSequence!, fromMe: content.fromMe, authorship,
     authorId: typeof content.authorId === "string" ? content.authorId : null,
     authorLabel: typeof content.authorName === "string" ? content.authorName : null,
     text, textState: text !== null ? "ready" : query.sourceKind === "media" || content.kind === "audio" || content.kind === "pdf" ? "pending" : "unavailable",

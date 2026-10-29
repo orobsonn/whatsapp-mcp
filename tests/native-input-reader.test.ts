@@ -40,7 +40,7 @@ it("keeps original Source sequence 10 after incoming 11, with exact body and act
   expect(result).toMatchObject({ observation: "native_capture_input", state: "available", conversationKind: "private",
     sourceKind: "message", originalMessageId: "original", originalSequence: 10, watermark: 11,
     captureState: "enabled", text: "Exact body\n  preserved.", textState: "ready", fromMe: false,
-    authorId: "peer", authorLabel: "Same display name", sourceVersion: 1 });
+    authorId: "peer", authorLabel: "Same display name", sourceVersion: 1, authorship: { kind: "external" } });
   expect(await reader().readNativeInput(query("message", "newer"))).toMatchObject({ originalSequence: 11 });
   expect(await readConversationActivity(settings(), { secret, sourceEpoch: "native-e", sourceGeneration: "native-g", chatId: "chat" }))
     .toMatchObject({ latestIncomingOriginalSequence: 11 });
@@ -57,13 +57,65 @@ it("exposes an unmodified snapshot for the existing OriginGuard hash", async () 
   expect(JSON.stringify(result)).not.toMatch(/provider-original|synthetic-lid@lid|synthetic-peer@lid|native-input-synthetic-reader-secret/);
 });
 
-it("returns owner manual sends with their original sequence after edits", async () => {
+it("returns own device sends as unattributed, preserving their original sequence after edits", async () => {
   await message("owner", true, "Owner reply");
   await run("UPDATE messages SET text='Owner edited',version=2 WHERE id='owner'");
   expect(await reader().readNativeInput(query("message", "owner"))).toMatchObject({ state: "available", fromMe: true,
-    originalSequence: 11, text: "Owner edited", sourceVersion: 2, watermark: 12 });
+    originalSequence: 11, text: "Owner edited", sourceVersion: 2, watermark: 12, authorship: { kind: "own_device_unattributed" } });
   expect(await readConversationActivity(settings(), { secret, sourceEpoch: "native-e", sourceGeneration: "native-g", chatId: "chat" }))
     .toMatchObject({ lastOwnerOriginalSequence: 11 });
+});
+
+async function action(options: { id?: string; chatId?: string; epoch?: string; generation?: string;
+  status?: string; messageId?: string | null; zaapId?: string | null } = {}) {
+  await env.DB.prepare(`INSERT INTO actions(id,epoch,generation,chat_id,envelope_json,hash,status,expires_at,
+      provider_message_id,provider_zaap_id,created_at)
+    VALUES(?,?,?,?,?,?,?,9999999999999,?,?,10)`)
+    .bind(options.id ?? "action-1", options.epoch ?? "native-e", options.generation ?? "native-g", options.chatId ?? "chat",
+      JSON.stringify({ text: "Exact body\n  preserved.", secret: "do-not-expose-envelope" }), "c".repeat(64),
+      options.status ?? "accepted", options.messageId ?? null, options.zaapId ?? null).run();
+}
+
+it.each(["messageId", "zaapId"] as const)("correlates exact unique action %s receipts without exposing provider or envelope fields", async field => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  await action({ [field]: "provider-original-must-not-leave" });
+  const result = await reader().readNativeInput(query());
+  expect(result).toMatchObject({ state: "available", fromMe: true, originalMessageId: "original", originalSequence: 10,
+    authorship: { kind: "assistant_action", action: { id: "action-1", status: "accepted" } } });
+  expect(JSON.stringify(result)).not.toMatch(/provider-original|do-not-expose-envelope|provider_message_id|provider_zaap_id|envelope_json/);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("counts a single action matching both provider receipt columns only once", async () => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  await action({ messageId: "provider-original-must-not-leave", zaapId: "provider-original-must-not-leave", status: "delivered" });
+  expect(await reader().readNativeInput(query())).toMatchObject({ authorship: { kind: "assistant_action",
+    action: { id: "action-1", status: "delivered" } } });
+});
+
+it.each(["chat", "epoch", "generation", "same_text_without_receipt"])("does not attribute by %s mismatch or identical message content", async mismatch => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  await run(`INSERT INTO chats(id,epoch,generation,external_id,kind,name,capture_enabled,created_at,updated_at)
+    VALUES('other-chat','native-e','native-g','other-synthetic','individual','Same display name',1,10,10)`);
+  await action({ messageId: mismatch === "same_text_without_receipt" ? null : "provider-original-must-not-leave",
+    ...(mismatch === "chat" ? { chatId: "other-chat" } : {}), ...(mismatch === "epoch" ? { epoch: "old-e" } : {}),
+    ...(mismatch === "generation" ? { generation: "old-g" } : {}) });
+  expect(await reader().readNativeInput(query())).toMatchObject({ state: "available", authorship: { kind: "own_device_unattributed" } });
+});
+
+it("keeps incoming authorship external even if its ID happens to match an action receipt", async () => {
+  await action({ messageId: "provider-original-must-not-leave" });
+  expect(await reader().readNativeInput(query())).toMatchObject({ fromMe: false, authorship: { kind: "external" } });
+});
+
+it("leaves ambiguous or invalid action metadata as unattributed device input", async () => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  await action({ messageId: "provider-original-must-not-leave" });
+  await action({ id: "action-2", zaapId: "provider-original-must-not-leave" });
+  expect(await reader().readNativeInput(query())).toMatchObject({ authorship: { kind: "own_device_unattributed" } });
+  await run("DELETE FROM actions WHERE id='action-2'");
+  await env.DB.prepare("UPDATE actions SET status=? WHERE id='action-1'").bind("x".repeat(65)).run();
+  expect(await reader().readNativeInput(query())).toMatchObject({ authorship: { kind: "own_device_unattributed" } });
 });
 
 async function media(kind = "audio") {
@@ -84,6 +136,40 @@ it.each(["audio", "pdf"])("maps %s media and delayed derivatives to original mes
   expect(derivative).toMatchObject({ state: "available", originalMessageId: "original", originalSequence: 10,
     text: "Exact derived text", textState: "ready", sourceVersion: null, authorId: "peer" });
   expect(JSON.stringify(derivative)).not.toMatch(/provider.example|private\/object|token=secret/);
+});
+
+it("inherits derivative authorship only from its exact original message action correlation", async () => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  await media();
+  expect(await reader().readNativeInput(query("derivative", "derivative"))).toMatchObject({
+    state: "available", originalMessageId: "original", originalSequence: 10, authorship: { kind: "own_device_unattributed" } });
+  await action({ zaapId: "provider-original-must-not-leave" });
+  expect(await reader().readNativeInput(query("derivative", "derivative"))).toMatchObject({
+    state: "available", originalMessageId: "original", originalSequence: 10,
+    authorship: { kind: "assistant_action", action: { id: "action-1", status: "accepted" } } });
+});
+
+it.each(["late_receipt", "status_changed"])("denies changed attribution evidence across reads: %s", async mutation => {
+  await run("UPDATE messages SET from_me=1 WHERE id='original'");
+  if (mutation === "status_changed") await action({ messageId: "provider-original-must-not-leave" });
+  let reads = 0;
+  const db = env.DB;
+  const proxy = new Proxy(db, { get(target, property) {
+    if (property !== "prepare") return Reflect.get(target, property, target);
+    return (sql: string) => {
+      const statement = target.prepare(sql);
+      if (!sql.includes("SELECT m.from_me,COUNT(a.id) match_count")) return statement;
+      return { bind: (...values: unknown[]) => ({ first: async () => {
+        const attribution = await statement.bind(...values).first();
+        if (++reads === 1) {
+          if (mutation === "late_receipt") await action({ messageId: "provider-original-must-not-leave" });
+          else await run("UPDATE actions SET status='delivered' WHERE id='action-1'");
+        }
+        return attribution;
+      } }) };
+    };
+  } });
+  expect(await readNativeCaptureInput({ ...settings(), DB: proxy }, query())).toMatchObject({ state: "blocked", reason: "source_changed" });
 });
 
 it("preserves unknown group/private author identity instead of deriving it from labels or chat IDs", async () => {
