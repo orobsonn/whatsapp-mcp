@@ -3,6 +3,7 @@ No graph doubles, provider stubs, embeddings, or LLM calls are used.
 """
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -209,9 +210,48 @@ async def lookup_contract(root):
         assert page['claims'] == [] and page['nextCursor'] and page['coverage']['state'] == 'partial'
         assert await store.get_entity('person:a') == request()['entities'][0]
         assert (await store.find_entities({'query': 'Nora'}))['entities'] == [request()['entities'][0]]
+        await origin_contract(root, graph, backend.engine.vector)
         print('native_lookup_continuation_ok')
     finally:
         await backend.close()
+
+
+async def origin_contract(root, graph, vector):
+    store = NativeKnowledgeStore(root, {**NS, 'generation': 'origin-only'}, graph, vector)
+    await store.initialize()
+    joint = request(REFS[0]); joint['origin'] = 'owner_report'
+    joint['relations'][0]['evidence'].append({'sourceRef': REFS[1]})
+    owner = await store.remember('origin-owner-ab', joint)
+    agent = await store.remember('origin-agent-a', request(REFS[0]))
+    assert owner['state'] == agent['state'] == 'ready'
+    assert len(set(owner['evidenceIds']) & set(agent['evidenceIds'])) == 1
+    before = (await store.query({}))['claims'][0]
+    assert set(before['origins']) == {'owner_report', 'agent_derived'}
+    by_group = {group['id']: group for group in before['supportGroups']}
+    assert all(item['origins'] == ['owner_report'] for item in by_group[owner['supportGroupIds'][0]]['evidence'])
+    assert by_group[agent['supportGroupIds'][0]]['evidence'][0]['origins'] == ['agent_derived']
+    assert (await store.withdraw('origin-drop-b', REFS[1]))['state'] == 'ready'
+    claim = (await store.query({}))['claims'][0]
+    assert len(claim['supportGroups']) == 1
+    assert claim['origins'] == ['agent_derived'], claim
+    assert claim['evidence'][0]['origins'] == ['agent_derived']
+    assert claim['supportGroups'][0]['evidence'][0]['origins'] == ['agent_derived']
+    assert (await store.status('origin-owner-ab'))['state'] == 'partial'
+    assert (await store.status('origin-agent-a'))['state'] == 'ready'
+    # Same group can accumulate both writers, but ready must prove THIS group's origin.
+    owner_a = request(REFS[0]); owner_a['origin'] = 'owner_report'
+    receipt = await store.remember('origin-owner-a', owner_a)
+    assert receipt['state'] == 'ready'
+    assert set((await store.query({}))['claims'][0]['origins']) == {'owner_report', 'agent_derived'}
+    rows = await graph.query('MATCH (g:Node) WHERE g.id=$id RETURN g.properties',
+                             {'id': receipt['supportGroupIds'][0]})
+    properties = json.loads(rows[0][0]); properties['origins'] = ['agent_derived']
+    await graph.query('MATCH (g:Node) WHERE g.id=$id SET g.properties=$properties',
+                      {'id': receipt['supportGroupIds'][0], 'properties': json.dumps(properties)})
+    assert (await store.status('origin-owner-a'))['state'] == 'uncertain'
+    assert (await store.status('origin-agent-a'))['state'] == 'ready'
+    assert (await store.query({}))['claims'][0]['origins'] == ['agent_derived']
+    print('native_support_group_origins_ok')
 
 
 if __name__ == '__main__':

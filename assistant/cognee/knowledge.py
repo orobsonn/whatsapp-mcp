@@ -58,7 +58,6 @@ class AssistantEvidence(DataPoint):
     name: str
     source_ref: dict
     quote: str | None = None
-    origins: list[str]
     metadata: dict = {'identity_fields': ['canonical_key'], 'index_fields': []}
 
 
@@ -67,6 +66,7 @@ class AssistantSupportGroup(DataPoint):
     # A native scalar projection for count filtering, never an identity/label merge.
     name: str
     required_evidence_ids: list[str]
+    origins: list[str]
     metadata: dict = {'identity_fields': ['canonical_key'], 'index_fields': []}
 
 
@@ -240,12 +240,13 @@ class NativeKnowledgeStore:
                 if quote is not None: self._text(quote)
                 eid = ['evidence', str(claim.id), ref, quote]
                 evidence = AssistantEvidence(id=UUID(self._id(*eid)), canonical_key=self._key(*eid),
-                    name='source evidence', source_ref=ref, quote=quote, origins=[value['origin']])
+                    name='source evidence', source_ref=ref, quote=quote)
                 relation_supports.append((claim, endpoints, evidence, self._ref_key(ref)))
             required_ids = sorted({str(item[2].id) for item in relation_supports})
             group_identity = ['support_group', str(claim.id), required_ids]
             group = AssistantSupportGroup(id=UUID(self._id(*group_identity)),
-                canonical_key=self._key(*group_identity), name=str(len(required_ids)), required_evidence_ids=required_ids)
+                canonical_key=self._key(*group_identity), name=str(len(required_ids)),
+                required_evidence_ids=required_ids, origins=[value['origin']])
             prepared.extend((*item, group) for item in relation_supports)
         return prepared
 
@@ -298,10 +299,10 @@ class NativeKnowledgeStore:
             self._set_state(operationId, 'indexing')
             try:
                 for claim, endpoints, evidence, ref_key, group in prepared:
-                    rows = await self.graph.query('MATCH (v:Node) WHERE v.id=$id RETURN v.properties', {'id': str(evidence.id)})
+                    rows = await self.graph.query('MATCH (g:Node) WHERE g.id=$id RETURN g.properties', {'id': str(group.id)})
                     if rows:
                         previous = json.loads(rows[0][0])
-                        evidence.origins = sorted(set(previous.get('origins', [])) | set(evidence.origins))
+                        group.origins = sorted(set(previous.get('origins', [])) | set(group.origins))
                     await self.graph.add_nodes([*endpoints, claim, group, evidence], source_ref_key=ref_key)
                     await self.graph.add_edges([
                         (str(claim.id), str(endpoints[0].id), 'claim_subject', {}),
@@ -336,6 +337,10 @@ class NativeKnowledgeStore:
             ref_key = self._ref_key(self._source(evidence['source_ref']))
             expected_evidence = self._id('evidence', claim_id, evidence['source_ref'], evidence.get('quote'))
             ids = group['required_evidence_ids']
+            origins = group.get('origins')
+            if (not isinstance(origins, list) or not origins or
+                any(origin not in ('owner_report', 'agent_derived') for origin in origins)):
+                continue
             if (not ids or len(ids) != len(set(ids)) or sorted(ids) != ids or
                 self._id('support_group', claim_id, ids) != row[16] or
                 expected_evidence != row[5] or row[5] not in ids or
@@ -372,10 +377,10 @@ class NativeKnowledgeStore:
             found = 0
             for claim_id in {item[0] for item in supports}:
                 rows = await self._rows(claim_id, complete=False)
-                by_id = {(row[5], row[16]): json.loads(row[6]) for row in rows}
+                by_id = {(row[5], row[16]): (json.loads(row[6]), json.loads(row[17])['origins']) for row in rows}
                 for _, evidence_id, ref_key, group_id in (item for item in supports if item[0] == claim_id):
-                    evidence = by_id.get((evidence_id, group_id))
-                    if evidence and self._ref_key(evidence['source_ref']) == ref_key and receipt['origin'] in evidence['origins']:
+                    support = by_id.get((evidence_id, group_id))
+                    if support and self._ref_key(support[0]['source_ref']) == ref_key and receipt['origin'] in support[1]:
                         found += 1
             return self._set_state(operation_id, 'ready' if supports and found == len(supports) else 'partial' if found else 'uncertain')
         except Exception:
@@ -496,9 +501,16 @@ class NativeKnowledgeStore:
             evidence_by_id, groups = {}, {}
             for row in supports:
                 item = json.loads(row[6])
-                entry = {'id': row[5], 'sourceRef': item['source_ref'], 'origins': item['origins']}
+                # Origin describes this assertion with this exact set of premises.
+                # A shared Evidence node cannot lend origin across support groups.
+                group_origins = sorted(set(json.loads(row[17])['origins']))
+                entry = {'id': row[5], 'sourceRef': item['source_ref'], 'origins': group_origins}
                 if item.get('quote') is not None: entry['quote'] = item['quote']
-                evidence_by_id[row[5]] = entry
+                if row[5] in evidence_by_id:
+                    flattened = evidence_by_id[row[5]]
+                    flattened['origins'] = sorted(set(flattened['origins']) | set(group_origins))
+                else:
+                    evidence_by_id[row[5]] = {**entry, 'origins': list(group_origins)}
                 groups.setdefault(row[16], {'id': row[16], 'evidence': []})['evidence'].append(entry)
             evidence = list(evidence_by_id.values())
             result = {'id': claim_id, 'subject': {'id': subject['external_id'], 'kind': subject['kind'], 'name': first[2]},
