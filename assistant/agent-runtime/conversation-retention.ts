@@ -83,6 +83,7 @@ export class NativeConversationRetention {
   }
   let final:boolean;try{final=await this.isCurrent(id);}catch(error){report({phase:'final_context_sql',reason:'exception',elapsedMs:Date.now()-began,started,completed});throw error;}
   if(!final){await this.purge(identity);throw Error('conversation_context_withdrawn');}signal?.throwIfAborted();
+  if(started)try{console.info('native_context_proof_diagnostic',{phase:'context_complete',reason:'current',elapsedMs:Date.now()-began,started,completed});}catch{/* Aggregate observation only. */}
  }
  async exposeSource(identity:ConversationIdentity,ref:SourceSelectionRef){
   const source=await this.access().read(owner,ref.id,ref.revision);if(!source||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash)throw Error('conversation_exposure_proof');

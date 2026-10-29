@@ -8,7 +8,7 @@ import {assertRestoredGeneration} from '../retention-runtime';
 import {configuredKnowledgeService} from '../knowledge/configured';
 import {ConversationRuntime,conversationIdentity,conversationAddress,conversationReplyAnchor,verifiedConversationEvent,type ConversationIdentity,type VerifiedConversationEvent,type TaskContext} from './conversation';
 import {NativeConversationRetention} from './conversation-retention';
-import {nativeContextDestroyPort,openNativeConversation} from './native-transport';
+import {nativeContextDestroyPort,openNativeConversation,nativeConversationInstance} from './native-transport';
 import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence,nativeTelegramActivation,nativeCuratorDispatchRequest} from './native-policy';
 import type {ConversationProviderHost} from './conversation-provider';
 import {createConversationReadCapabilities} from './conversation-connectors';
@@ -29,6 +29,7 @@ import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
 import {NativeTasks,isNativeTaskDue} from './native-tasks';
 import {compactStatement,jsonStatement} from '../d1-statement';
+import {reconcileCuratorOutcomes} from './curator-outcomes';
 
 const owner={kind:'owner'} as const;
 type NativeOwnerInput={text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string;native_identity_json:string|null;native_activation_key:string|null};
@@ -279,6 +280,14 @@ export class NativeApplicationHost {
  }
  async tick(){
   this.currentScope();await assertRestoredGeneration(this.env);
+  // Settlement/failure notices contain operational metadata only. They must
+  // remain observable when Source proof blocks ordinary inference or intake.
+  const curatorOutcomes=this.env.NATIVE_CURATOR_ENABLED==='true'?await reconcileCuratorOutcomes({db:this.db,scope:this.scope,
+   assertCurrent:()=>{this.currentScope();if(this.env.ROUTINES_PAUSED==='true')throw Error('native_disabled');},
+   authority:identity=>this.authority(identity),ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),
+   read:(sessionId,receipt,signal)=>openNativeConversation(sessionId).read(receipt,{signal}),
+   instance:nativeConversationInstance,
+   api:check=>new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),check,'HTML')}):{checked:0,notified:0};
   const cut=this.env.NATIVE_CAPTURE_START_AFTER_SEQUENCE;if(typeof cut!=='string'||!/^\d+$/.test(cut)||!Number.isSafeInteger(Number(cut)))throw Error('native_capture_cut_unconfigured');
   // Persistent per-item gaps and least-recently-attempted ordering keep an
   // unavailable media item from blocking unrelated conversations forever.
@@ -296,7 +305,7 @@ export class NativeApplicationHost {
   for(const row of ownerUpdates.results)try{outcomes.push(await this.receiveTelegram(row.update_id));}catch{outcomes.push({state:'unavailable'});}
   await this.sweepRetiredContexts();
   const tasks=await this.tasks().dispatchDue((event,guard,activationKey,fence)=>this.admit(verifiedConversationEvent(event),null,fence,guard,activationKey));
-  const curator=await this.dispatchCurator();return {state:'ticked',outcomes,tasks,curator};
+  const curator=await this.dispatchCurator();return {state:'ticked',outcomes,tasks,curator,curatorOutcomes};
  }
  async modelHost(sessionId:string,turnId:string,submissionId?:string):Promise<ConversationProviderHost>{
   const identity=await this.registered(sessionId),period=new Date().toISOString().slice(0,10),scope={installationId:this.scope.installationId,generation:this.scope.generation,period};

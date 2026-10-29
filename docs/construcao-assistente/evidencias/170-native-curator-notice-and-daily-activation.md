@@ -34,6 +34,10 @@ Prova privada do rollout corrigido: `native-own-curator-daily-rollout-1793309070
 
 Essa primeira admissão é recuperação do dia já vencido ao habilitar a rotina, não mudança do horário03:00. Os próximos dias seguem o cursor durável, incluindo pendências registradas.
 
-**Estado neste registro: admitida/em processamento; conclusão e cobertura diária ainda não homologadas.** O resultado completo deve ser acrescentado após o término real, sem transformar admissão ou configuração em sucesso da análise. A referência de custos é projeção, com limite financeiro de testes preservado; não há promessa de rotina sem interrupção por orçamento ou serviço externo.
+**Resultado posterior: SDK `failed`, `conversation_context_unavailable`, às21:27:07.465UTC.** A execução parou durante a conferência do contexto, antes de produzir tool calls. A consulta dos turnIds dessa submission no ledger confirmou zero recibos de inferência; todos os3679 registros permaneceram pendentes. Não houve nova submissão para repetir a passagem falhada.
+
+Uma leitura de metadados de todos os205 vínculos de origem retidos encontrou mensagens/mídias disponíveis, mas isso não valida hashes, parsing ou o prazo de cada RPC. O motivo físico da indisponibilidade ainda não foi determinado; não foi atribuído a quota por suposição. A evidência171 acompanha diagnóstico e aviso operacional independente das fontes.
+
+Conclusão e cobertura diária continuam sem homologação. A referência de custos é projeção, com limite financeiro de testes preservado; não há promessa de rotina sem interrupção por orçamento ou serviço externo.
 
 Envio WhatsApp após aprovação real, consequência no provedor, documentação final e release minor continuam pendentes na issue146. O dono escolheu aguardar uma conversa normal em vez de fabricar uma entrada de teste.

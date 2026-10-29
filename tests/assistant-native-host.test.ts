@@ -15,13 +15,14 @@ import {SourceController} from '../assistant/sources';
 import {InferenceBudget} from '../assistant/budget';
 import {TelegramLink} from '../assistant/telegram-auth';
 import {RetentionPurge} from '../assistant/retention-purge';
-const transport=vi.hoisted(()=>({dispatch:vi.fn(),abort:vi.fn(),quiesce:vi.fn(),destroy:vi.fn(),deliveries:new Map<string,DeliveredMessage>()}));
+const transport=vi.hoisted(()=>({dispatch:vi.fn(),read:vi.fn(async()=>({})),instance:vi.fn(async(id:string)=>({id,uid:id})),abort:vi.fn(),quiesce:vi.fn(),destroy:vi.fn(),deliveries:new Map<string,DeliveredMessage>()}));
 vi.mock('../assistant/agent-runtime/native-transport',()=>({
- openNativeConversation:(sessionId:string)=>({dispatch:async(q:{idempotencyKey:string;message:DeliveredMessage})=>{transport.dispatch(sessionId,q);transport.deliveries.set(q.idempotencyKey,q.message);return {submissionId:q.idempotencyKey,uid:sessionId,acceptedAt:new Date().toISOString()};},read:async()=>({})}),
+ openNativeConversation:(sessionId:string)=>({dispatch:async(q:{idempotencyKey:string;message:DeliveredMessage})=>{transport.dispatch(sessionId,q);transport.deliveries.set(q.idempotencyKey,q.message);return {submissionId:q.idempotencyKey,uid:sessionId,acceptedAt:new Date().toISOString()};},read:transport.read}),
  nativeContextDestroyPort:()=>({abort:transport.abort,quiesce:transport.quiesce,destroy:transport.destroy}),
+ nativeConversationInstance:(id:string)=>transport.instance(id),
 }));
 const secret='native-host-synthetic-secret-more-than32',bot='native_host_bot';
-beforeEach(async()=>{vi.clearAllMocks();transport.deliveries.clear();await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
+beforeEach(async()=>{vi.clearAllMocks();transport.read.mockReset().mockResolvedValue({});transport.instance.mockReset().mockImplementation(async id=>({id,uid:id}));transport.deliveries.clear();await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
 afterEach(()=>vi.restoreAllMocks());
 async function fixture(){
  const scope={installationId:crypto.randomUUID(),generation:'own-g1',sourceEpoch:'e1',sourceGeneration:'g1'};
@@ -57,6 +58,14 @@ async function fixture(){
 }
 async function latestTask(host:NativeApplicationHost,taskRef:string){const delivery=transport.deliveries.get(taskRef);if(!delivery)throw Error('fixture_delivery');
  const row=await env.DB.prepare('SELECT identity_json FROM assistant_native_conversations WHERE id=(SELECT conversation_id FROM assistant_native_conversation_events WHERE task_ref=?)').bind(taskRef).first<{identity_json:string}>();return host.runtime.resolveTask(JSON.parse(row!.identity_json),delivery);}
+async function outcomeFixture(){
+ const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';const host=f.host(),first=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));
+ if(first.state!=='admitted'||!first.receipt)throw Error('fixture_curator');const task=await latestTask(host,first.taskRef),runId=task.cohort[0].eventId.slice(12),fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+ await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+ const failure=(submissionId=first.receipt!.submissionId,outcome='failed')=>Object.assign(Error('PRIVATE_EXCEPTION_SENTINEL'),{name:'AgentRunError',outcome,submissionId});
+ const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:200,message_thread_id:42,chat:{id:101,type:'private'}}}));
+ return {...f,host,first:{...first,receipt:first.receipt!},runId,failure,fetch};
+}
 describe('native application composition on real D1 and Source reads',()=>{
  it('native owner input replay stays retired after purge via cron and duplicate webhook, while a fresh update remains live',async()=>{
   const f=await fixture();await f.ownerUpdate(1,'Pedido sintético original',43);const host=f.host(),first=await host.receiveTelegram(1),task=await latestTask(host,first.taskRef);
@@ -248,6 +257,72 @@ describe('native application composition on real D1 and Source reads',()=>{
   const task=await latestTask(host,receipt.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
   const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).not.toContain('Contexto do projeto.');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
   expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'accepted'}});expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(1);
+ });
+ it('reports a proven curator failure before broken source guards, independently of summary preference and without a model retry',async()=>{
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';const host=f.host(),first=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));
+  if(first.state!=='admitted'||!first.receipt)throw Error('fixture_curator');const task=await latestTask(host,first.taskRef),runId=task.cohort[0].eventId.slice(12),fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare("UPDATE assistant_curator_state SET notice_mode='errors_help' WHERE installation_id=?").bind(f.scope.installationId).run();
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  await env.DB.prepare("INSERT INTO assistant_curator_notices VALUES(?,?,?,'accepted',1)").bind(f.scope.installationId,f.scope.generation,runId).run();
+  await env.DB.prepare(`INSERT INTO assistant_curator_capture_gaps(installation_id,generation,run_id,sequence,source_kind,source_id,chat_id,recorded_at) VALUES(?,?,?,1,'message','PRIVATE_GAP_SOURCE','PRIVATE_GAP_CHAT',1)`).bind(f.scope.installationId,f.scope.generation,runId).run();
+  transport.read.mockRejectedValue(Object.assign(Error('PRIVATE_EXCEPTION_SENTINEL'),{name:'AgentRunError',outcome:'failed',submissionId:first.receipt!.submissionId}));
+  vi.spyOn(host.retention,'assertCurrent').mockRejectedValue(Error('conversation_context_unavailable'));
+  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:200,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  const dispatches=transport.dispatch.mock.calls.length;
+  await expect(host.tick()).rejects.toThrow('conversation_context_unavailable');
+  expect(fetch).toHaveBeenCalledOnce();const body=JSON.parse(String(fetch.mock.calls[0][1]?.body));expect(body.text).toContain('execução foi interrompida');expect(body.text).toContain('1 pendência');expect(body.text).not.toContain('PRIVATE_');
+  await expect(host.tick()).rejects.toThrow('conversation_context_unavailable');expect(fetch).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
+  const row=await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(runId).first();expect(row).toEqual({outcome:'failed',notice_state:'accepted'});
+ });
+ it.each(['completed','wrong_submission','wrong_uid','aborted','lost_notice'] as const)('curator settlement keeps %s distinct from coverage, retry authority and notification certainty',async mode=>{
+  const f=await outcomeFixture();
+  if(mode==='completed'||mode==='wrong_uid')transport.read.mockResolvedValue({submissionId:f.first.receipt.submissionId,uid:mode==='wrong_uid'?'different-incarnation':f.first.receipt.uid,text:'PRIVATE_REPLY_SENTINEL',data:{private:['PRIVATE_REPLY_SENTINEL']}} as never);
+  else transport.read.mockRejectedValue(f.failure(mode==='wrong_submission'?'different-submission':undefined,mode==='aborted'?'aborted':'failed'));
+  if(mode==='lost_notice')f.fetch.mockRejectedValue(Error('provider_lost_ack'));
+  const dispatches=transport.dispatch.mock.calls.length;await f.host.tick();await f.host.tick();
+  const row=await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first();
+  expect(row).toEqual(mode==='completed'?{outcome:'completed',notice_state:'not_required'}:mode==='wrong_submission'||mode==='wrong_uid'?{outcome:null,notice_state:'pending'}:{outcome:mode==='aborted'?'aborted':'failed',notice_state:mode==='lost_notice'?'uncertain':'accepted'});
+  expect(f.fetch).toHaveBeenCalledTimes(mode==='aborted'||mode==='lost_notice'?1:0);expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
+  expect(await env.DB.prepare('SELECT state FROM assistant_curator_runs WHERE id=?').bind(f.runId).first('state')).toBe('pending');
+  expect(JSON.stringify(await env.DB.prepare('SELECT * FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first())).not.toContain('PRIVATE_');
+ });
+ it('concurrent curator failure observations reserve one provider attempt',async()=>{
+  const f=await outcomeFixture();transport.read.mockRejectedValue(f.failure());await Promise.all([f.host.tick(),f.host.tick()]);expect(f.fetch).toHaveBeenCalledOnce();
+ });
+ it.each(['before','after'] as const)('keeps a changed native incarnation %s SDK read inconclusive',async phase=>{
+  const f=await outcomeFixture();transport.read.mockRejectedValue(f.failure());
+  const expected={id:f.first.receipt.uid,uid:f.first.receipt.uid},changed={...expected,uid:'different-incarnation'};
+  transport.instance.mockResolvedValueOnce(phase==='before'?changed:expected).mockResolvedValueOnce(changed);
+  await f.host.tick();expect(f.fetch).not.toHaveBeenCalled();expect(transport.read).toHaveBeenCalledTimes(phase==='before'?0:1);
+  expect(await env.DB.prepare('SELECT outcome FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first('outcome')).toBeNull();
+ });
+ it('does not let ten obsolete grants starve the current curator run',async()=>{
+  const f=await outcomeFixture();const oldAuthority={...(await nativeAuthority(f.own,(await latestTask(f.host,f.first.taskRef)).identity)).authority,policyRevision:0,grantRef:'obsolete-grant'};
+  for(let i=0;i<10;i++){
+   const oldId='old-outcome-'+i,day='2030-12-'+String(i+1).padStart(2,'0');
+   await env.DB.prepare(`INSERT INTO assistant_curator_runs(installation_id,generation,id,source_epoch,source_generation,day,run_kind,civil_day,from_sequence,to_sequence,capture_to_sequence,created_at) VALUES(?,?,?,?,?,?,'daily',?,0,0,0,1)`).bind(f.scope.installationId,f.scope.generation,oldId,'e1','g1',day,day).run();
+   await env.DB.prepare(`INSERT INTO assistant_native_conversation_events(conversation_id,event_id,revision,task_ref,request_hash,event_json,authority_json,state,receipt_json,created_at)
+    SELECT conversation_id,?,1,?,request_hash,event_json,?,'admitted',?,1 FROM assistant_native_conversation_events WHERE task_ref=?`).bind('curator-run:'+oldId,'old-task-'+i,JSON.stringify(oldAuthority),JSON.stringify({...f.first.receipt,submissionId:'old-submission-'+i}),f.first.taskRef).run();
+  }
+  transport.read.mockRejectedValue(f.failure());await f.host.tick();expect(f.fetch).toHaveBeenCalledOnce();expect(transport.read).toHaveBeenCalledOnce();
+ });
+ it('advances a prepared outcome poll while its summary topic is unavailable',async()=>{
+  const f=await outcomeFixture();await env.DB.prepare("DELETE FROM assistant_telegram_topics WHERE installation_id=? AND slot='summaries'").bind(f.scope.installationId).run();transport.read.mockRejectedValue(f.failure());
+  await f.host.tick();const before=await env.DB.prepare('SELECT last_checked_at FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first<number>('last_checked_at');
+  const now=vi.spyOn(Date,'now').mockReturnValue(before!+1000);try{await f.host.tick();}finally{now.mockRestore();}
+  expect(await env.DB.prepare('SELECT last_checked_at FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first('last_checked_at')).toBe(before!+1000);expect(f.fetch).not.toHaveBeenCalled();
+ });
+ it.each(['link','hold'] as const)('denies a curator failure notice when %s changes during settlement observation',async mode=>{
+  const f=await outcomeFixture();transport.read.mockImplementation(async()=>{if(mode==='hold')f.own.ROUTINES_PAUSED='true';else await env.DB.prepare("UPDATE assistant_telegram_links SET state='revoked',revision=revision+1,user_id=NULL,chat_id=NULL,activation_cut=NULL WHERE installation_id=?").bind(f.scope.installationId).run();throw f.failure();});
+  await expect(f.host.tick()).rejects.toThrow();expect(f.fetch).not.toHaveBeenCalled();
+ });
+ it('bounds the entire SDK observation and discards a late failure without a notice or new submission',async()=>{
+  const f=await outcomeFixture();let entered!:()=>void,release!:(error:Error)=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+  transport.read.mockImplementation(()=>{entered();return new Promise((_resolve,reject)=>{release=reject;});});
+  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+  try{const pending=f.host.tick();await started;await vi.advanceTimersByTimeAsync(5001);await pending;release(f.failure());await Promise.resolve();await Promise.resolve();expect(f.fetch).not.toHaveBeenCalled();
+   expect(await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(f.runId).first()).toEqual({outcome:null,notice_state:'pending'});
+  }finally{vi.useRealTimers();}
  });
  it.each(['healthy','abort','revoke'] as const)('curator notice separates remote preflight from transport and honors %s cancellation',async mode=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';

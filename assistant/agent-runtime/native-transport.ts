@@ -4,6 +4,7 @@ import {ConversationRuntimeAgent} from './entry';
 import type {NativeContextDestroyPort} from './conversation-retention';
 
 export const openNativeConversation=(sessionId:string)=>init(ConversationRuntimeAgent,{id:sessionId});
+export const nativeConversationInstance=(sessionId:string)=>getAgentInstance(ConversationRuntimeAgent,sessionId);
 /** No SDK internal storage deletion. A failed erase RPC is reconciled through
  * the public instance lookup because SDK destroy may abort its own request. */
 export function nativeContextDestroyPort(env:AssistantEnv):NativeContextDestroyPort {
