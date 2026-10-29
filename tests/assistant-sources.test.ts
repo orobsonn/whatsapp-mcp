@@ -205,3 +205,38 @@ it("rejects a previously authorized fence after its mandate expires", async () =
   const later = new SourceAccess(env.DB, scope, () => 200);
   expect(await later.revalidate(guest, read.fence)).toBe(false);
 });
+it('keeps MCP-provided owner context separate from a direct owner note',async()=>{
+ const note=await owner.create(input('same-key'));
+ const report=await owner.createReport(input('same-key'));
+ expect(report.id).not.toBe(note.id);
+ expect((await access.read(ownerActor,report.id))?.fence.source.origin).toBe('owner_report');
+ expect((await access.read(ownerActor,note.id))?.fence.source.origin).toBe('owner_note');
+ expect(await owner.createReport(input('same-key'))).toEqual(report);
+});
+it('corrects reported context without changing its origin or permitting the direct-note correction path',async()=>{
+ const report=await owner.createReport(input('mcp-report'));
+ await expect(owner.correct(report.id,1,{text:'Wrong path',occurredAt:2})).rejects.toThrow('source_revision_conflict');
+ const corrected=await owner.correctReport(report.id,1,{text:'Corrected owner-provided context',occurredAt:2});
+ expect(corrected).toMatchObject({revision:2,version:2});
+ expect(await access.read(ownerActor,report.id,1)).toBeNull();
+ expect((await access.read(ownerActor,report.id,2))?.fence.source.origin).toBe('owner_report');
+ const note=await owner.create(input('direct-note'));
+ await expect(owner.correctReport(note.id,1,{text:'Wrong path',occurredAt:2})).rejects.toThrow('source_revision_conflict');
+});
+
+it('durable report commands recover their historical receipts after later correction and withdrawal',async()=>{
+ const create={kind:'source.report',operationId:'report-create',input:input('durable-report')};
+ const report=await owner.execute(create);
+ const correction={kind:'source.correct_report',operationId:'report-correct',id:report.id,expectedRevision:1,text:'Correction',occurredAt:2};
+ const corrected=await owner.execute(correction);
+ expect(corrected).toMatchObject({revision:2,version:2,kind:'source.correct_report'});
+ await owner.execute({kind:'source.withdraw',operationId:'report-withdraw',id:report.id,expectedRevision:2});
+ expect(await owner.execute(create)).toEqual(report);expect(await owner.execute(correction)).toEqual(corrected);
+ await expect(owner.execute({...correction,text:'Conflicting retry'})).rejects.toThrow('control_operation_conflict');
+});
+it('keeps durable direct-note and report corrections separated',async()=>{
+ const note=await owner.execute({kind:'source.create',operationId:'note-create',input:input('durable-note')});
+ await expect(owner.execute({kind:'source.correct_report',operationId:'wrong-kind',id:note.id,expectedRevision:1,text:'Wrong',occurredAt:2})).rejects.toThrow('source_revision_conflict');
+ const corrected=await owner.execute({kind:'source.correct',operationId:'note-correct',id:note.id,expectedRevision:1,text:'Correct',occurredAt:2});
+ expect(corrected).toMatchObject({revision:2,version:2});
+});
