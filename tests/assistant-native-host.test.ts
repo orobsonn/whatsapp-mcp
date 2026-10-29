@@ -58,6 +58,39 @@ async function fixture(){
 async function latestTask(host:NativeApplicationHost,taskRef:string){const delivery=transport.deliveries.get(taskRef);if(!delivery)throw Error('fixture_delivery');
  const row=await env.DB.prepare('SELECT identity_json FROM assistant_native_conversations WHERE id=(SELECT conversation_id FROM assistant_native_conversation_events WHERE task_ref=?)').bind(taskRef).first<{identity_json:string}>();return host.runtime.resolveTask(JSON.parse(row!.identity_json),delivery);}
 describe('native application composition on real D1 and Source reads',()=>{
+ it('native owner input replay stays retired after purge via cron and duplicate webhook, while a fresh update remains live',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Pedido sintético original',43);const host=f.host(),first=await host.receiveTelegram(1),task=await latestTask(host,first.taskRef);
+  await host.retention.purge(task.identity);const calls=transport.dispatch.mock.calls.length;
+  await host.tick();expect(transport.dispatch).toHaveBeenCalledTimes(calls);
+  expect(await host.receiveTelegram(1)).toMatchObject({state:'retired',sessionId:task.sessionId,taskRef:first.taskRef});expect(transport.dispatch).toHaveBeenCalledTimes(calls);
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+  await f.ownerUpdate(2,'Pedido novo legítimo',42);const next=await host.receiveTelegram(2);expect(next.state).toBe('admitted');expect(next.sessionId).not.toBe(task.sessionId);
+ });
+ it('native owner input replay reuses a host-only admission after a crash before the native event',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Pedido sintético com ACK pendente',43);const host=f.host(),dispatch=vi.spyOn(host.runtime,'deliverConversation');
+  dispatch.mockRejectedValueOnce(Error('synthetic_before_native_admission'));
+  await expect(host.receiveTelegram(1)).rejects.toThrow('synthetic_before_native_admission');
+  const original=await env.DB.prepare('SELECT conversation_id FROM assistant_native_host_events WHERE installation_id=?').bind(f.scope.installationId).first<{conversation_id:string}>();expect(original).not.toBeNull();
+  const result=await host.receiveTelegram(1);expect(result).toMatchObject({state:'admitted',sessionId:original!.conversation_id});expect(transport.dispatch).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+ });
+ it('native owner input replay preserves the same immutable session and native key after an unknown admission ACK',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Pedido sintético com recibo incerto',43);const host=f.host();
+  transport.dispatch.mockImplementationOnce(()=>{throw Error('synthetic_lost_ack');});const first=await host.receiveTelegram(1);expect(first.state).toBe('uncertain');
+  const replay=await host.receiveTelegram(1);expect(replay.state).toBe('admitted');expect(replay.sessionId).toBe(first.sessionId);expect(replay.taskRef).toBe(first.taskRef);
+  expect(transport.dispatch.mock.calls[0]).toEqual(transport.dispatch.mock.calls[1]);
+  await expect(env.DB.prepare('UPDATE assistant_telegram_updates SET native_identity_json=? WHERE installation_id=? AND update_id=1').bind('{}',f.scope.installationId).run()).rejects.toThrow('native_telegram_input_binding_immutable');
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+ });
+ it('native owner input replay cannot allocate a losing epoch after another caller admitted and purged the same update',async()=>{
+  const f=await fixture();await f.ownerUpdate(1,'Pedido sintético concorrente',43);const a=f.host(),b=f.host();
+  let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(resolve=>release=resolve),blocked=new Promise<void>(resolve=>entered=resolve);
+  const current=a.retention.currentIdentity.bind(a.retention);let first=true;
+  vi.spyOn(a.retention,'currentIdentity').mockImplementation(async(...args)=>{const value=await current(...args);if(first){first=false;entered();await gate;}return value;});
+  const losing=a.receiveTelegram(1);await blocked;const winner=await b.receiveTelegram(1),task=await latestTask(b,winner.taskRef);await b.retention.purge(task.identity);release();
+  expect(await losing).toMatchObject({state:'retired',sessionId:task.sessionId});expect(transport.dispatch).toHaveBeenCalledTimes(1);
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_conversations WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(1);
+ });
  it('is off by default and cannot grant autonomous mode through a transcript or a lone mode flag',()=>{
   expect(nativeMode({})).toBe('off');expect(()=>nativeMode({NATIVE_CONVERSATIONS_MODE:'autonomous'})).toThrow('native_autonomous_disabled');
  });
