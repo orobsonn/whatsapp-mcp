@@ -24,3 +24,11 @@ O teste de fronteira manteve a admissão propositalmente pendente: antes, não h
 Não foram alterados o prazo da ponte, as permissões, a política de grupos ou a aprovação obrigatória do WhatsApp. A fila acumulada continua sendo recuperada. Esse resultado comprova a correção da fronteira de recebimento; não substitui o aceite de uma sugestão útil, do clique humano e da consequência do envio no provedor.
 
 Recibos de implantação, eventos do tail e observações de cursores/estados estão guardados no diretório privado do operador. Nenhum corpo de mensagem, contato ou segredo foi publicado.
+
+## Recuperação do transporte acumulado
+
+O Source passou a aceitar tamanho configurável de página de metadados (padrão 10, intervalo 1–100), sem alterar autenticação, confirmação por item ou autoridade de ação. A configuração temporária 100 foi publicada na versão `36064aae-03a9-43bd-b34b-a5587028717f`. O teste dirigido preservou o 101º registro para a próxima página; nove casos do bridge, TypeScript e build passaram.
+
+Antes da publicação, a próxima página foi dimensionada por conversas distintas e reservas disponíveis; o teto diário e o teto global de testes não foram aumentados. Depois, Source confirmou a sequência 5647 enquanto a cabeça observada era 5648, e o inbox próprio confirmou 5647. Isso comprova recuperação do transporte, não processamento sem lacunas de todas as fontes.
+
+Seis propostas surgidas durante a recuperação não chegaram ao Telegram: a consulta cruzada mostrou que todas já tinham resposta posterior do dono ou entrada mais recente. Zero ações Source foram preparadas para esses gatilhos vencidos. Não há, nesses casos, prova de defeito no RPC ou no Telegram; o bloqueio de atualidade foi correto.
