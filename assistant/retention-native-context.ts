@@ -2,7 +2,7 @@
  * same D1 batch as the exact source purge grant; no native destroy is claimed. */
 // 0040 FTS/shadow tables are derived: deleting canonical source_versions
 // invokes the fixed per-document trigger, preserving every unrelated document.
-export const nativeRetentionTables = new Set(`knowledge_operations native_conversations native_conversation_events native_reply_intents native_context_channels native_context_exposures native_context_purges native_reply_actions native_telegram_reviews native_telegram_callbacks archive_text archive_text_data archive_text_idx archive_text_docsize archive_text_config`.split(' ').map(name=>'assistant_'+name));
+export const nativeRetentionTables = new Set(`knowledge_operations native_conversations native_conversation_events native_reply_intents native_context_channels native_context_exposures native_context_purges native_reply_actions native_telegram_reviews native_telegram_callbacks curator_state curator_runs curator_items curator_capture_gaps curator_notices archive_text archive_text_data archive_text_idx archive_text_docsize archive_text_config`.split(' ').map(name=>'assistant_'+name));
 const namespace=(alias:string)=>`${alias}.installation_id=?1 AND ${alias}.generation=?2`;
 const refs=(kind:string)=>`SELECT id FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3 AND kind='${kind}'`;
 const valid=(json:string)=>`CASE WHEN json_valid(${json}) THEN ${json} ELSE '{}' END`;
@@ -19,7 +19,7 @@ const knowledgeSource=`json_extract(${valid('k.request_json')},'$.sourceId')=?4
  OR EXISTS(SELECT 1 FROM assistant_sources s WHERE ${namespace('s')} AND s.id=?4 AND s.origin='owner_report' AND s.origin_key='knowledge-report:'||k.id)`;
 export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
  const has=(name:string)=>catalog.has('assistant_'+name),native=has('native_conversations');
- const groups=[['native_conversations','native_conversation_events','native_reply_intents'],['native_context_channels','native_context_exposures','native_context_purges']];
+ const groups=[['native_conversations','native_conversation_events','native_reply_intents'],['native_context_channels','native_context_exposures','native_context_purges'],['curator_state','curator_runs','curator_items','curator_capture_gaps','curator_notices']];
  if(groups.some(group=>group.some(has)&&!group.every(has)) || (has('native_context_exposures')||has('native_reply_actions')||has('native_telegram_reviews'))&&!native || has('native_telegram_reviews')!==has('native_telegram_callbacks'))throw Error('native_context_schema_incomplete');
  const collections:{kind:string;query:string}[]=[];
  if(native)collections.push({kind:'native_context',query:`SELECT c.id FROM assistant_native_conversations c WHERE ${namespace('c')} AND (
@@ -38,6 +38,8 @@ export function nativeRetentionAdapter(catalog:ReadonlySet<string>){
    if(has('native_context_purges'))mutations.push(`INSERT INTO assistant_native_context_purges(installation_id,generation,conversation_id,state,updated_at) SELECT ?1,?2,c.id,'tombstoned',?5 FROM assistant_native_conversations c WHERE ${namespace('c')} AND c.id IN (${refs('native_context')}) AND ${gate} ON CONFLICT DO NOTHING`);
   }
   if(has('knowledge_operations'))mutations.push(`UPDATE assistant_knowledge_operations AS k SET request_json='{}',normalized_json=NULL,source_fences_json=NULL,response_json=json_object('operationId',k.id,'state','partial','error','source_purged'),state='complete',error='source_purged',updated_at=?5 WHERE ${namespace('k')} AND k.id IN (${refs('knowledge_operation')}) AND ${gate}`);
+  if(has('curator_items'))mutations.push(`UPDATE assistant_curator_items AS i SET state='withdrawn',source_hash=NULL,operation_ids_json='[]',updated_at=?5 WHERE ${namespace('i')} AND i.source_id=?4 AND ${gate}`);
+  if(has('curator_capture_gaps'))mutations.push(`UPDATE assistant_curator_capture_gaps AS g SET state='withdrawn' WHERE ${namespace('g')} AND EXISTS(SELECT 1 FROM assistant_source_origins o WHERE ${namespace('o')} AND o.canonical_id=?4 AND o.source_kind=g.source_kind AND o.source_id=g.source_id) AND ${gate}`);
   return mutations;
  }};
 }
