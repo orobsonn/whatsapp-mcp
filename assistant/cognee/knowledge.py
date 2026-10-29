@@ -27,6 +27,11 @@ from cognee.infrastructure.databases.provenance.source_refs import make_source_r
 from cognee.infrastructure.databases.unified.provenance_delete_planner import execute_source_ref_removal
 
 
+# Leaves headroom inside the host's 4 MiB response envelope. This bounds one
+# transport page, never the corpus or the number of alternatives for a claim.
+MAX_QUERY_PAGE_BYTES = 3 * 1024 * 1024
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
@@ -315,7 +320,7 @@ class NativeKnowledgeStore:
                 self._set_state(operationId, 'uncertain', 'native_write_uncertain')
             return await self._reconcile(operationId)
 
-    async def _rows(self, claim_id, complete=True):
+    async def _rows(self, claim_id, complete=True, group_id=None):
         rows = await self.graph.query("""MATCH (c:Node)-[s:EDGE]->(a:Node),
             (c)-[o:EDGE]->(b:Node),(c)-[e:EDGE]->(v:Node),
             (c)-[k:EDGE]->(g:Node),(g)-[ge:EDGE]->(v)
@@ -324,11 +329,12 @@ class NativeKnowledgeStore:
               AND e.relationship_name='claim_evidence' AND v.type='AssistantEvidence'
               AND k.relationship_name='claim_support_group' AND g.type='AssistantSupportGroup'
               AND ge.relationship_name='support_evidence'
+              AND ($support_group_id='' OR g.id=$support_group_id)
             RETURN c.properties,a.properties,a.name,b.properties,b.name,v.id,v.properties,
               a.id,b.id,c.source_ref_keys,a.source_ref_keys,b.source_ref_keys,v.source_ref_keys,
               s.source_ref_keys,o.source_ref_keys,e.source_ref_keys,
               g.id,g.properties,g.source_ref_keys,k.source_ref_keys,ge.source_ref_keys
-            ORDER BY g.id,v.id""", {'claim': claim_id, 'space': self.space})
+            ORDER BY g.id,v.id""", {'claim': claim_id, 'space': self.space, 'support_group_id': group_id or ''})
         valid, required, seen = [], {}, {}
         for row in rows:
             claim, subject, obj, evidence, group = (json.loads(row[index]) for index in (0, 1, 3, 6, 17))
@@ -375,11 +381,11 @@ class NativeKnowledgeStore:
                 edges = await self.graph.find_edges_by_source_ref(ref_key)
                 return self._set_state(operation_id, 'partial' if remaining or edges else 'ready')
             found = 0
-            for claim_id in {item[0] for item in supports}:
-                rows = await self._rows(claim_id, complete=False)
+            for claim_id, group_id in {(item[0], item[3]) for item in supports}:
+                rows = await self._rows(claim_id, complete=False, group_id=group_id)
                 by_id = {(row[5], row[16]): (json.loads(row[6]), json.loads(row[17])['origins']) for row in rows}
-                for _, evidence_id, ref_key, group_id in (item for item in supports if item[0] == claim_id):
-                    support = by_id.get((evidence_id, group_id))
+                for _, evidence_id, ref_key, expected_group in (item for item in supports if item[0] == claim_id and item[3] == group_id):
+                    support = by_id.get((evidence_id, expected_group))
                     if support and self._ref_key(support[0]['source_ref']) == ref_key and receipt['origin'] in support[1]:
                         found += 1
             return self._set_state(operation_id, 'ready' if supports and found == len(supports) else 'partial' if found else 'uncertain')
@@ -448,27 +454,89 @@ class NativeKnowledgeStore:
             if not await self._entity_has_complete_claim(item['external_id']):
                 continue
             entities.append({'id': item['external_id'], 'kind': item['kind'], 'name': name})
-        page = {'entities': entities, 'coverage': self._coverage(len(rows[:limit]), len(entities))}
+        page = {'entities': entities, 'coverage': self._coverage(len(rows[:limit]), len(entities), len(rows) > limit)}
         if len(rows) > limit: page['nextCursor'] = rows[limit - 1][0]
         return page
 
     @staticmethod
-    def _coverage(candidates, returned):
-        return {'scope': 'native_candidate_page', 'state': 'partial' if candidates != returned else 'complete',
+    def _coverage(candidates, returned, more=False):
+        return {'scope': 'native_candidate_page', 'state': 'partial' if more or candidates != returned else 'complete',
                 'candidates': candidates, 'returned': returned}
 
+    @staticmethod
+    def _group_cursor(claim_id, group_id):
+        return f'kg1.{claim_id}.{group_id}'
+
+    @staticmethod
+    def _parse_group_cursor(cursor):
+        if not isinstance(cursor, str) or len(cursor) > 256:
+            raise ValueError('knowledge_cursor')
+        if not cursor: return '', ''
+        parts = re.fullmatch(r'kg1\.([0-9a-f-]{36})\.([0-9a-f-]{36})', cursor)
+        if not parts: raise ValueError('knowledge_cursor')
+        try:
+            values = tuple(str(UUID(part)) for part in parts.groups())
+        except ValueError as error:
+            raise ValueError('knowledge_cursor') from error
+        if values != parts.groups(): raise ValueError('knowledge_cursor')
+        return values
+
+    @staticmethod
+    def _claim_from_rows(claim_id, supports):
+        first = supports[0]
+        claim, subject, obj = json.loads(first[0]), json.loads(first[1]), json.loads(first[3])
+        evidence_by_id, groups = {}, {}
+        for row in supports:
+            item = json.loads(row[6])
+            group_origins = sorted(set(json.loads(row[17])['origins']))
+            entry = {'id': row[5], 'sourceRef': item['source_ref'], 'origins': group_origins}
+            if item.get('quote') is not None: entry['quote'] = item['quote']
+            if row[5] in evidence_by_id:
+                flattened = evidence_by_id[row[5]]
+                flattened['origins'] = sorted(set(flattened['origins']) | set(group_origins))
+            else:
+                evidence_by_id[row[5]] = {**entry, 'origins': list(group_origins)}
+            groups.setdefault(row[16], {'id': row[16], 'evidence': []})['evidence'].append(entry)
+        evidence = list(evidence_by_id.values())
+        result = {'id': claim_id, 'subject': {'id': subject['external_id'], 'kind': subject['kind'], 'name': first[2]},
+            'predicate': claim['predicate'], 'object': {'id': obj['external_id'], 'kind': obj['kind'], 'name': first[4]},
+            'classification': claim['classification'], 'evidence': evidence, 'supportGroups': list(groups.values()),
+            'origins': sorted({origin for item in evidence for origin in item['origins']})}
+        for field, native in (('validFrom', 'valid_from'), ('validUntil', 'valid_until')):
+            if claim.get(native) is not None: result[field] = claim[native]
+        return result
+
+    @staticmethod
+    def _merge_claim_groups(current, addition):
+        # Copy the flattened origin lists: per-group origins must remain local.
+        evidence = {item['id']: {**item, 'origins': list(item['origins'])} for item in current['evidence']}
+        for item in addition['evidence']:
+            if item['id'] in evidence:
+                evidence[item['id']]['origins'] = sorted(set(evidence[item['id']]['origins']) | set(item['origins']))
+            else:
+                evidence[item['id']] = {**item, 'origins': list(item['origins'])}
+        return {**current, 'supportGroups': [*current['supportGroups'], *addition['supportGroups']],
+            'evidence': list(evidence.values()),
+            'origins': sorted({origin for item in evidence.values() for origin in item['origins']})}
+
     async def query(self, input):
-        """Page native claim IDs before fetching support; results are candidates, not ACLs."""
+        """Page indivisible support groups; claims contain ONLY groups in this page.
+
+        limit counts native candidate groups. The opaque cursor orders claim/group
+        IDs, so a claim's other alternatives remain retrievable without loading its
+        whole history. Coverage is partial whenever continuation exists. Structural
+        candidates remain subject to host authorization and original revalidation.
+        """
         await self.initialize()
         if not isinstance(input, dict) or set(input) - {'entityId', 'predicate', 'classification', 'after', 'limit'}:
             raise ValueError('knowledge_query')
         limit = input.get('limit', 20)
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('knowledge_page_limit')
-        params = {'space': self.space, 'limit': limit + 1, 'after': input.get('after', '')}
-        if not isinstance(params['after'], str): raise ValueError('knowledge_cursor')
-        if params['after']: self._text(params['after'])
-        conditions = ["c.name=$space", "c.type='AssistantClaim'", 'c.id>$after',
+        after_claim, after_group = self._parse_group_cursor(input.get('after', ''))
+        params = {'space': self.space, 'limit': limit + 1, 'after_claim': after_claim, 'after_group': after_group}
+        conditions = ["c.name=$space", "c.type='AssistantClaim'",
+                      '(c.id>$after_claim OR (c.id=$after_claim AND g.id>$after_group))',
                       "s.relationship_name='claim_subject'", "o.relationship_name='claim_object'",
                       "e.relationship_name='claim_evidence'", "v.type='AssistantEvidence'",
                       "k.relationship_name='claim_support_group'", "g.type='AssistantSupportGroup'",
@@ -482,46 +550,45 @@ class NativeKnowledgeStore:
                 self._text(input[field])
                 if field == 'classification' and input[field] not in ('reported', 'inferred'):
                     raise ValueError('knowledge_classification')
-                # The pinned adapter stores non-core fields as JSON, consistently via
-                # json.dumps. Parameterized exact JSON field fragments avoid interpolating
-                # Cypher, and the native engine applies filters BEFORE claim pagination.
                 params[field] = json.dumps(field) + ': ' + json.dumps(input[field])
                 conditions.append(f'c.properties CONTAINS ${field}')
         rows = await self.graph.query('''MATCH (c:Node)-[s:EDGE]->(a:Node),
             (c)-[o:EDGE]->(b:Node),(c)-[e:EDGE]->(v:Node),
             (c)-[k:EDGE]->(g:Node),(g)-[ge:EDGE]->(v) WHERE ''' + ' AND '.join(conditions) +
             ' WITH c,g,count(DISTINCT v.id) AS support_count WHERE support_count=CAST(g.name AS INT64) '
-            'RETURN DISTINCT c.id ORDER BY c.id LIMIT $limit', params)
-        claims = []
-        for (claim_id,) in rows[:limit]:
-            supports = await self._rows(claim_id)
-            if not supports: continue
-            first = supports[0]
-            claim, subject, obj = json.loads(first[0]), json.loads(first[1]), json.loads(first[3])
-            evidence_by_id, groups = {}, {}
-            for row in supports:
-                item = json.loads(row[6])
-                # Origin describes this assertion with this exact set of premises.
-                # A shared Evidence node cannot lend origin across support groups.
-                group_origins = sorted(set(json.loads(row[17])['origins']))
-                entry = {'id': row[5], 'sourceRef': item['source_ref'], 'origins': group_origins}
-                if item.get('quote') is not None: entry['quote'] = item['quote']
-                if row[5] in evidence_by_id:
-                    flattened = evidence_by_id[row[5]]
-                    flattened['origins'] = sorted(set(flattened['origins']) | set(group_origins))
-                else:
-                    evidence_by_id[row[5]] = {**entry, 'origins': list(group_origins)}
-                groups.setdefault(row[16], {'id': row[16], 'evidence': []})['evidence'].append(entry)
-            evidence = list(evidence_by_id.values())
-            result = {'id': claim_id, 'subject': {'id': subject['external_id'], 'kind': subject['kind'], 'name': first[2]},
-                'predicate': claim['predicate'], 'object': {'id': obj['external_id'], 'kind': obj['kind'], 'name': first[4]},
-                'classification': claim['classification'], 'evidence': evidence, 'supportGroups': list(groups.values()),
-                'origins': sorted({origin for item in evidence for origin in item['origins']})}
-            for field, native in (('validFrom', 'valid_from'), ('validUntil', 'valid_until')):
-                if claim.get(native) is not None: result[field] = claim[native]
-            claims.append(result)
-        page = {'claims': claims, 'coverage': self._coverage(len(rows[:limit]), len(claims))}
-        if len(rows) > limit: page['nextCursor'] = rows[limit - 1][0]
+            'RETURN DISTINCT c.id,g.id ORDER BY c.id,g.id LIMIT $limit', params)
+        claims, consumed, returned, last = {}, 0, 0, None
+        more = len(rows) > limit
+        for claim_id, group_id in rows[:limit]:
+            supports = await self._rows(claim_id, group_id=group_id)
+            if not supports:
+                consumed += 1
+                last = (claim_id, group_id)
+                continue
+            addition = self._claim_from_rows(claim_id, supports)
+            candidate = dict(claims)
+            candidate[claim_id] = (self._merge_claim_groups(claims[claim_id], addition)
+                                   if claim_id in claims else addition)
+            # Reserve maximal counter digits, cursor, and the longer state label.
+            # Count the actual UTF-8 JSON, including duplicated flattened evidence.
+            reserved = {'claims': list(candidate.values()),
+                        'coverage': self._coverage(limit, limit),
+                        'nextCursor': self._group_cursor(claim_id, group_id)}
+            size = len(json.dumps(reserved, ensure_ascii=False, allow_nan=False).encode('utf-8'))
+            if size > MAX_QUERY_PAGE_BYTES:
+                if not returned:
+                    # The host's <=256 KiB write envelope guarantees accepted
+                    # dataplane groups fit. Oversize direct internal writes cannot
+                    # be hidden as an empty or perpetually repeated cursor page.
+                    raise ValueError('knowledge_support_group_exceeds_page_budget')
+                more = True
+                break
+            claims = candidate
+            consumed += 1
+            returned += 1
+            last = (claim_id, group_id)
+        page = {'claims': list(claims.values()), 'coverage': self._coverage(consumed, returned, more)}
+        if more and last: page['nextCursor'] = self._group_cursor(*last)
         return page
 
     async def withdraw(self, operationId, sourceRef):

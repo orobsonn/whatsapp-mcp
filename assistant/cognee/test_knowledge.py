@@ -211,6 +211,7 @@ async def lookup_contract(root):
         assert await store.get_entity('person:a') == request()['entities'][0]
         assert (await store.find_entities({'query': 'Nora'}))['entities'] == [request()['entities'][0]]
         await origin_contract(root, graph, backend.engine.vector)
+        await page_contract(root, graph, backend.engine.vector)
         print('native_lookup_continuation_ok')
     finally:
         await backend.close()
@@ -254,8 +255,71 @@ async def origin_contract(root, graph, vector):
     print('native_support_group_origins_ok')
 
 
+async def page_contract(root, graph, vector):
+    store = NativeKnowledgeStore(root, {**NS, 'generation': 'group-page-only'}, graph, vector)
+    await store.initialize()
+    expected, receipts = {}, []
+    for index in range(8):
+        value = request(REFS[0])
+        quotes = [f'{index}:{slot}:' + 'ç🙂' * (110 * 1024 // 6) for slot in range(2)]
+        value['relations'][0]['evidence'] = [
+            {'sourceRef': REFS[slot], 'quote': quotes[slot]} for slot in range(2)]
+        assert len(json.dumps(value, ensure_ascii=False).encode()) < 256 * 1024
+        receipt = await store.remember(f'page-{index}', value)
+        assert receipt['state'] == 'ready'
+        expected[receipt['supportGroupIds'][0]] = (set(receipt['evidenceIds']), set(quotes))
+        receipts.append(receipt)
+    seen, cursor, page_count = set(), None, 0
+    while True:
+        query = {'limit': 20}
+        if cursor: query['after'] = cursor
+        page = await store.query(query)
+        assert len(json.dumps(page, ensure_ascii=False).encode()) <= 3 * 1024 * 1024
+        groups = [group for claim in page['claims'] for group in claim['supportGroups']]
+        assert groups, page
+        for group in groups:
+            assert group['id'] not in seen
+            ids, quotes = expected[group['id']]
+            assert {item['id'] for item in group['evidence']} == ids
+            assert {item['quote'] for item in group['evidence']} == quotes
+            seen.add(group['id'])
+        page_count += 1
+        next_cursor = page.get('nextCursor')
+        if next_cursor:
+            assert len(next_cursor) <= 256 and next_cursor.startswith('kg1.')
+            assert next_cursor != cursor and page['coverage']['state'] == 'partial'
+            cursor = next_cursor
+        else:
+            assert page['coverage']['state'] == 'complete'
+            break
+    assert page_count > 1 and seen == set(expected)
+    first = await store.query({'limit': 1})
+    assert len(first['claims'][0]['supportGroups']) == 1 and first.get('nextCursor')
+    # The lookup must advance the claim+group cursor after incomplete native proof.
+    broken = min(receipts, key=lambda receipt: (receipt['claimIds'][0], receipt['supportGroupIds'][0]))
+    broken_id = broken['evidenceIds'][0]
+    node = await graph.query('MATCH (v:Node) WHERE v.id=$id RETURN v.properties', {'id': broken_id})
+    ref = json.loads(node[0][0])['source_ref']
+    await graph.remove_node_source_refs([broken_id], [store._ref_key(ref)])
+    partial = await store.query({'limit': 1})
+    assert partial['claims'] == [] and partial.get('nextCursor') and partial['coverage']['state'] == 'partial'
+    assert (await store.status(broken['operationId']))['state'] == 'partial'
+    assert await store.get_entity('person:a') == request()['entities'][0]
+    assert (await store.find_entities({'query': 'Nora'}))['entities'] == [request()['entities'][0]]
+    print('native_group_byte_pages_ok')
+
+
+async def pagination_contract(root):
+    root.mkdir(parents=True, exist_ok=True)
+    backend = CogneeBackend(root); await backend.initialize()
+    try:
+        await page_contract(root, backend.engine.graph, backend.engine.vector)
+    finally:
+        await backend.close()
+
+
 if __name__ == '__main__':
-    modes = {'read': independent_read, 'continue': continue_contract, 'lookup': lookup_contract}
+    modes = {'read': independent_read, 'continue': continue_contract, 'lookup': lookup_contract, 'pages': pagination_contract}
     if len(sys.argv) > 1 and sys.argv[1] in modes:
         asyncio.run(modes[sys.argv[1]](Path(sys.argv[2])))
     else:
