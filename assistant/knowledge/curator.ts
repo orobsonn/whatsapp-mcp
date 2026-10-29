@@ -225,6 +225,31 @@ export class KnowledgeCurator {
   if((result[0].results[0] as {valid:number}|undefined)?.valid!==1)throw Error('curator_knowledge_receipt_changed');
   if(!result[1].results[0])throw Error('curator_source_changed');return {sequence,state:input.state};
  }
+ /** The agent already chose and executed a real memory write. Reflect its
+  * original host receipt; never ask the model to copy an opaque operation id
+  * correctly as a precondition of durable accounting. No graph write occurs. */
+ async reflectReady(runId:string,operationId:string){
+  if(typeof operationId!=='string'||!operationId.length||operationId.length>256)throw Error('curator_knowledge_receipt');
+  const scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
+  const operation=await this.db.prepare(`SELECT id FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=? AND client='curator' AND kind='remember' AND state='complete'
+   AND (error IS NULL OR error='outcome_uncertain') AND json_extract(CASE WHEN json_valid(response_json) THEN response_json ELSE '{}' END,'$.state')='ready'
+   AND json_extract(CASE WHEN json_valid(response_json) THEN response_json ELSE '{}' END,'$.operationId')=id AND json_array_length(CASE WHEN json_valid(source_fences_json) THEN source_fences_json ELSE '{}' END,'$.sources')>0`)
+   .bind(...this.keys(scope),operationId).first();this.current(scope);if(!operation)throw Error('curator_knowledge_receipt');
+  const items=await this.db.prepare(`SELECT DISTINCT i.sequence FROM assistant_curator_items i
+   JOIN assistant_knowledge_operations k ON k.installation_id=i.installation_id AND k.generation=i.generation AND k.id=?
+   JOIN json_each(k.source_fences_json,'$.sources') f
+   WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.state IN ('presented','indexing')
+    AND json_extract(f.value,'$.source.id')=i.source_id AND json_extract(f.value,'$.source.revision')=i.revision
+    AND json_extract(f.value,'$.source.version')=i.version AND json_extract(f.value,'$.source.hash')=i.source_hash ORDER BY i.sequence`)
+   .bind(operationId,...this.keys(scope),runId).all<{sequence:number}>();this.current(scope);
+  let learned=0,pending=0;
+  for(const item of items.results){
+   try{await this.acknowledge(runId,item.sequence,{state:'learned',operationIds:[operationId]});learned++;}
+   catch{pending++;}
+  }
+  await this.host.assertCurrent();this.current(scope);
+  return {state:pending?'pending' as const:'reflected' as const,learned,pending};
+ }
  async status(runId:string):Promise<CuratorReceipt>{
   const scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
   const rows=await this.db.prepare('SELECT state,COUNT(*) count FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? GROUP BY state').bind(...this.keys(scope),runId).all<{state:CuratorItemState;count:number}>();

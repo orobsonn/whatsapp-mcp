@@ -4,6 +4,7 @@ import * as v from 'valibot';
 import type { AgentHandleDispatchRequest, DeliveredMessage, DispatchReceipt } from '@flue/runtime';
 import { ConversationRuntime, conversationAddress, verifiedConversationEvent, type ConversationAuthority, type ConversationIdentity, type ConversationHost, type HostConversationEvent, type TaskContext } from '../assistant/agent-runtime/conversation';
 import { KnowledgeService } from '../assistant/knowledge/service';
+import {useConversationKnowledgeTools} from '../assistant/agent-runtime/conversation-tools';
 import type { KnowledgePort, NativeKnowledgeWrite } from '../assistant/knowledge/contracts';
 
 // Small hooks fixture. It verifies our mounted native definitions and closure
@@ -223,4 +224,24 @@ it('interleaved native render closures keep their own immutable task without an 
  expect(taskContexts.map(t=>t.taskRef)).toEqual([a.receipt.taskRef,b.receipt.taskRef]);
  const query=first.tools.find(t=>t.name==='knowledge_query')!;
  authority={...authority,policyRevision:2};await expect(query.run({data:{},toolCallId:'stale'})).rejects.toThrow('conversation_authority_changed');
+});
+it('reflects a ready tool result with the original host id and the task captured before the write awaited',async()=>{
+ const ref=await source(),first=await admit(),oldTask=await taskFor(first),other=await admit({eventId:'other-event'}),newTask=await taskFor(other);let active=oldTask,resolutions=0;
+ const reflected:{id:string;contextRef:string}[]=[];knowledgePort.remember=async operationId=>{active=newTask;return {operationId,state:'ready'};};
+ hooks.tools=[];useConversationKnowledgeTools(async()=>{resolutions++;const captured=active;return {runtime,task:captured,onKnowledgeReady:async operationId=>{reflected.push({id:operationId,contextRef:captured.contextRef});return {state:'reflected',learned:1,pending:0};}};});
+ const remember=hooks.tools.find(t=>t.name==='knowledge_remember')!,result=await remember.run({data:v.parse(remember.input,remembered(ref)),toolCallId:'host-original'});
+ expect(result).toMatchObject({output:{state:'ready',accounting:{state:'reflected',learned:1}}});expect(reflected).toEqual([{id:(result.output as {operationId:string}).operationId,contextRef:oldTask.contextRef}]);expect(resolutions).toBe(1);
+});
+it('preserves a real ready receipt when reflection fails but never catches revocation after the callback',async()=>{
+ const ref=await source(),task=await taskFor(await admit());let revoke=false;
+ hooks.tools=[];useConversationKnowledgeTools(async()=>({runtime,task,onKnowledgeReady:async()=>{if(revoke)authority={...authority,policyRevision:authority.policyRevision+1};throw Error('bookkeeping failed');}}));
+ const remember=hooks.tools.find(t=>t.name==='knowledge_remember')!,data=v.parse(remember.input,remembered(ref));
+ expect(await remember.run({data,toolCallId:'ready-pending'})).toMatchObject({output:{state:'ready',accounting:{state:'pending'}}});
+ revoke=true;await expect(remember.run({data,toolCallId:'revoke'})).rejects.toThrow('conversation_authority_changed');
+});
+it('does not reflect uncertain memory as learned and reflects a later ready status with its original supplied id',async()=>{
+ const ref=await source(),task=await taskFor(await admit()),reflect=vi.fn(async()=>({state:'reflected',learned:1,pending:0}));
+ knowledgePort.remember=async()=>{throw Error('ACK lost');};hooks.tools=[];useConversationKnowledgeTools(async()=>({runtime,task,onKnowledgeReady:reflect}));
+ const remember=hooks.tools.find(t=>t.name==='knowledge_remember')!,result=await remember.run({data:v.parse(remember.input,remembered(ref)),toolCallId:'uncertain'});expect(result).toMatchObject({output:{state:'uncertain'}});expect(reflect).not.toHaveBeenCalled();
+ const operationId=(result.output as {operationId:string}).operationId,status=hooks.tools.find(t=>t.name==='knowledge_status')!;await status.run({data:{operationId},toolCallId:'reconcile'});expect(reflect).toHaveBeenCalledWith(operationId);
 });
