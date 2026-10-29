@@ -1,6 +1,6 @@
 # Assistente autônoma com memória compartilhada — desenho para validação
 
-**Estado:** proposta de arquitetura; não autoriza implementação nem ativação. Data: 28/10/2026, America/Fortaleza. Base de código inspecionada: `2c2f132`. Plano: [etapas e aceite](../plans/2026-10-28-assistente-autonoma-memoria-compartilhada.md).
+**Estado:** plano autorizado pelo dono para implementar e testar em 28/10/2026; ativação autônoma e contratação não autorizadas. Data: 28/10/2026, America/Fortaleza. Base de código inspecionada: `2c2f132`. Plano: [etapas e aceite](../plans/2026-10-28-assistente-autonoma-memoria-compartilhada.md).
 
 ## 1. O produto que estamos construindo
 
@@ -16,10 +16,14 @@ Não é suficiente gerar um texto convincente a partir das três últimas mensag
 - D04: o agente pode decidir aprender e criar relações durante qualquer execução.
 - D05: Cognee é conhecimento compartilhado entre bot, curadoria e GPT via **MCP existente do assistente**. Não criar outro MCP para o dono configurar nem outro grafo por cliente.
 - D06: o dono pode fornecer contexto no GPT, pedir pesquisa no acervo e solicitar a criação/correção de relações.
-- D07: incluir curadoria diária complementar das mensagens e acontecimentos, sem tornar a noite a única ocasião de aprender.
+- D07: curadoria diária às 03:00 America/Fortaleza, complementar ao aprendizado imediato. Inicialmente enviar resumo curto diário no Telegram; depois da confirmação de estabilidade pelo dono, avisar somente erros ou necessidade de ajuda, sem transição automática por número arbitrário de dias.
 - D08: revisar dimensionamento para uso contínuo, sem preservar limites artificiais do protótipo como restrições do produto.
 - D09: GitHub permanece somente leitura nos repositórios próprios autorizados. Calendar inclui títulos e gestão de eventos dentro das autorizações existentes; leitura global não concede poderes novos de escrita.
-- D10: validar este desenho e seu plano antes de implementar. O novo goal é de investigação/documentação apenas.
+- D10: desenho discutido e escolhas devolvidas pelo dono; pedido posterior “com isso ai tu ja pode criar o novo goal e seguir” autoriza implementação e testes. Não autoriza ativar respostas autônomas nem contratar infraestrutura.
+- D11: analisar individuais recebidas por padrão; o dono pode excluir contatos/conversas da análise e aprendizado. Grupos somente após inclusão explícita.
+- D12: nos grupos habilitados, considerar resposta relevante mesmo sem marcação, evitando intervenções desnecessárias.
+- D13: priorizar boa resposta, sem prazo fixo de retorno neste estágio.
+- D14: referência de orçamento informada pelo dono: aproximadamente R$200/mês no total, dos quais aproximadamente R$100 para Z-API e R$100 para IA/infraestrutura. Valores informados, não cotação verificada ou viabilidade comprovada; apresentar estimativa antes da ativação.
 
 ### Responsabilidade de engenharia
 
@@ -104,9 +108,9 @@ O modelo recebe a entrada e contexto recente adequado, escolhe consultar ferrame
 | Responder conversa atual | Produzir intenção de texto e acompanhar resultado | Destino fixado pelo host; modo e política de execução vigentes |
 | Pedir ajuda ao dono | Publicar pergunta privada e continuar após resposta correlacionada | Vinculação explícita a tarefa/pergunta/revisão |
 
-O modelo configurado precisa funcionar no provider nativo real. `gpt-6-luna` não apareceu no catálogo Pi instalado na inspeção; registrar uma definição compatível ou resolver o suporte antes de declarar migração pronta. Não trocar modelo silenciosamente nem reconstruir um pseudo-loop só para conservar o adapter textual atual.
+O modelo configurado precisa funcionar no provider nativo real. `gpt-6-luna` foi confirmado no catálogo Pi instalado durante P0; compatibilidade de protocolo e chamada real continuam sendo provas separadas. Não trocar modelo silenciosamente nem reconstruir um pseudo-loop só para conservar o adapter textual atual.
 
-A sessão atua internamente como assistente do dono para leitura global autorizada, não como administrador autenticado por uma mensagem de terceiro. Reutilizar `SourceAccess` com propósito explícito de conhecimento e autorização de dados do dono: `ignore` impede atuar no grupo, mas não apaga seu histórico do acervo autorizado; exclusão/retirada/privacidade devem impedir o uso dos dados. Nenhuma ferramenta de memória habilita responder num grupo que não foi autorizado para atuação.
+A sessão atua internamente como assistente do dono para leitura global autorizada, não como administrador autenticado por uma mensagem de terceiro. Reutilizar `SourceAccess` com propósito explícito de conhecimento e autorização de dados do dono: individuais entram por padrão e grupos somente por inclusão explícita. Excluir uma conversa impede sua análise, aprendizado e uso por bots, curador e serviço de conhecimento via MCP, inclusive por recuperação cruzada. Captura/arquivo são controles separados: excluir da análise não apaga nem desliga a captura automaticamente. Conhecimento derivado, contextos e intenções dependentes precisam ser invalidados; suporte independente ainda autorizado pode permanecer. Nome igual não amplia a exclusão para outra pessoa. O vínculo canônico do contato identifica as conversas diretamente excluídas, sem inferir um banimento global da entidade. Nenhuma ferramenta de memória habilita responder num grupo que não foi autorizado para atuação.
 
 Custos são reservados antes das chamadas e conciliados por recibo persistente, incluindo compaction, embeddings e extração no Cognee. `observe()`/logs de uso não são autorização de gasto. O ensaio de P0 deve comprovar interceptação antes do transporte ou adotar wrapper de provider estreito que conserve integralmente o protocolo nativo.
 
@@ -152,6 +156,8 @@ Consultar deve pesquisar o grafo elegível do dono **antes** do ranking, com pro
 
 Agente curador privado com sessão própria e mesmas operações de conhecimento. Não recebe ferramentas de envio a terceiros nem escrita Calendar/GitHub. Pode consultar as fontes autorizadas necessárias à interpretação. O bot conserva `remember/relate` durante qualquer interação, sem aguardar a noite.
 
+O disparo é diário às 03:00 America/Fortaleza (06:00 UTC), com recuperação das passagens não concluídas. Inicialmente publica resumo curto diário no Telegram; muda para somente erros/pedidos de ajuda após confirmação do dono de que está estável. O resumo distingue cobertura e pendências, sem expor conversas desnecessariamente.
+
 A revisão usa dia civil America/Fortaleza e cursor monotônico de eventos capturados. Inclui mensagens tardias, edições, retiradas e derivados que ficaram disponíveis depois. Define o intervalo/coorte no início; eventos posteriores pertencem à próxima passagem. Retoma pendências de passagens anteriores e registra analisado, aprendido, em indexação, indisponível e pendente separadamente.
 
 Curadoria trabalha em lotes ajustados ao tempo/custo medidos, com prioridade para consultas interativas. Materializar uma entrega agendada não prova que o dia foi analisado. Avanço de cursor exige registro durável do resultado ou de pendência recuperável, nunca descarte silencioso por atingir capacidade.
@@ -184,7 +190,7 @@ Medir em ensaio: nós/arestas/chunks por fonte útil, bytes persistidos, ingest�
 
 Não há promessa de capacidade infinita. Ajustes de lote, paginação, simultaneidade e tempo derivam de recursos, medidas e orçamento; ficam documentados com razão. Esgotamento gera fila/aviso explícito e mantém captura, sem apagar conhecimento ou resetar recibos para caber no protótipo.
 
-**Meta de experiência proposta para validação:** decisão/aviso inicial de texto simples em até30s no p95 com índice pronto, sem esperar curadoria. É alvo de produto a medir, não desempenho já entregue nem timeout para descartar contexto. Pesquisas demoradas podem publicar andamento e continuar. O custo operacional recorrente será apresentado após medir; não confundir com o teto de testes já autorizado.
+**Experiência confirmada:** priorizar qualidade, sem prazo fixo de retorno. Medir latência e andamento para melhorar o uso, sem descartar contexto por uma meta arbitrária. Antes da ativação, apresentar custo recorrente estimado e sua incerteza frente à referência do dono: cerca de R$200/mês total, sendo aproximadamente R$100 Z-API (informado pelo dono) e R$100 IA + infraestrutura. Não presumir viabilidade nem contratar para atingir essa referência. O teto histórico dos testes pagos (US$10 global) permanece separado e seus recibos não são reiniciados.
 
 ## 9. Autonomia, efeitos e ajuda do dono
 
@@ -202,7 +208,7 @@ Cada intenção lógica produz no máximo uma tentativa externa. Repetir ferrame
 
 Perguntas ao dono têm `questionId/taskId/revision`, referência ao ponto de dúvida e canal de resposta. Resposta livre ou botão precisa ser associado à pergunta correta, inclusive em tópicos diferentes; um “sim” solto não autoriza ação antiga. Depois de respondida, revalidar a conversa e continuar a tarefa, em vez de iniciar um diálogo sem vínculo.
 
-Definição proposta de atuação: responder a pedidos úteis e retomar compromissos autorizados; reconhecer encerramentos, evitar eco e não entrar em todo comentário de grupo. Grupos precisam de acompanhamento explicitamente habilitado. Não prometer acerto de julgamento por schema/citação; avaliar casos reais de resposta útil, silêncio e escalada.
+Definição proposta de atuação: responder a pedidos úteis e retomar compromissos autorizados; reconhecer encerramentos, evitar eco e não entrar em todo comentário de grupo. Individuais recebidas são elegíveis por padrão, exceto exclusões do dono. Grupos precisam de acompanhamento explicitamente habilitado para análise/aprendizado e atuação; nesses grupos pode responder quando relevante mesmo sem marcação. Não prometer acerto de julgamento por schema/citação; avaliar casos reais de resposta útil, silêncio e escalada.
 
 ## 10. Privacidade, correção e esquecimento
 
@@ -231,7 +237,7 @@ Não fazer backfill integral pago. Primeiro migrar conhecimento e fontes existen
 - A05 — Compartilhamento: contexto fornecido pelo GPT/MCP do assistente é recuperado por outra sessão do bot; curador complementa e GPT consulta o resultado atualizado.
 - A06 — Relação cruzada: pergunta de uma sessão requer conhecimento de outra conversa/projeto, recuperado pelo caminho de relações e original autorizado.
 - A07 — Correção: fonte alterada/retirada deixa de sustentar aresta e resposta, inclusive quando havia histórico/compaction nativo.
-- A08 — Curadoria: revisão diária retoma após interrupção, inclui edição/derivado tardio e não duplica relações nem deixa lacunas invisíveis.
+- A08 — Curadoria: disparo às 03:00 America/Fortaleza, resumo inicial e transição confirmada pelo dono para erros/ajuda; revisão diária retoma após interrupção, inclui edição/derivado tardio e não duplica relações nem deixa lacunas invisíveis.
 - A09 — Ajuda: dúvida gera pergunta identificável ao dono; resposta retoma a tarefa certa e reavalia mensagens novas.
 - A10 — Ação: sugestão útil real, aprovação real e uma tentativa Source com consequência no provedor; modo autônomo só é validado após autorização específica de ativação.
 - A11 — Autonomia: caso permitido responde sozinho, caso sem necessidade silencia, caso fora da autorização pede ajuda; repetição de ferramenta/ACK perdido não duplica.
@@ -241,9 +247,11 @@ Não fazer backfill integral pago. Primeiro migrar conhecimento e fontes existen
 - A15 — Divulgação: somente mensagem final apropriada chega ao destinatário; corpus com instruções maliciosas e dados de outra conversa é avaliado sem falsa garantia de confidencialidade perfeita.
 - A16 — Julgamento e uso real: acompanhar utilidade, silêncio correto, perguntas desnecessárias, latência e intervenções do dono; testes locais não substituem observação em produção.
 
+- A17 — Escopo: individual nova é analisada por padrão; grupo não incluído e contato excluído não entram em análise/aprendizado, curadoria ou recuperação cruzada pelo MCP. Excluir invalida suporte/contexto dependente sem apagar captura nem suporte independente autorizado.
+
 ## 13. O que Robson valida e o que engenharia deve provar
 
-**Validação de produto:** objetivo/fluxos acima; alcance global já autorizado; comportamento em grupos; abordagem de pedir ajuda; meta de experiência proposta; sequência de sombra → aprovação → autonomia. Horário da curadoria e orçamento recorrente são definidos antes de ativá-la, a partir de proposta concreta de custo. Não são pretextos para bloquear o desenho.
+**Validação de produto recebida:** objetivo/fluxos, alcance global, individuais com exclusões, grupos por inclusão com relevância além de menções, curadoria às 03:00 America/Fortaleza, resumo inicialmente e avisos depois, qualidade sem prazo fixo e referência de custo. Implementação e testes foram autorizados no chat. Ativação autônoma e contratação exigem autorização posterior; a viabilidade de custo deve ser demonstrada antes da ativação.
 
 **Provas técnicas ainda não realizadas:** provider/modelo nativo com reserva antes de toda inferência; APIs de expurgo/renovação de contexto; identidade e proveniência de arestas no Cognee1.6.5; hospedagem durável e restauração; volume/custos sustentados. O plano inclui ensaios curtos após aprovação para fechar essas decisões antes da migração.
 
@@ -270,4 +278,6 @@ Revisão adversarial independente de segurança, crescimento, atomicidade, custo
 
 Builder-check independente leu desenho e plano: não apontou lacuna importante que exigisse adivinhar produto/arquitetura; verificou cobertura A01–A16. Dúvidas técnicas relevantes permanecem explicitamente atribuídas a P0, com revisão antes da migração.
 
-Exemplos de aceite usam dados sintéticos ou fontes privadas locais; não publicar conversas, nomes ou volumes pessoais neste documento. Esta aprovação documental é para apresentar a proposta ao dono, não para executar ou declarar o produto pronto.
+Exemplos de aceite usam dados sintéticos ou fontes privadas locais; não publicar conversas, nomes ou volumes pessoais neste documento. O dono autorizou implementar e testar após sua devolutiva de produto. Isso não comprova o produto pronto nem autoriza ativação autônoma ou contratação. A revisão anterior cobriu A01–A16; A17 e os ajustes posteriores recebem revisão incremental.
+
+Revisão incremental da devolutiva: exclusão atua sobre conversas/fontes, não banimento global por nome; deve filtrar ingestão, busca, originais e evidências antes da seleção. O interceptor Flue não recebe payload/modelo e envolve também passos do stream: usar wrapper estreito do provider nativo, com reserva única antes do transporte. Rotação de contexto não comprova expurgo físico. Avisos, qualidade e orçamento seguem D07/D11–D14.

@@ -1,4 +1,4 @@
-# Assistente autônoma e memória compartilhada — plano de implementação para validação
+# Assistente autônoma e memória compartilhada — plano de implementação autorizado
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans somente após aprovação explícita deste desenho/plano. Checkboxes representam trabalho futuro, não executado.
 
@@ -12,15 +12,19 @@
 
 ## Global Constraints
 
-- Estado deste documento: **aguardando validação do dono**. Não implementar, ativar automação, chamar modelo pago, indexar acervo, publicar ou habilitar envio por causa deste arquivo.
+- Estado deste documento: **implementação e testes autorizados pelo dono em 28/10/2026**, após sua devolutiva e pedido de novo goal. Começar por P0; não ativar respostas autônomas ou contratar infraestrutura sem autorização posterior.
 - Preservar branch, episódios, custos, reservas, incertezas, recibos, pareamento e credenciais; não modificar/copy dados do Elo nem instalar harness.
 - MCP de memória é extensão do MCP existente do assistente, com autoridade do dono fixada no servidor; não oferecer outro MCP para configurar nem outro grafo por cliente.
 - Leitura global do acervo autorizado é decisão do dono; não reintroduzir restrição artificial de contexto à mesma conversa. Acesso aos dados e autorização para agir são controles diferentes.
 - Flue tem identidade de sessão estável; entrega/tarefa/intenção de ação têm identidade separada. Grupo usa chatId do grupo, sem retarget a participante.
+- Individuais recebidas entram na análise por padrão, exceto exclusões do dono; grupos só por inclusão explícita. Exclusão acompanha bots, curadoria e MCP, com invalidação dos derivados/contextos dependentes e preservação separada da captura.
+- Grupos habilitados podem gerar resposta relevante sem menção; curadoria às 03:00 America/Fortaleza, resumo diário inicial e somente erros/ajuda após confirmação do dono. Qualidade sem deadline fixo.
+- Referência mensal do dono: aproximadamente R$200 total, ~R$100 Z-API informado e ~R$100 IA/infra; estimar viabilidade antes de ativar.
 - Agent pode aprender em qualquer run; curadoria diária complementa. Memória inferida não vira `owner_note`, política ou mandato.
 - Sem tetos acumulados128/256, sem64 como universo máximo de pesquisa, semgrafo inteiro em RAM por busca. Lotes e páginas são limites ajustáveis de execução, acompanhados de cobertura.
 - Teto dos testes pagos já autorizado: US$10 global, incluindo históricos incertos; custo recorrente de produção exige proposta concreta antes de ativação. Nenhum reset de ledger.
 - GitHub somente leitura; Calendar dentro da autorização do dono. Ativação autônoma externa requer autorização operacional explícita, após validação funcional.
+- Verificar também na infraestrutura real Cloudflare: bindings, persistência, chamadas de ferramentas e consequência no provedor. Testes locais não fecham aceite; usar ambiente de ensaio isolado antes do fluxo real Telegram/WhatsApp.
 - Publicar release por marco concluído, com changelog/version/tag coerentes; não criar release por tarefa ou encerrar issue pela presença de código.
 
 ## Review Focus
@@ -53,7 +57,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 
 **Arquivos de referência:** runtime/provider/install; `node_modules/@flue/runtime/docs/reference`; Cognee tag/pacote fixados; `cognee/backend.py`, `server.py`, `engine.ts`, `checkpoints.ts`, `retention-purge.ts`.
 
-**Interfaces:** produz ADR único de runtime/provider, protocolo de conhecimento/proveniência e hospedagem/persistência. Consome decisões D01–D10 e relatório de volume capturado, não conteúdo pessoal público.
+**Interfaces:** produz ADR único de runtime/provider, protocolo de conhecimento/proveniência e hospedagem/persistência. Consome decisões D01–D14 e relatório de volume capturado, não conteúdo pessoal público.
 
 - [ ] Confirmar APIs do pacote realmente instalado e comparar com tag Cognee1.6.5. Registrar `remember/recall`, DataPoint/Edge, `get_edge_evidence_records`, `improve`, IDs e hooks Flue. Não assumir paridade automática da documentação atual.
 - [ ] Ensaio delimitado, após aprovação: duas entradas na mesma instância Flue, uma ferramenta nativa entre chamadas, reinício, join e compaction. Comprovar o modelo configurado e preservação do protocolo de tool calls.
@@ -61,7 +65,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 - [ ] Provar remoção/invalidação de histórico e resumos pelas APIs disponíveis. Definir identidade lógica + contextEpoch e como impedir leitura de instância antiga. Não usar `abort` como expurgo.
 - [ ] Ensaio Cognee com dados sintéticos: fonte→entidades com IDs estáveis→aresta→evidence→original. Relação criada pelo agente é consultada por outra operação, corrigida e invalidada após retirada. Validar que enriquecimento sem evidence não vira fato afirmável.
 - [ ] Auditar somente infraestrutura existente: serviço com volume persistente é hipótese preferida; comparar com Container existente + snapshots/journal. Demonstrar restore consistente das mutações de conhecimento, não só originais; registrar imagem, recuperação e custo. Incluir autenticação Own↔Cognee, dono/namespace fixo e TLS/rede privada, sem REST desprotegida. Fechar **uma** opção em ADR antes de P1.
-- [ ] Medir volume/tamanho/distribuição reais e manter relatório privado. Ensaiar memória/CPU/disk/latências/custos com carga derivada disso, sem afirmar cobertura completa do WhatsApp. Propor lotes/SLO/custo operacional com justificativa e apresentar ao dono antes de ativação.
+- [ ] Medir volume/tamanho/distribuição reais e manter relatório privado. Ensaiar memória/CPU/disk/latências/custos com carga derivada disso, sem afirmar cobertura completa do WhatsApp. Propor lotes/custo operacional, medindo latência sem deadline fixo, com justificativa e apresentar ao dono antes de ativação.
 - [ ] Revisar o ADR adversarialmente e ajustar spec/plano se alguma capacidade não se confirmar. Não migrar produção por tentativa de descobrir APIs.
 
 **Verificação:** logs/recibos dos ensaios e leitura independente dos dados; orçamento preservado. Este marco pode reprovar uma escolha de provider/hospedagem sem descartar o produto. A aprovação do plano autoriza estudo técnico delimitado, não gasto acima do teto existente ou nova contratação.
@@ -82,7 +86,7 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 
 - [ ] Testar o percurso escrito no spec A03–A06, com proprietário fixado e outro cliente lendo o mesmo conhecimento; observar o teste falhar antes de implementar.
 - [ ] Implementar identidades estáveis, classificação declaração/inferência, origem `owner_report/agent_derived` distinta de nota do dono, temporalidade e suporte explícito a fontes atuais. Resolver suportes derivados até originais sem ciclos; texto do modelo não é evidência de si. Estender tipos que hoje só cobrem projeto/missão para pessoa/grupo/conversa/repositório sem inventar relações por nome.
-- [ ] Explicitar autorização interna de leitura global do assistente em `access.ts`/RPC, sem conceder administração a terceiros. Separar grupo `ignore` para atuação de exclusão/retirada/privacidade dos dados. Pesquisa global não habilita resposta em grupo não autorizado.
+- [ ] Explicitar autorização interna de leitura global do assistente em `access.ts`/RPC, sem conceder administração a terceiros. Aplicar individuais padrão, grupos opt-in e exclusões em análise, aprendizado, consulta e curadoria; separar esses controles da captura/arquivo e invalidar contextos derivados. Evidência independente autorizada pode permanecer. Pesquisa global não habilita resposta em grupo não autorizado.
 - [ ] Persistir operação e conhecimento aceito de forma durável, com reconsulta idempotente. Grafo semântico fica no Cognee; D1/R2 guarda fonte/registro/revisão/proveniência e estado operacional necessários ao contrato.
 - [ ] Implementar consulta nativa das entidades/arestas/evidências, owner/revogação antes do ranking e releitura dos originais selecionados. Remover montagem obrigatória de todos os sourceIDs em um payload; não usar pós-filtro de top-k como substituto de acesso.
 - [ ] Substituir manifesto JSON e listas completas de fontes/operações por metadados persistentes consultáveis. Versionar mutações do grafo, inclusive nova aresta sem nova fonte. Retirar caps128/256/64 e varredura completa de grafo; medir operação sobre corpus acima dos tetos antigos.
@@ -132,12 +136,12 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 
 **Interfaces:** `CuratorWindow { fromSequence, toSequence, day, timezone }`; `runCurator(ctx, window): Promise<CuratorReceipt>` com analisado/pending/unavailable/learned/indexing separados. Sessão privada de curadoria do dono, mesmo KnowledgeService de P1.
 
-- [ ] Testar A08: dois dias, interrupção e retomada, mensagem tardia, edição, derivado liberado depois; mesmo conhecimento já aprendido pelo agente imediato não duplica.
+- [ ] Testar A08/A17: horário03:00 America/Fortaleza, resumo inicial/transição confirmada para erros/ajuda, respeito às exclusões, dois dias, interrupção e retomada, mensagem tardia, edição, derivado liberado depois; mesmo conhecimento já aprendido pelo agente imediato não duplica.
 - [ ] Ler incrementalmente o arquivo com janela civil America/Fortaleza e sequência monotônica; registrar pendências antes de avançar. Permitir completar relação nova sobre material já analisado, com origem conferida.
 - [ ] Agente escolhe informações/conexões úteis e usa as mesmas ferramentas; configurar improve e evidência por estágio. Não considerar execução noop ou parcial como cobertura diária completa.
 - [ ] Aplicar lotes/custos/prioridade fechados na medição; consultas interativas continuam atendidas. Curador não recebe ferramentas de envio ou escrita externa.
 - [ ] Testar repetir o mesmo disparo e concorrer com remember do bot/MCP; uma relação reúne suportes e uma operação incerta é reconciliada.
-- [ ] Só após validar e definir horário/custo recorrente, configurar o disparo nativo da plataforma para a sessão curadora. Isso é parte da implementação futura, não uma automação Codex criada agora.
+- [ ] Só após validar e apresentar custo recorrente, configurar para03:00 America/Fortaleza o disparo nativo da plataforma para a sessão curadora. Isso é parte da implementação futura, não uma automação Codex criada agora.
 
 ## P5 — Modos de ação e migração sem perda
 
@@ -166,8 +170,8 @@ Arquivos de migração recebem o próximo número livre **na execução**, sem r
 
 ## Condições para sair do planejamento
 
-O desenho e este plano precisam ser validados pelo dono. A execução começa por P0 e apresenta suas decisões técnicas concretas antes de alterar produção. Horário do curador, meta de experiência e custo recorrente são decisões de produto a fechar com proposta mensurada. Chaves de entidade, banco, provider e protocolo ficam sob responsabilidade de engenharia e revisão independente, sem exigir que Robson audite detalhes de baixo nível.
+O dono autorizou implementar e testar com as escolhas D01–D14. A execução começa por P0 e apresenta decisões técnicas concretas antes de alterar produção. Horário, avisos e prioridade de qualidade estão definidos; a viabilidade do custo recorrente ainda exige estimativa antes da ativação. Chaves de entidade, banco, provider e protocolo ficam sob responsabilidade de engenharia e revisão independente, sem exigir que Robson audite detalhes de baixo nível.
 
 ## Revisão do plano
 
-Revisão adversarial independente sem P1 bloqueante documental; ajustes de autenticação, reconciliação incerta e retirada antes da persistência real foram incorporados. Builder-check independente confirmou coerência entre desenho e etapas e cobertura A01–A16. Isso não substitui as provas técnicas de P0 nem a validação do dono.
+Revisão adversarial independente sem P1 bloqueante documental; ajustes de autenticação, reconciliação incerta e retirada antes da persistência real foram incorporados. Builder-check independente confirmou coerência entre desenho e etapas e cobertura A01–A16; A17 e a devolutiva posterior têm revisão incremental. Isso não substitui as provas técnicas de P0 nem a validação do dono.

@@ -29,5 +29,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { setupFiles: ["./tests/setup.ts"], testTimeout: 30000, fileParallelism: false, exclude: [...configDefaults.exclude, "tests/oauth-coordinator.test.ts", "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts", "tests/assistant-checkpoint-runtime.test.ts", "tests/assistant-owner-binding-runtime.test.ts", "tests/assistant-scheduled-runtime.test.ts", "tests/assistant-telegram-runtime.test.ts"] },
+  test: { setupFiles: ["./tests/setup.ts"], testTimeout: 30000, fileParallelism: false, exclude: [...configDefaults.exclude, "tests/assistant-native-agent-runtime.test.ts", "tests/oauth-coordinator.test.ts", "tests/assistant-flue-runtime.test.ts", "tests/assistant-episodes.test.ts", "tests/assistant-checkpoint-runtime.test.ts", "tests/assistant-owner-binding-runtime.test.ts", "tests/assistant-scheduled-runtime.test.ts", "tests/assistant-telegram-runtime.test.ts"] },
 });
