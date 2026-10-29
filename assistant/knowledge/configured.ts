@@ -21,7 +21,8 @@ export function configuredKnowledge(env:AssistantEnv,expected:OriginScope,client
  };
  const scope=current(),port=new HttpKnowledgePort({endpoint,token,namespace:{installationId:scope.installationId,generation:space},
   operationalGeneration:scope.generation,client});
- const origin=reader&&bridgeSecret?new OriginGuard(db,current,reader,bridgeSecret):undefined;
+ // KnowledgeSourcePolicy owns group opt-in; this guard verifies source reads only.
+ const origin=reader&&bridgeSecret?new OriginGuard(db,current,reader,bridgeSecret,2000,'owner_read'):undefined;
  const service=new KnowledgeService(db,()=>({scope:current(),client}),port,Date.now,configuredRetirementGuard(env),origin);
  return {async execute(command:KnowledgeCommand){
   current();await assertRestoredGeneration(env);current();
