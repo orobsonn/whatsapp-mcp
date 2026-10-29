@@ -1,4 +1,4 @@
-import {expect,it} from 'vitest';
+import {expect,it,vi} from 'vitest';
 import {HttpKnowledgePort} from '../assistant/knowledge/http-port';
 import type {NativeKnowledgeWrite} from '../assistant/knowledge/contracts';
 const namespace={installationId:'synthetic-installation',generation:'knowledge-v1'},token='synthetic-token-'.repeat(4);
@@ -6,6 +6,18 @@ const input:NativeKnowledgeWrite={entities:[],relations:[],origin:'agent_derived
 function options(transport:typeof fetch,generation='runtime-1'){
  return {endpoint:'https://synthetic.example/knowledge',token,namespace,operationalGeneration:generation,client:'owner_mcp' as const,fetch:transport};
 }
+it('binds the default native fetch receiver to globalThis',async()=>{
+ const page={claims:[],coverage:{scope:'native_candidate_page',state:'complete',candidates:0,returned:0}};
+ const nativeFetch=vi.spyOn(globalThis,'fetch').mockImplementation(function(this:unknown){
+  if(this!==globalThis)throw TypeError('Illegal invocation');
+  return Promise.resolve(Response.json({ok:true,namespace,result:page}));
+ });
+ try{
+  const port=new HttpKnowledgePort({endpoint:'https://synthetic.example/knowledge',token,namespace,
+   operationalGeneration:'runtime-1',client:'owner_mcp'});
+  expect(await port.query({limit:20})).toEqual(page);
+ }finally{nativeFetch.mockRestore();}
+});
 it('keeps shared namespace stable while separating operation receipts across runtime generations',async()=>{
  const calls:{namespace:typeof namespace;method:string;input:{operationId:string}}[]=[];
  const transport=(async(url,init)=>{expect(url).toBe('https://synthetic.example/knowledge');expect(init?.redirect).toBe('error');

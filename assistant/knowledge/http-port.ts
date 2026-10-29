@@ -39,7 +39,7 @@ export class HttpKnowledgePort implements KnowledgePort {
   this.client=z.enum(['owner_mcp','owner_telegram','conversation_agent','curator']).parse(options.client);
   this.timeoutMs=options.timeoutMs??30000;
   if(!Number.isSafeInteger(this.timeoutMs)||this.timeoutMs<1||this.timeoutMs>60000)throw Error('knowledge_timeout_configuration');
-  this.endpoint=url.href;this.token=options.token;this.transport=options.fetch??fetch;
+  this.endpoint=url.href;this.token=options.token;this.transport=options.fetch??globalThis.fetch.bind(globalThis);
  }
  private wireId(operationId:string){return bridgeHash(['knowledge-wire-operation-v1',this.namespace,this.generation,this.client,id.parse(operationId)]);}
  private async call<T>(method:string,input:unknown,schema:z.ZodType<T>):Promise<T>{
