@@ -17,6 +17,42 @@ beforeEach(()=>{
 });
 const note=(key:string,text=key,occurredAt=now)=>sources.create({originKey:key,text,occurredAt});
 async function due(){now=time('2026-10-29T06:00:00Z');return (await curator.beginDue())!;}
+const head=async()=>await sql('SELECT COALESCE(MAX(sequence),0) head FROM assistant_source_changes WHERE installation_id=? AND generation=?').first<number>('head')??0;
+const sampleWindow=(fromSequence:number,toSequence:number,day='2026-10-28')=>({fromSequence,toSequence,day,timezone:'America/Fortaleza' as const});
+it('samples only the requested canonical range without touching the daily cursor, backlog or capture gaps',async()=>{
+ await note('outside before');const from=await head();await note('inside','explicit sample evidence');const to=await head();await note('outside after');
+ const run=await curator.beginSample({operationId:'sample-explicit-range',window:sampleWindow(from,to)});
+ expect(run).toMatchObject({kind:'sample',window:sampleWindow(from,to),coverage:{scope:'sample_window',archive:'not_exhaustive'}});
+ expect((await curator.next(run.id)).items.map(i=>i.text)).toEqual(['explicit sample evidence']);
+ expect(await sql('SELECT COUNT(*) n FROM assistant_curator_state WHERE installation_id=? AND generation=?').first('n')).toBe(0);
+ expect(await sql('SELECT COUNT(*) n FROM assistant_curator_capture_gaps WHERE installation_id=? AND generation=?').first('n')).toBe(0);
+ const daily=await due();expect(daily.kind).toBe('daily');expect(daily.window.fromSequence).toBe(0);expect((await curator.next(daily.id)).items).toHaveLength(3);
+});
+it('replays the same sample operation and actual creation instant, rejects changed arguments and invalid day/head before mutation',async()=>{
+ const from=await head();await note('one');const to=await head(),request={operationId:'sample-stable-operation',window:sampleWindow(from,to)},created=now;
+ const first=await curator.beginSample(request),identity={version:1 as const,installationId:scope.installationId,generation:scope.generation,channel:'telegram' as const,principalOrChatId:'curator:owner',contextEpoch:'epoch'};
+ const event=await curator.event(first.id,identity,'owner');expect(event.occurredAt).toBe(created);expect(JSON.parse(event.body)).toMatchObject({type:'sample_curator',run:{kind:'sample'}});
+ now+=9000;expect(await curator.beginSample(request)).toEqual(first);expect(await curator.event(first.id,identity,'owner')).toEqual(event);
+ await expect(curator.beginSample({...request,window:sampleWindow(to,to)})).rejects.toThrow('curator_sample_conflict');
+ await expect(curator.beginSample({operationId:'future-head',window:sampleWindow(from,to+1)})).rejects.toThrow('curator_sample_window');
+ await expect(curator.beginSample({operationId:'invalid-day',window:sampleWindow(from,to,'2026-02-30')})).rejects.toThrow();
+ expect(await sql('SELECT COUNT(*) n FROM assistant_curator_runs WHERE installation_id=? AND generation=?').first('n')).toBe(1);
+ const foreignScope={...scope,installationId:crypto.randomUUID()},foreign=new KnowledgeCurator(env.DB,()=>foreignScope,host,()=>now);
+ await expect(foreign.beginSample({operationId:'foreign-head',window:sampleWindow(from,to)})).rejects.toThrow('curator_sample_window');
+ scope={...scope,sourceGeneration:'replaced'};await expect(curator.beginSample(request)).rejects.toThrow('curator_run_denied');
+});
+it('never lets sample evaluation finish a daily pending item or suppress its next-day carry',async()=>{
+ const from=await head();await note('daily pending');const to=await head(),daily=await due();host.verifySource=async()=>({state:'unavailable'});await curator.next(daily.id);
+ host.verifySource=async()=>({state:'current',guard:{sql:'1',values:[]}});const sample=await curator.beginSample({operationId:'sample-not-daily',window:sampleWindow(from,to)}),item=(await curator.next(sample.id)).items[0];
+ await curator.acknowledge(sample.id,item.sequence,{state:'evaluated'});expect((await curator.status(daily.id)).counts.unavailable).toBe(1);
+ now=time('2026-10-30T06:00:00Z');const later=(await curator.beginDue())!;expect((await curator.next(later.id)).items.map(i=>i.text)).toEqual(['daily pending']);
+});
+it('never lets a daily evaluation finish sample pending work and never carries sample-only pending work into a later daily run',async()=>{
+ const from=await head();await note('sample pending');const to=await head(),sample=await curator.beginSample({operationId:'sample-private-pending',window:sampleWindow(from,to)});
+ host.verifySource=async()=>({state:'unavailable'});await curator.next(sample.id);host.verifySource=async()=>({state:'current',guard:{sql:'1',values:[]}});
+ const daily=await due(),item=(await curator.next(daily.id)).items[0];await curator.acknowledge(daily.id,item.sequence,{state:'evaluated'});
+ expect((await curator.status(sample.id)).counts.unavailable).toBe(1);now=time('2026-10-30T06:00:00Z');const later=(await curator.beginDue())!;expect((await curator.next(later.id)).items).toEqual([]);
+});
 it('pins the civil day at03 Fortaleza and resumes the same durable window without creating work early',async()=>{
  await note('first');now=time('2026-10-29T05:59:59Z');expect(await curator.beginDue()).toBeNull();
  const run=await due();expect(run.window.day).toBe('2026-10-28');expect(run.window.timezone).toBe('America/Fortaleza');

@@ -9,7 +9,7 @@ import {configuredKnowledgeService} from '../knowledge/configured';
 import {ConversationRuntime,conversationIdentity,conversationAddress,conversationReplyAnchor,verifiedConversationEvent,type ConversationIdentity,type VerifiedConversationEvent,type TaskContext} from './conversation';
 import {NativeConversationRetention} from './conversation-retention';
 import {nativeContextDestroyPort,openNativeConversation} from './native-transport';
-import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence,nativeTelegramActivation} from './native-policy';
+import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence,nativeTelegramActivation,nativeCuratorDispatchRequest} from './native-policy';
 import type {ConversationProviderHost} from './conversation-provider';
 import {createConversationReadCapabilities} from './conversation-connectors';
 import {NativeReplyActions} from './conversation-actions';
@@ -304,7 +304,8 @@ export class NativeApplicationHost {
   if(!topic)return {state:'unavailable',reason:'summary_topic_unavailable'};
   if(!await curator.claimNotice(receipt.id))return {state:'already_claimed'};
   const c=receipt.counts,pending=c.pending+c.presented+c.unavailable+c.indexing+c.capturePending;
-  const text=`${receipt.state==='complete'?'✅':'⏳'} <b>REVISÃO DA MEMÓRIA — ${telegramText(receipt.window.day)}</b>\n\n${c.evaluated+c.learned} fontes avaliadas; ${c.learned} fontes com aprendizado confirmado.\n${pending} pendências${receipt.needsHelp?' — preciso da sua ajuda':''}.`;
+  const heading=receipt.kind==='sample'?'AMOSTRA DA MEMÓRIA':'REVISÃO DA MEMÓRIA',scope=receipt.kind==='sample'?`\n\nSomente a janela (${receipt.window.fromSequence}, ${receipt.window.toSequence}] compõe esta amostra. Este ensaio não ativa a rotina diária.`:'';
+  const text=`${receipt.state==='complete'?'✅':'⏳'} <b>${heading} — ${telegramText(receipt.window.day)}</b>\n\n${c.evaluated+c.learned} fontes avaliadas; ${c.learned} fontes com aprendizado confirmado.\n${pending} pendências${receipt.needsHelp?' — preciso da sua ajuda':''}.${scope}`;
   try{
    const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{
     await this.runtime.assertTaskCurrent(task);const now=await nativeOwnerFence(this.env,this.currentScope());if(JSON.stringify(now)!==JSON.stringify(fence))throw Error('native_owner_link_changed');
@@ -313,8 +314,27 @@ export class NativeApplicationHost {
   }catch{await curator.settleNotice(receipt.id,'uncertain');return {state:'uncertain'};}
  }
  async dispatchCurator(now=Date.now()){
-  if(this.env.NATIVE_CURATOR_ENABLED!=='true')return {state:'disabled' as const};
-  const fence=await nativeOwnerFence(this.env,this.currentScope()),identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
+  const request=nativeCuratorDispatchRequest(this.env);if(request.kind==='disabled')return {state:'disabled' as const};
+  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope);let identity:ConversationIdentity|undefined;
+  if(request.kind==='sample'){
+   // A sample is tied to its FIRST native admission even after a dependency
+   // retires that context. Allocating another epoch would create another paid
+   // request under a different Flue idempotency key for the same sample.
+   const prior=await this.db.prepare(`SELECT r.id run_id,r.source_epoch,r.source_generation,r.civil_day,r.from_sequence,r.to_sequence,
+    e.task_ref,e.state,c.id session_id,c.identity_json,c.tombstoned_at FROM assistant_curator_runs r
+    JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id
+    JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
+    WHERE r.installation_id=? AND r.generation=? AND r.day=? AND r.run_kind='sample' ORDER BY e.sequence LIMIT 1`)
+    .bind(scope.installationId,scope.generation,'sample:'+request.request.operationId).first<{run_id:string;source_epoch:string;source_generation:string;civil_day:string;from_sequence:number;to_sequence:number;task_ref:string;state:string;session_id:string;identity_json:string;tombstoned_at:number|null}>();
+   this.currentScope();if(prior){
+    if(prior.source_epoch!==scope.sourceEpoch||prior.source_generation!==scope.sourceGeneration)throw Error('curator_run_denied');
+    const window=request.request.window;if(prior.civil_day!==window.day||prior.from_sequence!==window.fromSequence||prior.to_sequence!==window.toSequence)throw Error('curator_sample_conflict');
+    if(prior.tombstoned_at!==null||prior.state==='withdrawn')return {state:'retired' as const,runId:prior.run_id,sessionId:prior.session_id,taskRef:prior.task_ref};
+    identity=conversationIdentity.parse(JSON.parse(prior.identity_json));
+   }
+  }
+  identity??=await this.identity('telegram','curator:'+fence.userId);
+  const curator=await this.curator(identity),run=request.kind==='sample'?await curator.beginSample(request.request):await curator.beginDue(now);
   if(!run)return {state:'not_due' as const};
   // The curator's system job is not a fact SourceRef, owner request or policy.
   return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,identity,fence.userId)));

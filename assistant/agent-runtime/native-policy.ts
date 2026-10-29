@@ -5,10 +5,20 @@ import {retentionExecutionGuard} from '../retention-execution';
 import type {AccessGuard} from '../access';
 import {bridgeHash} from '../ingress';
 import {conversationAddress,type ConversationAuthority,type ConversationIdentity} from './conversation';
-import {isCuratorPrincipal} from '../knowledge/curator';
+import {isCuratorPrincipal,curatorSampleRequest,type CuratorSampleRequest} from '../knowledge/curator';
 import {z} from 'zod';
 
 export type NativeMode='off'|'shadow'|'approval'|'autonomous';
+/** Select the host's curation request before allocating any native identity or
+ * admitting a daily window. A sample cannot silently disable a daily schedule. */
+export function nativeCuratorDispatchRequest(env:AssistantEnv):{kind:'disabled'}|{kind:'daily'}|{kind:'sample';request:CuratorSampleRequest}{
+ const schedule=env.NATIVE_CURATOR_SCHEDULE_ENABLED??'false',sample=env.NATIVE_CURATOR_SAMPLE_REQUEST;
+ if(!['true','false'].includes(schedule))throw Error('native_curator_configuration_invalid');
+ if(sample!==undefined&&schedule==='true')throw Error('native_curator_configuration_conflict');
+ if(env.NATIVE_CURATOR_ENABLED!=='true'||schedule==='false'&&sample===undefined)return {kind:'disabled'};
+ if(sample!==undefined){try{return {kind:'sample',request:curatorSampleRequest.parse(JSON.parse(sample))};}catch{throw Error('native_curator_sample_invalid');}}
+ return {kind:'daily'};
+}
 export function nativeMode(env:AssistantEnv):NativeMode {
  const mode=env.NATIVE_CONVERSATIONS_MODE??'off';
  if(!['off','shadow','approval','autonomous'].includes(mode))throw Error('native_configuration_invalid');
