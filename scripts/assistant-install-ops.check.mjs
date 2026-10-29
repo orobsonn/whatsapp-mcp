@@ -1,6 +1,6 @@
 import {test,after} from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,rm,writeFile,readFile,stat,symlink,mkdir} from "node:fs/promises";
+import {mkdtemp,rm,writeFile,readFile,stat,symlink,mkdir,realpath} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 import {pathToFileURL} from "node:url";
@@ -8,7 +8,7 @@ import {build} from "esbuild";
 import {createServer as httpServer} from "node:http";
 import {operatorConfig,operatorArgv,main} from "./assistant-install-ops.mjs";
 import {createOperatorLog,localOperatorReady,waitForOperator,postOperatorCommand} from "./assistant-operator-local.mjs";
-const directory=await mkdtemp(join(tmpdir(),"assistant-install-ops-test-"));after(()=>rm(directory,{recursive:true,force:true}));
+const directory=await mkdtemp(join(await realpath(tmpdir()),"assistant-install-ops-test-"));after(()=>rm(directory,{recursive:true,force:true}));
 const entry=join(directory,"fixture.ts"),output=join(directory,"fixture.mjs");
 await writeFile(entry,`export {OwnerAssistant} from ${JSON.stringify(resolve("assistant/mcp.ts"))};export {handleInstallationOperator} from ${JSON.stringify(resolve("assistant/installation-operator.ts"))};export {retirementBootstrapPlan,RetentionAuthorityCore} from ${JSON.stringify(resolve("assistant/retention-authority.ts"))};`,{mode:0o600});
 // Node tests exercise actual methods/helpers. This shim supplies only base-class

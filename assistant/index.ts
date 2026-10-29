@@ -43,7 +43,10 @@ export default {
     }
 
     if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
-      return receiveCapture(request, env);
+      return receiveCapture(request, env, async sequence => {
+        const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+        await new NativeApplicationHost(env).receiveCapture(sequence);
+      });
 
     if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")
       return receiveTelegram(request, env);

@@ -15,7 +15,8 @@ async function privateFile(path, content) {
     if (!previous.isFile() || previous.mode & 0o077 || await readFile(path, "utf8") !== content) throw new Error("installation_artifact_conflict"); }
 }
 async function privateDirectory(output, repositoryRoot) {
-  const allowed = path => path.startsWith(resolve(repositoryRoot, "local") + sep) || path.startsWith(join(tmpdir(), "assistant-install-"));
+  const canonicalTemp=await realpath(tmpdir());
+  const allowed = path => path.startsWith(resolve(repositoryRoot, "local") + sep) || path.startsWith(join(tmpdir(), "assistant-install-")) || path.startsWith(join(canonicalTemp, "assistant-install-"));
   if (!allowed(resolve(output))) throw new Error("installation_output_path");
   let ancestor = resolve(output);
   for (;;) { try { await lstat(ancestor); break; } catch (error) { if (error.code !== "ENOENT") throw error; ancestor = dirname(ancestor); } }

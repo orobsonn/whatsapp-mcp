@@ -32,7 +32,7 @@ export async function readBridgeJson(input: Request | Response): Promise<unknown
   return JSON.parse(new TextDecoder().decode(body));
 }
 
-export async function receiveCapture(request: Request, env: AssistantEnv): Promise<Response> {
+export async function receiveCapture(request: Request, env: AssistantEnv, onReceived?: (sequence:number)=>Promise<void>): Promise<Response> {
   const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (!env.DB || !env.BRIDGE_SECRET || env.BRIDGE_SECRET.length < 32 || !env.INSTALLATION_ID ||
       !env.OPERATIONAL_GENERATION || !env.BRIDGE_SOURCE_EPOCH || !env.BRIDGE_SOURCE_GENERATION)
@@ -71,8 +71,8 @@ export async function receiveCapture(request: Request, env: AssistantEnv): Promi
     // Native inference runs in its own durable session. A downstream admission
     // gap cannot erase the already committed capture receipt or trigger a
     // second legacy brain; the native intake worker reconciles it later.
-    if(env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'&&env.ROUTINES_PAUSED!=='true'){
-      try{const {NativeApplicationHost}=await import('./agent-runtime/native-host');await new NativeApplicationHost(env).receiveCapture(event.sequence);}
+    if(onReceived&&env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'&&env.ROUTINES_PAUSED!=='true'){
+      try{await onReceived(event.sequence);}
       catch{/* Durable capture inbox remains the retry source. */}
     }
     return reply({ sequence: event.sequence, metadataHash: stored.metadata_hash, state: "received" });
