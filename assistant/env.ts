@@ -30,6 +30,10 @@ export interface AssistantEnv {
   MEDIA_CONTEXT_ENABLED?: string;
   COGNEE?: DurableObjectNamespace<CogneeContainer>;
   SEMANTIC_SEARCH_MODE?: string;
+  KNOWLEDGE_SERVICE_URL?: string;
+  KNOWLEDGE_SERVICE_TOKEN?: string;
+  /** Stable shared acervo identity; never derived from a task or restore. */
+  KNOWLEDGE_SPACE_GENERATION?: string;
   CAPTURE_READER?: SnapshotReader;
   CAPTURE_MEDIA_READER?: MediaReader;
   MEDIA_PDF_PARSER?: PdfAdmissionReader;

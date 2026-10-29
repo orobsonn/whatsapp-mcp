@@ -1,0 +1,21 @@
+[Unit]
+Description=Private authenticated channel for the personal assistant knowledge service
+After=network-online.target robson-assistant-cognee.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=true
+LoadCredential=tunnel.token:/opt/robson-assistant-cognee/secrets/tunnel.token
+ExecStart=/usr/local/bin/cloudflared-assistant tunnel --no-autoupdate --loglevel warn --metrics 127.0.0.1:20245 run --token-file ${CREDENTIALS_DIRECTORY}/tunnel.token
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

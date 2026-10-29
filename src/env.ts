@@ -37,4 +37,6 @@ export interface Env extends AuthorityEnv {
   ASSISTANT_BRIDGE_SECRET?: string;
   ASSISTANT_INSTALLATION_ID?: string;
   ASSISTANT_GENERATION?: string;
+  /** Advertise only after the Own knowledge capability is configured/verified. */
+  ASSISTANT_KNOWLEDGE_ENABLED?: string;
 }
