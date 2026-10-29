@@ -50,7 +50,14 @@ export function createNativeProbeRuntime(db:D1Database,token:string,run:NativePr
  knowledge:task=>probeKnowledge(db,token,run,task.knowledge.client)});
  return {runtime,retention};
 }
-export function nativeProbeEvent(run:NativeProbeRun,chat:'a'|'b',sequence:number,body?:string){return verifiedConversationEvent({identity:run[chat],eventId:'synthetic-event-'+chat+'-'+sequence,revision:1,kind:'incoming',author:{kind:'person',id:'synthetic-participant-'+sequence},occurredAt:sequence,body:body??(chat==='a'?'PROBE_QUERY:'+run.predicate:'Synthetic isolated acknowledgement B '+sequence)});}
+export async function nativeProbeEvent(db:D1Database,token:string,run:NativeProbeRun,chat:'a'|'b',sequence:number,body?:string){
+ const text=body??(chat==='a'?'PROBE_QUERY:'+run.predicate:'Synthetic isolated acknowledgement B '+sequence);
+ // The event's source proves its exact original input. The independently
+ // seeded factual source is reached later through the real knowledge tool.
+ const input=chat==='a'?await probeKnowledge(db,token,run,'owner_mcp').execute({kind:'context.report',operationId:'owner-input-'+run.run+'-'+chat+'-'+sequence,text,occurredAt:sequence}) as any:undefined;
+ if(input&&input.state!=='recorded')throw Error('native_probe_input_report_uncertain');
+ return verifiedConversationEvent({identity:run[chat],eventId:'synthetic-event-'+chat+'-'+sequence,revision:1,kind:'incoming',author:{kind:'person',id:'synthetic-participant-'+sequence},occurredAt:sequence,body:text,...(input?{sourceRef:input.sourceRef}:{})});
+}
 export async function nativeProbeModelHost(db:D1Database,run:NativeProbeRun,identity:ConversationIdentity,sessionId:string,turnId:string,retention:NativeConversationRetention):Promise<ConversationProviderHost>{
  if(sessionId!==await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch))throw Error('synthetic_model_session');
  const scope={...run.scope,period:'synthetic-protocol-ledger'};
