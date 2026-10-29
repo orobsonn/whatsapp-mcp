@@ -29,7 +29,7 @@ export default {
       }
     })());
   },
-  async fetch(request: Request, env: AssistantEnv): Promise<Response> {
+  async fetch(request: Request, env: AssistantEnv, ctx: ExecutionContext): Promise<Response> {
     const headers = {
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
@@ -46,8 +46,13 @@ export default {
 
     if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
       return receiveCapture(request, env, async sequence => {
-        const {NativeApplicationHost}=await import('./agent-runtime/native-host');
-        await new NativeApplicationHost(env).receiveCapture(sequence);
+        // The Source bridge waits only for the durable metadata receipt. Its
+        // 2s transport deadline must not cancel canonical/native admission.
+        // waitUntil extends this attempt; the durable inbox/cron owns recovery.
+        ctx.waitUntil((async()=>{
+          const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+          await new NativeApplicationHost(env).receiveCapture(sequence);
+        })().catch(()=>{/* Closed admission gaps remain in the durable inbox. */}));
       });
 
     if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")

@@ -150,9 +150,9 @@ it("requires authenticated MCP props and exact affinity for all link operations"
 });
 it("exposes only the exact POST webhook route and returns durable denial without leaking payload", async () => {
   for (const [method, path] of [["GET", "/webhooks/telegram"], ["POST", "/webhooks/telegram/"], ["POST", "/telegram_link.begin"]])
-    expect((await worker.fetch(new Request("https://example.invalid" + path, { method }), hostEnv())).status).toBe(403);
+    expect((await worker.fetch(new Request("https://example.invalid" + path, { method }), hostEnv(), createExecutionContext())).status).toBe(403);
   const request = new Request("https://example.invalid/webhooks/telegram", { method: "POST", headers: { "X-Telegram-Bot-Api-Secret-Token": secret }, body: JSON.stringify(message(1)) });
-  const response = await worker.fetch(request, hostEnv());
+  const response = await worker.fetch(request, hostEnv(), createExecutionContext());
   expect(response.status).toBe(200); expect(await response.json()).toEqual({ code: "denied" });
   expect(await query("SELECT COUNT(*) n FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=?").first("n")).toBe(0);
 });

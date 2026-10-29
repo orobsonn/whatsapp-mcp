@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, createExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import assistant from "../assistant/index";
 import type { AssistantEnv } from "../assistant/env";
@@ -12,7 +12,7 @@ import inboxSql from "../assistant/migrations/0004_capture_inbox.sql?raw";
 const secret = "synthetic-bridge-secret-for-tests-only";
 const receiver: AssistantEnv = { DB: env.DB, BRIDGE_SECRET: secret, BRIDGE_SOURCE_EPOCH: "bridge-e",
   BRIDGE_SOURCE_GENERATION: "bridge-g", INSTALLATION_ID: "bridge-test", OPERATIONAL_GENERATION: "target-g" };
-const binding = { fetch: async (input: RequestInfo | URL, init?: RequestInit) => assistant.fetch(new Request(input, init), receiver) };
+const binding = { fetch: async (input: RequestInfo | URL, init?: RequestInit) => assistant.fetch(new Request(input, init), receiver, createExecutionContext()) };
 const sender = (target = binding): Env => ({ ...env, OWNER_SUB: "synthetic-owner", MAINTENANCE: "false",
   INSTALLATION_EPOCH: "bridge-e", CONNECTION_GENERATION: "bridge-g", ASSISTANT_INGRESS: target,
   ASSISTANT_BRIDGE_SECRET: secret, ASSISTANT_INSTALLATION_ID: "bridge-test", ASSISTANT_GENERATION: "target-g" });
@@ -21,7 +21,7 @@ const metadata = (sequence = 1, previousSequence = 0) => ({ protocol: 1, install
   chatId: "synthetic-chat", sourceId: "synthetic-message", sourceKind: "message", operation: "upsert", recordedAt: 100 });
 const post = (body: unknown, token = secret) => assistant.fetch(new Request("https://assistant.internal/internal/capture", {
   method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
-}), receiver);
+}), receiver, createExecutionContext());
 async function count(table: string) { return (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n; }
 async function seed(n = 1) {
   for (let i = 0; i < n; i++) await env.DB.prepare(`INSERT INTO assistant_capture_changes
@@ -74,7 +74,7 @@ it("replays the same event key after a lost acknowledgement", async () => {
   await seed(); let loseAck = true; const keys: number[] = [];
   const target = { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init); keys.push((await request.clone().json() as { sequence: number }).sequence);
-    const result = await assistant.fetch(request, receiver);
+    const result = await assistant.fetch(request, receiver, createExecutionContext());
     if (loseAck) { loseAck = false; throw new Error("Synthetic lost acknowledgement"); }
     return result;
   } };
