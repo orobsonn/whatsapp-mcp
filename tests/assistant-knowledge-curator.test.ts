@@ -3,6 +3,8 @@ import {beforeEach,expect,it} from 'vitest';
 import {SourceController} from '../assistant/sources';
 import type {OriginScope} from '../assistant/origin-guard';
 import {KnowledgeCurator,curatorSchedule,isCuratorPrincipal,type CuratorHost} from '../assistant/knowledge/curator';
+import {KnowledgeService} from '../assistant/knowledge/service';
+import type {KnowledgePort} from '../assistant/knowledge/contracts';
 
 let scope:OriginScope,now:number,sources:SourceController,curator:KnowledgeCurator,host:CuratorHost;
 const time=(s:string)=>Date.parse(s),owner={kind:'owner'} as const;
@@ -117,4 +119,32 @@ it('keeps indexing separate from learned and exposes the same operation for reco
  curator=new KnowledgeCurator(env.DB,()=>scope,host,()=>now);const replay=(await curator.next(run.id)).items[0];expect(replay.state).toBe('indexing');expect(replay.operationIds).toEqual(['same-index-operation']);
  await env.DB.prepare("UPDATE assistant_knowledge_operations SET response_json=? WHERE installation_id=? AND generation=? AND id='same-index-operation'").bind(JSON.stringify({operationId:'same-index-operation',state:'ready'}),scope.installationId,scope.generation).run();
  await curator.acknowledge(run.id,item.sequence,{state:'learned',operationIds:replay.operationIds});const done=await curator.finish(run.id);expect(done.counts.indexing).toBe(0);expect(done.counts.learned).toBe(1);expect(done.state).toBe('complete');
+});
+async function uncertainLearning(){
+ await note('uncertain original','exact original evidence');const run=await due(),item=(await curator.next(run.id)).items[0];
+ let ready=false;
+ const port:KnowledgePort={remember:async()=>{throw Error('synthetic ACK loss');},status:async operationId=>({operationId,state:ready?'ready':'indexing'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async operationId=>({operationId,state:'ready'})};
+ const service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),port,()=>now);
+ const result=await service.execute({kind:'remember',operationId:'uncertain-real-service',entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:item.sourceRef,quote:'exact original evidence'}]}]});
+ expect(result).toEqual({operationId:'uncertain-real-service',state:'uncertain'});
+ const durable=await sql('SELECT state,error,response_json,normalized_json,source_fences_json FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=?','uncertain-real-service').first<Record<string,unknown>>();
+ expect(durable).toMatchObject({state:'uncertain',error:'outcome_uncertain',response_json:null});expect(durable?.normalized_json).toBeTruthy();expect(durable?.source_fences_json).toBeTruthy();
+ return {run,item,service,ready:()=>{ready=true;}};
+}
+it('retains a real KnowledgeService uncertain operation for indexing and learns only after its same receipt reconciles ready',async()=>{
+ const setup=await uncertainLearning();
+ await expect(curator.acknowledge(setup.run.id,setup.item.sequence,{state:'learned',operationIds:['uncertain-real-service']})).rejects.toThrow('curator_knowledge_receipt');
+ await curator.acknowledge(setup.run.id,setup.item.sequence,{state:'indexing',operationIds:['uncertain-real-service']});
+ const replay=(await new KnowledgeCurator(env.DB,()=>scope,host,()=>now).next(setup.run.id)).items[0];expect(replay.operationIds).toEqual(['uncertain-real-service']);expect(replay.state).toBe('indexing');
+ setup.ready();expect(await setup.service.execute({kind:'status',operationId:replay.operationIds[0]})).toMatchObject({state:'ready'});
+ await curator.acknowledge(setup.run.id,setup.item.sequence,{state:'learned',operationIds:replay.operationIds});expect((await curator.finish(setup.run.id)).counts.learned).toBe(1);
+});
+it('rejects an uncertain receipt that becomes terminal source_purged while the final acknowledgement awaits Source proof',async()=>{
+ const setup=await uncertainLearning();host.verifySource=async()=>{
+  await sql("UPDATE assistant_knowledge_operations SET error='source_purged',state='complete',response_json='{}',source_fences_json=NULL WHERE installation_id=? AND generation=? AND id=?",'uncertain-real-service').run();
+  return {state:'current',guard:{sql:'1',values:[]}};
+ };
+ await expect(curator.acknowledge(setup.run.id,setup.item.sequence,{state:'indexing',operationIds:['uncertain-real-service']})).rejects.toThrow('curator_knowledge_receipt_changed');
+ const item=await sql('SELECT state,operation_ids_json FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND sequence=?',setup.run.id,setup.item.sequence).first();
+ expect(item).toEqual({state:'presented',operation_ids_json:'[]'});
 });

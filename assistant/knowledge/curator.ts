@@ -138,16 +138,38 @@ export class KnowledgeCurator {
   if(!row||!['presented','evaluated','learned','indexing','unavailable'].includes(row.state)||!row.source_hash)throw Error('curator_item_not_presented');
   if((input.state==='learned'||input.state==='indexing')&&!input.operationIds.length)throw Error('curator_knowledge_receipt');
   for(const id of input.operationIds){
-   const receipt=await this.db.prepare("SELECT response_json,source_fences_json,error FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=? AND kind='remember' AND client='curator'").bind(...this.keys(scope),id).first<{response_json:string|null;source_fences_json:string|null;error:string|null}>();this.current(scope);
+   const receipt=await this.db.prepare("SELECT state,response_json,source_fences_json,error FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=? AND kind='remember' AND client='curator'").bind(...this.keys(scope),id).first<{state:string;response_json:string|null;source_fences_json:string|null;error:string|null}>();this.current(scope);
    const result=receipt?.response_json?JSON.parse(receipt.response_json):null,proof=receipt?.source_fences_json?JSON.parse(receipt.source_fences_json):null;
-   if(!receipt||receipt.error||!proof?.sources?.some((f:{source:{id:string;revision:number;version:number;hash:string}})=>f.source.id===row.source_id&&f.source.revision===row.revision&&f.source.version===row.version&&f.source.hash===row.source_hash)
-    ||input.state==='learned'&&result?.state!=='ready'||input.state==='indexing'&&!['accepted','indexing','uncertain'].includes(result?.state))throw Error('curator_knowledge_receipt');
+   // A lost transport ACK has no response_json: the durable attempt state and
+   // verified source fences are its recovery handle. outcome_uncertain may
+   // remain as historical metadata after KnowledgeService.status settles ready.
+   if(!receipt||receipt.error!==null&&receipt.error!=='outcome_uncertain'||!proof?.sources?.some((f:{source:{id:string;revision:number;version:number;hash:string}})=>f.source.id===row.source_id&&f.source.revision===row.revision&&f.source.version===row.version&&f.source.hash===row.source_hash)
+    ||input.state==='learned'&&(receipt.state!=='complete'||result?.state!=='ready')
+    ||input.state==='indexing'&&!(['accepted','attempting','uncertain'].includes(receipt.state)||receipt.state==='complete'&&['accepted','indexing','uncertain'].includes(result?.state)))throw Error('curator_knowledge_receipt');
   }
   const read=await this.access(scope).read(owner,row.source_id,row.revision);this.current(scope);if(!read||read.fence.source.version!==row.version||read.fence.source.hash!==row.source_hash)throw Error('curator_source_changed');
   const proof=await this.host.verifySource(read);this.current(scope);if(proof.state!=='current')throw Error('curator_source_unavailable');
-  const access=this.access(scope).guard(owner,read.fence,this.clock()),authority=this.host.authorityGuard();
-  const updated=await this.db.prepare(`UPDATE assistant_curator_items SET state=?,operation_ids_json=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND source_hash=? AND (${access.sql}) AND (${proof.guard.sql}) AND (${authority.sql}) RETURNING sequence`)
-   .bind(input.state,JSON.stringify([...new Set(input.operationIds)]),this.clock(),...this.keys(scope),runId,sequence,row.source_hash,...access.values,...proof.guard.values,...authority.values).first();this.current(scope);if(!updated)throw Error('curator_source_changed');return {sequence,state:input.state};
+  const access=this.access(scope).guard(owner,read.fence,this.clock()),authority=this.host.authorityGuard(),operationIds=JSON.stringify([...new Set(input.operationIds)]);
+  const receiptState=input.state==='learned'?"k.state='complete' AND json_extract(CASE WHEN json_valid(k.response_json) THEN k.response_json ELSE '{}' END,'$.state')='ready'"
+   :input.state==='indexing'?"(k.state IN ('accepted','attempting','uncertain') OR (k.state='complete' AND json_extract(CASE WHEN json_valid(k.response_json) THEN k.response_json ELSE '{}' END,'$.state') IN ('accepted','indexing','uncertain')))":'1';
+  // A settlement or terminal purge may race the asynchronous Source proof.
+  // Revalidate EVERY supplied receipt inside the final mutation transaction.
+  // JSON packing bounds D1 bind count independently of operationIds length.
+  const receiptGuard:AccessGuard={sql:`NOT EXISTS(SELECT 1 FROM json_each(?) requested WHERE NOT EXISTS(
+   SELECT 1 FROM assistant_knowledge_operations k WHERE k.installation_id=? AND k.generation=? AND k.id=requested.value AND k.kind='remember' AND k.client='curator'
+   AND (k.error IS NULL OR k.error='outcome_uncertain') AND (${receiptState})
+   AND EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(k.source_fences_json) THEN k.source_fences_json ELSE '{}' END,'$.sources') f
+    WHERE json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.id')=?
+     AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.revision')=?
+     AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.version')=?
+     AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.hash')=?)))`,values:[operationIds,...this.keys(scope),row.source_id,row.revision,row.version,row.source_hash]};
+  const result=await this.db.batch([
+   this.db.prepare(`SELECT CASE WHEN (${receiptGuard.sql}) THEN 1 ELSE 0 END valid`).bind(...receiptGuard.values),
+   this.db.prepare(`UPDATE assistant_curator_items SET state=?,operation_ids_json=?,updated_at=? WHERE installation_id=? AND generation=? AND run_id=? AND sequence=? AND source_hash=? AND (${access.sql}) AND (${proof.guard.sql}) AND (${authority.sql}) AND (${receiptGuard.sql}) RETURNING sequence`)
+    .bind(input.state,operationIds,this.clock(),...this.keys(scope),runId,sequence,row.source_hash,...access.values,...proof.guard.values,...authority.values,...receiptGuard.values),
+  ]);this.current(scope);
+  if((result[0].results[0] as {valid:number}|undefined)?.valid!==1)throw Error('curator_knowledge_receipt_changed');
+  if(!result[1].results[0])throw Error('curator_source_changed');return {sequence,state:input.state};
  }
  async status(runId:string):Promise<CuratorReceipt>{
   const scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
