@@ -4,7 +4,7 @@ import {SourceController,sourceTextHash,type SourceCommand} from '../sources';
 import type {SourceRetirementGuard} from '../retention-authority';
 import {bridgeHash} from '../ingress';
 import type {OriginGuard,OriginFence} from '../origin-guard';
-type Row={id:string;kind:string;client:KnowledgeContext['client'];request_hash:string;normalized_json:string|null;source_fences_json:string|null;state:string;response_json:string|null;created_at:number;request_json:string};
+type Row={error:string|null;id:string;kind:string;client:KnowledgeContext['client'];request_hash:string;normalized_json:string|null;source_fences_json:string|null;state:string;response_json:string|null;created_at:number;request_json:string};
 export type KnowledgeExposure={sources:SourceFence[];origins:OriginFence[]};
 type Snapshot=KnowledgeExposure;
 type ControlPlan={sourceCommand:SourceCommand;previousRef?:{id:string;revision:number;version:number;hash:string};cleanupId?:string;sourceHash?:string};
@@ -39,13 +39,19 @@ export class KnowledgeService {
  private async row(c:KnowledgeContext,id:string){return this.db.prepare('SELECT * FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=?').bind(...this.keys(c),id).first<Row>();}
  private async admit(c:KnowledgeContext,command:Extract<KnowledgeCommand,{operationId:string}>):Promise<Row>{
   const hash=await bridgeHash(['knowledge-operation-v1',scopeKey(c),command]);this.current(c);
+  // Refuse new quoted copies once an installation-wide withdrawal exists.
+  // Existing IDs still resolve their immutable hash/terminal purge receipt.
+  const sourceIds=command.kind==='remember'?command.relations.flatMap(r=>r.evidence.map(e=>e.sourceRef.id)):command.kind==='context.correct'?[command.sourceId]:command.kind==='withdraw'?[command.sourceRef.id]:[];
   await this.db.prepare(`INSERT INTO assistant_knowledge_operations(installation_id,generation,id,kind,client,request_hash,request_json,created_at,updated_at)
-   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`).bind(...this.keys(c),command.operationId,command.kind,c.client,hash,JSON.stringify(command),this.clock(),this.clock()).run();
-  const row=await this.row(c,command.operationId);this.current(c);if(!row||row.request_hash!==hash)throw Error('knowledge_operation_conflict');return row;
+   SELECT ?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM assistant_retention_barriers b WHERE b.installation_id=? AND
+    (b.source_id IN (SELECT value FROM json_each(?)) OR (b.origin='owner_report' AND b.origin_key=?))) ON CONFLICT DO NOTHING`)
+   .bind(...this.keys(c),command.operationId,command.kind,c.client,hash,JSON.stringify(command),this.clock(),this.clock(),c.scope.installationId,JSON.stringify(sourceIds),command.kind==='context.report'?'knowledge-report:'+command.operationId:null).run();
+  const row=await this.row(c,command.operationId);this.current(c);if(!row)throw Error('knowledge_source_unavailable');if(row.request_hash!==hash)throw Error('knowledge_operation_conflict');return row;
  }
- private async complete(c:KnowledgeContext,id:string,result:unknown){this.current(c);await this.db.prepare("UPDATE assistant_knowledge_operations SET state='complete',response_json=?,updated_at=? WHERE installation_id=? AND generation=? AND id=?").bind(JSON.stringify(result),this.clock(),...this.keys(c),id).run();return result;}
+ private purged(id:string){return {operationId:id,state:'partial',error:'source_purged'} as const;}
+ private async complete(c:KnowledgeContext,id:string,result:unknown){this.current(c);const updated=await this.db.prepare("UPDATE assistant_knowledge_operations SET state='complete',response_json=?,updated_at=? WHERE installation_id=? AND generation=? AND id=? AND error IS NOT 'source_purged' RETURNING id").bind(JSON.stringify(result),this.clock(),...this.keys(c),id).first();return !updated&&(await this.row(c,id))?.error==='source_purged'?this.purged(id):result;}
  private async claim(c:KnowledgeContext,id:string){this.current(c);return !!await this.db.prepare("UPDATE assistant_knowledge_operations SET state='attempting',updated_at=? WHERE installation_id=? AND generation=? AND id=? AND state='accepted' RETURNING id").bind(this.clock(),...this.keys(c),id).first();}
- private async uncertain(c:KnowledgeContext,id:string){await this.db.prepare("UPDATE assistant_knowledge_operations SET state='uncertain',error='outcome_uncertain',updated_at=? WHERE installation_id=? AND generation=? AND id=? AND state IN ('accepted','attempting','uncertain')").bind(this.clock(),...this.keys(c),id).run();return {operationId:id,state:'uncertain'} as const;}
+ private async uncertain(c:KnowledgeContext,id:string){await this.db.prepare("UPDATE assistant_knowledge_operations SET state='uncertain',error='outcome_uncertain',updated_at=? WHERE installation_id=? AND generation=? AND id=? AND state IN ('accepted','attempting','uncertain')").bind(this.clock(),...this.keys(c),id).run();return (await this.row(c,id))?.error==='source_purged'?this.purged(id):{operationId:id,state:'uncertain'} as const;}
  private snapshot(raw:string):Snapshot {const value=JSON.parse(raw);return Array.isArray(value)?{sources:value,origins:[]}:value;}
  /** Fresh Reader observations and one local D1 transaction form the publication
   * snapshot. Reader and D1 have no shared transaction; delivered copies cannot
@@ -61,6 +67,7 @@ export class KnowledgeService {
  private async validFences(c:KnowledgeContext,raw:string|null){return !!raw&&this.validSnapshot(c,this.snapshot(raw));}
  private sources(c:KnowledgeContext){return new SourceController(this.db,c.scope,owner,this.clock,this.retirement);}
  private async control(c:KnowledgeContext,row:Row):Promise<unknown>{
+  if(row.error==='source_purged')return this.purged(row.id);
   const command=JSON.parse(row.request_json) as Exclude<KnowledgeCommand,{kind:'remember'|'query'|'entities'|'status'}>;
   let plan:ControlPlan;
   if(row.normalized_json)plan=JSON.parse(row.normalized_json);
@@ -81,8 +88,8 @@ export class KnowledgeService {
    this.current(c);
    // The full recovery plan is durable before either effect. An exact replay
    // recovers the Source ledger receipt even after its old revision is gone.
-   await this.db.prepare("UPDATE assistant_knowledge_operations SET normalized_json=? WHERE installation_id=? AND generation=? AND id=? AND normalized_json IS NULL").bind(JSON.stringify(plan),...this.keys(c),row.id).run();
-   plan=JSON.parse((await this.row(c,row.id))!.normalized_json!);
+   await this.db.prepare("UPDATE assistant_knowledge_operations SET normalized_json=? WHERE installation_id=? AND generation=? AND id=? AND normalized_json IS NULL AND error IS NOT 'source_purged'").bind(JSON.stringify(plan),...this.keys(c),row.id).run();
+   const saved=(await this.row(c,row.id))!;if(saved.error==='source_purged')return this.purged(row.id);plan=JSON.parse(saved.normalized_json!);
   }
   try{
    this.current(c);const ref=await this.sources(c).execute(plan.sourceCommand);this.current(c);
@@ -97,6 +104,7 @@ export class KnowledgeService {
  private async status(c:KnowledgeContext,id:string):Promise<KnowledgeReceipt|unknown>{
   const row=await this.row(c,id);this.current(c);if(!row)return {operationId:id,state:'not_found'};
   if(row.client!==c.client)throw Error('knowledge_operation_client');
+  if(row.error==='source_purged')return this.purged(id);
   if(row.kind!=='remember'){this.owner(c);return row.response_json?JSON.parse(row.response_json):this.control(c,row);}
   if(!row.normalized_json)return {operationId:id,state:'accepted'};
   if(!await this.validFences(c,row.source_fences_json))return {operationId:id,state:'partial',error:'evidence_changed'};
@@ -149,6 +157,7 @@ export class KnowledgeService {
   if(command.kind==='status')return this.status(c,command.operationId);
   if(command.kind!=='remember')this.owner(c);
   const row=await this.admit(c,command);
+  if(row.error==='source_purged')return this.purged(command.operationId);
   if(command.kind!=='remember')return row.response_json?JSON.parse(row.response_json):this.control(c,row);
   if(row.response_json||row.state!=='accepted')return this.status(c,command.operationId);
   let normalized:NativeKnowledgeWrite,proof:Snapshot;
@@ -167,7 +176,7 @@ export class KnowledgeService {
    }
    normalized={entities,relations,origin:'agent_derived'};
    await this.db.prepare("UPDATE assistant_knowledge_operations SET normalized_json=?,source_fences_json=? WHERE installation_id=? AND generation=? AND id=? AND normalized_json IS NULL AND state='accepted'").bind(JSON.stringify(normalized),JSON.stringify(proof),...this.keys(c),command.operationId).run();
-   const stored=(await this.row(c,command.operationId))!;normalized=JSON.parse(stored.normalized_json!);proof=this.snapshot(stored.source_fences_json!);
+   const stored=(await this.row(c,command.operationId))!;if(stored.error==='source_purged')return this.purged(command.operationId);normalized=JSON.parse(stored.normalized_json!);proof=this.snapshot(stored.source_fences_json!);
   }
   if(!await this.validSnapshot(c,proof))return {operationId:command.operationId,state:'partial',error:'evidence_changed'};
   if(!await this.claim(c,command.operationId))return this.status(c,command.operationId);

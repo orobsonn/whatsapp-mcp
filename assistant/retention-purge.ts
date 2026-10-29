@@ -5,6 +5,7 @@ import { bridgeHash } from "./ingress";
 import type { SourceRetirementGuard } from "./retention-authority";
 import { WithdrawalBarrier } from "./retention-barrier";
 import { canonicalSnapshotTables } from "./retention-snapshot-contract";
+import { nativeRetentionAdapter, nativeRetentionTables } from "./retention-native-context";
 export type RestorePurgeGate = Readonly<{ token: string; operationId: string; targetGeneration: string }>;
 const label = z.string().min(1).max(256);
 export const purgeCommand = z.object({ kind: z.literal("source.purge"), operationId: label, sourceId: label }).strict();
@@ -40,7 +41,10 @@ export class RetentionPurge {
     if (previous && (previous.request_hash !== hash || previous.source_id !== command.sourceId)) throw new Error("retention_operation_conflict");
     if (previous?.state === "complete") return JSON.parse(previous.report_json!);
     const catalog = (await this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' LIMIT 129").all<{ name: string }>()).results;
-    if (catalog.length > 128 || catalog.some(row => !supportedTables.has(row.name) && !["assistant_retention_runtime_hold", "assistant_retention_active_generation"].includes(row.name))) return { state: "blocked", reason: "retention_schema_adapter_required", d1: "pending" };
+    if (catalog.length > 128 || catalog.some(row => !supportedTables.has(row.name) && !nativeRetentionTables.has(row.name) && !["assistant_retention_runtime_hold", "assistant_retention_active_generation"].includes(row.name))) return { state: "blocked", reason: "retention_schema_adapter_required", d1: "pending" };
+    let nativeAdapter: ReturnType<typeof nativeRetentionAdapter>;
+    try { nativeAdapter = nativeRetentionAdapter(new Set(catalog.map(row => row.name))); }
+    catch { return { state: "blocked", reason: "native_context_schema_incomplete", d1: "pending" }; }
     const restoring = catalog.some(row => row.name === "assistant_retention_installation_gate") ? await this.db.prepare("SELECT state,token,operation_id,target_generation FROM assistant_retention_installation_gate WHERE installation_id=?").bind(this.scope.installationId).first<{ state: string; token: string; operation_id: string; target_generation: string | null }>() : null;
     if (this.restoreGate && (restoring?.state !== "quiescing" || restoring.token !== this.restoreGate.token || restoring.operation_id !== this.restoreGate.operationId || restoring.target_generation !== this.scope.generation || this.restoreGate.targetGeneration !== this.scope.generation)) throw new Error("restore_purge_gate_lost");
     if (!this.restoreGate && restoring?.state === "quiescing") return { state: "blocked", reason: "canonical_writers_quiesced", d1: "pending" };
@@ -60,6 +64,7 @@ export class RetentionPurge {
     if (tables.size && !["assistant_routine_items", "assistant_routine_event_items", "assistant_routine_ingestions", "assistant_routine_state", "assistant_routine_cycles", "assistant_routine_fup_results"].every(table => tables.has(table))) return { state: "blocked", reason: "routines_schema_incomplete", d1: "pending" };
     const collect = (kind: string, query: string) => sql(`INSERT INTO assistant_retention_purge_refs SELECT ?1,?2,?3,'${kind}',found.id FROM (${query}) found WHERE found.id IS NOT NULL AND found.id NOT IN (${refs(kind)}) ORDER BY found.id LIMIT 128 ON CONFLICT DO NOTHING`);
     const collection = () => [
+      ...nativeAdapter.collections.map(({kind, query}) => collect(kind, query)),
       // A private support is not the source/anchor of its derived batch. Keep
       // that anchor's UNIQUE attempt while collecting every private copy.
       ...(ownerContext ? [
@@ -134,6 +139,7 @@ export class RetentionPurge {
     const restoreGrants = this.restoreGate ? [...canonicalSnapshotTables].flatMap(table => ["update", "delete"].map(action => this.db.prepare(`INSERT INTO assistant_retention_restore_grants SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM assistant_retention_installation_gate WHERE installation_id=? AND token=? AND operation_id=? AND target_generation=? AND state='quiescing')`).bind(...args.slice(0, 2), restoreToken, this.restoreGate!.token, table, action, this.scope.installationId, this.restoreGate!.token, this.restoreGate!.operationId, this.scope.generation))) : [];
     const statements = [...collection(), ...restoreGrants,
       sql(`INSERT INTO assistant_retention_purge_grants SELECT ?1,?2,?4,?3 WHERE (SELECT COUNT(*) FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3)=?5 AND NOT(${financialInvalid}) AND EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=?1 AND generation=?2 AND id=?4 AND status='withdrawn') AND (${restoreGuard}) ON CONFLICT DO NOTHING`, [count]),
+      ...nativeAdapter.mutations(gate).map(query => sql(query, [this.clock()])),
       sql(`UPDATE assistant_budget_reservations AS r SET state='settled',actual_units=(SELECT p.actual_units FROM (${paid}) p WHERE p.operation_key=r.operation_key AND p.request_hash=r.request_hash AND p.actual_units IS NOT NULL LIMIT 1)
        WHERE ${namespace("r")} AND r.state IN ('reserved','uncertain') AND EXISTS(SELECT 1 FROM (${paid}) p WHERE p.operation_key=r.operation_key AND p.request_hash=r.request_hash AND p.actual_units IS NOT NULL) AND ${gate}`),
       sql(`UPDATE assistant_budget_reservations AS r SET state='uncertain' WHERE ${namespace("r")} AND r.state='reserved' AND (r.operation_key IN (${refs("model")}) OR r.operation_key IN (SELECT operation_key FROM assistant_media_receipts t WHERE ${namespace("t")} AND t.source_id=?4)) AND ${gate}`),
@@ -202,7 +208,7 @@ export class RetentionPurge {
         del("assistant_routine_ingestions", `t.source_id=?4 OR t.item_id IN (${refs("routine")})`), del("assistant_routine_items", `t.id IN (${refs("routine")})`), sql(`UPDATE assistant_routine_event_items AS t SET item_id=NULL,outcome='retention_purged' WHERE ${namespace("t")} AND t.item_id IN (${refs("routine")}) AND ${gate}`), del("assistant_routine_fup_results", `t.follow_up_id IN (${refs("fup")})`)] : []),
       sql(`UPDATE assistant_sources SET current_version=NULL,title=NULL,conversation_id=NULL,project_id=NULL WHERE installation_id=?1 AND generation=?2 AND id=?4 AND status='withdrawn' AND ${gate}`),
       del("assistant_source_versions", sameSource),
-      sql(`UPDATE assistant_retention_purges SET state='complete',report_json=json_object('state','complete','logicalBlock','withdrawn','d1','purged','d1Scope','current_namespace_source_closure','otherGenerations','pending','financial','preserved_installation_all_generations','r2','pending','externalCopies','pending','externalIndex','pending','retained','source_tombstone_and_financial_and_owner_assessment_metadata','identifiers','retained_metadata_not_anonymized','closureRefs',(SELECT COUNT(*) FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3)) WHERE installation_id=?1 AND generation=?2 AND operation_id=?3 AND source_id=?4 AND ${gate}`),
+      sql(`UPDATE assistant_retention_purges SET state='complete',report_json=json_object('state','complete','logicalBlock','withdrawn','d1','purged','d1Scope','current_namespace_source_closure','otherGenerations','pending','financial','preserved_installation_all_generations','r2','pending','externalCopies','pending','externalIndex','pending','nativeContexts','tombstoned_pending_physical','retained','source_tombstone_and_financial_and_owner_assessment_metadata','identifiers','retained_metadata_not_anonymized','closureRefs',(SELECT COUNT(*) FROM assistant_retention_purge_refs WHERE installation_id=?1 AND generation=?2 AND purge_id=?3)) WHERE installation_id=?1 AND generation=?2 AND operation_id=?3 AND source_id=?4 AND ${gate}`),
       sql(`DELETE FROM assistant_retention_purge_grants WHERE installation_id=?1 AND generation=?2 AND source_id=?4 AND purge_id=?3`),
       ...(this.restoreGate ? [this.db.prepare("DELETE FROM assistant_retention_restore_grants WHERE installation_id=? AND generation=? AND token=? AND gate_token=?").bind(this.scope.installationId, this.scope.generation, restoreToken, this.restoreGate.token)] : []),
     ];
