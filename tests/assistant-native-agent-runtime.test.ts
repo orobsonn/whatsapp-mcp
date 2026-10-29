@@ -15,7 +15,7 @@ beforeAll(()=>{
 'use agent';
 import {useModel,useTool,useInitialData,useDelivery} from '@flue/runtime';
 import {getCloudflareContext,extend} from '@flue/runtime/cloudflare';
-export const cloudflare=extend({base:Base=>class extends Base{async eraseForOwner(grant){if(grant!=='synthetic-owner-grant')throw Error('purge_denied');await this.destroy();}}});
+export const cloudflare=extend({base:Base=>class extends Base{async proofRevision(){return this.env.PROBE_REVISION||'local';}async eraseForOwner(grant){if(grant!=='synthetic-owner-grant')throw Error('purge_denied');await this.destroy();}}});
 import * as v from 'valibot';
 export function NativeProof(){
  const seed=useInitialData(); const delivery=useDelivery();
@@ -58,7 +58,7 @@ export default {async fetch(request,env){if(env.DEPLOYED_PROBE==='true'&&(!env.P
  if(action==='deny'||action==='timeout'){await env.DB.prepare('INSERT INTO proof_events(kind,detail) VALUES(?,?)').bind(action,'synthetic-only').run();return Response.json({state:'configured'});}
  if(action==='clear-flags'){await env.DB.prepare("DELETE FROM proof_events WHERE kind IN ('deny','timeout')").run();return Response.json({state:'configured'});}
 const handle=init(NativeProof,{id});try{
- if(action==='inspect')return Response.json({instance:await getAgentInstance(NativeProof,id)});
+ if(action==='inspect')return Response.json({instance:await getAgentInstance(NativeProof,id),revision:await env.FLUE_NATIVE_PROOF_AGENT.get(env.FLUE_NATIVE_PROOF_AGENT.idFromName(id)).proofRevision()});
  if(action==='purge'){if(grant!=='synthetic-owner-grant')return new Response(null,{status:403});await env.DB.prepare('INSERT INTO proof_tombstones(id) VALUES(?) ON CONFLICT DO NOTHING').bind(id).run();try{await env.FLUE_NATIVE_PROOF_AGENT.get(env.FLUE_NATIVE_PROOF_AGENT.idFromName(id)).eraseForOwner(grant);}catch{}return Response.json({state:'withdrawn'});}
  if(await env.DB.prepare('SELECT id FROM proof_tombstones WHERE id=?').bind(id).first())return Response.json({error:'context_withdrawn'},{status:403});
  if(receipt){const reply=await handle.read(receipt,{signal:AbortSignal.timeout(20000)});return Response.json(reply);}
