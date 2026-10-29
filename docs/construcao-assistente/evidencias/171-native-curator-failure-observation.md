@@ -26,4 +26,14 @@ O recibo nativo de admissão era devolvido novamente pelo scheduler, mas a falha
 
 RED reproduziu falta de aviso quando o guard de fontes falhava, starvation de um11º run atrás de dez grants antigos e timestamp parado com tópico ausente. A validação dirigida também cobre concorrência, ACK perdido, cancelamento/pausa, revínculo, submission/UID diferentes, erro tardio, conclusão SDK sem falsa cobertura e contagem de capture gaps. Tipos, build e revisão adversarial acompanharam o delta.
 
-Ainda falta comprovar o aviso pelo caminho publicado, identificar a causa original quando reproduzida e concluir uma passagem diária real. Esses itens não são substituídos pelos testes locais. O envio WhatsApp aprovado e a release final seguem separados na issue146.
+## Publicação e prova real posterior
+
+Migração0051 aplicada apenas no D1 próprio, com registro/readback confirmados. Código `afe5e6e` publicado no Own `cd73696b-3c40-4496-bcc9-91c1d32c9646`, preservando bindings, runtime, schedules, modoapproval e recorrência diária. Source não foi alterado.88 casos dirigidos, tipos e build passaram; revisão adversarial final sem Critical/Important. A CI completa desse SHA, `40963147935`, terminou com `success`.
+
+O cron observou o recibo original e persistiu `outcome=failed`, `notice_state=accepted`, mensagem Telegram137. A regressão com resumo já aceito foi coberta em teste; este run real falhou antes de produzir seu resumo. Não houve nova submission, inferência ou modificação da cobertura para produzir a notificação.
+
+Na observação limitada,19 conferências completas dos mesmos166 fences de origem terminaram `current`, com duração de7515 a32598ms. Não houve diagnóstico de indisponibilidade nesse recorte. Isso comprova disponibilidade posterior, **não determina nem corrige por si a causa da falha original**. Prova privada filtrada: `native-context-proof-filtered-1793312423738.json`; a captura temporária foi encerrada.
+
+O fanout de consultas continua um custo estrutural medido. A revisão adversarial recomendou estudar provas hash-only por lote, com normalização idêntica, controle de conexão Source efetivamente revalidado, correspondência exata e todos os checks finais preservados. Essa otimização ainda não foi implementada neste registro.
+
+Ainda falta concluir uma passagem diária real e observar o envio WhatsApp após aprovação. Durante a investigação chegaram três entradas privadas: as submissions concluíram, com dois resultadossilent e uma revisão enviada ao Telegram. Essa revisão expirou sem aprovação; isso não comprova envio nem validação humana da sugestão. A release final permanece separada na issue146.
