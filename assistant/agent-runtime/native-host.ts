@@ -6,7 +6,7 @@ import {bridgeHash} from '../ingress';
 import {OriginGuard,scopeKeys} from '../origin-guard';
 import {assertRestoredGeneration} from '../retention-runtime';
 import {configuredKnowledgeService} from '../knowledge/configured';
-import {ConversationRuntime,conversationIdentity,conversationAddress,verifiedConversationEvent,type ConversationIdentity,type VerifiedConversationEvent,type TaskContext} from './conversation';
+import {ConversationRuntime,conversationIdentity,conversationAddress,conversationReplyAnchor,verifiedConversationEvent,type ConversationIdentity,type VerifiedConversationEvent,type TaskContext} from './conversation';
 import {NativeConversationRetention} from './conversation-retention';
 import {nativeContextDestroyPort,openNativeConversation} from './native-transport';
 import {nativeAuthority,nativeGlobalBudgetGuard,nativeMode,nativeScope,joinGuards,nativeOwnerFence} from './native-policy';
@@ -23,6 +23,10 @@ import {configuredRetirementGuard} from '../retention-authority';
 import type {NativeCaptureInput} from '../../src/native-input-reader';
 import {CaptureMaterializer} from '../materialize';
 import {telegramText} from '../telegram-format';
+import {KnowledgeCurator,isCuratorPrincipal,type CuratorReceipt} from '../knowledge/curator';
+import {nativeMediaCapability} from './native-media';
+import {NativeOwnerHelp} from './native-owner-help';
+import {createNativeCalendarCapability} from './native-calendar';
 
 const owner={kind:'owner'} as const;
 /** Request-local composition root. No active task/session/actor is stored in a
@@ -37,8 +41,9 @@ export class NativeApplicationHost {
   this.origin=new OriginGuard(this.db,()=>this.currentScope(),env.CAPTURE_READER,env.BRIDGE_SECRET,2000,'owner_read');
   this.retention=new NativeConversationRetention(this.db!,()=>this.currentScope(),this.origin,nativeContextDestroyPort(env));
   this.runtime=new ConversationRuntime(this.db!,{retention:this.retention,authority:async identity=>(await this.authority(identity)).authority,
+   knowledgeClient:identity=>isCuratorPrincipal(identity.principalOrChatId)?'curator':'conversation_agent',
    authorizeEvent:event=>this.authorizeEvent(event),open:openNativeConversation,
-   knowledge:()=>configuredKnowledgeService(env,this.currentScope(),'conversation_agent')});
+   knowledge:task=>configuredKnowledgeService(env,this.currentScope(),task.knowledge.client)});
  }
  currentScope(){
   const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET];
@@ -60,6 +65,9 @@ export class NativeApplicationHost {
   await this.authority(identity);await this.retention.assertCurrent(identity);return identity;
  }
  private async authorizeEvent(event:VerifiedConversationEvent){
+  if(isCuratorPrincipal(event.identity.principalOrChatId)){
+   const {authority}=await this.authority(event.identity);await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
+  }
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch);
   const row=await this.db!.prepare(`SELECT request_hash,source_ref_json FROM assistant_native_host_events WHERE installation_id=? AND generation=? AND conversation_id=? AND event_id=? AND event_revision=?`)
    .bind(this.scope.installationId,this.scope.generation,sessionId,event.eventId,event.revision).first<{request_hash:string;source_ref_json:string}>();
@@ -114,6 +122,7 @@ export class NativeApplicationHost {
   if(input.observation!=='native_capture_input')return finish('unavailable','source_reader_invalid');
   if(input.state!=='available')return finish('unavailable',input.reason??'source_unavailable');
   if(input.sourceEpoch!==scope.sourceEpoch||input.sourceGeneration!==scope.sourceGeneration||input.sourceKind!==row.source_kind||input.sourceId!==row.source_id||input.chatId!==row.chat_id||!Number.isSafeInteger(input.originalSequence)||input.originalSequence<1||typeof input.fromMe!=='boolean'||input.captureState!=='enabled')return finish('unavailable','source_reader_invalid');
+  if(!input.authorship||!['external','assistant_action','own_device_unattributed'].includes(input.authorship.kind)||input.fromMe===(input.authorship.kind==='external'))return finish('unavailable','source_authorship_unknown');
   const content=input.snapshot?.content;
   if(!content||content.fromMe!==input.fromMe||content.messageId!==input.originalMessageId||(content.authorId??null)!==input.authorId||input.text!==(typeof content.text==='string'?content.text:null))return finish('unavailable','source_reader_invalid');
   // Source observation hash covers the exact author/direction/body snapshot.
@@ -124,16 +133,21 @@ export class NativeApplicationHost {
   if(!source)return finish('excluded');
   const body=typeof content.text==='string'?content.text:JSON.stringify(content??{});
   if(body!==source.text||await sourceTextHash(body)!==source.fence.source.hash)return finish('unavailable','canonical_text_changed');
-  if(input.textState!=='ready')return finish('unavailable','media_text_pending');
+  // Images/PDF enter as their exact canonical Source metadata. The agent can
+  // choose media_read; no fabricated visual description or eager OCR.
+  if(input.textState!=='ready'&&!(row.source_kind==='media'&&['image','pdf'].includes(String(content.kind))))return finish('unavailable','media_text_pending');
   let identity:ConversationIdentity;try{identity=await this.identity('whatsapp',row.chat_id);}catch(error){const code=error instanceof Error?error.message:'native_authority_unavailable';return finish(code==='native_conversation_denied'?'excluded':'unavailable',code);}
   const {authority}=await this.authority(identity),ref={id:source.fence.source.id,revision:source.fence.source.revision,version:source.fence.source.version,hash:source.fence.source.hash};
   // Provider authors, actual group participants, and destination are distinct.
-  const author=input.fromMe?{kind:'owner' as const,id:authority.ownerId}:{kind:'person' as const,id:input.authorId??(input.conversationKind==='private'?row.chat_id:'unknown-participant:'+input.originalMessageId)};
-  const event=verifiedConversationEvent({identity,eventId:'capture:'+row.source_kind+':'+row.source_id,revision:source.fence.source.revision,kind:input.fromMe?'owner_manual':'incoming',author,
-   occurredAt:typeof content.occurredAt==='number'?content.occurredAt:typeof content.receivedAt==='number'?content.receivedAt:Date.now(),body,sourceRef:ref});
+  const author=input.authorship.kind==='external'?{kind:'person' as const,id:input.authorId??(input.conversationKind==='private'?row.chat_id:'unknown-participant:'+input.originalMessageId)}
+   :{kind:'system' as const,id:input.authorship.kind==='assistant_action'?'assistant-action:'+input.authorship.action.id:'own-device-unattributed'};
+  const status=input.authorship.kind==='assistant_action'?input.authorship.action.status:undefined;
+  const actionState=status&&['delivered','read'].includes(status)?'delivered' as const:status&&['accepted','sent'].includes(status)?'accepted' as const:undefined;
+  const event=verifiedConversationEvent({identity,eventId:'capture:'+row.source_kind+':'+row.source_id,revision:source.fence.source.revision,kind:input.authorship.kind==='external'?'incoming':'action_result',author,
+   occurredAt:typeof content.occurredAt==='number'?content.occurredAt:typeof content.receivedAt==='number'?content.receivedAt:Date.now(),body,sourceRef:ref,...(actionState?{actionState}:{})});
   const result=await this.admit(event,input.originalSequence);return finish(result.state,null,result.taskRef);
  }
- async receiveTelegram(updateId:number){
+ async receiveTelegram(updateId:number,raw?:unknown){
   const fence=await nativeOwnerFence(this.env,this.currentScope()),link=telegramLinkGuard(fence);
   const row=await this.db!.prepare(`SELECT text,message_id,message_date,thread_id,payload_hash FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND outcome='pending' AND state='pending' AND (${link.sql})`)
    .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,updateId,this.scope.sourceEpoch,this.scope.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,...link.values).first<{text:string;message_id:number;message_date:number;thread_id:number|null;payload_hash:string}>();
@@ -145,6 +159,8 @@ export class NativeApplicationHost {
   const source=await new SourceAccess(this.db!,this.scope,Date.now,'knowledge').read(owner,report.id,report.revision);
   if(!source||source.text!==row.text||source.fence.source.version!==report.version)throw Error('native_owner_source_changed');
   const ref={id:source.fence.source.id,revision:source.fence.source.revision,version:source.fence.source.version,hash:source.fence.source.hash};
+  const help=await this.help();if(raw!==undefined)await help.recordReply(raw);
+  const resumed=await help.resume(updateId,ref);if(resumed.state==='resumed'||resumed.state==='pending')return resumed.receipt!;
   const event=verifiedConversationEvent({identity,eventId:'telegram:'+this.env.TELEGRAM_BOT_INSTANCE+':'+updateId,revision:1,kind:'incoming',author:{kind:'owner',id:fence.userId},occurredAt:row.message_date*1000,body:row.text,sourceRef:ref,...(row.thread_id?{threadId:String(row.thread_id)}:{})});
   return this.admit(event,null,fence);
  }
@@ -171,10 +187,11 @@ export class NativeApplicationHost {
    ORDER BY COALESCE(n.updated_at,0),i.sequence LIMIT 10`).bind(...scopeKeys(this.scope),Number(cut)).all<{sequence:number}>();
   const outcomes=[];for(const row of capture.results)try{outcomes.push(await this.receiveCapture(row.sequence));}catch{outcomes.push({state:'unavailable'});}
   const ownerUpdates=await this.db!.prepare(`SELECT update_id FROM assistant_telegram_updates u WHERE installation_id=? AND generation=? AND bot_instance=? AND outcome='pending' AND state='pending'
+   AND NOT EXISTS(SELECT 1 FROM assistant_native_help_questions q WHERE q.installation_id=u.installation_id AND q.generation=u.generation AND q.bot_instance=u.bot_instance AND q.owner_update_id=u.update_id AND q.state='resumed')
    AND NOT EXISTS(SELECT 1 FROM assistant_native_host_events e JOIN assistant_native_conversation_events n ON n.conversation_id=e.conversation_id AND n.event_id=e.event_id AND n.revision=e.event_revision WHERE e.installation_id=u.installation_id AND e.generation=u.generation AND e.event_id='telegram:'||u.bot_instance||':'||u.update_id AND n.state='admitted') ORDER BY update_id LIMIT 5`)
    .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!).all<{update_id:number}>();
   for(const row of ownerUpdates.results)try{outcomes.push(await this.receiveTelegram(row.update_id));}catch{outcomes.push({state:'unavailable'});}
-  await this.sweepRetiredContexts();return {state:'ticked',outcomes};
+  await this.sweepRetiredContexts();const curator=await this.dispatchCurator();return {state:'ticked',outcomes,curator};
  }
  async modelHost(sessionId:string,turnId:string):Promise<ConversationProviderHost>{
   const identity=await this.registered(sessionId),period=new Date().toISOString().slice(0,10),scope={installationId:this.scope.installationId,generation:this.scope.generation,period};
@@ -197,10 +214,10 @@ export class NativeApplicationHost {
    authorityGuard:task=>this.actionAuthority(task),activity:task=>this.activity(task)});
  }
  async activity(task:TaskContext){
-  await this.runtime.assertTaskCurrent(task);const last=[...task.cohort].reverse().find(e=>e.kind==='incoming');
-  if(!last||task.returnChannel.channel!=='whatsapp'||!this.env.CAPTURE_READER?.readConversationActivity)throw Error('native_activity_unavailable');
-  const seq=await this.db!.prepare(`SELECT original_sequence FROM assistant_native_host_events WHERE conversation_id=? AND event_id=? AND event_revision=?`)
-   .bind(task.sessionId,last.eventId,last.revision).first<number>('original_sequence');
+  await this.runtime.assertTaskCurrent(task);const anchor=conversationReplyAnchor(task);
+  if(!anchor||task.returnChannel.channel!=='whatsapp'||!this.env.CAPTURE_READER?.readConversationActivity)throw Error('native_activity_unavailable');
+  const seq=await this.db!.prepare(`SELECT h.original_sequence FROM assistant_native_host_events h JOIN assistant_native_conversation_events e ON e.conversation_id=h.conversation_id AND e.event_id=h.event_id AND e.revision=h.event_revision WHERE e.task_ref=? AND e.conversation_id=? AND e.state<>'withdrawn' AND h.source_ref_json=?`)
+   .bind(anchor.taskRef,task.sessionId,JSON.stringify(anchor.sourceRef)).first<number>('original_sequence');
   if(!seq||seq<1)throw Error('native_activity_trigger_unknown');
   const observation=captureConversationActivity.parse(await this.env.CAPTURE_READER.readConversationActivity({secret:this.env.BRIDGE_SECRET!,sourceEpoch:this.scope.sourceEpoch,sourceGeneration:this.scope.sourceGeneration,chatId:task.returnChannel.id}));
   if(observation.state!=='available'||observation.sourceEpoch!==this.scope.sourceEpoch||observation.sourceGeneration!==this.scope.sourceGeneration||observation.chatId!==task.returnChannel.id||observation.latestIncomingOriginalSequence!==seq||observation.lastOwnerOriginalSequence>seq||observation.members.some(m=>!m.captureEnabled))throw Error('native_activity_superseded');
@@ -217,13 +234,71 @@ export class NativeApplicationHost {
  async frame(task:TaskContext){
   await this.runtime.assertTaskCurrent(task);
   const reads=createConversationReadCapabilities({env:this.env,task,origin:this.origin,assertCurrent:()=>this.runtime.assertTaskCurrent(task),expose:proof=>this.retention.expose(task.identity,proof),getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId)});
-  return {reads,effects:{reply:async(input:unknown)=>{
+  const curator=isCuratorPrincipal(task.identity.principalOrChatId)?await this.curatorFrame(task):undefined;
+  const media=nativeMediaCapability({env:this.env,task,runtime:this.runtime,retention:this.retention,origin:this.origin,getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId),modelGuard:()=>nativeGlobalBudgetGuard(this.env)});
+  const calendar=createNativeCalendarCapability({db:this.db!,env:this.env,scope:this.scope,getScope:()=>this.currentScope(),task,assertCurrent:()=>this.runtime.assertTaskCurrent(task),authorityGuard:async()=>joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId)),ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),expose:proof=>this.retention.expose(task.identity,proof)});
+  return {reads,media,...(curator?{curator}:{}),effects:{reply:async(input:unknown)=>{
    if(task.returnChannel.channel!=='whatsapp')throw Error('native_reply_channel_denied');
    const actions=this.actions(),result=await actions.propose(task,input);
    if(result.authority?.kind==='human_approval'&&result.intent)return {...result,review:await(await this.review()).dispatch(result.intent.id,'native-intent:'+result.intent.id)};
    if(result.authority?.kind==='autonomous_policy'&&result.intent)return actions.execute(result.intent.id,result.authority);
    return result;
-  },respondOwner:(text:string)=>this.respondOwner(task,text)}};
+  },respondOwner:(text:string)=>this.respondOwner(task,text),askOwner:async(question:string)=>(await this.help()).ask(task,question),calendarChange:(mutation:unknown)=>calendar.change(mutation)}};
+ }
+ async help(){
+  const credentialKey=await bridgeHash(['native-help-credentials-v1',this.env.TELEGRAM_BOT_INSTANCE,this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_WEBHOOK_SECRET]);
+  const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{await assertRestoredGeneration(this.env);this.currentScope();},'HTML');
+  return new NativeOwnerHelp({db:this.db!,scope:this.scope,getScope:()=>this.currentScope(),botInstance:this.env.TELEGRAM_BOT_INSTANCE!,credentialKey,api,
+   ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),assertCurrent:task=>this.runtime.assertTaskCurrent(task),
+   authorityGuard:async task=>joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId)),activity:task=>this.activity(task),
+   exposeSource:(task,ref)=>this.retention.exposeSource(task.identity,ref),
+   resume:async input=>this.admit(verifiedConversationEvent({identity:input.task.identity,eventId:input.eventId,revision:1,kind:'clarification',author:{kind:'owner',id:input.ownerFence.userId},occurredAt:input.occurredAt,body:input.text,sourceRef:input.sourceRef,replyTo:input.anchor}),input.originalSequence,input.ownerFence),
+  });
+ }
+ async curator(identity:ConversationIdentity){
+  if(!isCuratorPrincipal(identity.principalOrChatId))throw Error('native_curator_denied');
+  const sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch),{guard}=await this.authority(identity);
+  return new KnowledgeCurator(this.db!,()=>this.currentScope(),{
+   assertCurrent:async()=>{await this.registered(sessionId);},
+   authorityGuard:()=>joinGuards(guard,this.retention.authorityGuard(sessionId)),
+   verifySource:async read=>{
+    if(read.fence.source.origin!=='whatsapp')return {state:'current',guard:{sql:'1',values:[]}};
+    const fence=await this.origin.fence(read.id);if(!fence)return {state:'changed'};
+    const result=await this.origin.checkContext(fence);return result.state==='current'?{state:'current',guard:this.origin.localContextGuard(fence)}:{state:result.state};
+   },
+   expose:async(_runId,read)=>this.retention.exposeSource(identity,{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash}),
+  });
+ }
+ private async curatorFrame(task:TaskContext){
+  const latest=task.cohort.at(-1);if(!latest||latest.author.kind!=='system'||!latest.eventId.startsWith('curator-run:'))throw Error('native_curator_denied');
+  const curator=await this.curator(task.identity),runId=latest.eventId.slice(12);
+  return {curator,runId,finish:async(input:{needsHelp?:boolean})=>{
+   await this.runtime.assertTaskCurrent(task);const receipt=await curator.finish(runId,input);
+   const notice=await this.curatorSummary(task,curator,receipt);return {...receipt,notice};
+  }};
+ }
+ private async curatorSummary(task:TaskContext,curator:KnowledgeCurator,receipt:CuratorReceipt){
+  if(!receipt.shouldNotify)return {state:'not_required'};
+  const fence=await nativeOwnerFence(this.env,this.currentScope()),link=telegramLinkGuard(fence);
+  const topic=await this.db!.prepare(`SELECT thread_id FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND link_revision=? AND slot='summaries' AND state='ready' AND fence_json=? AND (${link.sql})`)
+   .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,fence.linkRevision,JSON.stringify(fence),...link.values).first<number>('thread_id');
+  if(!topic)return {state:'unavailable',reason:'summary_topic_unavailable'};
+  if(!await curator.claimNotice(receipt.id))return {state:'already_claimed'};
+  const c=receipt.counts,pending=c.pending+c.presented+c.unavailable+c.indexing+c.capturePending;
+  const text=`${receipt.state==='complete'?'✅':'⏳'} <b>REVISÃO DA MEMÓRIA — ${telegramText(receipt.window.day)}</b>\n\n${c.evaluated+c.learned} fontes avaliadas; ${c.learned} fontes com aprendizado confirmado.\n${pending} pendências${receipt.needsHelp?' — preciso da sua ajuda':''}.`;
+  try{
+   const api=new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),async()=>{
+    await this.runtime.assertTaskCurrent(task);const now=await nativeOwnerFence(this.env,this.currentScope());if(JSON.stringify(now)!==JSON.stringify(fence))throw Error('native_owner_link_changed');
+   },'HTML');
+   await api.send(fence.chatId,topic,text,[]);await curator.settleNotice(receipt.id,'accepted');return {state:'accepted'};
+  }catch{await curator.settleNotice(receipt.id,'uncertain');return {state:'uncertain'};}
+ }
+ async dispatchCurator(now=Date.now()){
+  if(this.env.NATIVE_CURATOR_ENABLED!=='true')return {state:'disabled' as const};
+  const fence=await nativeOwnerFence(this.env,this.currentScope()),identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
+  if(!run)return {state:'not_due' as const};
+  // The curator's system job is not a fact SourceRef, owner request or policy.
+  return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,identity,fence.userId)));
  }
  async respondOwner(task:TaskContext,text:string){
   if(task.identity.channel!=='telegram'||typeof text!=='string'||!text.trim()||text.length>4096)throw Error('native_owner_response_denied');

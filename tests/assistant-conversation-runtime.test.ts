@@ -17,7 +17,7 @@ vi.mock('@flue/runtime',()=>({
  useInitialData:()=>hooks.seed,useDelivery:()=>hooks.delivery,useModel:(...args:unknown[])=>hooks.models.push(args),
  useTool:(tool:typeof hooks.tools[number])=>hooks.tools.push(tool),useAgentStart:(start:()=>Promise<void>)=>hooks.starts.push(start),
  usePersistentState:(name:string,initial:unknown)=>{const store=hooks.state;return [store.get(name)??initial,(next:unknown)=>store.set(name,typeof next==='function'?next(store.get(name)??initial):next)];},
- useResponseStart:(start:typeof hooks.responseStarts[number])=>hooks.responseStarts.push(start),useResponseFinish:()=>{},
+ useResponseStart:(start:typeof hooks.responseStarts[number])=>hooks.responseStarts.push(start),useResponseFinish:()=>{},useAgentFinish:()=>{},
 }));
 vi.mock('@flue/runtime/cloudflare',()=>({getCloudflareContext:()=>({env:{}}),getDurableObjectIdentity:()=>({name:hooks.name,className:'FlueConversationRuntimeAgent'})}));
 import { ConversationRuntimeAgent, configureConversationResolver, conversationDriver } from '../assistant/agent-runtime/conversation-profiles';
@@ -176,9 +176,10 @@ it('tombstones an old epoch without resurrecting it on replay and permits a fres
  const missing={...identity,contextEpoch:'never-opened'};await runtime.tombstone(missing);
  await expect(runtime.deliverConversation(event({identity:missing}))).rejects.toThrow('conversation_context_withdrawn');
 });
-it('mounts four narrow native tools with the real configured model and no administrative grant',async()=>{
+it('mounts native knowledge, research and host-bound effects without administrative grants',async()=>{
  const a=await admit(),mounted=render(a);expect(hooks.models).toEqual([['openai/gpt-6-luna',expect.objectContaining({thinkingLevel:'low',compaction:expect.any(Object)})]]);
- expect(mounted.tools.map(t=>t.name)).toEqual(['knowledge_query','knowledge_entities','knowledge_remember','knowledge_status']);
+ expect(mounted.tools.map(t=>t.name)).toEqual(expect.arrayContaining(['knowledge_query','knowledge_entities','knowledge_remember','knowledge_status','archive_search','archive_read','github_resolve','github_list','github_read','calendar_availability','propose_reply','ask_owner']));
+ for(const name of ['curator_next','curator_acknowledge','curator_finish','calendar_change','respond_owner'])expect(mounted.tools.map(t=>t.name)).not.toContain(name);
  await mounted.starts[0]();
  expect(()=>v.parse(mounted.tools[2].input,{...remembered({id:'source',revision:1,version:1,hash:'a'.repeat(64)}),origin:'owner_report'})).toThrow();
  conversationDriver(a.receipt.sessionId);expect(hooks.opened).toEqual([a.receipt.sessionId]);

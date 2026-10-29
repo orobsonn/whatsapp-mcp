@@ -5,6 +5,7 @@ import {retentionExecutionGuard} from '../retention-execution';
 import type {AccessGuard} from '../access';
 import {bridgeHash} from '../ingress';
 import type {ConversationAuthority,ConversationIdentity} from './conversation';
+import {isCuratorPrincipal} from '../knowledge/curator';
 
 export type NativeMode='off'|'shadow'|'approval'|'autonomous';
 export function nativeMode(env:AssistantEnv):NativeMode {
@@ -29,7 +30,10 @@ export async function nativeAuthority(env:AssistantEnv,identity:ConversationIden
  const fence=await nativeOwnerFence(env,scope),owner=telegramLinkGuard(fence),restore=retentionExecutionGuard(scope);
  let revision=fence.linkRevision,policy='owner',replyMode=mode;let channel:AccessGuard;
  if(identity.channel==='telegram'){
-  if(identity.principalOrChatId!==fence.userId)throw Error('native_principal_denied');
+  if(isCuratorPrincipal(identity.principalOrChatId)){
+   if(env.NATIVE_CURATOR_ENABLED!=='true'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_principal_denied');
+   replyMode='shadow';policy='private_curator';
+  }else if(identity.principalOrChatId!==fence.userId)throw Error('native_principal_denied');
   channel={sql:'1',values:[]};
  }else{
   const row=await env.DB.prepare(`SELECT o.kind,o.access_state,COALESCE(p.revision,0) revision,

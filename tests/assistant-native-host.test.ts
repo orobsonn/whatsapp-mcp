@@ -13,6 +13,7 @@ import type {AssistantEnv} from '../assistant/env';
 import {receiveCapture,bridgeHash} from '../assistant/ingress';
 import {SourceController} from '../assistant/sources';
 import {InferenceBudget} from '../assistant/budget';
+import {telegramUpdateHash} from '../assistant/telegram-auth';
 const transport=vi.hoisted(()=>({dispatch:vi.fn(),abort:vi.fn(),quiesce:vi.fn(),destroy:vi.fn(),deliveries:new Map<string,DeliveredMessage>()}));
 vi.mock('../assistant/agent-runtime/native-transport',()=>({
  openNativeConversation:(sessionId:string)=>({dispatch:async(q:{idempotencyKey:string;message:DeliveredMessage})=>{transport.dispatch(sessionId,q);transport.deliveries.set(q.idempotencyKey,q.message);return {submissionId:q.idempotencyKey,uid:sessionId,acceptedAt:new Date().toISOString()};},read:async()=>({})}),
@@ -42,9 +43,10 @@ async function fixture(){
   const response=await receiveCapture(new Request('https://own.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify(metadata)}),{...own,NATIVE_CONVERSATIONS_MODE:'off'});expect(response.status).toBe(200);
   return {sequence:row.sequence,chatId,sourceId:row.source_id,text};
  };
- const ownerUpdate=async(updateId:number,text:string,threadId:number)=>{
+ const ownerUpdate=async(updateId:number,text:string,threadId:number,replyTo?:number)=>{
+  const raw={update_id:updateId,message:{message_id:updateId+100,date:Math.floor(Date.now()/1000),from:{id:101,is_bot:false},chat:{id:101,type:'private'},text,message_thread_id:threadId,...(replyTo?{reply_to_message:{message_id:replyTo,chat:{id:101,type:'private'},message_thread_id:threadId}}:{})}};
   await env.DB.prepare(`INSERT INTO assistant_telegram_updates(installation_id,generation,bot_instance,update_id,payload_hash,token,source_epoch,source_generation,link_revision,user_id,chat_id,message_id,message_date,thread_id,text,outcome,state,received_at)
-   VALUES(?,?,?,?,?,?,'e1','g1',1,'101','101',?,?,?,?,'pending','pending',?)`).bind(scope.installationId,scope.generation,bot,updateId,await bridgeHash([updateId,text,threadId]),crypto.randomUUID(),updateId+100,Math.floor(Date.now()/1000),threadId,text,Date.now()).run();
+   VALUES(?,?,?,?,?,?,'e1','g1',1,'101','101',?,?,?,?,'pending','pending',?)`).bind(scope.installationId,scope.generation,bot,updateId,await telegramUpdateHash(raw),crypto.randomUUID(),updateId+100,raw.message.date,threadId,text,Date.now()).run();return raw;
  };
  return {scope,source,own,append,ownerUpdate,host:()=>new NativeApplicationHost(own)};
 }
@@ -64,10 +66,10 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect((await host.activity(taskB)).triggerSequence).toBe(second.sequence);
   const other=await f.append('Outra conversa','5585888888888'),c=await host.receiveCapture(other.sequence);expect((await latestTask(host,c.taskRef!)).sessionId).not.toBe(taskA.sessionId);
  });
- it('deduplicates the already admitted Source sequence and preserves exact human manual authorship',async()=>{
+ it('deduplicates Source input and keeps unattributed own-device output distinct from human authority',async()=>{
   const f=await fixture(),incoming=await f.append('Eu já respondi','5585999999999',false,true),host=f.host();
   const a=await host.receiveCapture(incoming.sequence),b=await host.receiveCapture(incoming.sequence);expect(a).toEqual(b);expect(transport.dispatch).toHaveBeenCalledTimes(1);
-  const task=await latestTask(host,a.taskRef!);expect(task.cohort[0]).toMatchObject({kind:'owner_manual',author:{kind:'owner',id:'101'}});
+  const task=await latestTask(host,a.taskRef!);expect(task.cohort[0]).toMatchObject({kind:'action_result',author:{kind:'system',id:'own-device-unattributed'}});
  });
  it('does not analyze a default group, honors explicit group permission, and preserves group participant identity',async()=>{
   const f=await fixture(),group=await f.append('Mensagem do grupo','120363999999999999-group',true),host=f.host();expect((await host.receiveCapture(group.sequence)).state).toBe('excluded');expect(transport.dispatch).not.toHaveBeenCalled();
@@ -125,5 +127,58 @@ describe('native application composition on real D1 and Source reads',()=>{
   const f=await fixture(),message=await f.append('Olá'),host=f.host(),receipt=await host.receiveCapture(message.sequence),task=await latestTask(host,receipt.taskRef!);
   await expect(nativeAuthority(f.own,{...task.identity,principalOrChatId:'unobserved'})).rejects.toThrow('native_conversation_denied');
   f.own.BRIDGE_SOURCE_GENERATION='changed';expect(()=>host.currentScope()).toThrow('native_configuration_changed');
+ });
+ it('keeps daily curation disabled by default and gives an enabled curator its private native session/client',async()=>{
+  const f=await fixture();expect(await f.host().dispatchCurator()).toEqual({state:'disabled'});expect(transport.dispatch).not.toHaveBeenCalled();
+  f.own.NATIVE_CURATOR_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-evidence',text:'Nora participa do projeto Cedar.',occurredAt:1});
+  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(!('taskRef' in receipt))throw Error('fixture_curator');
+  const task=await latestTask(host,receipt.taskRef);expect(task.identity.principalOrChatId).toBe('curator:101');expect(task.knowledge.client).toBe('curator');expect(task.authority.mode).toBe('shadow');expect(task.cohort[0].author).toEqual({kind:'system',id:'curator-host'});expect(task.cohort[0].sourceRef).toBeUndefined();
+  const frame=await host.frame(task);expect(frame.curator).toBeDefined();const page=await frame.curator!.curator.next(frame.curator!.runId);expect(page.items).toHaveLength(1);expect(page.items[0].text).toBe('Nora participa do projeto Cedar.');
+  await expect(frame.effects.reply({decision:'respond',text:'Terceiro'})).rejects.toThrow('native_reply_channel_denied');
+  await expect(frame.effects.respondOwner('Destino livre')).rejects.toThrow('native_owner_response_denied');
+  expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_context_exposures WHERE conversation_id=?').bind(task.sessionId).first<number>('n')).toBe(1);
+ });
+ it('curator finish produces one short daily summary in the fixed owner summary topic',async()=>{
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-source',text:'Contexto do projeto.',occurredAt:1});
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(!('taskRef' in receipt))throw Error('fixture_curator');
+  const task=await latestTask(host,receipt.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).not.toContain('Contexto do projeto.');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
+  expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'accepted'}});expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(1);
+ });
+ it('asks privately and resumes a quoted authenticated owner clarification in the same WhatsApp session without faking an old cohort',async()=>{
+  const f=await fixture(),incoming=await f.append('Você confirma a condição?'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+  await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(url,init)=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  const frame=await host.frame(originalTask);expect(await frame.effects.askOwner('Qual condição devo usar?')).toMatchObject({state:'sent'});
+  const raw=await f.ownerUpdate(7,'Use a condição de cem reais.',42,77),receipt=await host.receiveTelegram(7,raw),task=await latestTask(host,receipt.taskRef);
+  expect(task.sessionId).toBe(originalTask.sessionId);expect(task.cohort).toHaveLength(1);expect(task.cohort[0]).toMatchObject({kind:'clarification',author:{kind:'owner',id:'101'}});expect(task.replyTo).toEqual({taskRef:originalTask.taskRef,sourceRef:originalTask.cohort[0].sourceRef});
+  expect((await host.activity(task)).triggerSequence).toBe(incoming.sequence);expect(task.returnChannel.id).toBe(incoming.chatId);
+  await expect((await host.frame(task)).effects.calendarChange({verb:'create',summary:'Não autorizado por WhatsApp',start:'2031-01-01T10:00:00-03:00',end:'2031-01-01T11:00:00-03:00'})).rejects.toThrow('native_calendar_owner_required');
+  expect(fetch).toHaveBeenCalledTimes(2);expect(await host.receiveTelegram(7,raw)).toMatchObject({taskRef:task.taskRef,state:'admitted'});
+ });
+ it('treats a quoted answer to a superseded question as stale instead of looping a 503 or resurrecting WhatsApp work',async()=>{
+  const f=await fixture(),incoming=await f.append('Mensagem antiga'),host=f.host(),a=await host.receiveCapture(incoming.sequence),originalTask=await latestTask(host,a.taskRef!);
+  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'pending',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+  vi.spyOn(globalThis,'fetch').mockImplementation(async url=>String(url).endsWith('/getMe')?Response.json({ok:true,result:{is_bot:true,username:bot,has_topics_enabled:true}}):Response.json({ok:true,result:{message_id:77,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  await(await host.frame(originalTask)).effects.askOwner('Qual resposta?');const newer=await f.append('Mensagem nova');await host.receiveCapture(newer.sequence);
+  const raw=await f.ownerUpdate(8,'Sobre a pergunta antiga: sim.',42,77),receipt=await host.receiveTelegram(8,raw),task=await latestTask(host,receipt.taskRef);
+  expect(task.identity.channel).toBe('telegram');expect(task.replyTo).toBeUndefined();expect(await env.DB.prepare(`SELECT state FROM assistant_native_help_questions WHERE context_ref=?`).bind(originalTask.contextRef).first('state')).toBe('cancelled');
+ });
+ it('admits an image as exact canonical metadata so the agent can choose perception without eager OCR or a fabricated caption',async()=>{
+  const f=await fixture(),incoming=await f.append('temporary'),mediaId=crypto.randomUUID();
+  await env.DB.prepare(`UPDATE messages SET kind='image',text=NULL,version=2 WHERE id=?`).bind(incoming.sourceId).run();
+  await env.DB.prepare(`INSERT INTO media(id,chat_id,message_id,message_version,epoch,generation,kind,mime,size,sha256,object_key,state,source_url,created_at) VALUES(?,?,?,2,'e1','g1','image','image/png',100,?,'synthetic/image','ready','https://provider.invalid/private',?)`)
+   .bind(mediaId,incoming.chatId,incoming.sourceId,'b'.repeat(64),Date.now()).run();
+  const seq=await env.DB.prepare(`SELECT MAX(sequence) n FROM assistant_capture_changes WHERE source_kind='media' AND source_id=?`).bind(mediaId).first<number>('n');if(!seq)throw Error('fixture_media_sequence');
+  const metadata={protocol:1,installationId:f.scope.installationId,generation:f.scope.generation,sourceEpoch:'e1',sourceGeneration:'g1',sequence:seq,previousSequence:incoming.sequence,chatId:incoming.chatId,sourceId:mediaId,sourceKind:'media',operation:'upsert',recordedAt:Date.now()};
+  expect((await receiveCapture(new Request('https://own.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify(metadata)}),{...f.own,NATIVE_CONVERSATIONS_MODE:'off'})).status).toBe(200);
+  const fetch=vi.spyOn(globalThis,'fetch').mockRejectedValue(Error('no_eager_model_or_binary_request'));
+  const host=f.host(),receipt=await host.receiveCapture(seq);expect(receipt.state).toBe('admitted');const task=await latestTask(host,receipt.taskRef!);
+  const raw=await env.DB.prepare(`SELECT event_json FROM assistant_native_conversation_events WHERE task_ref=?`).bind(task.taskRef).first<string>('event_json'),body=JSON.parse(JSON.parse(raw!).body);
+  expect(body.kind).toBe('image');expect(body.media.id).toBe(mediaId);expect(body.text).toBeUndefined();expect(task.cohort[0].sourceRef).toBeDefined();expect(fetch).not.toHaveBeenCalled();
+  expect(await(await host.frame(task)).media.read(task.cohort[0].sourceRef)).toEqual({state:'unavailable',reason:'media_context_unconfigured'});
  });
 });

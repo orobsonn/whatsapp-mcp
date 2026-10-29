@@ -83,6 +83,25 @@ it('budget0 calls no endpoint', async () => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(0);
   expect((await context.interpret(owner, sourceId)).state).toBe('pending'); expect(port).not.toHaveBeenCalled();
 });
+it('native media uses analysis policy before reading bytes and refuses excluded private originals',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ await env.DB.prepare(`INSERT INTO assistant_conversation_policies VALUES(?,?,?,'private',1,'ignore',1)`).bind(scope.installationId,scope.generation,'chat').run();
+ const bytes=vi.spyOn(options.reader,'readBoundedMedia');
+ expect(await new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:()=>({sql:'1',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_source_unavailable'});
+ expect(bytes).not.toHaveBeenCalled();expect(port).not.toHaveBeenCalled();
+});
+it('native media honors the global spend latch after reservation without a model attempt or ledger reset',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(600000);
+ expect(await new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'0',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending'});
+ expect(port).not.toHaveBeenCalled();expect((await budget.status()).committed).toBe(530000);
+});
+it('native media releases derived observations with the original binary parent and reuses them without inference',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);const assert=vi.fn(async()=>{});
+ const native=new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:assert,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
+ const output=await native.interpret(owner,sourceId);expect(output.state).toBe('complete');expect(await native.interpret(owner,sourceId)).toEqual(output);expect(port).toHaveBeenCalledTimes(1);expect(assert).toHaveBeenCalled();
+ if(output.state!=='complete')throw Error('fixture_native_media');
+ const original=await new SourceAccess(env.DB,scope,Date.now,'knowledge').read(owner,sourceId);expect(original?.text).not.toContain('Órbita');expect(output.evidence.parent.hash).toBe(original!.fence.source.hash);expect(output.evidence.text).toContain('Órbita');
+});
 afterEach(() => vi.restoreAllMocks());
 it.each(['hold', 'generation'])('restore %s after OCR reservation prevents its adapter attempt and preserves commitment', async kind => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(600000);

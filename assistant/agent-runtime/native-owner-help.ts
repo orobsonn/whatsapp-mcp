@@ -67,6 +67,8 @@ export class NativeOwnerHelp {
   const guard=together(context.guard,topic);if(!await this.sql(`SELECT 1 WHERE ${guard.sql}`,...guard.values).first())throw Error('native_help_context_changed');
   return {...context,guard};
  }
+ private stale(error:unknown){return error instanceof Error&&['native_activity_superseded','native_help_context_changed','native_help_source_changed','conversation_context_withdrawn','native_help_cancelled'].includes(error.message);}
+ private async cancelStale(row:Row){await this.sql(`UPDATE assistant_native_help_questions SET state='cancelled',updated_at=? WHERE id=? AND link_json=? AND state IN ('sent','answered','resuming')`,this.clock(),row.id,row.link_json).run();return {state:'stale' as const,questionId:row.id};}
  async ask(task:TaskContext,rawQuestion:unknown){
   const text=question.parse(rawQuestion),context=await this.current(task),id=await bridgeHash(['native-help-v1',this.host.scope,task.contextRef]);
   const hash=await bridgeHash([text,context.anchor,context.originalSequence,context.fence,this.host.credentialKey]),topic=await this.sql(`SELECT thread_id FROM assistant_telegram_topics
@@ -103,7 +105,9 @@ export class NativeOwnerHelp {
   const row=await this.sql(`SELECT * FROM assistant_native_help_questions WHERE installation_id=? AND generation=? AND bot_instance=? AND message_id=? AND state='sent' AND link_json=?`,...this.keys(),msg.reply_to_message.message_id,JSON.stringify(fence)).first<Row>();
   if(!row)return {state:'unrelated' as const};
   if(msg.message_thread_id!==row.thread_id||(msg.reply_to_message.message_thread_id!==undefined&&msg.reply_to_message.message_thread_id!==row.thread_id))return {state:'denied' as const};
-  const proof=await this.rowCurrent(row),inbox={sql:`EXISTS(SELECT 1 FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND payload_hash=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_id=? AND text=? AND outcome='pending' AND state='pending')`,values:[...this.keys(),update.update_id,hash,fence.sourceEpoch,fence.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,msg.message_id,msg.text]};
+  let proof:Awaited<ReturnType<NativeOwnerHelp['rowCurrent']>>;
+  try{proof=await this.rowCurrent(row);}catch(error){if(this.stale(error))return this.cancelStale(row);throw error;}
+  const inbox={sql:`EXISTS(SELECT 1 FROM assistant_telegram_updates WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=? AND payload_hash=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_id=? AND text=? AND outcome='pending' AND state='pending')`,values:[...this.keys(),update.update_id,hash,fence.sourceEpoch,fence.sourceGeneration,fence.linkRevision,fence.userId,fence.chatId,msg.message_id,msg.text]};
   const guard=together(proof.guard,inbox);
   await this.host.db.batch([
    this.sql(`INSERT INTO assistant_native_help_replies(installation_id,generation,bot_instance,update_id,question_id,payload_hash,reply_to_message_id,link_json,created_at)
@@ -118,8 +122,11 @@ export class NativeOwnerHelp {
   this.currentScope();const link=await this.sql('SELECT question_id FROM assistant_native_help_replies WHERE installation_id=? AND generation=? AND bot_instance=? AND update_id=?',...this.keys(),updateId).first<{question_id:string}>();
   if(!link)return {state:'unrelated' as const};const row=await this.row(link.question_id);if(!row)throw Error('native_help_missing');
   if(row.state==='resumed')return {state:'resumed' as const,questionId:row.id,receipt:row.receipt_json?JSON.parse(row.receipt_json):null};
+  if(row.state==='cancelled')return {state:'stale' as const,questionId:row.id};
   if(!['answered','resuming'].includes(row.state)||row.owner_update_id!==updateId)throw Error('native_help_cancelled');
-  const proof=await this.rowCurrent(row,true),reply=await this.sql(`SELECT u.text,u.message_date,r.payload_hash FROM assistant_native_help_replies r JOIN assistant_telegram_updates u USING(installation_id,generation,bot_instance,update_id)
+  let proof:Awaited<ReturnType<NativeOwnerHelp['rowCurrent']>>;
+  try{proof=await this.rowCurrent(row,true);}catch(error){if(this.stale(error))return this.cancelStale(row);throw error;}
+  const reply=await this.sql(`SELECT u.text,u.message_date,r.payload_hash FROM assistant_native_help_replies r JOIN assistant_telegram_updates u USING(installation_id,generation,bot_instance,update_id)
    WHERE r.installation_id=? AND r.generation=? AND r.bot_instance=? AND r.update_id=? AND r.question_id=? AND r.link_json=? AND u.payload_hash=r.payload_hash AND u.outcome='pending' AND u.state='pending'`,...this.keys(),updateId,row.id,row.link_json).first<{text:string;message_date:number;payload_hash:string}>();
   if(!reply)throw Error('native_help_reply_changed');
   const access=new SourceAccess(this.host.db,this.host.scope,this.clock,'knowledge'),input=await access.read(owner,sourceRef.id,sourceRef.revision);

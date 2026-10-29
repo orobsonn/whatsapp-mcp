@@ -48,7 +48,7 @@ export async function receiveTelegram(request: Request, env: AssistantEnv): Prom
     const outcome = await link.receive(input);
     if(outcome==='pending'&&env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'){
       const {NativeApplicationHost}=await import('./agent-runtime/native-host');
-      await new NativeApplicationHost(env).receiveTelegram((input as {update_id:number}).update_id);
+      await new NativeApplicationHost(env).receiveTelegram((input as {update_id:number}).update_id,input);
     }else if (outcome === "pending" && env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
       const { TelegramDialogueHost } = await import("./telegram-dialogue-runtime");
       await new TelegramDialogueHost(env).start((input as { update_id: number }).update_id);

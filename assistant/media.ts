@@ -1,4 +1,4 @@
-import { SourceAccess, type TrustedActor } from "./access";
+import { SourceAccess, type TrustedActor,type AccessGuard } from "./access";
 import { InferenceBudget, type BudgetScope } from "./budget";
 import { bridgeHash } from "./ingress";
 import { sourceTextHash } from "./sources";
@@ -10,7 +10,8 @@ import { MEDIA_MODEL_CONFIG, mediaPayload, mediaOutput, mediaUsage, type MediaMo
 import { storedMediaEvidence, type MediaEvidence } from "./media-evidence";
 import { retentionExecutionGuard, assertRetentionExecution } from "./retention-execution";
 export interface MediaReader { readBoundedMedia(input: { secret: string; sourceEpoch: string; sourceGeneration: string; chatId: string; mediaId: string; expectedMessageVersion: number; expectedMediaVersion: number; expectedBlobHash: string }): Promise<CaptureMediaResult> }
-type Options = { origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; pdfParser?: PdfAdmissionReader; timeoutMs?: number };
+type Options = { origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; pdfParser?: PdfAdmissionReader; timeoutMs?: number;
+ accessPurpose?:'archive'|'knowledge';assertAuthority?:()=>Promise<void>;authorityGuard?:()=>AccessGuard;modelGuard?:()=>AccessGuard };
 type Outcome = { state: "complete"; evidence: MediaEvidence; coverage: { complete: boolean; unreadablePages: number[] } } | { state: "pending"; reason: string; operationKey?: string } | { state: "existing_audio"; source: RetrievedSource };
 type Receipt = { state: string; request_hash: string | null; admission_json: string | null; response_json: string | null; actual_units: number | null; reason: string | null };
 const ns = "installation_id=? AND generation=?";
@@ -24,7 +25,7 @@ export class MediaContext {
   private readonly budget: InferenceBudget;
   private readonly timeout: number;
   constructor(private readonly db: D1Database, scope: BudgetScope & OriginScope, private readonly options: Options, private readonly clock = Date.now) {
-    this.scope = Object.freeze({ ...scope }); this.access = new SourceAccess(db, { installationId: scope.installationId, generation: scope.generation }, clock); this.budget = new InferenceBudget(db, scope);
+    this.scope = Object.freeze({ ...scope }); this.access = new SourceAccess(db, scope, clock,options.accessPurpose??'archive'); this.budget = new InferenceBudget(db, scope);
     this.timeout = options.timeoutMs ?? 45000;
     if (!Number.isSafeInteger(this.timeout) || this.timeout < 1 || this.timeout > 60000) throw new Error("media_configuration");
   }
@@ -34,7 +35,11 @@ export class MediaContext {
   private async fresh(actor: TrustedActor, parent: RetrievedSource, origin: OriginFence) {
     // Remote observation can yield while a local mandate/identity/ACL is revoked.
     // Re-read local authority last, with the current clock, before returning.
-    return await this.access.revalidate(actor, parent.fence) && await this.options.origin.check(origin) && await this.access.revalidate(actor, parent.fence);
+    await this.options.assertAuthority?.();
+    if(!await this.access.revalidate(actor,parent.fence)||!await this.options.origin.check(origin))return false;
+    await this.options.assertAuthority?.();
+    const source=this.access.guard(actor,parent.fence,this.clock()),host=this.options.authorityGuard?.();
+    return !!await this.sql(`SELECT 1 WHERE (${source.sql})${host?` AND (${host.sql})`:''}`,...source.values,...(host?.values??[])).first();
   }
   async read(actor: TrustedActor, parent: RetrievedSource): Promise<MediaEvidence | null> {
     const current = parent?.fence ? await this.access.read(actor, parent.id, parent.fence.source.revision) : null;
@@ -99,10 +104,10 @@ export class MediaContext {
     if (!await this.fresh(actor, parent, origin)) return pending("media_origin_changed", key);
     try { const reserved = await this.budget.reserve(key, requestHash, MEDIA_MODEL_CONFIG.ceilingUnits); if (!reserved.created) return pending("media_reservation_uncertain", key); }
     catch { return pending("media_budget_unavailable", key); }
-    const guard = this.access.guard(actor, parent.fence, this.clock()), execution = retentionExecutionGuard(this.scope);
+    const guard = this.access.guard(actor, parent.fence, this.clock()), execution = retentionExecutionGuard(this.scope),modelGuard=this.options.modelGuard?.()??{sql:'1',values:[]};
     try {
       if (!await this.fresh(actor, parent, origin)) { await this.budget.settle(key, requestHash, 0); return pending("media_origin_changed", key); }
-      const admitted = await this.sql(`UPDATE assistant_media_receipts SET state='attempting',request_hash=? WHERE ${ns} AND operation_key=? AND state='prepared' AND ${guard.sql} AND ${execution.sql} RETURNING operation_key`, requestHash, ...this.keys(), key, ...guard.values, ...execution.values).all();
+      const admitted = await this.sql(`UPDATE assistant_media_receipts SET state='attempting',request_hash=? WHERE ${ns} AND operation_key=? AND state='prepared' AND ${guard.sql} AND ${execution.sql} AND (${modelGuard.sql}) RETURNING operation_key`, requestHash, ...this.keys(), key, ...guard.values, ...execution.values,...modelGuard.values).all();
       if (admitted.results.length !== 1) return pending("media_admission_uncertain", key);
     } catch { return pending("media_admission_uncertain", key); }
     const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, knownActual: number | null = null;
@@ -110,6 +115,7 @@ export class MediaContext {
       // A withdrawal after admission must still prevent sending its body.
       if (!await this.fresh(actor, parent, origin)) { await this.budget.settle(key, requestHash, 0); return pending("media_origin_changed", key); }
       await assertRetentionExecution(this.db, this.scope);
+      const spend=this.options.modelGuard?.();if(spend&&!await this.sql(`SELECT 1 WHERE (${spend.sql})`,...spend.values).first())return pending('media_budget_unavailable',key);
       const result = await Promise.race([this.options.model({ body, signal: abort.signal }), new Promise<never>((_, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("media_timeout")); }, this.timeout); })]);
       if (typeof result.body !== "string" || new TextEncoder().encode(result.body).length > 262144 || result.status !== 200) throw 0;
       const parsed: unknown = JSON.parse(result.body); knownActual = mediaUsage(parsed);

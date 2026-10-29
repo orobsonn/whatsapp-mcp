@@ -26,6 +26,8 @@ export interface AssistantEnv {
   NATIVE_CONTEXT_ADMIN_SECRET?: string;
   /** Explicit cut of the verified Source stream at native activation. */
   NATIVE_CAPTURE_START_AFTER_SEQUENCE?: string;
+  /** Recurring curator remains disabled until the owner sees recurring cost. */
+  NATIVE_CURATOR_ENABLED?: string;
   FLUE_CONVERSATION_RUNTIME_AGENT?: {idFromName(name:string):DurableObjectId;get(id:DurableObjectId):DurableObjectStub & {eraseNativeContext(secret:string,sessionId:string):Promise<void>}};
   ROUTINES_ENABLED?: string;
   ROUTINES_PAUSED?: string;

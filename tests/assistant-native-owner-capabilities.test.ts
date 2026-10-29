@@ -95,7 +95,7 @@ describe('native private owner help with canonical input and causal lineage',()=
  });
  it('new incoming or a manual owner response prevents resuming an old source trigger',async()=>{
   const f=await fixture();await f.help.ask(f.task,'Qual condição?');const r=await f.canonicalReply();await f.help.recordReply(r.raw);f.supersede();
-  await expect(f.help.resume(r.raw.update_id,r.sourceRef)).rejects.toThrow('native_activity_superseded');expect(f.resumes).toHaveLength(0);
+  expect(await f.help.resume(r.raw.update_id,r.sourceRef)).toMatchObject({state:'stale'});expect(f.resumes).toHaveLength(0);
  });
  it('retirement clears the question and denies its quoted reply even when the owner remains linked',async()=>{
   const f=await fixture();await f.help.ask(f.task,'Qual condição?');await f.retention.purge(f.identity);
