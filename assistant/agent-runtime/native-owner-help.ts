@@ -62,7 +62,10 @@ export class NativeOwnerHelp {
   if(row.task_json==='{}'||!row.question_text||row.credential_hash!==await bridgeHash(this.host.credentialKey))throw Error('native_help_cancelled');
   const task=JSON.parse(row.task_json) as TaskContext,context=await this.current(task,allowResuming?row:undefined);
   if(context.anchor.taskRef!==row.anchor_task_ref||JSON.stringify(context.anchor.sourceRef)!==row.source_ref_json||context.originalSequence!==row.original_sequence||JSON.stringify(context.fence)!==row.link_json)throw Error('native_help_context_changed');
-  return context;
+  const topic:AccessGuard={sql:`EXISTS(SELECT 1 FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=?
+   AND link_revision=? AND slot='pending' AND state='ready' AND thread_id=? AND fence_json=?)`,values:[...this.keys(),context.fence.linkRevision,row.thread_id,row.link_json]};
+  const guard=together(context.guard,topic);if(!await this.sql(`SELECT 1 WHERE ${guard.sql}`,...guard.values).first())throw Error('native_help_context_changed');
+  return {...context,guard};
  }
  async ask(task:TaskContext,rawQuestion:unknown){
   const text=question.parse(rawQuestion),context=await this.current(task),id=await bridgeHash(['native-help-v1',this.host.scope,task.contextRef]);
