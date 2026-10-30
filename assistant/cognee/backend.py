@@ -31,7 +31,7 @@ class CogneeBackend:
             'EMBEDDING_API_KEY': 'no-provider-key', 'EMBEDDING_ENDPOINT': BROKER, 'EMBEDDING_MAX_TOKENS': '8191',
             'EMBEDDING_BATCH_SIZE': '1', 'EMBEDDING_MAX_CONCURRENT_DATA_POINTS': '4', 'GRAPH_DATABASE_PROVIDER': 'ladybug',
             'VECTOR_DB_PROVIDER': 'lancedb', 'GRAPH_DATABASE_SUBPROCESS_ENABLED': 'false',
-            'VECTOR_DB_SUBPROCESS_ENABLED': 'false', 'KUZU_BUFFER_POOL_SIZE': '67108864',
+            'VECTOR_DB_SUBPROCESS_ENABLED': 'false', 'KUZU_BUFFER_POOL_SIZE': '134217728',
             'KUZU_MAX_DB_SIZE': '1073741824', 'KUZU_NUM_THREADS': '2', 'DB_PROVIDER': 'sqlite', 'DB_NAME': 'assistant_index',
             'SYSTEM_ROOT_DIRECTORY': str(self.root / 'system'), 'DATA_ROOT_DIRECTORY': str(self.root / 'data'),
             'COGNEE_DATA_ROOT_DIRECTORY': str(self.root / 'data'), 'ENABLE_BACKEND_ACCESS_CONTROL': 'false',
