@@ -22,6 +22,14 @@ Cognee1.6.5 declara Ladybug0.19.0 no Linux; não se afirma suporte upstream à c
 
 A memória de execução passa a128MiB; tamanho de banco, páginas e conteúdo permanecem iguais. A imagem legada mantém seu lock original; este overlay pertence à instalação separada do serviço nativo. Nenhuma infraestrutura nova foi contratada ou ativada.
 
-## Pendência antes da promoção pessoal
+## Promoção pessoal comprovada
 
-Comparar o manifesto completo de uma cópia fechada das seis relações pessoais e seus recibos no ambiente novo. Só depois promover o serviço com backup anterior preservado, conferir a leitura pelo MCP e documentar o resultado. Esta evidência não fecha a issue146 nem substitui a validação humana do envio aprovado.
+O canário do dono rodou como o usuário do serviço, com a biblioteca nova em uma cópia exclusiva. O backup fechado foi comparado ao manifesto anterior ao stop para detectar escritas em andamento. As seis relações completas e as três tabelas de operações/suportes/fontes permaneceram iguais antes/depois da conversão e fechamento. O supervisor aguardou o término do processo e exigiu o resultado final `native_snapshot_verified`, além de exit0.
+
+A primeira inicialização do serviço encontrou um aviso do cache pip bloqueado pelo sandbox. O checker recusou o stderr e a rotina restaurou o serviço antigo antes da reabertura do canal. A correção desabilita cache na verificação de metadata; não permite avisos ou conflitos adicionais. A verificação passou depois em unidade isolada com o mesmo sandbox. Essa ocorrência e o retorno ao estado anterior foram preservados nos recibos privados.
+
+A segunda tentativa terminou em `owner_native_graph_upgraded`. Namespace e credencial foram preservados; a raiz antiga e o ambiente anterior continuam disponíveis, sem receber downgrade de banco convertido. Conferência local confirmou seis relações, ledger idêntico e caminhos do grafo/biblioteca novos. O canal só foi reaberto depois. A leitura independente pelo MCP retornou as mesmas seis relações, todas com evidência, e identidade/conteúdo de relações e evidências iguais ao registro anterior.
+
+Revisão adversarial corrigiu a janela de confirmação incerta da reabertura: a tentativa é registrada antes de iniciar o túnel e veda rollback automático a partir dessa fronteira. A remoção do drop-in confere o artefato real, independentemente de flag em memória; configuração divergente e escritas novas exigem reconciliação. Nenhuma ativação de envio autônomo ocorreu.
+
+CI41058607697 passou no cód.d77522a. O ajuste final do cache e este complemento terão sua própria verificação do head. A issue146 permanece aberta para as demais validações; este marco não substitui a aprovação humana e a consequência real do envio no WhatsApp.

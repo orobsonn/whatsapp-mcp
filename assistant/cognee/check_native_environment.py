@@ -33,7 +33,7 @@ def main():
     if len(paths) != 2 or not all(path.is_relative_to(prefix) for path in paths):
         raise RuntimeError('native_dependency_path')
     environment = {key: value for key, value in os.environ.items() if not key.startswith('PIP_')}
-    environment.update(PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK='1')
+    environment.update(PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_CACHE_DIR='1')
     result = subprocess.run([sys.executable, '-I', '-m', 'pip', 'check'], env=environment,
                             capture_output=True, text=True, check=False)
     validate_check(result.returncode, result.stdout, result.stderr)
