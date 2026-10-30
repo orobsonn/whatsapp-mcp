@@ -16,4 +16,10 @@ Três RED reproduziram seleção3 ausente, concorrência3 ausente e override ain
 
 ## Operação real
 
-Publicação, recibo da revisão3, cobertura, custo e remoção da configuração temporária serão acrescentados somente após observação externa. Esta etapa não comprova a diária concluída nem fecha o goal.
+Own8114971e publicou o código81bde28, saída16384 e seleção explícita da revisão3. SDKsub_ik_197b37564add24ef178d9322aed34830 iniciou10:54:33UTC e terminoufailed11:20:57UTC. Não houve mudança de sessão, janela diária ou UID. A compactação nativa persistiu10:56:31UTC, resumo4451caracteres,269716tokens antes. Seus dois recibos completos somam10045microUSD. O contexto seguinte caiu para4339tokens.
+
+A execução inteira acrescentou11 recibos, todoscomplete,137696microUSD (US$0,137696); a consulta inclui chamadas de compactação fora das mensagens canônicas. Não acrescentou recibo incerto. A última chamada91614in/720out custou23444microUSD e teve HTTP200. Após contabilizá-la, a revalidação das fontes retornou reader_timeout após5065ms; SDK recebeu a recusa estática native_model_uncertain. Isso não transforma o recibo financeiro completo em incerto nem comprova resposta utilizável. O diagnóstico distingue essa falha da compactação anterior.
+
+Cobertura final observada:73evaluated,1learned,48presented,125unavailable,355skipped_policy,7superseded e213withdrawn. O MCP leu independentemente a nova relação com duas evidências WhatsApp, classificaçãoreported; não se publicam nomes, textos nem fontes reais. A diária permanecepending e as48apresentadas não contam como avaliadas. Não houve resumo de sucesso nem conclusão forçada.
+
+A configuração temporária foi removida na publicação5949b01b com bindings, runtime, horários e modoapproval preservados. Autonomia permanece desligada. CI41043349724 do código81bde28 concluiu com sucesso. Censo11:25UTC:US$2,344002 comprometidos nos ledgers conhecidos, incluindoUS$0,381277 incertos, contraUS$10; não é fatura do fornecedor.

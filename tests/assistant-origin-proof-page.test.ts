@@ -54,6 +54,30 @@ it('checks cancellation after the RPC and before any post-fence query',async()=>
  f.readSnapshotProofs.mockImplementation(async q=>{const result=await original(q);controller.abort(Error('proof_cancelled'));return result;});
  await expect(f.guard.checkContexts(f.fences,controller.signal)).rejects.toThrow('proof_cancelled');expect(f.readSnapshot).not.toHaveBeenCalled();
 });
+it('accepts a valid proof delayed six seconds using the same single RPC',async()=>{
+ const f=await fixture(),original=f.readSnapshotProofs.getMockImplementation()!;
+ let begin!:()=>void;const started=new Promise<void>(resolve=>{begin=resolve;});
+ f.readSnapshotProofs.mockImplementation(async q=>{begin();await new Promise(resolve=>setTimeout(resolve,6000));return original(q);});
+ const pending=f.guard.checkContexts(f.fences);await started;
+ expect(await pending).toMatchObject({state:'current',proofPages:1});expect(f.readSnapshotProofs).toHaveBeenCalledOnce();
+});
+it('denies a pending page after fifteen seconds and ignores its late success',async()=>{
+ const f=await fixture(),original=f.readSnapshotProofs.getMockImplementation()!;
+ let begin!:()=>void,release!:()=>void;const started=new Promise<void>(resolve=>{begin=resolve;});
+ f.readSnapshotProofs.mockImplementation(async q=>{begin();await new Promise<void>(resolve=>{release=resolve;});return original(q);});
+ const pending=f.guard.checkContexts(f.fences);await started;let settled=false;void pending.then(()=>{settled=true;});
+ await new Promise(resolve=>setTimeout(resolve,6000));expect(settled).toBe(false);
+ expect(await pending).toMatchObject({state:'unavailable',proofPages:1});
+ release();await Promise.resolve();expect(f.readSnapshotProofs).toHaveBeenCalledOnce();expect(f.readSnapshot).not.toHaveBeenCalled();
+});
+it('cancels an in-flight proof immediately without waiting for its RPC deadline',async()=>{
+ const f=await fixture(),controller=new AbortController();let begin!:()=>void;
+ const started=new Promise<void>(resolve=>{begin=resolve;});f.readSnapshotProofs.mockImplementation(async()=>{begin();return new Promise<never>(()=>{});});
+ const pending=f.guard.checkContexts(f.fences,controller.signal);await started;
+ const outcome=pending.then(()=> 'unexpected',error=>error.message);controller.abort(Error('proof_cancelled'));
+ expect(await Promise.race([outcome,new Promise(resolve=>setTimeout(()=>resolve('still_waiting'),100))])).toBe('proof_cancelled');
+ expect(f.readSnapshotProofs).toHaveBeenCalledOnce();
+});
 it('uses the singular adapter only when proof-page capability is absent',async()=>{
  const f=await fixture(),legacy=new OriginGuard(env.DB,()=>f.scope,{readSnapshot:f.readSnapshot},f.secret);
  expect(await legacy.checkContexts(f.fences)).toMatchObject({state:'current',proofPages:0,singularChecks:2});expect(f.readSnapshot).toHaveBeenCalledTimes(2);

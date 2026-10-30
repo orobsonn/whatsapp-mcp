@@ -157,7 +157,7 @@ export class OriginGuard {
         states.push(...await Promise.all(fences.slice(at,at+8).map((f,i)=>this.checkContext(f,()=>!signal?.aborted&&current(),event=>report?.(event,at+i)))));signal?.throwIfAborted();}
       return result(states.some(s=>s.state==='changed')?'changed':states.some(s=>s.state==='unavailable')?'unavailable':'current');
     }
-    const started=Date.now();let phase:OriginDiagnostic['phase']='pre_fence_sql',timer:ReturnType<typeof setTimeout>|undefined;
+    const started=Date.now();let phase:OriginDiagnostic['phase']='pre_fence_sql',timer:ReturnType<typeof setTimeout>|undefined,abort:(()=>void)|undefined;
     const local=async()=>{
       const query=this.fenceQuery(scope,fences.map(f=>f.canonicalId)),rows=await this.db.prepare(query.sql).bind(...query.values).all<OriginRow>();
       signal?.throwIfAborted();const byId=new Map<string,OriginFence|null>();for(const row of rows.results){if(byId.has(row.canonical_id))throw Error('origin_context_page_duplicate');byId.set(row.canonical_id,this.fenceRow(scope,row.canonical_id,row));}
@@ -167,7 +167,10 @@ export class OriginGuard {
       if(!await local())return result('changed');signal?.throwIfAborted();phase='reader_rpc';proofPages++;
       const raw=await Promise.race([
         this.reader.readSnapshotProofs({secret:this.secret,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,refs:fences.map(({sourceKind,sourceId,chatId})=>({sourceKind,sourceId,chatId}))}),
-        new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('reader_timeout')),5000);}),
+        // The real 579-source curator reached a transient >5s page. Wait for
+        // this same read; never duplicate a non-cancellable service RPC.
+        new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('reader_timeout')),15000);}),
+        new Promise<never>((_,reject)=>{abort=()=>reject(signal?.reason??Error('origin_context_cancelled'));signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();}),
       ]);clearTimeout(timer);signal?.throwIfAborted();if(!current())return result('changed');phase='snapshot_parse';
       const serialized=JSON.stringify(raw);if(new TextEncoder().encode(serialized).length>PROOF_PAGE_BYTES)throw Error('snapshot_too_large');
       const page=snapshotProofPage.parse(JSON.parse(serialized));
@@ -180,7 +183,7 @@ export class OriginGuard {
       if(!await local())return result('changed');signal?.throwIfAborted();
       return result(changed?'changed':unavailable?'unavailable':'current');
     }catch(error){signal?.throwIfAborted();originDiagnostic(event=>report?.(event),phase,error instanceof Error?error.message:'exception',started);return result('unavailable');}
-    finally{clearTimeout(timer);}
+    finally{clearTimeout(timer);if(abort)signal?.removeEventListener('abort',abort);}
   }
   async check(fence: OriginFence,isCurrent:()=>boolean=()=>true): Promise<boolean> {
     if (fence) fence = JSON.parse(JSON.stringify(fence)) as OriginFence;
