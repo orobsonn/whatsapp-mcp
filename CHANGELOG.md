@@ -20,6 +20,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
 
 ### Fixed
+- Validade de autorização de envio é conferida após o retorno do Own; consulta lenta não invalida prova recém-emitida nem aceita prova vencida em trânsito. Aprovação, limite de validade e claim único permanecem obrigatórios.
 - `assistente_controlar` diferencia a ausência da política necessária a `fup.put` de uma falha interna genérica; datas com timezone, referências e replays foram verificados sem executar follow-ups reais.
 - Conversas nativas herdam a recuperação do Flue após interrupção. A leitura de mídia remove uma conferência completa duplicada, preservando a releitura da fonte, a autorização posterior e o guard final. As etapas internas da percepção conferem a tarefa e o arquivo, mantendo a verificação completa do histórico na entrada/saída e antes de seu uso.
 - Materialização de captura volta a tentar leituras indisponíveis após três falhas, com backoff persistido e sem reativar mensagens já respondidas. O agendador respeita o próximo prazo antes de ocupar a fila.

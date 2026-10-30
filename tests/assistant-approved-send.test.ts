@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import type { Env } from "../src/env";
 import { ingestEvent } from "../src/capture";
 import { registerProviderRelationship, conversationActivity } from "../src/conversation-activity";
 import { upsertDirectoryPage } from "../src/directory";
-import { prepareApprovedSend, executeApprovedSend, approvedSendStatus } from "../src/assistant-approved-send";
+import { prepareApprovedSend, executeApprovedSend, executeNativeReply, approvedSendStatus } from "../src/assistant-approved-send";
 import { executeAction, type SendProvider } from "../src/actions";
 const scope={installationId:"own",generation:"own-g1",sourceEpoch:"e1",sourceGeneration:"g1"};
 const secret="s".repeat(48);
@@ -23,6 +23,23 @@ beforeEach(async()=>{
 });
 function provider(hook?:()=>Promise<void>,fail=false){let sends=0;const port:SendProvider={status:async()=>{await hook?.();return {connected:true,phone:"device"};},send:async()=>{sends++;if(fail)throw Error("lost ack");return {messageId:"provider-1",zaapId:"zaap-1"};}};return {port,count:()=>sends};}
 describe("private Source approved send",()=>{
+ it.each([
+  ['legacy','fresh'],['native','fresh'],['legacy','expired'],['native','expired'],['legacy','too_future'],['native','too_future'],
+ ] as const)("checks %s authorization freshness after a slow owner RPC (%s)",async(kind,validity)=>{
+  const a=await prepareApprovedSend(e,input()),p=provider(),base=Date.now();let elapsed=0;
+  const clock=vi.spyOn(Date,'now').mockImplementation(()=>base+elapsed);
+  const authority={kind:'human_approval' as const,intentId:'native-intent',approvalId:'human-1'};
+  const slowOwner={
+   approvedSendAuthorization:async()=>{elapsed+=13000;return {authorized:true as const,actionId:a.actionId,hash:a.hash,approvalId:'human-1',expiresAt:validity==='expired'?base+5000:Date.now()+(validity==='too_future'?11000:5000)};},
+   nativeReplyAuthorization:async()=>{elapsed+=13000;return {authorized:true as const,actionId:a.actionId,hash:a.hash,authority,expiresAt:validity==='expired'?base+5000:Date.now()+(validity==='too_future'?11000:5000)};},
+  } as unknown as Env['ASSISTANT_OWNER'];
+  try{
+   const configured={...e,ASSISTANT_OWNER:slowOwner};
+   const result=kind==='native'?executeNativeReply(configured,{secret,scope,actionId:a.actionId,authority},p.port):executeApprovedSend(configured,{secret,scope,actionId:a.actionId,approvalId:'human-1'},p.port);
+   if(validity==='fresh'){expect((await result).status).toBe('accepted');expect(p.count()).toBe(1);}
+   else{await expect(result).rejects.toThrow(kind==='native'?'native_reply_denied':'approved_send_denied');expect(p.count()).toBe(0);}
+  }finally{clock.mockRestore();}
+ });
  it("prepares one atomic action under concurrent retries and rejects conflicting text",async()=>{
   const [a,b]=await Promise.all([prepareApprovedSend(e,input()),prepareApprovedSend(e,input())]);expect(a).toEqual(b);
   expect(a.target).toEqual({chatId,name:"Pessoa selecionada",address:"5585999999999",kind:"individual"});
