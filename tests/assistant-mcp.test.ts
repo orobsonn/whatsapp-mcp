@@ -89,6 +89,7 @@ import journalSchema from "../assistant/migrations/0017_shadow_decisions.sql?raw
 import { OwnerAssistant, OwnerQueries, type OwnerAffinity } from "../assistant/mcp";
 import { SourceController } from "../assistant/sources";
 import { OriginGuard } from "../assistant/origin-guard";
+import {OwnerControl} from '../assistant/control';
 let affinity: OwnerAffinity;
 beforeEach(async () => {
   affinity = { installationId: crypto.randomUUID(), generation: "g1", sourceEpoch: "capture-e", sourceGeneration: "capture-g" };
@@ -96,6 +97,19 @@ beforeEach(async () => {
     await env.DB.batch(schema.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
 });
 afterEach(() => vi.restoreAllMocks());
+it.each(['tutor-ronald','curso-lucas'])('returns a safe actionable %s policy diagnostic through MCP instead of operation_failed',async id=>{
+ const {settings,rpc}=setup();rpc.control.mockImplementation(async(_affinity,command)=>new OwnerControl(env.DB,affinity,{kind:'owner'}).execute(command));
+ const command={kind:'fup.put',operationId:'synthetic-'+id,id,expectedVersion:0,conversationId:'synthetic-chat',policyRevision:0,source:{id:'synthetic-note',revision:1},project:{id:'synthetic-project',revision:1},purpose:'PRIVATE_SENTINEL',dueAt:id==='tutor-ronald'?'2026-11-03T10:00:00-03:00':'2026-11-05T10:00:00-03:00',timezone:'America/Fortaleza',precision:'exact',state:'awaiting_approval'};
+ const r=await mcpFetch(request('tools/call',{name:'assistente_controlar',arguments:{command}}),settings,owner),body=await r.json() as any;
+ expect(body.result.isError).toBe(true);expect(JSON.parse(body.result.content[0].text)).toMatchObject({error:'control_policy_required',field:'policyRevision',message:expect.any(String)});
+ expect(JSON.stringify(body)).not.toContain('PRIVATE_SENTINEL');
+});
+it('keeps arbitrary remote exceptions private and does not turn uncertain writes into safe retry advice',async()=>{
+ const {settings,rpc}=setup();rpc.control.mockRejectedValue(Error('SECRET_SENTINEL timeout after commit'));
+ const command={kind:'project.put',operationId:'synthetic-uncertain',id:'synthetic',expectedVersion:0,name:'Synthetic'};
+ const r=await mcpFetch(request('tools/call',{name:'assistente_controlar',arguments:{command}}),settings,owner),body=await r.json() as any;
+ expect(JSON.parse(body.result.content[0].text)).toEqual({error:'operation_failed'});expect(JSON.stringify(body)).not.toContain('SECRET_SENTINEL');
+});
 function receiver() {
   return new OwnerAssistant(createExecutionContext(), { DB: env.DB, INSTALLATION_ID: affinity.installationId,
     OPERATIONAL_GENERATION: affinity.generation, BRIDGE_SOURCE_EPOCH: affinity.sourceEpoch, BRIDGE_SOURCE_GENERATION: affinity.sourceGeneration });

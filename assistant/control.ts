@@ -93,7 +93,7 @@ export class OwnerControl {
     if (this.principal.kind !== "owner") throw new Error("owner_required");
     const item = command(input);
     if(this.nativeMission&&item.kind!=='mission.put')throw Error('native_task_command_denied');
-    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0)throw Error('control_input');
+    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0)throw Error('control_policy_required');
     if (item.kind === "policy.put" && (!this.scope.sourceEpoch || !this.scope.sourceGeneration)) throw new Error("control_origin_unconfigured");
     const ledger = new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item));
     const previous = await ledger.recover<CommandReceipt>(); if (previous) return previous;
