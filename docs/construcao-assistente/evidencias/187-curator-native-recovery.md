@@ -21,3 +21,11 @@ A continuação seguinte foi admitida e o SDK confirmou a política nativa de10t
 O ajuste remove somente a primeira conferência. A releitura da fonte, o RPC de origem, a conferência completa posterior e o SQL final permanecem. Não há cache de autorização, remoção de proteção na construção das capacidades ou mudança do orçamento. O outro caller de produção, legado, não injeta esse callback e conserva seu comportamento.
 
 A regressão de leitura pública de mídia em cache falhou antes da correção e passou depois: uma conferência global após cada prova da fonte, sem nova inferência. Mais três casos dirigidos passaram, incluindo retirada da fonte ou contexto dentro do último await da autorização de gasto. Typecheck e build Own passaram; revisão adversarial do diff não encontrou Critical/Important. O ajuste ainda não foi publicado na execução ativa, e nenhum ganho de latência em produção foi anunciado.
+
+## Retorno de anexo pendente e leitura indisponível
+
+A continuação consultou arquivos distintos e recebeu `media_attachment_pending`. Em dois casos conferidos sem leitura dos corpos, o Source tinha imagem pronta, objeto, hash e versões/tipo compatíveis; o Own também tinha o arquivo na mesma conversa e namespace. Esses metadados não comprovam o resultado do snapshot remoto executado antes, nem permitem atribuir a falha a um timeout.
+
+O retorno antigo reunia observação indisponível, tipo não suportado, anexo ausente e projeção ausente. A correção distingue essas situações no caminho existente: falha do snapshot devolve `caption_snapshot_unavailable` com motivo normalizado; tipo não suportado é explícito; ausência do anexo e da projeção permanecem pendências diferentes. Não há nova rota, alteração de prazo, relaxamento de autorização ou inferência adicional para diagnosticar.
+
+Os dois casos dirigidos, com e sem legenda, reproduziram prova inicial válida seguida de falha independente da observação: antes eram anunciados como anexo pendente; depois retornaram indisponibilidade com `reader_timeout`, sem segunda chamada de modelo. Ambos passaram após a correção, assim como typecheck/build e revisão adversarial. Isso comprova o contrato do diagnóstico; não comprova que os casos reais tiveram esse motivo. Este ajuste também aguarda o encerramento da execução ativa para publicação.

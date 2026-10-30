@@ -22,10 +22,14 @@ export function nativeMediaCapability(options:{env:AssistantEnv;task:TaskContext
   let parentRef=ref,parentRead=read,parentFence=fence,captionEvidence:unknown;
   if(fence.sourceKind==='message'){
    const caption=await origin.observe(options.getScope(),fence),attachment=caption.content?.media;
-   if(caption.state!=='available'||!attachment||!['image','pdf'].includes(String(caption.content?.kind)))return {state:'pending',reason:'media_attachment_pending'};
+   // OriginGuard normalizes diagnostics; never label a failed read as an
+   // attachment that simply has not arrived, or expose the Source body here.
+   if(caption.state!=='available')return {state:'unavailable',reason:'caption_snapshot_unavailable',diagnostic:caption.reason??caption.state};
+   if(!['image','pdf'].includes(String(caption.content?.kind)))return {state:'unavailable',reason:'media_message_kind_unsupported'};
+   if(!attachment)return {state:'pending',reason:'media_attachment_pending'};
    const file=await db.prepare(`SELECT canonical_id FROM assistant_source_origins WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND source_kind='media' AND source_id=? AND chat_id=? AND tombstoned=0`)
     .bind(...scopeKeys(options.getScope()),attachment.id,fence.chatId).first<{canonical_id:string}>();
-   if(!file)return {state:'pending',reason:'media_attachment_pending'};
+   if(!file)return {state:'pending',reason:'media_file_projection_pending'};
    const fileRead=await access.read({kind:'owner'},file.canonical_id),fileFence=await origin.fence(file.canonical_id);
    if(!fileRead||!fileFence||(await origin.checkContext(fileFence)).state!=='current')throw Error('native_media_source_changed');
    const observed=await origin.observe(options.getScope(),fileFence),body=observed.content;
