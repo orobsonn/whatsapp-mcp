@@ -14,4 +14,12 @@ A correção mede o horário imediatamente depois do retorno nos ramos nativo e 
 
 Seis cenários dirigidos: nativo/legado com RPC de13s e prova emitida ao final, prova vencida em trânsito e prova excessivamente futura. Antes da correção, quatro falharam e dois passaram, reproduzindo as duas falhas do contrato. Depois, os35testes dos dois arquivos de envio aprovado/nativo passaram; typecheck e build Source passaram.
 
-Publicação e envio real ainda precisam de confirmação. Não renovar aprovação expirada, modificar prazo por SQL ou criar outro envio para contornar o resultado. Recibos privados preservam a correlação sem publicar conteúdo pessoal.
+## Publicação e consequência real
+
+O Source foi publicado em100% na versão `35d1339e-6d84-4840-8003-53f3407ac6c9`, código `0d4556c`, preservando bindings, runtime, agendamento e configuração. Own não foi alterado e autonomia permanece desligada.
+
+A execução anterior falhou antes da tentativa. Usando proxy local Wrangler para o binding RPC já existente, o operador conferiu que a mesma ação continuava `proposed` e vigente, e invocou `executeNative` com a autoridade humana já gravada. Não criou outra ação, não renovou prazo, não alterou texto/destino nem contornou as provas do Own. O Source aceitou uma tentativa em30/10 às23:26:18UTC, canal de aprovação `native_telegram_owner`, com ID do provedor e sem erro. O proxy foi encerrado. Isso foi uma retomada operacional após a correção, não um callback ininterrupto bem-sucedido desde a primeira tentativa.
+
+A captura Source identificou uma única mensagem enviada com o ID do provedor e texto exatamente igual ao envelope aprovado. Na leitura registrada, o estado era aceito/enviado; entrega e leitura não foram comprovadas. O segundo clique real foi solicitado apenas para reconciliação e verificação de ausência de nova mensagem, ainda sem resultado nesta escrita.
+
+Censo posterior:6.463.799microUSD nos ledgers conhecidos, incluindo796.754em reservas e381.277incertos preservados. A provisão externa separada de133.000leva o controle conservador a6.596.799, saldo3.403.201contra o teto histórico de10.000.000microUSD. Não é fatura nem estimativa mensal. Recibos privados preservam a correlação sem publicar conteúdo pessoal.

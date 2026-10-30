@@ -4,7 +4,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
-## [0.52.0] - 2026-10-29
+## [0.52.0] - 2026-10-30
 
 ### Added
 - Sessões contínuas nativas do Flue por conversa WhatsApp e uma sessão do dono no Telegram entre tópicos. A IA escolhe ferramentas, consulta originais e conhecimento, aprende relações e pode responder, silenciar ou pedir orientação.
@@ -37,10 +37,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Imagem real interpretada pelo DeepSeek no Worker e explicada no Telegram; recuperação da legenda, ausência de legenda e reutilização/retirada do arquivo verificadas separadamente. Evidência185.
 - MCP real criou relações consultadas pelo bot; correção e retirada foram verificadas em nova resposta e os dados fictícios foram limpos. Curador escolheu cinco relações legítimas posteriormente consultadas pelo MCP. Evidências158 e160.
 - Bot real explicou código GitHub, consultou títulos/horários, criou/editou/excluiu o mesmo evento Calendar com leitura independente no Google e enviou lembrete confirmado pelo dono. Evidências161,165 e166.
-- Janela real de1499 alterações terminou com114 conteúdos avaliados e38 indisponíveis, mantendo cobertura parcial. Aviso isolado aceito pelo Telegram; primeira execução diária admitida pelo agendador, ainda em processamento. Nenhum aprendizado foi inventado para preencher o ensaio. Custos medidos e projeção separados de fatura reconciliada. Evidências167,169 e170.
+- Curadoria real concluiu no Flue com cobertura parcial:158avaliadas,1aprendizado creditado,88indisponíveis e204lacunas de captura explícitas. O agente gravou memória adicional recuperada pelo MCP; o resumo anterior desse dia já estava aceito, sem novo aviso nesta retomada. Evidências170 e187.
+- Pergunta real ao dono recebeu orientação vinculada, retomou a mesma conversa e gerou sugestão. O dono aprovou; após corrigir o relógio da autorização, a mesma ação foi retomada operacionalmente e aceita pelo provedor, com uma mensagem enviada capturada e texto exato. Isso não comprova entrega/leitura nem callback ininterrupto após a correção. Evidência188.
 
 ### Notes
-- Marco ainda em homologação, sem tag/release0.52.0. A continuação diária encerrou com cobertura parcial e sem páginas por confirmar;88conteúdos e204lacunas de captura permanecem explícitos. O resumo anterior desse dia já estava aceito, sem novo envio nesta retomada. Restam a resposta autêntica do dono retomando uma tarefa e o envio WhatsApp após aprovação real para fechar o marco; estado atualizado na issue146.
+- Marco de uso em aprovação: continuidade, ferramentas, memória compartilhada, orientação e envio aprovado possuem provas reais. Curadoria conserva cobertura parcial. Crescimento/restauração, divulgação e decisões de autonomia também têm ensaios controlados, sem promessa de escala ilimitada ou confidencialidade perfeita. Custos medidos e projeção permanecem separados de fatura reconciliada.
 - Respostas autônomas permanecem desligadas. Aceito pelo provedor não equivale a entregue/lido. Contratação de infraestrutura não foi autorizada por esta implementação.
 
 ## [0.51.0] - 2026-10-28
