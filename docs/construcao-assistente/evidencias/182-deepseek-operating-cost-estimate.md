@@ -26,4 +26,8 @@ O serviço de conhecimento permanece na infraestrutura existente. O custo increm
 
 ## Estado
 
-Seleção e secret de DeepSeek publicados, credencial/saldo/modelo confirmados por leituras não pagas. Nenhum recibo de inferência DeepSeek observado na primeira conferência após a publicação. A estimativa não autoriza ampliar limites, ativar respostas autônomas nem trocar modelos adicionais de mídia/embeddings. A14 permanece aberto até evidência suficiente.
+Seleção e secret de DeepSeek publicados, credencial/saldo/modelo confirmados por leituras não pagas. Na primeira conferência ainda não existiam recibos de inferência; a observação posterior confirmou chamadas reais completas nos canais Telegram e WhatsApp, sem recibo DeepSeek incerto nessa janela. A leitura visual real também foi concluída, conforme evidência185. Não confundir os recibos antigos de outro modelo com consumo DeepSeek.
+
+O uso observado do dono incluiu pesquisas extensas no repositório e histórico, com entrada muito maior que a do WhatsApp nessa amostra. Seus totais e os consumos por canal ficaram registrados privadamente; não foram multiplicados por30 para simular um mês normal. A contabilização conserva o preço de pico sem cache, enquanto os dados de cache do SDK não são fatura conciliada. A curadoria observada nessa janela ainda usava o modelo anterior; não há base para anunciar custo diário medido da curadoria com DeepSeek. Infraestrutura continua sem rateio conciliado. A14 permanece aberto nesses limites.
+
+A estimativa não autoriza ampliar limites, ativar respostas autônomas nem trocar modelos de embeddings. A leitura visual usa a autorização e a estimativa específica da evidência185; não há fallback silencioso.

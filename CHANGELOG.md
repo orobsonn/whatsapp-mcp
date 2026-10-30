@@ -19,6 +19,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
 
 ### Fixed
+- Materialização de captura volta a tentar leituras indisponíveis após três falhas, com backoff persistido e sem reativar mensagens já respondidas. O agendador respeita o próximo prazo antes de ocupar a fila.
 - Leitura de imagens respeita o provedor DeepSeek selecionado, conserva recibos e reutiliza o mesmo arquivo. Legenda original acompanha a interpretação, inclusive quando o anexo fica pronto depois; recuperação de entrada já respondida termina sem nova inferência.
 - Recebimento confirma o registro durável antes da admissão nativa, com recuperação da ponte sem confundir ACK com processamento pela IA.
 - Primeira identidade de cada entrada Telegram e canal do dono são fixados atomicamente; replay anterior à retirada não reabre contexto removido. Falha de turno do SDK não descarta a próxima entrada válida.
