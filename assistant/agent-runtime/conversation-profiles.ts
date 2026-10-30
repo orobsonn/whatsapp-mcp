@@ -83,7 +83,7 @@ export function ConversationRuntimeAgent(){
  });
  async function application(){const binding=await bound();if(!binding.frame)throw Error('conversation_application_unconfigured');return {...binding,...await binding.frame(binding.task)};}
  useConversationReadTools(application);
- useTool({name:'media_read',description:'Leia uma imagem/PDF capturado ou transcrição já disponível pelo SourceRef exato autorizado. A interpretação visual é derivada; páginas ilegíveis ou mídia pendente não significam conteúdo completo. Não invente citações literais do original a partir de OCR.',
+ useTool({name:'media_read',description:'Leia uma imagem/PDF capturado pelo SourceRef exato do arquivo ou da mensagem com legenda; retorna também a legenda original quando disponível. A interpretação visual é derivada; páginas ilegíveis ou mídia pendente não significam conteúdo completo. Não invente citações literais do original a partir de OCR.',
   input:v.strictObject({sourceRef:v.strictObject({id:v.pipe(v.string(),v.minLength(1),v.maxLength(256)),revision:v.pipe(v.number(),v.integer(),v.minValue(1)),version:v.pipe(v.number(),v.integer(),v.minValue(1)),hash:v.pipe(v.string(),v.regex(/^[a-f0-9]{64}$/))})}),
   async run({data}){const binding=await application();return {output:JSON.stringify(await binding.media.read(data.sourceRef))};}});
  async function completeOperation(binding:Awaited<ReturnType<typeof application>>,operation:()=>Promise<unknown>){

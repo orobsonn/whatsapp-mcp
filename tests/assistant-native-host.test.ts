@@ -22,7 +22,7 @@ vi.mock('../assistant/agent-runtime/native-transport',()=>({
  nativeConversationInstance:(id:string)=>transport.instance(id),
 }));
 const secret='native-host-synthetic-secret-more-than32',bot='native_host_bot';
-beforeEach(async()=>{vi.clearAllMocks();transport.read.mockReset().mockResolvedValue({});transport.instance.mockReset().mockImplementation(async id=>({id,uid:id}));transport.deliveries.clear();await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
+beforeEach(async()=>{vi.clearAllMocks();transport.read.mockReset().mockResolvedValue({});transport.instance.mockReset().mockImplementation(async id=>({id,uid:id}));transport.deliveries.clear();await env.DB.exec('DELETE FROM conversation_relationships; DELETE FROM owner_message_originals; DELETE FROM approved_sends; DELETE FROM actions; DELETE FROM assistant_capture_changes; DELETE FROM media; DELETE FROM message_versions; DELETE FROM messages; DELETE FROM pending_statuses; DELETE FROM directory_syncs; DELETE FROM chats;');});
 afterEach(()=>vi.restoreAllMocks());
 async function fixture(){
  const scope={installationId:crypto.randomUUID(),generation:'own-g1',sourceEpoch:'e1',sourceGeneration:'g1'};
@@ -58,6 +58,24 @@ async function fixture(){
 }
 async function latestTask(host:NativeApplicationHost,taskRef:string){const delivery=transport.deliveries.get(taskRef);if(!delivery)throw Error('fixture_delivery');
  const row=await env.DB.prepare('SELECT identity_json FROM assistant_native_conversations WHERE id=(SELECT conversation_id FROM assistant_native_conversation_events WHERE task_ref=?)').bind(taskRef).first<{identity_json:string}>();return host.runtime.resolveTask(JSON.parse(row!.identity_json),delivery);}
+async function lateImageCaption(){
+ const f=await fixture(),incoming=await f.append('What does this warning mean?'),mediaId=crypto.randomUUID();
+ await env.DB.prepare(`UPDATE messages SET kind='image' WHERE id=?`).bind(incoming.sourceId).run();
+ const original=f.own.CAPTURE_READER!.readNativeInput!;let first=true;
+ f.own.CAPTURE_READER!.readNativeInput=async q=>{
+  if(first){first=false;await env.DB.prepare(`INSERT INTO media(id,chat_id,message_id,message_version,epoch,generation,kind,mime,size,sha256,object_key,state,source_url,created_at) VALUES(?,?,?,1,'e1','g1','image','image/png',100,?,'synthetic/image','ready','https://provider.invalid/private',?)`)
+   .bind(mediaId,incoming.chatId,incoming.sourceId,'b'.repeat(64),Date.now()).run();}
+  return original(q);
+ };
+ const host=f.host();expect(await host.receiveCapture(incoming.sequence)).toMatchObject({state:'unavailable'});
+ return {...f,incoming,mediaId,host};
+}
+async function stageReadyImage(f:Awaited<ReturnType<typeof lateImageCaption>>){
+ const sequence=(await env.DB.prepare(`SELECT MAX(sequence) n FROM assistant_capture_changes WHERE source_kind='media' AND source_id=?`).bind(f.mediaId).first<number>('n'))!;
+ const metadata={protocol:1,...f.scope,sequence,previousSequence:f.incoming.sequence,chatId:f.incoming.chatId,sourceId:f.mediaId,sourceKind:'media',operation:'upsert',recordedAt:Date.now()};
+ expect((await receiveCapture(new Request('https://own.invalid/internal/capture',{method:'POST',headers:{Authorization:'Bearer '+secret},body:JSON.stringify(metadata)}),{...f.own,NATIVE_CONVERSATIONS_MODE:'off'})).status).toBe(200);
+ return sequence;
+}
 async function outcomeFixture(){
  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';const host=f.host(),first=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));
  if(first.state!=='admitted'||!first.receipt)throw Error('fixture_curator');const task=await latestTask(host,first.taskRef),runId=task.cohort[0].eventId.slice(12),fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
@@ -67,6 +85,32 @@ async function outcomeFixture(){
  return {...f,host,first:{...first,receipt:first.receipt!},runId,failure,fetch};
 }
 describe('native application composition on real D1 and Source reads',()=>{
+ it('recovers a real caption whose file became ready during admission and delivers the exact caption plus image hint',async()=>{
+  const f=await lateImageCaption();expect(transport.dispatch).not.toHaveBeenCalled();
+  const receipt=await f.host.receiveCapture(f.incoming.sequence);expect(receipt.state).toBe('admitted');
+  const task=await latestTask(f.host,receipt.taskRef!),body=JSON.parse(transport.deliveries.get(task.taskRef)!.body!);
+  expect(body).toMatchObject({body:f.incoming.text,attachmentKind:'image',eventId:'capture:message:'+f.incoming.sourceId});
+  expect(body.sourceRef.revision).toBe(2);expect(transport.dispatch).toHaveBeenCalledTimes(1);
+  expect(await f.host.receiveCapture(f.incoming.sequence)).toMatchObject({state:'admitted'});expect(transport.dispatch).toHaveBeenCalledTimes(1);
+ });
+ it.each([false,true])('does not revive a failed image caption after newer incoming or owner activity (owner=%s)',async owner=>{
+  const f=await lateImageCaption();await f.append(owner?'Already answered':'ok','5585999999999',false,owner);
+  expect(await f.host.receiveCapture(f.incoming.sequence)).toMatchObject({state:'superseded'});expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it('preserves the activity requirement after a transient reader failure overwrites the original caption gap',async()=>{
+  const f=await lateImageCaption(),activity=f.own.CAPTURE_READER!.readConversationActivity!;
+  f.own.CAPTURE_READER!.readConversationActivity=async()=>{throw Error('transient');};
+  expect(await f.host.receiveCapture(f.incoming.sequence)).toMatchObject({state:'unavailable'});
+  await f.append('Already answered','5585999999999',false,true);f.own.CAPTURE_READER!.readConversationActivity=activity;
+  expect(await f.host.receiveCapture(f.incoming.sequence)).toMatchObject({state:'superseded'});expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it('recovers the missing caption when the actual ready-file event arrives',async()=>{
+  const f=await lateImageCaption(),sequence=await stageReadyImage(f);
+  expect(await f.host.receiveCapture(sequence)).toMatchObject({state:'admitted'});
+  const rows=(await env.DB.prepare(`SELECT event_json FROM assistant_native_conversation_events e JOIN assistant_native_conversations c ON c.id=e.conversation_id WHERE c.installation_id=? AND c.generation=? ORDER BY e.created_at`).bind(f.scope.installationId,f.scope.generation).all<{event_json:string}>()).results.map(r=>JSON.parse(r.event_json));
+  expect(rows.some(r=>r.body===f.incoming.text&&r.attachmentKind==='image'&&r.sourceRef.revision===2)).toBe(true);
+  expect(rows.some(r=>r.eventId==='capture:media:'+f.mediaId)).toBe(true);
+ });
  it('owner reassessment keeps the original WhatsApp anchor and the exact authenticated owner text',async()=>{
   const f=await fixture(),input=await f.append('Como cadastro a sobra do preparo?'),host=f.host(),received=await host.receiveCapture(input.sequence),wa=await latestTask(host,received.taskRef!),ref=wa.cohort[0].sourceRef!;
   const prior=await host.runtime.proposeReply(wa,'Proposta anterior sem envio');

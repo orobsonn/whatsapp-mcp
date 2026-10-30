@@ -34,15 +34,19 @@ export class CaptureMaterializer {
     for (const row of rows.results) results.push(await this.process(row.sequence, true));
     return results;
   }
-  async process(sequence: number, retry = false): Promise<{ sequence: number; state: string; canonicalId?: string }> {
+  /** Re-observe an existing applied event whose attachment metadata changed.
+   * The original inbox identity and the same transactional projection are retained. */
+  async reconcile(sequence:number){return this.process(sequence,false,true);}
+  async process(sequence: number, retry = false, refreshApplied = false): Promise<{ sequence: number; state: string; canonicalId?: string }> {
     const scope = activeOrigin(this.getScope), keys = scopeKeys(scope);
     const event = await this.sql(`SELECT sequence,chat_id,source_id,source_kind,operation,application_state FROM assistant_capture_inbox
       WHERE ${originScopeSql} AND sequence=?`, ...keys, sequence).first<Inbox>();
     if (!event) return { sequence, state: "missing" };
     if (JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(keys)) return { sequence, state: "stale" };
-    if (event.application_state === "applied" || (event.application_state === "blocked" && !retry)) return { sequence, state: event.application_state };
+    if(refreshApplied&&event.application_state!=='applied')return {sequence,state:event.application_state};
+    if ((event.application_state === "applied"&&!refreshApplied) || (event.application_state === "blocked" && !retry)) return { sequence, state: event.application_state };
     const ref: OriginRef = { sourceKind: event.source_kind, sourceId: event.source_id, chatId: event.chat_id };
-    return {sequence,...await this.project(scope,ref,{event,retry})};
+    return {sequence,...await this.project(scope,ref,{event,retry,refreshApplied})};
   }
   /** Private one-off migration: no invented capture event, activity anchor,
    * native task or initial curation change. Later live edits use this same projection. */
@@ -74,7 +78,7 @@ export class CaptureMaterializer {
       AND NOT EXISTS(SELECT 1 FROM assistant_capture_inbox WHERE ${originScopeSql} AND source_kind=? AND source_id=?)`,
       values:[...execution.values,...host.values,scope.installationId,canonicalId,JSON.stringify([scope.sourceEpoch,scope.sourceGeneration,ref.sourceKind,ref.sourceId]),scope.installationId,scope.generation,canonicalId,...scopeKeys(scope),ref.sourceKind,ref.sourceId]};
   }
-  private async project(scope:OriginScope,ref:OriginRef,live?:{event:Inbox;retry:boolean},historicalKind?:'private'|'group',throughSequence=0):Promise<{state:string;canonicalId?:string;reason?:string}>{
+  private async project(scope:OriginScope,ref:OriginRef,live?:{event:Inbox;retry:boolean;refreshApplied:boolean},historicalKind?:'private'|'group',throughSequence=0):Promise<{state:string;canonicalId?:string;reason?:string}>{
     const keys=scopeKeys(scope),sequence=live?.event.sequence??0,historical=!live;
     const [existing, chat] = await Promise.all([
       this.sql(`SELECT o.canonical_id,o.watermark,o.observation_hash,o.tombstoned,o.chat_id,s.revision,s.current_version,s.status
@@ -138,8 +142,8 @@ export class CaptureMaterializer {
       WHERE ${originScopeSql} AND sequence=? AND application_state=? AND ${sourceFence} AND ${chatFence}
       ON CONFLICT(installation_id,generation,source_epoch,source_generation,sequence) DO UPDATE SET token=excluded.token,state='admitted',
         attempts=assistant_materialization_results.attempts+1,observed_at=excluded.observed_at,watermark=excluded.watermark,observation_hash=excluded.observation_hash
-      WHERE assistant_materialization_results.state='blocked' AND assistant_materialization_results.attempts<3 AND assistant_materialization_results.next_retry_at<=?`,
-    token, now, observed.watermark, observed.hash, ...keys, sequence, live!.retry ? "blocked" : "pending", ...sourceValues, ...chatValues, now));
+      WHERE (assistant_materialization_results.state='applied' AND ?=1) OR (assistant_materialization_results.state='blocked' AND assistant_materialization_results.attempts<3 AND assistant_materialization_results.next_retry_at<=?)`,
+    token, now, observed.watermark, observed.hash, ...keys, sequence, live!.refreshApplied?'applied':live!.retry ? "blocked" : "pending", ...sourceValues, ...chatValues,live!.refreshApplied?1:0, now));
     const watermark = Math.max(sequence, observed.watermark ?? 0, chat?.watermark ?? 0);
     const conversationWithdrawn = withdrawn && (ref.sourceKind === "conversation" || observed.conversationWithdrawn);
     const accessState = conversationWithdrawn ? "withdrawn"

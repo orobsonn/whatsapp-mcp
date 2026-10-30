@@ -121,13 +121,14 @@ export class NativeApplicationHost {
   const cut=this.env.NATIVE_CAPTURE_START_AFTER_SEQUENCE;
   if(typeof cut!=='string'||!/^\d+$/.test(cut)||!Number.isSafeInteger(Number(cut)))throw Error('native_capture_cut_unconfigured');
   if(sequence<=Number(cut))return finish('before_activation');
-  const saved=await this.db!.prepare(`SELECT metadata_hash,state,task_ref FROM assistant_native_capture_intake WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND sequence=?`)
-   .bind(...scopeKeys(scope),sequence).first<{metadata_hash:string;state:string;task_ref:string|null}>();
+  const saved=await this.db!.prepare(`SELECT metadata_hash,state,task_ref,last_gap FROM assistant_native_capture_intake WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND sequence=?`)
+   .bind(...scopeKeys(scope),sequence).first<{metadata_hash:string;state:string;task_ref:string|null;last_gap:string|null}>();
   if(saved?.metadata_hash!==undefined&&saved.metadata_hash!==row.metadata_hash)throw Error('native_capture_conflict');
   if(saved&&['admitted','excluded','withdrawn','metadata_only','superseded','before_activation'].includes(saved.state))return {state:saved.state,taskRef:saved.task_ref};
   await finish('pending');
   const materializer=new CaptureMaterializer(this.db!,()=>this.currentScope(),this.env.CAPTURE_READER!,this.env.BRIDGE_SECRET!);
-  const materialized=await materializer.process(sequence,row.application_state==='blocked');
+  const recovering=row.application_state==='applied'&&saved?.state==='unavailable'&&['native_event_origin_changed','canonical_snapshot_changed'].includes(saved.last_gap??'');
+  const materialized=recovering?await materializer.reconcile(sequence):await materializer.process(sequence,row.application_state==='blocked');
   if(row.operation==='withdraw'||row.source_kind==='conversation'){
    await this.sweepRetiredContexts();return finish(row.operation==='withdraw'?'withdrawn':'metadata_only');
   }
@@ -143,12 +144,33 @@ export class NativeApplicationHost {
   if(!input.authorship||!['external','assistant_action','own_device_unattributed'].includes(input.authorship.kind)||input.fromMe===(input.authorship.kind==='external'))return finish('unavailable','source_authorship_unknown');
   const content=input.snapshot?.content;
   if(!content||content.fromMe!==input.fromMe||content.messageId!==input.originalMessageId||(content.authorId??null)!==input.authorId||input.text!==(typeof content.text==='string'?content.text:null))return finish('unavailable','source_reader_invalid');
+  // A transient failure may replace the original recovery gap. Every resumed
+  // applied intake still requires current activity, including after a crash.
+  if(row.application_state==='applied'&&saved){
+   let activity;
+   try{activity=captureConversationActivity.parse(await this.env.CAPTURE_READER!.readConversationActivity?.({secret:this.env.BRIDGE_SECRET!,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:row.chat_id}));}
+   catch{return finish('unavailable','source_activity_unavailable');}
+   if(activity.state!=='available'||activity.sourceEpoch!==scope.sourceEpoch||activity.sourceGeneration!==scope.sourceGeneration||activity.chatId!==row.chat_id||activity.members.some(m=>!m.captureEnabled))return finish('unavailable','source_activity_unavailable');
+   if(activity.lastOwnerOriginalSequence>input.originalSequence||activity.latestIncomingOriginalSequence>input.originalSequence)return finish('superseded');
+  }
   // Source observation hash covers the exact author/direction/body snapshot.
   const canonical=await this.db!.prepare(`SELECT canonical_id,observation_hash FROM assistant_source_origins WHERE installation_id=? AND generation=? AND source_epoch=? AND source_generation=? AND source_kind=? AND source_id=? AND chat_id=? AND tombstoned=0`)
    .bind(...scopeKeys(scope),row.source_kind,row.source_id,row.chat_id).first<{canonical_id:string;observation_hash:string}>();
   if(!canonical||canonical.observation_hash!==await bridgeHash([input.snapshot.sourceVersion??null,input.snapshot.access,input.snapshot.content]))return finish('unavailable','canonical_snapshot_changed');
   const source=await new SourceAccess(this.db!,scope,Date.now,'knowledge').read(owner,canonical.canonical_id);
   if(!source)return finish('excluded');
+  if(row.source_kind==='media'&&typeof content.messageId==='string'){
+   const parent=await this.db!.prepare(`SELECT i.sequence,i.application_state,n.state,n.last_gap FROM assistant_capture_inbox i LEFT JOIN assistant_native_capture_intake n
+    ON n.installation_id=i.installation_id AND n.generation=i.generation AND n.source_epoch=i.source_epoch AND n.source_generation=i.source_generation AND n.sequence=i.sequence
+    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.source_kind='message' AND i.source_id=? AND i.chat_id=? ORDER BY i.sequence DESC LIMIT 1`)
+    .bind(...scopeKeys(scope),content.messageId,row.chat_id).first<{sequence:number;application_state:string;state:string|null;last_gap:string|null}>();
+   if(parent?.application_state==='applied'){
+    await materializer.reconcile(parent.sequence);
+    if(parent.state==='unavailable'&&['native_event_origin_changed','canonical_snapshot_changed'].includes(parent.last_gap??'')){
+     const recovered=await this.receiveCapture(parent.sequence);if(recovered.state==='superseded')return finish('superseded');
+    }
+   }
+  }
   const body=typeof content.text==='string'?content.text:JSON.stringify(content??{});
   if(body!==source.text||await sourceTextHash(body)!==source.fence.source.hash)return finish('unavailable','canonical_text_changed');
   // Images/PDF enter as their exact canonical Source metadata. The agent can
@@ -162,7 +184,7 @@ export class NativeApplicationHost {
   const status=input.authorship.kind==='assistant_action'?input.authorship.action.status:undefined;
   const actionState=status&&['delivered','read'].includes(status)?'delivered' as const:status&&['accepted','sent'].includes(status)?'accepted' as const:undefined;
   const event=verifiedConversationEvent({identity,eventId:'capture:'+row.source_kind+':'+row.source_id,revision:source.fence.source.revision,kind:input.authorship.kind==='external'?'incoming':'action_result',author,
-   occurredAt:typeof content.occurredAt==='number'?content.occurredAt:typeof content.receivedAt==='number'?content.receivedAt:Date.now(),body,sourceRef:ref,...(actionState?{actionState}:{})});
+   occurredAt:typeof content.occurredAt==='number'?content.occurredAt:typeof content.receivedAt==='number'?content.receivedAt:Date.now(),body,sourceRef:ref,...(content.kind==='image'||content.kind==='pdf'?{attachmentKind:content.kind}:{}),...(actionState?{actionState}:{})});
   try{const result=await this.admit(event,input.originalSequence);return finish(result.state,null,result.taskRef);}
   catch(error){
    const code=error instanceof Error&&captureAdmissionGaps.has(error.message)?error.message:'native_admission_unavailable';

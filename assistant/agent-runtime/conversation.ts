@@ -16,7 +16,7 @@ export const nativeTaskWorkRef=z.object({kind:z.enum(['mission','follow_up']),bi
 const eventSchema=z.object({identity:conversationIdentity,eventId:label,revision:integer.positive(),
  kind:z.enum(['incoming','owner_manual','correction','withdrawal','action_result','approval','discard','clarification','mission_due','fup_due']),
  author:z.object({kind:z.enum(['owner','person','system']),id:label}).strict(),occurredAt:integer,
- body:z.string(),sourceRef:sourceRef.optional(),threadId:label.optional(),
+ body:z.string(),sourceRef:sourceRef.optional(),attachmentKind:z.enum(['image','pdf']).optional(),threadId:label.optional(),
  actionState:z.enum(['proposed','discarded','approved','attempted','accepted','delivered']).optional(),
  replyTo:replyToSchema.optional(),workRef:nativeTaskWorkRef.optional()}).strict()
  .refine(e=>!e.replyTo||(e.kind==='clarification'&&e.identity.channel==='whatsapp'&&e.author.kind==='owner'),{message:'conversation_reply_anchor_denied'})
@@ -86,7 +86,7 @@ function signal(row:EventRow):DeliveredMessage{
  const event=eventSchema.parse(JSON.parse(row.event_json));
  return {kind:'signal',type:'assistant.conversation.'+event.kind,attributes:{taskRef:row.task_ref},
   body:JSON.stringify({eventId:event.eventId,revision:event.revision,kind:event.kind,author:event.author,
-   occurredAt:event.occurredAt,body:event.body,...(event.sourceRef?{sourceRef:event.sourceRef}:{}),
+   occurredAt:event.occurredAt,body:event.body,...(event.sourceRef?{sourceRef:event.sourceRef}:{}),...(event.attachmentKind?{attachmentKind:event.attachmentKind}:{}),
    ...(event.threadId?{threadId:event.threadId}:{}),...(event.actionState?{actionState:event.actionState}:{}),...(event.replyTo?{replyTo:event.replyTo}:{}),...(event.workRef?{workRef:event.workRef}:{})})};
 }
 /** Native intake may reorder JSON object keys. The envelope still has exactly

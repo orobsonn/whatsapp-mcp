@@ -95,6 +95,21 @@ it("preserves original and corrected versions while an old event observes curren
   expect((await query("SELECT original_text,author_id FROM assistant_source_versions WHERE installation_id=? AND generation=? ORDER BY version", scope.installationId, scope.generation).all()).results)
     .toEqual([{ original_text: "Synthetic original", author_id: "author" }, { original_text: "Corrected synthetic", author_id: "author" }]);
 });
+it('reconciles a captured image caption after its attachment becomes ready without inventing another capture event',async()=>{
+  snapshots.set('message:message',{...snapshot(),content:{...snapshot().content,kind:'image',text:'What does this warning mean?'}});
+  await event();await materializer.drain();const first=(await canonical())!;
+  snapshots.set('message:message',{...snapshot('message','message',20),content:{...snapshot().content,kind:'image',text:first.original_text,
+    media:{id:'photo',version:1,hash:'b'.repeat(64),size:100,mime:'image/png'}}});
+  snapshots.set('conversation:chat',snapshot('conversation','chat',20));
+  expect(await guard.check((await guard.fence(first.id))!)).toBe(false);
+  expect(await materializer.reconcile(10)).toMatchObject({state:'applied',canonicalId:first.id});
+  expect(await canonical()).toMatchObject({id:first.id,revision:2,current_version:2,original_text:first.original_text});
+  expect(await guard.check((await guard.fence(first.id))!)).toBe(true);
+  await materializer.reconcile(10);
+  expect(await canonical()).toMatchObject({revision:2,current_version:2});
+  expect(await query('SELECT COUNT(*) n FROM assistant_capture_inbox WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+  expect((await materializer.progress()).received).toBe(10);
+});
 it("stores media and derivative dependencies without downloading a file", async () => {
   const media = snapshot("media", "media");
   const mediaMetadata = { id: "media", version: 1, hash: "a".repeat(64), size: 100, mime: "audio/ogg" };
