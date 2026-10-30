@@ -2,6 +2,7 @@ import type { AssistantEnv } from "./env";
 import { receiveCapture } from "./ingress";
 import { receiveTelegram } from "./telegram-webhook";
 import { runScheduledAssistant } from "./scheduler";
+import {importArchivedReference} from './archive-import';
 export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
@@ -54,6 +55,8 @@ export default {
           await new NativeApplicationHost(env).receiveCapture(sequence);
         })().catch(()=>{/* Closed admission gaps remain in the durable inbox. */}));
       });
+
+    if(new URL(request.url).pathname==='/internal/archive-import')return importArchivedReference(request,env);
 
     if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")
       return receiveTelegram(request, env);
