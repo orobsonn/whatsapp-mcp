@@ -186,6 +186,12 @@ export class ConversationRuntime {
  }
  async assertTaskCurrent(task:TaskContext){
   await this.host.retention?.assertCurrent(task.identity);
+  await this.assertTaskAuthority(task);
+ }
+ /** Current task authority only, for inner operations whose inputs do not
+  * include the conversation history. Callers releasing/using that history
+  * still require assertTaskCurrent before and after the operation. */
+ async assertTaskAuthority(task:TaskContext){
   const authority=await this.current(task.identity);
   if(task.sessionId!==await address(task.identity)||JSON.stringify(authority)!==JSON.stringify(task.authority))throw Error('conversation_authority_changed');
   const refs=task.cohort.map(event=>event.taskRef),contextRef='conversation-context-v1-'+await bridgeHash([task.sessionId,refs,authority]);

@@ -131,6 +131,20 @@ it('freezes host task/cohort authority, preserving ordered authors and group des
  const foreign=await admit({identity:{...identity,principalOrChatId:'other-chat'},eventId:'other'});
  await expect(taskFor(b,[foreign.receipt.taskRef,b.receipt.taskRef])).rejects.toThrow('conversation_cohort_denied');
 });
+it('checks task authority without rescanning history while retaining domain, grant and tombstone denials',async()=>{
+ const admitted=await admit(),task=await taskFor(admitted),full=vi.fn(async()=>{});
+ host.retention={assertCurrent:full} as unknown as NonNullable<ConversationHost['retention']>;
+ await runtime.assertTaskAuthority(task);expect(full).not.toHaveBeenCalled();
+ await runtime.assertTaskCurrent(task);expect(full).toHaveBeenCalledTimes(1);
+ host.assertTask=async()=>{throw Error('domain_revoked');};
+ await expect(runtime.assertTaskAuthority(task)).rejects.toThrow('domain_revoked');host.assertTask=undefined;
+ await expect(runtime.assertTaskAuthority({...task,returnChannel:{channel:'whatsapp',id:'other'}})).rejects.toThrow('conversation_task_denied');
+ authority={...authority,grantRef:'replaced'};
+ await expect(runtime.assertTaskAuthority(task)).rejects.toThrow('conversation_authority_changed');authority={...task.authority};
+ await env.DB.prepare('UPDATE assistant_native_conversations SET tombstoned_at=200 WHERE id=?').bind(task.sessionId).run();
+ await expect(runtime.assertTaskAuthority(task)).rejects.toThrow('conversation_context_withdrawn');
+ expect(full).toHaveBeenCalledTimes(1);
+});
 it('rejects forged native deliveries, changed grants and a model-mutated TaskContext',async()=>{
  const a=await admit(),task=await taskFor(a),message=a.request.message as DeliveredMessage;
  await expect(runtime.resolveTask(identity,{...message,body:'forged body'})).rejects.toThrow('conversation_delivery_denied');

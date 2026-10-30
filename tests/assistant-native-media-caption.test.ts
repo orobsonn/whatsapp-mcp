@@ -20,9 +20,10 @@ it.each([true,false])('reads caption and file through the same paid image receip
  const captionRef=await ref(caption.canonicalId!),fileRef=await ref(file.canonicalId!);
  await new InferenceBudget(env.DB,{...scope,period:new Date().toISOString().slice(0,10)}).configure(600000);
  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({observations:'There is an update warning.',pages:[{page:1,state:'readable',text:'Update failed.'}]})}}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}}));
- const expose=vi.fn(),origin=new OriginGuard(env.DB,()=>scope,reader,'secret'),capability=nativeMediaCapability({env:{DB:env.DB,MEDIA_CONTEXT_ENABLED:'true',NATIVE_MODEL_PROVIDER:'deepseek',DEEPSEEK_API_KEY:'synthetic-key',BRIDGE_SECRET:'secret',CAPTURE_MEDIA_READER:{readBoundedMedia:async()=>({observation:'capture_media',state:'available',sourceEpoch:'e',sourceGeneration:'cg',chatId:'chat',mediaId:'file',messageVersion:1,mediaVersion:1,blobHash,mime:'image/png',size:bytes.length,watermark:2,bytes})}},
-  task:{identity:{},knowledge:{scope}} as any,runtime:{assertTaskCurrent:async()=>{}} as any,retention:{expose} as any,origin,getScope:()=>scope,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
+ const full=vi.fn(async()=>{}),authority=vi.fn(async()=>{}),expose=vi.fn(),origin=new OriginGuard(env.DB,()=>scope,reader,'secret'),capability=nativeMediaCapability({env:{DB:env.DB,MEDIA_CONTEXT_ENABLED:'true',NATIVE_MODEL_PROVIDER:'deepseek',DEEPSEEK_API_KEY:'synthetic-key',BRIDGE_SECRET:'secret',CAPTURE_MEDIA_READER:{readBoundedMedia:async()=>({observation:'capture_media',state:'available',sourceEpoch:'e',sourceGeneration:'cg',chatId:'chat',mediaId:'file',messageVersion:1,mediaVersion:1,blobHash,mime:'image/png',size:bytes.length,watermark:2,bytes})}},
+  task:{identity:{},knowledge:{scope}} as any,runtime:{assertTaskCurrent:full,assertTaskAuthority:authority} as any,retention:{expose} as any,origin,getScope:()=>scope,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
  expect(await capability.read(captionRef)).toMatchObject({state:'available',parentSourceRef:fileRef,requestSourceRef:captionRef,caption:hasCaption?{state:'available',sourceRef:captionRef,text:'What does this warning mean?'}:{state:'absent'}});
+ expect(full).toHaveBeenCalledTimes(2);expect(authority).toHaveBeenCalled();
  expect(await capability.read(fileRef)).toMatchObject({state:'available',parentSourceRef:fileRef,caption:hasCaption?{state:'available',sourceRef:captionRef,text:'What does this warning mean?'}:{state:'absent'}});
  expect(fetch).toHaveBeenCalledTimes(1);expect(expose.mock.calls.every(([_,value])=>value.sources.length===2&&value.origins.length===2)).toBe(true);
  // The proof succeeded, but the following snapshot read can fail independently.
@@ -30,6 +31,9 @@ it.each([true,false])('reads caption and file through the same paid image receip
  const retry=vi.spyOn(origin,'observe').mockImplementation(async(...args)=>{const value=await observe(...args);return ++observations===2?{...value,state:'blocked',reason:'reader_timeout',content:null}:value;});
  expect(await capability.read(captionRef)).toMatchObject({state:'unavailable',reason:'caption_snapshot_unavailable',diagnostic:'reader_timeout'});
  expect(fetch).toHaveBeenCalledTimes(1);retry.mockRestore();
+ // An unrelated context withdrawal during perception still blocks release.
+ full.mockImplementationOnce(async()=>{}).mockImplementationOnce(async()=>{throw Error('conversation_context_withdrawn');});
+ await expect(capability.read(fileRef)).rejects.toThrow('conversation_context_withdrawn');expect(fetch).toHaveBeenCalledTimes(1);
  snapshots.media={...snapshots.media,state:'withdrawn'};
  await expect(capability.read(captionRef)).rejects.toThrow('native_media_source_changed');expect(fetch).toHaveBeenCalledTimes(1);
 });
