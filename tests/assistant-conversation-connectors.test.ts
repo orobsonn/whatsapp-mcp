@@ -91,6 +91,38 @@ it('GitHub explores real reader list/read at host-observed SHA with only fixed r
  expect(requests.filter(request=>request.url.includes('/contents/')).every(request=>new URL(request.url).searchParams.get('ref')===sha)).toBe(true);
  await expect(reads.github.read({repository:'repo',commit:sha,path:'index.ts',url:'https://evil.invalid'})).rejects.toThrow();
 });
+it('GitHub discovers owner-authorized private repositories with honest provider pagination',async()=>{
+ const f=await configuredHost(),requests:Request[]=[],proofs:any[]=[];
+ const reads=createConversationReadCapabilities({...f.options,expose:async p=>{proofs.push(p);},request:async r=>{
+  requests.push(r);const page=Number(new URL(r.url).searchParams.get('page'));
+  return Response.json(page===1?Array.from({length:20},(_,i)=>({name:'repo-'+i,full_name:'synthetic-owner/repo-'+i,owner:{id:101,login:'synthetic-owner'},private:true,description:'Recipe app',default_branch:'main',temp_clone_token:'never-publish'})):[]);
+ }});
+ const first=await reads.github.repositories({page:1});expect(first).toMatchObject({state:'available',nextPage:2,coverage:{complete:false}});
+ expect(first).toHaveProperty('items.0',expect.objectContaining({repository:'synthetic-owner/repo-0',private:true,description:'Recipe app'}));
+ expect(await reads.github.repositories({page:2})).toMatchObject({items:[],coverage:{complete:true}});
+ expect(new URL(requests[0].url).pathname).toBe('/user/repos');expect(new URL(requests[0].url).searchParams.get('affiliation')).toBe('owner');
+ expect(requests.every(r=>r.method==='GET'&&new URL(r.url).origin==='https://api.github.com')).toBe(true);
+ expect(proofs[0].sources[0].source.id).toBe(f.authorization.id);expect(JSON.stringify(first)).not.toMatch(/never-publish|synthetic-secret-token/);
+});
+it('GitHub repository discovery rejects a response for another owner',async()=>{
+ const f=await configuredHost();let published=false;
+ const reads=createConversationReadCapabilities({...f.options,expose:async()=>{published=true;},request:async()=>Response.json([{name:'repo',full_name:'other/repo',owner:{id:202,login:'other'},private:true,description:null,default_branch:'main'}])});
+ await expect(reads.github.repositories({})).rejects.toThrow('github_owner_mismatch');expect(published).toBe(false);
+});
+it('GitHub repository discovery checks grant withdrawal at final publication',async()=>{
+ const f=await configuredHost();const reads=createConversationReadCapabilities({...f.options,expose:async()=>{await sources.withdraw(f.authorization.id,1);},request:async()=>Response.json([{name:'repo',full_name:'synthetic-owner/repo',owner:{id:101,login:'synthetic-owner'},private:true,description:null,default_branch:'main'}])});
+ await expect(reads.github.repositories({})).rejects.toThrow('connector_source_changed');
+});
+it('GitHub discovery without owner-wide authority lists only explicit descriptors without fetching',async()=>{
+ const f=await configuredHost(),ownerGrant=JSON.parse(f.settings.GITHUB_READ_OWNER);let fetched=false;
+ const settings={...f.settings,GITHUB_READ_OWNER:undefined,GITHUB_READ_REPOSITORIES:JSON.stringify([{...ownerGrant,id:'explicit',repo:'only-repo'}])};
+ const reads=createConversationReadCapabilities({...f.options,env:settings,request:async()=>{fetched=true;throw Error('unexpected_fetch');}});
+ expect(await reads.github.repositories({})).toMatchObject({items:[{repository:'explicit',name:'only-repo'}],coverage:{scope:'configured_repositories',complete:true}});expect(fetched).toBe(false);
+});
+it('GitHub owner-wide discovery without its credential remains unavailable rather than empty',async()=>{
+ const f=await configuredHost();const reads=createConversationReadCapabilities({...f.options,env:{...f.settings,GITHUB_READ_TOKEN:undefined},request:async()=>{throw Error('unexpected_fetch');}});
+ expect(await reads.github.repositories({})).toMatchObject({state:'unavailable',reason:'github_credential_unconfigured'});
+});
 it('Calendar returns event titles and host grant proofs before release without exposing OAuth credentials',async()=>{
  const f=await configuredHost(),proofs:any[]=[],requests:Request[]=[];
  const reads=createConversationReadCapabilities({...f.options,expose:async proof=>{proofs.push(proof);},request:async request=>{

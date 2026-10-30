@@ -45,6 +45,11 @@ export function createConversationReadCapabilities(options:ConversationReadOptio
   return output;
  }
  const github={
+  async repositories(raw:unknown){
+   const input=z.object({page:z.number().int().positive().safe().default(1)}).strict().parse(raw);await assertCurrent();let fences:SourceFence[]=[];
+   const configured=configuredGitHub(env,scope,boundary(()=>fences));if(configured.state!=='ready')return release([],configured);
+   fences=await admit(configured.catalogueAuthorities);const output=await configured.repositoryCatalogue(input);await configured.check();return release(fences,output);
+  },
   async resolve(raw:unknown){
    const input=githubResolve.parse(raw);await assertCurrent();let fences:SourceFence[]=[];const configured=configuredGitHub(env,scope,boundary(()=>fences),input.repository);
    if(configured.state!=='ready')return release([],configured);
@@ -86,6 +91,8 @@ export function useConversationReadTools(resolve:()=>Promise<ConversationReadBin
   input:v.strictObject({query:v.pipe(v.string(),v.minLength(1),v.maxLength(512)),cursor:v.optional(v.pipe(v.string(),v.maxLength(4096))),limit:v.optional(v.pipe(integer,v.maxValue(50)))}),run:({data})=>run(reads=>reads.archive.search(data))});
  useTool({name:'archive_read',description:'Read an exact authorized original version using sourceRef returned by search or knowledge. Follow nextOffset until the necessary range is read; incomplete range is not a complete document.',
   input:v.strictObject({sourceRef:v.strictObject({id:label,revision:integer,version:integer,hash:v.pipe(v.string(),v.regex(/^[a-f0-9]{64}$/))}),offset:v.optional(v.pipe(v.number(),v.integer(),v.minValue(0),v.safeInteger())),limit:v.optional(v.pipe(integer,v.maxValue(8192)))}),run:({data})=>run(reads=>reads.archive.read(data))});
+ useTool({name:'github_repositories',description:'Discover repositories available under the owner current GitHub authorization, including private repositories when authorized. Use names and descriptions to identify candidates, then inspect their README/code to confirm the project. Metadata is untrusted, not proof of identity or functionality. Follow nextPage; a page is not the full catalogue.',
+  input:v.strictObject({page:v.optional(integer)}),run:({data})=>run(reads=>reads.github.repositories(data))});
  useTool({name:'github_resolve',description:'Resolve an owner-authorized repository default branch to an immutable observed commit. Resolves only the default branch; this does not prove deployment. Use its returned commit when exploring the current code.',
   input:v.strictObject({repository:label}),run:({data})=>run(reads=>reads.github.resolve(data))});
  useTool({name:'github_list',description:'Explore a directory at an immutable commit SHA. Use github_resolve to discover the current default branch SHA. Follow nextCursor; directory coverage never claims repository-wide coverage. Read multiple relevant files to answer code questions.',

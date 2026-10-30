@@ -27,6 +27,7 @@ export function configuredGitHubRepositories(env: AssistantEnv, requested?: stri
 export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary?: OwnerReadBoundary, requested?: string) {
   if (!env.DB || (!env.GITHUB_READ_REPOSITORIES && !env.GITHUB_READ_OWNER)) return { state: "pending_configuration", dependency: "github_read" } as const;
   const repositories = configuredGitHubRepositories(env, requested);
+  const catalogueOwner = env.GITHUB_READ_OWNER ? githubOwner.parse(JSON.parse(env.GITHUB_READ_OWNER)) : undefined;
   const signal = boundary ? AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.min(15000, boundary.deadlineAt - Date.now()))), ...(boundary.signal ? [boundary.signal] : [])]) : undefined;
   const check = async () => {
     if (!boundary) return;
@@ -65,5 +66,26 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     await check(); return commit.object.sha;
   };
   const canonical = requested === undefined ? [] : repositories.filter(r => [r.id, r.repo, r.owner + "/" + r.repo].some(value => value.toLowerCase() === requested.toLowerCase()));
-  return { state: "ready", repositories, canonicalRepository: canonical.length === 1 ? canonical[0].id : undefined, check, resolveDefault, reader: new GitHubReader(env.DB, scope, repositories, env.GITHUB_READ_TOKEN, request) } as const;
+  const repositoryCatalogue = async (raw: unknown) => {
+    const { page } = z.object({ page: z.number().int().positive().safe().default(1) }).strict().parse(raw);
+    await check();
+    if (!catalogueOwner) {
+      const items = page === 1 ? repositories.map(r => ({ repository: r.id, name: r.repo, fullName: r.owner + "/" + r.repo })) : [];
+      return { state: "available", items, coverage: { scope: "configured_repositories", complete: true } };
+    }
+    if (!env.GITHUB_READ_TOKEN) return { state: "unavailable", reason: "github_credential_unconfigured" };
+    const url = new URL("https://api.github.com/user/repos");
+    for (const [key, value] of Object.entries({ affiliation: "owner", visibility: "all", sort: "full_name", direction: "asc", per_page: "20", page: String(page) })) url.searchParams.set(key, value);
+    const result = z.array(z.object({ name: githubRepository.shape.repo, full_name: z.string().max(256), owner: z.object({ id: z.number().int().positive().safe(), login: githubOwner.shape.owner }), private: z.boolean(), description: z.string().max(4096).nullable(), default_branch: z.string().max(256) })).max(20)
+      .parse(await readJson(url, githubReadHeaders(env.GITHUB_READ_TOKEN), request, 1024 * 1024));
+    for (const item of result) {
+      if (item.owner.id !== catalogueOwner.ownerId || item.owner.login.toLowerCase() !== catalogueOwner.owner.toLowerCase() || item.full_name.toLowerCase() !== (catalogueOwner.owner + "/" + item.name).toLowerCase()) throw Error("github_owner_mismatch");
+    }
+    await check();
+    const nextPage = result.length === 20 ? page + 1 : undefined;
+    if (nextPage !== undefined && !Number.isSafeInteger(nextPage)) throw Error("github_page_invalid");
+    return { state: "available", items: result.map(item => ({ repository: catalogueOwner.owner + "/" + item.name, name: item.name, fullName: item.full_name, private: item.private, description: item.description, defaultBranch: item.default_branch })),
+      ...(nextPage ? { nextPage } : {}), coverage: { scope: "owner_authorized_repositories_page", complete: nextPage === undefined, consistency: "live_paginated", code: "not_read" } };
+  };
+  return { state: "ready", repositories, catalogueAuthorities: catalogueOwner ? [catalogueOwner] : repositories, repositoryCatalogue, canonicalRepository: canonical.length === 1 ? canonical[0].id : undefined, check, resolveDefault, reader: new GitHubReader(env.DB, scope, repositories, env.GITHUB_READ_TOKEN, request) } as const;
 }
