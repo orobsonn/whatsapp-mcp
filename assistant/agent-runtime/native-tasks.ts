@@ -88,7 +88,14 @@ export class NativeTasks {
   if(proof.read.fence.source.origin!=='owner_report'||proof.read.text!==JSON.parse(row.event_json).body)throw Error('native_task_owner_required');
   await this.h.retention.exposeSource(task.identity,ref);
   const guard=joinGuards(base,proof.guard,{sql:`EXISTS(SELECT 1 FROM assistant_native_conversation_events WHERE task_ref=? AND conversation_id=? AND sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?) AND state<>'withdrawn')`,values:[last.taskRef,task.sessionId,task.sessionId]});
-  await this.check(guard);return {fence,activation,guard,ref};
+  await this.check(guard);return {fence,activation,guard,ref,text:proof.read.text,occurredAt:proof.read.occurredAt};
+ }
+ /** Reuse the authenticated current owner input for a cross-channel request;
+  * tool arguments never supply its body, actor or authority. */
+ async ownerRequest(task:TaskContext){
+  const context=await this.ownerContext(task,true);
+  if(!context.ref||typeof context.text!=='string'||context.occurredAt===undefined)throw Error('native_task_owner_required');
+  return {...context,ref:context.ref,text:context.text,occurredAt:context.occurredAt};
  }
  private async binding(type:z.infer<typeof kind>,key:string,v:number){return this.sql('SELECT * FROM assistant_native_task_bindings WHERE installation_id=? AND generation=? AND kind=? AND resource_id=? AND resource_version=?',...this.keys(),type,key,v).first<Binding>();}
  private async enrollment(task:TaskContext,type:z.infer<typeof kind>,key:string,v:number,work:Ref,context:Awaited<ReturnType<NativeTasks['ownerContext']>>):Promise<NativeMissionEnrollment>{

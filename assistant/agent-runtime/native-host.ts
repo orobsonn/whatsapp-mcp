@@ -29,6 +29,7 @@ import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
 import {NativeTasks,isNativeTaskDue} from './native-tasks';
 import {compactStatement,jsonStatement} from '../d1-statement';
+import {sourceRef} from '../source-proof-contract';
 import {reconcileCuratorOutcomes,observeCuratorSettlement,curatorDispatchReceipt} from './curator-outcomes';
 
 const owner={kind:'owner'} as const;
@@ -340,6 +341,26 @@ export class NativeApplicationHost {
    VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`).bind(this.scope.installationId,this.scope.generation,task.sessionId,submissionId,task.taskRef,task.watermark).run();
  }
  tasks(){return new NativeTasks({db:this.db,env:this.env,scope:this.currentScope(),runtime:this.runtime,retention:this.retention,origin:this.origin,authorityGuard:task=>this.actionAuthority(task)});}
+ /** Owner-requested new evaluation, never a renewal of an expired action. */
+ async reassessWhatsApp(ownerTask:TaskContext,raw:unknown){
+  const ref=sourceRef.parse(raw),request=await this.tasks().ownerRequest(ownerTask),access=new SourceAccess(this.db,this.scope,Date.now,'knowledge'),source=await access.read(owner,ref.id,ref.revision);
+  if(!source||source.fence.source.origin!=='whatsapp'||!source.fence.source.conversationId||source.fence.source.version!==ref.version||source.fence.source.hash!==ref.hash)throw Error('native_reassess_source_denied');
+  const identity=await this.retention.currentIdentity('whatsapp',source.fence.source.conversationId);if(!identity)throw Error('native_reassess_anchor_missing');
+  const {guard:authority}=await this.authority(identity),sessionId=await conversationAddress(identity,'whatsapp',identity.principalOrChatId,identity.contextEpoch);
+  const anchor=await this.db.prepare(`SELECT e.task_ref,e.sequence,h.original_sequence FROM assistant_native_conversation_events e JOIN assistant_native_host_events h ON h.conversation_id=e.conversation_id AND h.event_id=e.event_id AND h.event_revision=e.revision
+   WHERE e.conversation_id=? AND e.state<>'withdrawn' AND json_extract(e.event_json,'$.kind')='incoming' AND json_extract(e.event_json,'$.author.kind')='person' AND h.source_ref_json=? ORDER BY e.sequence DESC LIMIT 1`)
+   .bind(sessionId,JSON.stringify(ref)).first<{task_ref:string;sequence:number;original_sequence:number|null}>();
+  if(!anchor?.original_sequence)throw Error('native_reassess_anchor_missing');
+  const head=await this.db.prepare('SELECT MAX(sequence) head FROM assistant_native_conversation_events WHERE conversation_id=?').bind(sessionId).first<number>('head');
+  if(!head)throw Error('native_reassess_anchor_missing');
+  const task=await this.runtime.resolveStoredTask(identity,anchor.task_ref);await this.activity(task);
+  const eventId='owner-reassess:'+await bridgeHash([ownerTask.contextRef,ref.id,ref.revision,ref.version,ref.hash]);
+  const event=verifiedConversationEvent({identity,eventId,revision:1,kind:'clarification',author:{kind:'owner',id:request.fence.userId},occurredAt:request.occurredAt,body:request.text,sourceRef:request.ref,replyTo:{taskRef:anchor.task_ref,sourceRef:ref}});
+  const guard=joinGuards(request.guard,authority,this.retention.authorityGuard(sessionId),access.guard(owner,source.fence,Date.now()),{
+   sql:`EXISTS(SELECT 1 FROM assistant_native_conversation_events WHERE conversation_id=? AND state<>'withdrawn' AND sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?) AND (sequence=? OR (event_id=? AND request_hash=?)))`,
+   values:[sessionId,sessionId,head,eventId,await bridgeHash(event)]});
+  return this.admit(event,anchor.original_sequence,request.fence,guard);
+ }
  private async actionAuthority(task:TaskContext){await this.runtime.assertTaskCurrent(task);const {authority,guard}=await this.authority(task.identity);if(JSON.stringify(authority)!==JSON.stringify(task.authority))throw Error('native_authority_changed');return guard;}
  actions(){
   const source=this.env.WHATSAPP_APPROVED_SEND as NativeReplyActuatorRPC|undefined,secret=this.env.WHATSAPP_APPROVED_SEND_SECRET;
@@ -379,7 +400,7 @@ export class NativeApplicationHost {
    if(result.authority?.kind==='human_approval'&&result.intent)return {...result,review:await(await this.review()).dispatch(result.intent.id,'native-intent:'+result.intent.id)};
    if(result.authority?.kind==='autonomous_policy'&&result.intent)return actions.execute(result.intent.id,result.authority);
    return result;
-  },respondOwner:(text:string)=>this.respondOwner(task,text),askOwner:async(question:string)=>(await this.help()).ask(task,question),calendarChange:(mutation:unknown)=>calendar.change(mutation)}};
+  },respondOwner:(text:string)=>this.respondOwner(task,text),askOwner:async(question:string)=>(await this.help()).ask(task,question),calendarChange:(mutation:unknown)=>calendar.change(mutation),reassessWhatsApp:(ref:unknown)=>this.reassessWhatsApp(task,ref)}};
  }
  async help(){
   const credentialKey=await bridgeHash(['native-help-credentials-v1',this.env.TELEGRAM_BOT_INSTANCE,this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_WEBHOOK_SECRET]);

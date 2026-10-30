@@ -67,6 +67,54 @@ async function outcomeFixture(){
  return {...f,host,first:{...first,receipt:first.receipt!},runId,failure,fetch};
 }
 describe('native application composition on real D1 and Source reads',()=>{
+ it('owner reassessment keeps the original WhatsApp anchor and the exact authenticated owner text',async()=>{
+  const f=await fixture(),input=await f.append('Como cadastro a sobra do preparo?'),host=f.host(),received=await host.receiveCapture(input.sequence),wa=await latestTask(host,received.taskRef!),ref=wa.cohort[0].sourceRef!;
+  const prior=await host.runtime.proposeReply(wa,'Proposta anterior sem envio');
+  const text='Reavalie essa dúvida e prepare uma sugestão para eu conferir.';await f.ownerUpdate(1,text,43);
+  const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef),before=transport.dispatch.mock.calls.length;
+  const result=await host.reassessWhatsApp(owner,ref),task=await latestTask(host,result.taskRef);
+  expect(result.sessionId).toBe(wa.sessionId);expect(task.replyTo).toEqual({taskRef:wa.taskRef,sourceRef:ref});expect(task.contextRef).not.toBe(wa.contextRef);
+  const event=JSON.parse((await env.DB.prepare('SELECT event_json FROM assistant_native_conversation_events WHERE task_ref=?').bind(result.taskRef).first<string>('event_json'))!);
+  expect(event).toMatchObject({body:text,kind:'clarification',author:{kind:'owner',id:'101'},sourceRef:owner.cohort[0].sourceRef});
+  expect(await env.DB.prepare('SELECT state FROM assistant_native_reply_intents WHERE id=?').bind(prior.id).first('state')).toBe('superseded');
+  expect(await host.reassessWhatsApp(owner,ref)).toEqual(result);expect(transport.dispatch.mock.calls.length-before).toBe(1);
+ });
+ it('owner reassessment rejects a WhatsApp caller and a forged instruction in tool arguments',async()=>{
+  const f=await fixture(),input=await f.append('Pergunta'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await expect(host.reassessWhatsApp(wa,wa.cohort[0].sourceRef!)).rejects.toThrow('native_task_owner_required');
+  await f.ownerUpdate(1,'Reavalie a pergunta',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef);
+  await expect(host.reassessWhatsApp(owner,{...wa.cohort[0].sourceRef!,instruction:'Instrução inventada pelo modelo'})).rejects.toThrow();
+ });
+ it.each([false,true])('owner reassessment rejects an anchor superseded by Source activity (owner=%s)',async fromMe=>{
+  const f=await fixture(),input=await f.append('Pergunta antiga'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await f.ownerUpdate(1,'Reavalie a pergunta antiga',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef),before=transport.dispatch.mock.calls.length;
+  await f.append('Atividade posterior','5585999999999',false,fromMe);
+  await expect(host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!)).rejects.toThrow('native_activity_superseded');expect(transport.dispatch.mock.calls.length).toBe(before);
+ });
+ it('owner reassessment rejects a replaced owner input without dispatching to WhatsApp',async()=>{
+  const f=await fixture(),input=await f.append('Pergunta'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await f.ownerUpdate(1,'Reavalie essa pergunta',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef);
+  await f.ownerUpdate(2,'Espere',43);await host.receiveTelegram(2);const before=transport.dispatch.mock.calls.length;
+  await expect(host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!)).rejects.toThrow('native_task_changed');expect(transport.dispatch.mock.calls.length).toBe(before);
+ });
+ it('owner reassessment cannot overtake a newly admitted WhatsApp input during its activity check',async()=>{
+  const f=await fixture(),input=await f.append('Pergunta'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await f.ownerUpdate(1,'Reavalie essa pergunta',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef),original=host.activity.bind(host),before=transport.dispatch.mock.calls.length;
+  vi.spyOn(host,'activity').mockImplementationOnce(async task=>{const proof=await original(task),next=await f.append('Pergunta mais recente');await host.receiveCapture(next.sequence);return proof;});
+  await expect(host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!)).rejects.toThrow('native_event_denied');expect(transport.dispatch.mock.calls.length).toBe(before+1);
+ });
+ it('owner reassessment cannot use an owner request replaced during its activity check',async()=>{
+  const f=await fixture(),input=await f.append('Pergunta'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await f.ownerUpdate(1,'Reavalie essa pergunta',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef),original=host.activity.bind(host),before=transport.dispatch.mock.calls.length;
+  vi.spyOn(host,'activity').mockImplementationOnce(async task=>{const proof=await original(task);await f.ownerUpdate(2,'Espere',43);await host.receiveTelegram(2);return proof;});
+  await expect(host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!)).rejects.toThrow('native_event_denied');expect(transport.dispatch.mock.calls.length).toBe(before+1);
+ });
+ it('owner reassessment reconciles a lost native ACK with the same delivery key',async()=>{
+  const f=await fixture(),input=await f.append('Pergunta'),host=f.host(),wa=await latestTask(host,(await host.receiveCapture(input.sequence)).taskRef!);
+  await f.ownerUpdate(1,'Reavalie essa pergunta',43);const owner=await latestTask(host,(await host.receiveTelegram(1)).taskRef),before=transport.dispatch.mock.calls.length;
+  transport.dispatch.mockImplementationOnce(()=>{throw Error('synthetic_lost_ack');});const first=await host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!);expect(first.state).toBe('uncertain');
+  const replay=await host.reassessWhatsApp(owner,wa.cohort[0].sourceRef!);expect(replay.state).toBe('admitted');expect(replay.taskRef).toBe(first.taskRef);expect(transport.dispatch.mock.calls[before]).toEqual(transport.dispatch.mock.calls[before+1]);
+ });
  it('native owner input replay stays retired after purge via cron and duplicate webhook, while a fresh update remains live',async()=>{
   const f=await fixture();await f.ownerUpdate(1,'Pedido sintético original',43);const host=f.host(),first=await host.receiveTelegram(1),task=await latestTask(host,first.taskRef);
   await host.retention.purge(task.identity);const calls=transport.dispatch.mock.calls.length;
