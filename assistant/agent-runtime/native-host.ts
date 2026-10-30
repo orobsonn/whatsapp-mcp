@@ -329,7 +329,7 @@ export class NativeApplicationHost {
   const authorityGuard=()=>joinGuards(guard,this.retention.authorityGuard(sessionId),sessionGrant,workGuard);
   return {scope,sessionId,contextEpoch:identity.contextEpoch,turnId,budget,globalBudgetGuard:()=>nativeGlobalBudgetGuard(this.env),authorityGuard,
    assertAuthority:async()=>{await this.registered(sessionId);if(JSON.stringify((await this.authority(identity)).authority)!==JSON.stringify(authority))throw Error('native_authority_changed');if(observedTask)await this.runtime.assertTaskCurrent(observedTask);},
-   maxOutputTokens:8192,maxRequestBytes:8*1024*1024,maxResponseBytes:16*1024*1024,timeoutMs:90000};
+   maxOutputTokens:16384,maxRequestBytes:8*1024*1024,maxResponseBytes:16*1024*1024,timeoutMs:90000};
  }
  async resolve(sessionId:string,delivery:DeliveredMessage,submissionId?:string){const identity=await this.registered(sessionId);await this.runtime.resolveTask(identity,delivery);return {runtime:this.runtime,frame:(task:TaskContext)=>this.frame(task),consumed:(task:TaskContext)=>this.recordConsumed(task,submissionId)};}
  async recordConsumed(task:TaskContext,submissionId?:string){

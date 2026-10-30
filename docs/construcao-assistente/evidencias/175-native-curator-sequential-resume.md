@@ -4,7 +4,7 @@ Data:30/10/2026. Continuação do diagnóstico174. A diária4c5d e suas duas ten
 
 ## Mudança e revisão
 
-Removidos overrides de compactação2048/1024 do perfil. Flue usa seus padrões por modelo; o host continua limitando saída efetiva a8192. Isso remove uma restrição sem fundamento, não confirma a causa HTTP da falha anterior. Falhas SSE passam a registrar somente responseState e incompleteReason de enums fechados, além do estágio/status já existentes. Prosa, corpo e credenciais não entram nesses diagnósticos.
+Removidos overrides de compactação2048/1024 do perfil. Flue usa seus padrões por modelo; por pedido explícito do dono em30/10, o host amplia o limite de saída8192→16384tokens por chamada, preservando o teto históricoUS10 e todas as reservas. Isso remove uma restrição sem fundamento, não confirma a causa HTTP da falha anterior. Falhas SSE passam a registrar somente responseState e incompleteReason de enums fechados, além do estágio/status já existentes. Prosa, corpo e credenciais não entram nesses diagnósticos.
 
 A retomada seleciona o recibo predecessor exato, deriva apenas sua próxima revisão e confere MAX(predecessor) antes da criação ou MAX(next) durante replay. Config antiga com revisão posterior é recusada. Uma seleção constante não cria terceira/quarta tentativa automaticamente. Identidade, grant, corpo, hash, settlementSDKfailed/aborted e UID seguem obrigatórios. Não há migração, infraestrutura ou ferramenta nova.
 
