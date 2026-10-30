@@ -36,3 +36,7 @@ A referência de R$100 para IA/infra é plausível nos cenários iniciais, com m
 Preferências já aprovadas: 03:00 America/Fortaleza; inicialmente resumo diário; avisos somente de erro/ajuda depois de confirmação posterior do dono. A mudança de configuração e a primeira execução diária devem ter prova própria; esta estimativa, isoladamente, não declara a rotina ativa.
 
 Fontes oficiais consultadas em 29/10: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Workers](https://developers.cloudflare.com/workers/platform/pricing/), [D1](https://developers.cloudflare.com/d1/platform/pricing/). Recibos da amostra: evidência 167.
+
+## Primeira diária após a estimativa
+
+A evidência173 registra a primeira diária com backlog:14 chamadas,2.537.682 tokens de entrada/7.946 de saída,US$0,640384 no ledger conservador e cobertura parcial(359avaliados,88indisponíveis,114capturaspendentes). Esse percurso inclui histórico anterior e ensaios e não representa custo estacionário de um dia normal. A projeção acima permanece condicionada ao cenário medido; não é promessa de fatura nem homologação do custo mensal. Não houve compra de infraestrutura ou aumento do teto globalUS10.
