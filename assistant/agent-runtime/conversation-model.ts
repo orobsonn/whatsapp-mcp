@@ -7,7 +7,7 @@ export type NativeModelProvider='openai'|'deepseek';
 export type NativeModelApi='openai-responses'|'openai-completions';
 /** Host configuration, never inferred from a prompt or tool output. Existing
  * installations retain their provider until explicitly migrated. */
-export function nativeModelSelection(env:Pick<AssistantEnv,'NATIVE_MODEL_PROVIDER'|'OPENAI_API_KEY'|'DEEPSEEK_API_KEY'>){
+export function nativeModelSelection(env:Pick<AssistantEnv,'NATIVE_MODEL_PROVIDER'|'OPENAI_API_KEY'|'DEEPSEEK_API_KEY'>):{provider:NativeModelProvider;apiKey:string|undefined;model:string;thinkingLevel:'high'|'low'}{
  const provider=env.NATIVE_MODEL_PROVIDER??'openai';
  if(provider!=='openai'&&provider!=='deepseek')throw Error('native_model_configuration_invalid');
  const apiKey=provider==='deepseek'?env.DEEPSEEK_API_KEY:env.OPENAI_API_KEY;

@@ -7,6 +7,7 @@ import {createMediaModelPort} from '../media-model';
 import type {ConversationRuntime,TaskContext} from './conversation';
 import type {NativeConversationRetention} from './conversation-retention';
 import {assertReadExposureCurrent} from '../knowledge/read-exposure';
+import {nativeModelSelection} from './conversation-model';
 
 /** Model-chosen perception, reusing the installed image/PDF pipeline. The
  * original binary's parent remains the evidence; OCR is explicitly derived. */
@@ -14,13 +15,14 @@ export function nativeMediaCapability(options:{env:AssistantEnv;task:TaskContext
  const {env,task,runtime,retention,origin}=options,scope={...task.knowledge.scope},db=env.DB!,access=new SourceAccess(db,scope,Date.now,'knowledge');
  return {async read(raw:unknown){
   const ref=sourceRef.parse(raw);await runtime.assertTaskCurrent(task);
-  if(env.MEDIA_CONTEXT_ENABLED!=='true'||!env.CAPTURE_MEDIA_READER||!env.OPENAI_API_KEY)return {state:'unavailable',reason:'media_context_unconfigured'};
+  if(env.MEDIA_CONTEXT_ENABLED!=='true'||!env.CAPTURE_MEDIA_READER)return {state:'unavailable',reason:'media_context_unconfigured'};
+  const selected=nativeModelSelection(env);if(!selected.apiKey)return {state:'unavailable',reason:'media_context_unconfigured'};
   const read=await access.read({kind:'owner'},ref.id,ref.revision);if(!read||read.fence.source.version!==ref.version||read.fence.source.hash!==ref.hash||read.fence.source.origin!=='whatsapp')throw Error('native_media_source_unavailable');
   const fence=await origin.fence(ref.id);if(!fence||(await origin.checkContext(fence)).state!=='current')throw Error('native_media_source_changed');
   await retention.expose(task.identity,{sources:[read.fence],origins:[fence]});
-  const source={...read,origin:fence},model=createMediaModelPort(env.OPENAI_API_KEY,globalThis.fetch.bind(globalThis));
+  const model=createMediaModelPort(selected.apiKey,globalThis.fetch.bind(globalThis),selected.provider);
   const media=new MediaContext(db,{...scope,period:new Date().toISOString().slice(0,10)},{origin,reader:env.CAPTURE_MEDIA_READER,secret:env.BRIDGE_SECRET!,model,pdfParser:env.MEDIA_PDF_PARSER,
-   accessPurpose:'knowledge',assertAuthority:()=>runtime.assertTaskCurrent(task),authorityGuard:options.authorityGuard,modelGuard:options.modelGuard});
+   accessPurpose:'knowledge',modelProvider:selected.provider,assertAuthority:()=>runtime.assertTaskCurrent(task),authorityGuard:options.authorityGuard,modelGuard:options.modelGuard});
   const output=await media.interpret({kind:'owner'},ref.id);
   await runtime.assertTaskCurrent(task);
   if((await origin.checkContext(fence)).state!=='current')throw Error('native_media_source_changed');

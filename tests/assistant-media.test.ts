@@ -52,6 +52,31 @@ it('reserves before inference, persists receipt and reuses without inference whi
   expect(parent).toEqual(before); const evidence = await context.read(owner, parent); expect(evidence?.text).toContain('NÃO'); expect(evidence?.parent.hash).toBe(parent.fence.source.hash); expect(evidence?.textHash).not.toBe(evidence?.parent.hash);
   expect((await budget.status()).committed).toBe(70);
 });
+it('interprets an image with the selected DeepSeek protocol and reuses its exact billed artifact',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(12000);
+ port.mockResolvedValue({status:200,body:JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({observations:'Há um aviso de falha.',pages:[{page:1,state:'readable',text:'Não foi possível atualizar.'}]})}}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}})});
+ const ds=new MediaContext(env.DB,scope,{...options,modelProvider:'deepseek'}),result=await ds.interpret(owner,sourceId);
+ expect(result.state).toBe('complete');expect(await ds.interpret(owner,sourceId)).toEqual(result);expect(port).toHaveBeenCalledTimes(1);
+ expect((await budget.status()).committed).toBe(54);expect(JSON.parse(port.mock.calls[0][0].body).model).toBe('deepseek-flash');
+});
+it('does not bypass an unresolved attempt by changing the media provider configuration',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(600000);port.mockRejectedValue(Error('synthetic unknown acknowledgement'));
+ expect(await context.interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_uncertain'});
+ expect(await new MediaContext(env.DB,scope,{...options,modelProvider:'deepseek'}).interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_prior_attempt_unresolved'});
+ expect(port).toHaveBeenCalledTimes(1);expect((await budget.status()).committed).toBe(530000);
+});
+it('allows only one provider upload when concurrent media configurations passed their earlier checks',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ let readers=0,calls=0,releaseReaders!:()=>void,releaseModels!:()=>void,firstModel!:()=>void,secondModel!:()=>void;
+ const readerGate=new Promise<void>(resolve=>{releaseReaders=resolve}),modelGate=new Promise<void>(resolve=>{releaseModels=resolve});
+ const first=new Promise<void>(resolve=>{firstModel=resolve}),second=new Promise<void>(resolve=>{secondModel=resolve});
+ const reader={readBoundedMedia:async(q:Parameters<typeof options.reader.readBoundedMedia>[0])=>{if(++readers===2)releaseReaders();await readerGate;return options.reader.readBoundedMedia(q);}};
+ const model=(deepseek:boolean):MediaModelPort=>async()=>{if(++calls===1)firstModel();else secondModel();await modelGate;return {status:200,body:deepseek?JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({observations:'Aviso visível.',pages:[{page:1,state:'readable',text:'Erro'}]})}}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}}):response()};};
+ const one=new MediaContext(env.DB,scope,{...options,reader,model:model(false)}).interpret(owner,sourceId);
+ const two=new MediaContext(env.DB,scope,{...options,reader,model:model(true),modelProvider:'deepseek'}).interpret(owner,sourceId);
+ try{await first;await Promise.race([second,one.then(()=>{}),two.then(()=>{})]);}finally{releaseModels();}
+ await Promise.all([one,two]);expect(calls).toBe(1);
+});
 it('normalizes SourceAccess fences from two-field, origin and budget scopes without weakening their comparison',async()=>{
   const plain=new SourceAccess(env.DB,{installationId:scope.installationId,generation:scope.generation}),canonical=(await plain.read(owner,sourceId))!;
   for(const input of [{installationId:scope.installationId,generation:scope.generation,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration},scope,{sourceGeneration:scope.sourceGeneration,sourceEpoch:scope.sourceEpoch,period:scope.period,generation:scope.generation,installationId:scope.installationId}]){
