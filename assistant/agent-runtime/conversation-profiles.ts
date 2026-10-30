@@ -148,9 +148,8 @@ Nunca afirme envio ou entrega a partir de uma proposta; respeite o estado retorn
 ConversationRuntimeAgent.agentName='conversation-runtime';
 ConversationRuntimeAgent.initialData=seedSchema;
 // Research and daily curation may legitimately take more than two minutes.
-// Keep the SDK's native operational deadline and our single-attempt policy;
-// inference and external effects retain their own durable budgets/receipts.
-ConversationRuntimeAgent.durability={maxAttempts:1};
+// Keep the SDK's native deadline and recovery policy. Every new generation
+// still passes the budget/receipt adapter; external authority is unchanged.
 
 /** Explicit opt-in driver. Existing legacy install/profiles/provider are
  * untouched; do not expose this agent until budget and P5 guards are wired. */

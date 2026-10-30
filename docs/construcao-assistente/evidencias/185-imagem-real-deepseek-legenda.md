@@ -20,7 +20,7 @@ A projeção passa a reconciliar o evento real já recebido quando o anexo fica 
 
 O vínculo usa conversa, mensagem, versão da mensagem, mídia, versão da mídia e hash. Ambos os originais são expostos às verificações de acesso e retenção. Uma recuperação interrompida continua exigindo atividade atual; resposta manual ou entrada posterior comprovada encerra a recuperação como `superseded`, sem inferência ou reenvio.
 
-A correção complementar foi publicada em100% do Own na versão `9de1f75d-6189-4bc1-8d37-600947669576`, código `e398d25`, mantendo configuração e autonomia desativada. A leitura posterior da projeção antiga ainda estava pendente: o agendador estava percorrendo entradas indisponíveis anteriores. A publicação não foi declarada como prova de recuperação desse caso. Não se alterou posição da fila, recibo de captura ou tarefa encerrada para forçar o resultado.
+A correção complementar foi publicada em100% do Own na versão `9de1f75d-6189-4bc1-8d37-600947669576`, código `e398d25`, mantendo configuração e autonomia desativada. A recuperação desse caso foi confirmada posteriormente em produção: a mensagem canônica avançou para revisão2/versão2, e a consulta pelo MCP Zap devolveu a legenda original com a referência atualizada. A admissão nativa terminou `superseded`, sem lacuna e sem tarefa (`task_ref` nulo), pois a conversa já tinha resposta manual. Não houve nova inferência ou envio para reabrir esse caso. Não se alterou posição da fila, recibo de captura ou tarefa encerrada para forçar o resultado.
 
 ## Verificação local e limites
 

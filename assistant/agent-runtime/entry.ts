@@ -14,7 +14,7 @@ InterlocutorRuntime.agentName='interlocutor-runtime';InterlocutorRuntime.initial
 export function OwnerDialogueRuntime(){return Dialogue();}
 OwnerDialogueRuntime.agentName='owner-dialogue-runtime';OwnerDialogueRuntime.initialData=Dialogue.initialData;OwnerDialogueRuntime.durability=Dialogue.durability;
 export function ConversationRuntimeAgent(){return Conversation();}
-ConversationRuntimeAgent.agentName='conversation-runtime';ConversationRuntimeAgent.initialData=Conversation.initialData;ConversationRuntimeAgent.durability=Conversation.durability;
+ConversationRuntimeAgent.agentName='conversation-runtime';ConversationRuntimeAgent.initialData=Conversation.initialData;
 
 interface NativeAdminAgent extends CloudflareAgentLike {destroy():Promise<void>}
 /** Private named DO capability, never a model tool, @callable method or route.
