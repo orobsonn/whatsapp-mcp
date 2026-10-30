@@ -15,10 +15,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Ferramentas nativas GitHub somente leitura, Calendar com títulos e gestão autorizada de eventos próprios únicos, além de missões/retornos explicitamente vinculados à sessão do dono. Agendamento não executa o backlog legado de FUP.
 
 ### Changed
+- DeepSeek selecionada como padrão das sessões e da interpretação visual, preservando histórico Flue, ferramentas, reservas e recibos anteriores.
 - O contexto fixo de três textos/8KiB foi substituído por busca e leitura paginadas escolhidas pelo agente, com continuidade/compaction nativas. Paginação operacional não é limite total do acervo.
 - Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
 
 ### Fixed
+- `assistente_controlar` diferencia a ausência da política necessária a `fup.put` de uma falha interna genérica; datas com timezone, referências e replays foram verificados sem executar follow-ups reais.
 - Conversas nativas herdam a recuperação do Flue após interrupção. A leitura de mídia remove uma conferência completa duplicada, preservando a releitura da fonte, a autorização posterior e o guard final. As etapas internas da percepção conferem a tarefa e o arquivo, mantendo a verificação completa do histórico na entrada/saída e antes de seu uso.
 - Materialização de captura volta a tentar leituras indisponíveis após três falhas, com backoff persistido e sem reativar mensagens já respondidas. O agendador respeita o próximo prazo antes de ocupar a fila.
 - Leitura de imagens respeita o provedor DeepSeek selecionado, conserva recibos e reutiliza o mesmo arquivo. Legenda original acompanha a interpretação, inclusive quando o anexo fica pronto depois; recuperação de entrada já respondida termina sem nova inferência.
@@ -37,7 +39,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Janela real de1499 alterações terminou com114 conteúdos avaliados e38 indisponíveis, mantendo cobertura parcial. Aviso isolado aceito pelo Telegram; primeira execução diária admitida pelo agendador, ainda em processamento. Nenhum aprendizado foi inventado para preencher o ensaio. Custos medidos e projeção separados de fatura reconciliada. Evidências167,169 e170.
 
 ### Notes
-- Marco ainda em homologação, sem tag/release0.52.0. Envio WhatsApp após aprovação real, primeira rotina diária e CI do SHA final continuam critérios de aceite; o estado atualizado fica na issue146.
+- Marco ainda em homologação, sem tag/release0.52.0. A continuação diária encerrou com cobertura parcial e sem páginas por confirmar;88conteúdos e204lacunas de captura permanecem explícitos. O resumo anterior desse dia já estava aceito, sem novo envio nesta retomada. Restam a resposta autêntica do dono retomando uma tarefa e o envio WhatsApp após aprovação real para fechar o marco; estado atualizado na issue146.
 - Respostas autônomas permanecem desligadas. Aceito pelo provedor não equivale a entregue/lido. Contratação de infraestrutura não foi autorizada por esta implementação.
 
 ## [0.51.0] - 2026-10-28
