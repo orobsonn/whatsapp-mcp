@@ -377,11 +377,22 @@ describe('native application composition on real D1 and Source reads',()=>{
  });
  it.each(['completed','unknown','uid','wrong_submission'] as const)('does not resume an inconclusive or different predecessor (%s)',async mode=>{
   const f=await resumableDaily();
-  if(mode==='completed')transport.read.mockResolvedValue({submissionId:f.first.receipt!.submissionId,uid:f.first.receipt!.uid});
+  if(mode==='completed'){
+   await env.DB.prepare(`UPDATE assistant_curator_items SET state='evaluated' WHERE installation_id=? AND generation=? AND run_id=?`).bind(f.scope.installationId,f.scope.generation,f.runId).run();
+   transport.read.mockResolvedValue({submissionId:f.first.receipt!.submissionId,uid:f.first.receipt!.uid});
+  }
   if(mode==='unknown')transport.read.mockRejectedValue(Error('temporary observation failure'));
   if(mode==='uid')transport.instance.mockResolvedValue({id:f.first.sessionId,uid:'different'});
   if(mode==='wrong_submission')f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:'not-the-original'});
   await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
+ });
+ it('continues a completed SDK passage with a presented item once and replays it after the item finishes',async()=>{
+  const f=await resumableDaily(),host=f.host(),frame=await host.frame(f.task);await frame.curator!.curator.next(f.runId,{limit:1});
+  transport.read.mockResolvedValue({submissionId:f.first.receipt!.submissionId,uid:f.first.receipt!.uid});
+  const next=await host.dispatchCurator();if(next.state!=='admitted')throw Error('fixture_resume');expect(next.sessionId).toBe(f.first.sessionId);expect(transport.dispatch).toHaveBeenCalledOnce();
+  await env.DB.prepare(`UPDATE assistant_curator_items SET state='evaluated' WHERE installation_id=? AND generation=? AND run_id=?`).bind(f.scope.installationId,f.scope.generation,f.runId).run();
+  expect(await host.dispatchCurator()).toEqual(next);expect(transport.dispatch).toHaveBeenCalledOnce();
+  expect(await env.DB.prepare('SELECT receipt_json FROM assistant_native_conversation_events WHERE task_ref=?').bind(f.first.taskRef).first('receipt_json')).toBe(JSON.stringify(f.first.receipt));
  });
  it('requires another explicit terminal predecessor selection for revision3 and replays that exact continuation',async()=>{
   const f=await resumableDaily(),next=await f.host().dispatchCurator();if(next.state!=='admitted'||!next.receipt)throw Error('fixture_resume');
@@ -398,9 +409,10 @@ describe('native application composition on real D1 and Source reads',()=>{
   f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify(f.request);
   await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');
  });
- it('concurrent explicit continuations after revision2 converge on one revision3 and cannot select a completed predecessor',async()=>{
+ it('concurrent explicit continuations after revision2 converge on one revision3 and cannot select a completed predecessor without pending work',async()=>{
   const f=await resumableDaily(),second=await f.host().dispatchCurator();if(second.state!=='admitted'||!second.receipt)throw Error('fixture_resume');
   f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:second.receipt.submissionId});transport.dispatch.mockClear();
+  await env.DB.prepare(`UPDATE assistant_curator_items SET state='evaluated' WHERE installation_id=? AND generation=? AND run_id=?`).bind(f.scope.installationId,f.scope.generation,f.runId).run();
   transport.read.mockResolvedValue({submissionId:second.receipt.submissionId,uid:second.receipt.uid});
   await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
   transport.read.mockRejectedValue(Object.assign(Error('terminal'),{name:'AgentRunError',outcome:'aborted',submissionId:second.receipt.submissionId}));

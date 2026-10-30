@@ -527,8 +527,12 @@ export class NativeApplicationHost {
    if(existing?.state==='withdrawn')throw Error('native_curator_resume_denied');
    if(!existing){
     const outcome=await observeCuratorSettlement({instance:nativeConversationInstance,read:(id,receipt,signal)=>openNativeConversation(id).read(receipt,{signal})},selected.sessionId,selected.receipt);this.currentScope();
-    if(outcome!=='failed'&&outcome!=='aborted')throw Error('native_curator_resume_unconfirmed');
-    await selected.curator.reconcileReady(selected.runId);await selected.curator.status(selected.runId);this.currentScope();
+    if(outcome!=='failed'&&outcome!=='aborted'&&outcome!=='completed')throw Error('native_curator_resume_unconfirmed');
+    await selected.curator.reconcileReady(selected.runId);const status=await selected.curator.status(selected.runId);this.currentScope();
+    // SDK completion is not completion of the review's work. Only an explicit
+    // predecessor selection may continue remaining work; unavailable sources
+    // alone never authorize another paid passage.
+    if(outcome==='completed'&&status.counts.pending+status.counts.presented+status.counts.indexing===0)throw Error('native_curator_resume_no_pending_work');
    }
    return this.runtime.deliverConversation(verifiedConversationEvent(selected.event));
   }
