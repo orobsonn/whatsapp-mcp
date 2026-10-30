@@ -148,6 +148,17 @@ it('native media releases derived observations with the original binary parent a
  if(output.state!=='complete')throw Error('fixture_native_media');
  const original=await new SourceAccess(env.DB,scope,Date.now,'knowledge').read(owner,sourceId);expect(original?.text).not.toContain('Órbita');expect(output.evidence.parent.hash).toBe(original!.fence.source.hash);expect(output.evidence.text).toContain('Órbita');
 });
+it('cached native media checks global authority once after each fresh source proof',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ expect((await context.interpret(owner,sourceId)).state).toBe('complete');
+ const parent=(await new SourceAccess(env.DB,scope,Date.now,'knowledge').read(owner,sourceId))!;
+ const order:string[]=[],check=origin.check.bind(origin);
+ vi.spyOn(origin,'check').mockImplementation(async(...args)=>{const current=await check(...args);order.push('source');return current;});
+ const native=new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{order.push('authority');expect(order.at(-2)).toBe('source');},authorityGuard:()=>({sql:'1',values:[]})});
+ expect(await native.read(owner,parent)).not.toBeNull();
+ expect(order).toEqual(['source','authority','source','authority']);
+ expect(port).toHaveBeenCalledTimes(1);
+});
 afterEach(() => vi.restoreAllMocks());
 it.each(['hold', 'generation'])('restore %s after OCR reservation prevents its adapter attempt and preserves commitment', async kind => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(600000);

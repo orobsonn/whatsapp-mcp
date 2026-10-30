@@ -40,7 +40,9 @@ export class MediaContext {
   private async fresh(actor: TrustedActor, parent: RetrievedSource, origin: OriginFence) {
     // Remote observation can yield while a local mandate/identity/ACL is revoked.
     // Re-read local authority last, with the current clock, before returning.
-    await this.options.assertAuthority?.();
+    // Source reads stay internal; the full authority proof follows their awaits.
+    // Repeating it before them rescans the entire native history without
+    // replacing the final proof or its atomic local guard.
     if(!await this.access.revalidate(actor,parent.fence)||!await this.options.origin.check(origin))return false;
     await this.options.assertAuthority?.();
     const source=this.access.guard(actor,parent.fence,this.clock()),host=this.options.authorityGuard?.();
