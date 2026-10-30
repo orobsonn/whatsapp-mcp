@@ -1,5 +1,7 @@
 import {env} from 'cloudflare:test';
-import {beforeEach,expect,it} from 'vitest';
+import {beforeEach,expect,it,vi} from 'vitest';
+import {readJson} from '../assistant/connectors/read-only';
+import {configuredGitHub} from '../assistant/connectors/configured-github';
 import {SourceController,sourceTextHash} from '../assistant/sources';
 import {OriginGuard,type OriginScope} from '../assistant/origin-guard';
 import {ConversationArchive} from '../assistant/knowledge/archive';
@@ -90,6 +92,47 @@ it('GitHub explores real reader list/read at host-observed SHA with only fixed r
  expect(requests.every(request=>request.method==='GET'&&new URL(request.url).origin==='https://api.github.com')).toBe(true);
  expect(requests.filter(request=>request.url.includes('/contents/')).every(request=>new URL(request.url).searchParams.get('ref')===sha)).toBe(true);
  await expect(reads.github.read({repository:'repo',commit:sha,path:'index.ts',url:'https://evil.invalid'})).rejects.toThrow();
+});
+it('GitHub native authorization proofs may exceed 15 seconds without expiring before HTTP',async()=>{
+ const f=await configuredHost(),initial=Date.now();let wall=initial;const clock=vi.spyOn(Date,'now').mockImplementation(()=>wall),requests:Request[]=[];
+ try{
+  const reads=createConversationReadCapabilities({...f.options,assertCurrent:async()=>{wall+=4000;},request:async r=>{requests.push(r);return Response.json(r.url.includes('/git/ref/')?{ref:'refs/heads/main',object:{type:'commit',sha:'a'.repeat(40)}}:{name:'repo',owner:{id:101,login:'synthetic-owner'},default_branch:'main'});}});
+  expect(await reads.github.resolve({repository:'repo'})).toMatchObject({state:'available',commit:'a'.repeat(40)});
+  expect(wall-initial).toBeGreaterThan(15000);expect(requests).toHaveLength(2);
+ }finally{clock.mockRestore();}
+});
+it('GitHub IO timer starts after the authorization proof, without launching HTTP early',async()=>{
+ let release!:()=>void,started=false;const proof=new Promise<void>(resolve=>release=resolve),request=vi.fn(async()=>Response.json({ok:true}));
+ const result=readJson(new URL('https://api.github.com/user/repos'),{},request,1024,5,async()=>{started=true;await proof;});
+ await new Promise(resolve=>setTimeout(resolve,15));
+ try{expect(started).toBe(true);expect(request).not.toHaveBeenCalled();}finally{release();}
+ expect(await result).toEqual({ok:true});expect(request).toHaveBeenCalledTimes(1);
+});
+it('GitHub transport still times out and aborts HTTP after its IO allowance',async()=>{
+ let signal:AbortSignal|undefined;
+ await expect(readJson(new URL('https://api.github.com/user/repos'),{},async r=>{signal=r.signal;return new Promise<Response>(()=>{});},1024,5,async()=>{})).rejects.toThrow('connector_timeout');
+ expect(signal?.aborted).toBe(true);
+});
+it('GitHub preserves a short caller deadline instead of extending it to the native allowance',async()=>{
+ const f=await configuredHost();let wall=Date.now();const clock=vi.spyOn(Date,'now').mockImplementation(()=>wall),request=vi.fn(async()=>Response.json({}));
+ try{
+  const configured=configuredGitHub(f.settings,scope,{deadlineAt:wall+1000,check:async()=>{wall+=2000;},request},'repo');
+  if(configured.state!=='ready')throw Error('fixture_configuration');
+  await expect(configured.resolveDefault('synthetic-owner/repo')).rejects.toThrow('github_dialogue_expired');expect(request).not.toHaveBeenCalled();
+ }finally{clock.mockRestore();}
+});
+it('GitHub does not start HTTP after cancellation during an authorization proof',async()=>{
+ const f=await configuredHost(),abort=new AbortController(),request=vi.fn(async()=>Response.json({}));let release!:()=>void,arrive!:()=>void;
+ const arrived=new Promise<void>(resolve=>arrive=resolve),proof=new Promise<void>(resolve=>release=resolve);
+ const configured=configuredGitHub(f.settings,scope,{deadlineAt:Date.now()+30000,signal:abort.signal,check:async()=>{arrive();await proof;},request},'repo');
+ if(configured.state!=='ready')throw Error('fixture_configuration');
+ const result=configured.resolveDefault('synthetic-owner/repo');await arrived;abort.abort();release();
+ await expect(result).rejects.toThrow('github_dialogue_expired');expect(request).not.toHaveBeenCalled();
+});
+it('GitHub denies a grant withdrawn by a preflight proof before making HTTP requests',async()=>{
+ const f=await configuredHost(),request=vi.fn(async()=>Response.json({}));let checks=0;
+ const reads=createConversationReadCapabilities({...f.options,assertCurrent:async()=>{if(++checks===3)await sources.withdraw(f.authorization.id,1);},request});
+ await expect(reads.github.resolve({repository:'repo'})).rejects.toThrow('connector_source_changed');expect(request).not.toHaveBeenCalled();
 });
 it('GitHub discovers owner-authorized private repositories with honest provider pagination',async()=>{
  const f=await configuredHost(),requests:Request[]=[],proofs:any[]=[];

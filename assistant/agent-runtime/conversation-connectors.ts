@@ -24,7 +24,7 @@ export function createConversationReadCapabilities(options:ConversationReadOptio
  const {env,task,origin,assertCurrent,expose,request}=options,scope=Object.freeze({...task.knowledge.scope});
  const archive=new ConversationArchive(env.DB!,scope,origin,assertCurrent,expose,options);
  const access=new ConnectorAccess(env.DB!,scope),knowledge=new SourceAccess(env.DB!,scope,Date.now,'knowledge'),grants=new SourceAccess(env.DB!,scope);
- const boundary=(getFences:()=>SourceFence[])=>({deadlineAt:Date.now()+15000,check:async()=>{await assertCurrent();const fences=getFences();if(fences.length&&!await access.currentMany(owner,fences))throw Error('connector_source_changed');},...(request?{request}:{})});
+ const boundary=(getFences:()=>SourceFence[],allowanceMs=15000)=>({deadlineAt:Date.now()+allowanceMs,check:async()=>{await assertCurrent();const fences=getFences();if(fences.length&&!await access.currentMany(owner,fences))throw Error('connector_source_changed');},...(request?{request}:{})});
  async function admit(authorities:ConnectorAuthority[]){
   await assertCurrent();const fences:SourceFence[]=[];
   for(const authority of authorities){const fence=await access.admit(owner,authority);if(!fence)throw Error('connector_source_denied');fences.push(fence);}
@@ -47,11 +47,11 @@ export function createConversationReadCapabilities(options:ConversationReadOptio
  const github={
   async repositories(raw:unknown){
    const input=z.object({page:z.number().int().positive().safe().default(1)}).strict().parse(raw);await assertCurrent();let fences:SourceFence[]=[];
-   const configured=configuredGitHub(env,scope,boundary(()=>fences));if(configured.state!=='ready')return release([],configured);
+   const configured=configuredGitHub(env,scope,boundary(()=>fences,120000));if(configured.state!=='ready')return release([],configured);
    fences=await admit(configured.catalogueAuthorities);const output=await configured.repositoryCatalogue(input);await configured.check();return release(fences,output);
   },
   async resolve(raw:unknown){
-   const input=githubResolve.parse(raw);await assertCurrent();let fences:SourceFence[]=[];const configured=configuredGitHub(env,scope,boundary(()=>fences),input.repository);
+   const input=githubResolve.parse(raw);await assertCurrent();let fences:SourceFence[]=[];const configured=configuredGitHub(env,scope,boundary(()=>fences,120000),input.repository);
    if(configured.state!=='ready')return release([],configured);
    const id=configured.canonicalRepository;if(!id)return release([],{state:'unavailable',reason:'repository_not_authorized'});
    const entry=configured.repositories.find(item=>item.id===id)!;fences=await admit([entry]);
@@ -63,7 +63,7 @@ export function createConversationReadCapabilities(options:ConversationReadOptio
   async read(raw:unknown){return contents('github.read',githubRead.parse(raw));},
  };
  async function contents(kind:'github.list'|'github.read',input:z.infer<typeof githubList>|z.infer<typeof githubRead>){
-  await assertCurrent();let fences:SourceFence[]=[];const configured=configuredGitHub(env,scope,boundary(()=>fences),input.repository);
+  await assertCurrent();let fences:SourceFence[]=[];const configured=configuredGitHub(env,scope,boundary(()=>fences,120000),input.repository);
   if(configured.state!=='ready')return release([],configured);
   const id=configured.canonicalRepository;if(!id)return release([],{state:'unavailable',reason:'repository_not_authorized'});
   const entry=configured.repositories.find(item=>item.id===id)!;fences=await admit([entry]);

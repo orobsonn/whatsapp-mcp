@@ -28,7 +28,7 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
   if (!env.DB || (!env.GITHUB_READ_REPOSITORIES && !env.GITHUB_READ_OWNER)) return { state: "pending_configuration", dependency: "github_read" } as const;
   const repositories = configuredGitHubRepositories(env, requested);
   const catalogueOwner = env.GITHUB_READ_OWNER ? githubOwner.parse(JSON.parse(env.GITHUB_READ_OWNER)) : undefined;
-  const signal = boundary ? AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.min(15000, boundary.deadlineAt - Date.now()))), ...(boundary.signal ? [boundary.signal] : [])]) : undefined;
+  const signal = boundary ? AbortSignal.any([AbortSignal.timeout(Math.max(1, boundary.deadlineAt - Date.now())), ...(boundary.signal ? [boundary.signal] : [])]) : undefined;
   const check = async () => {
     if (!boundary) return;
     if (signal!.aborted || Date.now() >= boundary.deadlineAt) throw Error("github_dialogue_expired");
@@ -36,7 +36,10 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     if (signal!.aborted || Date.now() >= boundary.deadlineAt) throw Error("github_dialogue_expired");
   };
   const request: ReadFetch = async input => {
-    await check();
+    // No asynchronous proof inside readJson's HTTP timer. The preflight below
+    // already checked authority; cancellation still wins immediately at send.
+    input.signal.throwIfAborted();
+    if (boundary && (signal!.aborted || Date.now() >= boundary.deadlineAt)) throw Error("github_dialogue_expired");
     const response = await (boundary?.request ?? fetch)(signal ? new Request(input, { signal: AbortSignal.any([input.signal, signal]) }) : input);
     if (response.status !== 200) {
       const rate: Record<string, number> = {};
@@ -55,14 +58,14 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
   const resolveDefault = async (id: string) => {
     const repository = repositories.find(r => r.id === id); if (!repository) throw Error("repository_not_authorized");
     const base = `https://api.github.com/repos/${repository.owner}/${repository.repo}`, headers = githubReadHeaders(env.GITHUB_READ_TOKEN);
-    await check(); const raw = await readJson(new URL(base), headers, request, 65536); verifyGitHubOwner(repository, raw);
+    const raw = await readJson(new URL(base), headers, request, 65536, 8000, check); verifyGitHubOwner(repository, raw);
     const metadata = z.object({ default_branch: z.string().min(1).max(256) }).parse(raw);
     const parts = metadata.default_branch.split("/");
     if (parts.some(part => !part || part === "." || part === "..")) throw Error("github_ref_unsupported");
     // Only the immutable pointer is needed. The commit endpoint also includes
     // patches, whose size can exceed the bounded connector response.
-    await check(); const commit = z.object({ ref: z.literal("refs/heads/" + metadata.default_branch), object: z.object({ type: z.literal("commit"), sha: z.string().regex(/^[0-9a-f]{40}$/) }) })
-      .parse(await readJson(new URL(base + "/git/ref/heads/" + parts.map(encodeURIComponent).join("/")), headers, request, 16384));
+    const commit = z.object({ ref: z.literal("refs/heads/" + metadata.default_branch), object: z.object({ type: z.literal("commit"), sha: z.string().regex(/^[0-9a-f]{40}$/) }) })
+      .parse(await readJson(new URL(base + "/git/ref/heads/" + parts.map(encodeURIComponent).join("/")), headers, request, 16384, 8000, check));
     await check(); return commit.object.sha;
   };
   const canonical = requested === undefined ? [] : repositories.filter(r => [r.id, r.repo, r.owner + "/" + r.repo].some(value => value.toLowerCase() === requested.toLowerCase()));
@@ -77,7 +80,7 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     const url = new URL("https://api.github.com/user/repos");
     for (const [key, value] of Object.entries({ affiliation: "owner", visibility: "all", sort: "full_name", direction: "asc", per_page: "20", page: String(page) })) url.searchParams.set(key, value);
     const result = z.array(z.object({ name: githubRepository.shape.repo, full_name: z.string().max(256), owner: z.object({ id: z.number().int().positive().safe(), login: githubOwner.shape.owner }), private: z.boolean(), description: z.string().max(4096).nullable(), default_branch: z.string().max(256) })).max(20)
-      .parse(await readJson(url, githubReadHeaders(env.GITHUB_READ_TOKEN), request, 1024 * 1024));
+      .parse(await readJson(url, githubReadHeaders(env.GITHUB_READ_TOKEN), request, 1024 * 1024, 8000, check));
     for (const item of result) {
       if (item.owner.id !== catalogueOwner.ownerId || item.owner.login.toLowerCase() !== catalogueOwner.owner.toLowerCase() || item.full_name.toLowerCase() !== (catalogueOwner.owner + "/" + item.name).toLowerCase()) throw Error("github_owner_mismatch");
     }
@@ -87,5 +90,5 @@ export function configuredGitHub(env: AssistantEnv, scope: SourceScope, boundary
     return { state: "available", items: result.map(item => ({ repository: catalogueOwner.owner + "/" + item.name, name: item.name, fullName: item.full_name, private: item.private, description: item.description, defaultBranch: item.default_branch })),
       ...(nextPage ? { nextPage } : {}), coverage: { scope: "owner_authorized_repositories_page", complete: nextPage === undefined, consistency: "live_paginated", code: "not_read" } };
   };
-  return { state: "ready", repositories, catalogueAuthorities: catalogueOwner ? [catalogueOwner] : repositories, repositoryCatalogue, canonicalRepository: canonical.length === 1 ? canonical[0].id : undefined, check, resolveDefault, reader: new GitHubReader(env.DB, scope, repositories, env.GITHUB_READ_TOKEN, request) } as const;
+  return { state: "ready", repositories, catalogueAuthorities: catalogueOwner ? [catalogueOwner] : repositories, repositoryCatalogue, canonicalRepository: canonical.length === 1 ? canonical[0].id : undefined, check, resolveDefault, reader: new GitHubReader(env.DB, scope, repositories, env.GITHUB_READ_TOKEN, request, Date.now, check) } as const;
 }
