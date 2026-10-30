@@ -33,3 +33,13 @@ O primeiro cenário de headroom falhou porque o fixture não oferecia corte vál
 ## Operação real pendente neste registro
 
 A publicaçãoOwn e a continuação explícita da mesma diária serão registradas após leitura externa. Não há alegação de recuperação real antes desses recibos. Autonomia WhatsApp permanece desligada; Source, infraestrutura e migrações não mudam nesta correção.
+
+## Publicação e resultado real da continuação
+
+Código f8bc62b publicado em Own `82a16074-506f-4e3b-ade8-3db584cb0368`, com readback de bindings/runtime/schedules/subdomínio preservados. Source não mudou. A configuração temporária apontou somente para a diária4c5d e seu predecessor65d6. Conta de testes30/10 ampliada600000→2000000microUSD após censo2128368 comprometidos/312048incertos; teto global10M, reservas, incertezas e contas posteriores preservados. Não houve contratação.
+
+Continuação2 real `sub_ik_2a1432eea22ea3838b555ea7010bd00a`, mesma sessão/janela. Started10:24:46.249UTC; failed10:26:33.596UTC/context_length_exceeded. O primeiro turno foi barrado no preflight sem transporte/recibo. **Isso não significa que a continuação inteira foi gratuita:** a compactação fez dois turnos próprios, que uma junção limitada aos turnIds canônicos omitiria. Censo independente de todos os recibos da sessão: prefixo completo1275input/237output/497microUSD; resumo principal incerto69229microUSD. Ambos preservados. Nenhuma nova tentativa automática foi disparada a partir dessa falha.
+
+O SDKnão persiste eventos de telemetria compaction_start como registros canônicos. Ausência desse evento no SQL não prova ausência de tentativa. A leitura/fold independente, somente leitura e sem guardar originais, encontrou1334records/272contextEntries e preparação de compactação válida: firstKept267/assistant, splitturn,264 mensagens antigas+3prefixo. Assim, falta de corte foi descartada no histórico real. A chamada de resumo usa1638tokens de saída pela reserva2048 e reasoninghigh do SDK; a causa de sua falha precisa de diagnóstico próprio, sem inferir o statusHTTP descartado.
+
+Após SDKterminal, oneoff removido. Own ativo `f96e7955-af31-4cc4-84db-e555dab4e922`, código f8bc62b; schedule diário/curador ativos e autonomiaOFF. A diária permanece pendente; esta evidência não fecha A08 nem o goal. A CI completa f8bc62b/run41040191185 concluiu success, verificada independentemente após a publicação. Isso não comprova a recuperação da diária real, que continua pendente.
