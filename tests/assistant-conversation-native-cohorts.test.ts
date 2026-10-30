@@ -35,13 +35,17 @@ function hostRuntime(env){return new ConversationRuntime(env.DB,{
   return new KnowledgeService(env.DB,()=>task.knowledge,{query:async()=>({claims:[]})});
  }
 });}
-configureConversationResolver(async env=>({runtime:hostRuntime(env)}));
+configureConversationResolver(async env=>({runtime:hostRuntime(env),...(await env.DB.prepare("SELECT name FROM proof_flags WHERE name='finish-proof'").first()?{
+ frame:async task=>({reads:{},media:{read:async()=>{throw Error('unexpected_media');}},effects:{
+  respondOwner:async text=>{await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('effect',?)").bind(JSON.stringify({text,taskRef:task.taskRef,cohort:task.cohort.map(e=>e.taskRef)})).run();return {state:'sent'};},
+  reply:async()=>{throw Error('unexpected_reply');},askOwner:async()=>{throw Error('unexpected_question');},calendarChange:async()=>{throw Error('unexpected_calendar');}}})}: {})}));
 const native=openaiProvider(),base=native.getModels().find(m=>m.id==='gpt-6-luna');if(!base)throw Error('model_missing');
 const model={...base,contextWindow:32768,maxTokens:512};
 function options(original){return {...original,apiKey:'synthetic-no-credential',maxRetries:0,transport:'sse',fetch:async(_url,request)=>{
  const {env}=getCloudflareContext(),p=JSON.parse(request.body),raw=JSON.stringify(p.input);
  const sequence=Math.max(...[...raw.matchAll(/synthetic-event-([0-9]+)/g)].map(m=>Number(m[1])));
- const called=p.input.some(item=>item.type==='function_call'&&item.name==='knowledge_query'&&JSON.parse(item.arguments).predicate==='delivery-'+sequence);
+ const finishing=sequence>=10;
+ const called=p.input.some(item=>item.type==='function_call'&&(finishing?item.name==='respond_owner'&&JSON.parse(item.arguments).text==='Synthetic completed delivery '+sequence:item.name==='knowledge_query'&&JSON.parse(item.arguments).predicate==='delivery-'+sequence));
  await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('transport',?)").bind(JSON.stringify({sequence,called,input:p.input})).run();
  if(sequence===1&&!called){
   const deadline=Date.now()+15000;while(!await env.DB.prepare("SELECT name FROM proof_flags WHERE name='release'").first()){
@@ -53,8 +57,10 @@ function options(original){return {...original,apiKey:'synthetic-no-credential',
   if(first){await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('retry','synthetic-429')").run();return Response.json({error:{message:'synthetic transient throttle',type:'rate_limit_error',code:'rate_limit_exceeded'}},{status:429});}
  }
  const id='resp_'+crypto.randomUUID().replaceAll('-',''),text='Synthetic completed delivery '+sequence;
- const item=called?{type:'message',id:'msg_'+id,role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text,annotations:[]}]}:{type:'function_call',id:'fc_'+id,call_id:'call_'+id,name:'knowledge_query',arguments:JSON.stringify({predicate:'delivery-'+sequence}),status:'completed'};
- const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(called?{content:[]}:{arguments:''})}},...(called?[{type:'response.output_text.delta',output_index:0,content_index:0,delta:text}]:[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}}];
+ const firstFinish=finishing?await env.DB.prepare("INSERT INTO proof_flags(name) VALUES(?) ON CONFLICT DO NOTHING RETURNING name").bind('first-finish-'+sequence).first():false;
+ const final=called||finishing&&(!!firstFinish||sequence===11);
+ const item=final?{type:'message',id:'msg_'+id,role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text,annotations:[]}]}:{type:'function_call',id:'fc_'+id,call_id:'call_'+id,name:finishing?'respond_owner':'knowledge_query',arguments:JSON.stringify(finishing?{text}:{predicate:'delivery-'+sequence}),status:'completed'};
+ const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(final?{content:[]}:{arguments:''})}},...(final?[{type:'response.output_text.delta',output_index:0,content_index:0,delta:text}]:[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}}];
  return new Response(events.map(e=>'data: '+JSON.stringify(e)+String.fromCharCode(10,10)).join(''),{headers:{'Content-Type':'text/event-stream'}});
  }};}
 setProvider({...native,auth:{apiKey:{name:'Synthetic only',resolve:async()=>({auth:{apiKey:'synthetic-no-credential'}})}},getModels:()=>[model],stream:(m,c,o)=>native.stream(m,c,options(o)),streamSimple:(m,c,o)=>native.streamSimple(m,c,options(o))});
@@ -62,7 +68,7 @@ export default {async fetch(request,env){try{const {action,sequence,taskRef}=awa
  if(action==='deliver')return Response.json(await runtime.deliverConversation(verifiedConversationEvent({identity,eventId:'synthetic-event-'+sequence,revision:1,kind:'incoming',author:{kind:'owner',id:'synthetic-author-'+sequence},occurredAt:sequence,body:'Synthetic question '+sequence,threadId:'topic-'+sequence})));
  if(action==='read')return Response.json(await runtime.read(taskRef,{signal:AbortSignal.timeout(30000)}));
  throw Error('unknown_action');
- }catch(error){return Response.json({error:String(error),cause:String(error.cause)},{status:409});}}};
+ }catch(error){return Response.json({error:String(error),cause:error.cause,outcome:error.outcome,submissionId:error.submissionId},{status:409});}}};
 `);
  writeFileSync(join(scratch,'cloudflare.ts'),'export default {};');
  writeFileSync(join(scratch,'wrangler.jsonc'),JSON.stringify({name:'assistant-cohort-proof',compatibility_date:'2026-10-25',compatibility_flags:['nodejs_compat'],migrations:[{tag:'v1',new_sqlite_classes:['FlueConversationRuntimeAgent']}],d1_databases:[{binding:'DB',database_name:'synthetic',database_id:'00000000-0000-0000-0000-000000000001'}]}));
@@ -81,6 +87,13 @@ async function start(){
 async function call(body:unknown){const response=await runtime!.dispatchFetch('https://synthetic.invalid/',{method:'POST',body:JSON.stringify(body)});const result=await response.json();expect(response.status,JSON.stringify(result)).toBe(200);return result as any;}
 async function until(check:()=>Promise<boolean>){const deadline=Date.now()+20000;while(!await check()){if(Date.now()>deadline)throw Error('proof_wait_timeout');await new Promise(resolve=>setTimeout(resolve,20));}}
 afterAll(async()=>{await runtime?.dispose();rmSync(scratch,{recursive:true,force:true});expect(externalCalls).toBe(0);});
+async function initialize(db:Awaited<ReturnType<typeof start>>){
+ if(!await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_native_conversation_events'").first()){
+  const sql=readFileSync(join(root,'assistant/migrations/0036_conversation_sessions.sql'),'utf8').replace(/^--.*$/gm,'');
+  for(const statement of sql.split(';').filter(statement=>statement.trim()))await db.prepare(statement).run();
+ }
+ await db.prepare('CREATE TABLE IF NOT EXISTS proof_events(id INTEGER PRIMARY KEY,kind TEXT,detail TEXT)').run();await db.prepare('CREATE TABLE IF NOT EXISTS proof_flags(name TEXT PRIMARY KEY)').run();
+}
 test('real profile observes two joined deliveries, excludes pending input, retries the same cohort and resets after restart',async()=>{
  let db=await start();
  const sql=readFileSync(join(root,'assistant/migrations/0036_conversation_sessions.sql'),'utf8').replace(/^--.*$/gm,'');
@@ -113,4 +126,17 @@ test('real profile observes two joined deliveries, excludes pending input, retri
  expect(JSON.parse(after.detail).cohort).toEqual([c.taskRef]);expect(JSON.parse(after.detail).returnChannel.threadId).toBe('topic-3');
  const transport=(await db.prepare("SELECT detail FROM proof_events WHERE kind='transport' ORDER BY id DESC LIMIT 1").first<{detail:string}>())!;
  expect(transport.detail).toContain('synthetic-event-1');expect(transport.detail).toContain('synthetic-event-2');expect(transport.detail).toContain('synthetic-event-3');
+});
+test('finish continuation preserves the authenticated cursor and still rejects a second incomplete finish',async()=>{
+ const db=await start();await initialize(db);await db.prepare("INSERT INTO proof_flags(name) VALUES('finish-proof')").run();
+ const first=await call({action:'deliver',sequence:10}),completed=await call({action:'read',taskRef:first.taskRef});
+ expect(completed.reply.metadata.conversationCohort.taskRefs).toEqual([first.taskRef]);
+ const effects=(await db.prepare("SELECT detail FROM proof_events WHERE kind='effect'").all<{detail:string}>()).results.map(row=>JSON.parse(row.detail));
+ expect(effects).toEqual([{text:'Synthetic completed delivery 10',taskRef:first.taskRef,cohort:[first.taskRef]}]);
+ const second=await call({action:'deliver',sequence:11}),response=await runtime!.dispatchFetch('https://synthetic.invalid/',{method:'POST',body:JSON.stringify({action:'read',taskRef:second.taskRef})});
+ expect(response.status).toBe(409);expect(await response.json()).toMatchObject({outcome:'failed',submissionId:second.receipt.submissionId,cause:{type:'internal_error'}});
+ // Public SDK errors intentionally redact the internal hook exception. Its
+ // observable contract is one continuation, then failure without an effect.
+ expect(await db.prepare("SELECT count(*) n FROM proof_events WHERE kind='transport' AND json_extract(detail,'$.sequence')=11").first<number>('n')).toBe(2);
+ expect((await db.prepare("SELECT count(*) n FROM proof_events WHERE kind='effect'").first<number>('n'))).toBe(1);
 });

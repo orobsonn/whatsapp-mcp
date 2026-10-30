@@ -44,3 +44,13 @@ Uma nova avaliação pode gerar sugestão, pergunta ou silêncio. Não renova a 
 Oito testes dirigidos passaram: corpo exato/âncora/replay, chamador indevido e argumento forjado, atividade posterior recebida/enviada, substituição do pedido do dono, corrida com nova entrada WhatsApp, corrida com novo pedido Telegram e confirmação nativa perdida. Tipos e build passaram. A revisão adversarial não encontrou Critical/Important. CI41074107480 passou no commit `ff9b1e8`; a reavaliação terá a verificação do novo head.
 
 A aprovação humana e a consequência real no provedor continuam pendentes. Pesquisa, entrada admitida e mensagem no Telegram não substituem essa prova.
+
+## Falhas encontradas na primeira reavaliação real
+
+A nova capacidade foi publicada na versão `1db6e1f0-9596-435d-be60-e9341cfa915c`. O agente Telegram usou `whatsapp_reassess` com a fonte original e o host admitiu um novo esclarecimento na mesma conversa WhatsApp. A retomada não produziu revisão: o agente WhatsApp interpretou a instrução de encaminhamento Telegram como se ainda precisasse encaminhar o pedido, consultou o original e registrou silêncio por considerar essa ferramenta ausente. Não houve envio externo. A orientação compartilhada entre canais era ambígua; a correção identifica explicitamente o canal a partir da identidade validada e restringe instruções operacionais/ferramentas ao respectivo perfil.
+
+Esse caso também reproduziu um erro de encerramento já observado em execuções anteriores. O lembrete de finalização usava um sinal interno sem evento canônico. O cursor `useDelivery()` avança após um `append` de hook, sem novo `useAgentStart`; a continuação então falhava em `bound()` com `conversation_delivery_denied`. A correção reapresenta somente o envelope canônico já autenticado, mantém a mesma coorte e preserva o limite existente de uma continuação. Não afrouxa a autenticação nem cria uma fonte nova.
+
+A reprodução usa o perfil de produção, Flue/Pi, SQLite Durable Object local e transporte SSE sintético, sem chamadas pagas ou saída externa. O caso cobre finalização inicial sem ferramenta, continuação com entrega válida e erro previsto quando a segunda finalização continua incompleta. As provas anteriores de coorte/entrada concorrente/reinício continuam no mesmo ensaio. A repetição real ainda é necessária depois da publicação dessas correções.
+
+Os dois testes nativos passaram, assim como tipos e build. O SDK oculta a causa interna ao cliente: a asserção negativa confere o recibo falho correto, somente uma continuação e nenhum efeito adicional; o log local confirma `conversation_effect_not_completed`. A revisão adversarial do diff final não encontrou Critical/Important. CI41076383180 passou em `06aa52d`.
