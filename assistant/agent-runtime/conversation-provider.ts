@@ -1,4 +1,3 @@
-import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {Provider} from '@earendil-works/pi-ai/models';
 import type {SimpleStreamOptions,StreamOptions} from '@earendil-works/pi-ai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
@@ -7,9 +6,9 @@ import {InferenceBudget,type BudgetScope} from '../budget';
 import type {AccessGuard} from '../access';
 import {retentionExecutionGuard} from '../retention-execution';
 import {jsonStatement} from '../d1-statement';
+import {nativeModelCatalog,type NativeModelProvider,type NativeModelApi} from './conversation-model';
 
 export const NATIVE_MODEL_PRICE_VERSION='pi-ai-1.1.0-gpt-6-luna-upper-input025-output075-v1';
-const ENDPOINT='https://api.openai.com/v1/responses',MODEL='gpt-6-luna';
 export type ConversationModelIdentity={scope:BudgetScope;sessionId:string;contextEpoch:string;turnId:string};
 export type ConversationProviderHost=ConversationModelIdentity&{
  /** Capture from the native instrument model operation, including compaction.
@@ -25,7 +24,7 @@ export type ConversationProviderHost=ConversationModelIdentity&{
  authorityGuard:()=>AccessGuard;
  maxOutputTokens:number;maxRequestBytes:number;maxResponseBytes:number;timeoutMs:number;
 };
-export type ConversationProviderOptions={db:D1Database;apiKey:string;resolveHost:()=>Promise<ConversationProviderHost>|ConversationProviderHost;
+export type ConversationProviderOptions={db:D1Database;apiKey:string;provider?:NativeModelProvider;resolveHost:()=>Promise<ConversationProviderHost>|ConversationProviderHost;
  /** Host transport injection for synthetic tests. Never supplied by the model. */
  fetch?:typeof globalThis.fetch};
 type Receipt={state:'attempting'|'uncertain'|'complete';request_hash:string;price_version:string;ceiling_units:number;actual_units:number|null;input_tokens:number|null;output_tokens:number|null};
@@ -75,6 +74,36 @@ function usage(sse:string,failure:FailureDetails){
  }
  if(!found)throw Error('native_model_usage_missing');return found;
 }
+/** DeepSeek may attach usage to the final choice or a separate trailing chunk.
+ * Never infer usage from visible text or subtract cached tokens from custody.
+ * A full valid terminal is required before Pi can expose text or run tools. */
+function deepseekUsage(sse:string,failure:FailureDetails){
+ let found:{input:number;output:number}|undefined,finished=false,done=false;
+ for(const frame of sse.split(/\r?\n\r?\n/)){
+  const data=frame.split(/\r?\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');
+  if(!data)continue;
+  if(data==='[DONE]'){if(done)throw Error('native_model_response_invalid');done=true;continue;}
+  if(done)throw Error('native_model_response_invalid');
+  const e=JSON.parse(data);if(e.error||!Array.isArray(e.choices))throw Error('native_model_response_invalid');
+  if(e.choices.length>1)throw Error('native_model_response_invalid');
+  for(const c of e.choices){
+   if(c.index!==0)throw Error('native_model_response_invalid');
+   if(c.finish_reason!=null){
+    if(finished||!['stop','tool_calls'].includes(c.finish_reason)){
+     failure.responseState='incomplete';failure.incompleteReason=c.finish_reason==='length'?'max_output_tokens':c.finish_reason==='content_filter'?'content_filter':'other';
+     throw Error('native_model_response_invalid');
+    }finished=true;
+   }
+  }
+  if(e.usage){
+   const u=e.usage,input=u.prompt_tokens,output=u.completion_tokens;
+   if(found||![input,output,u.total_tokens].every(n=>Number.isSafeInteger(n)&&n>=0)||input+output!==u.total_tokens)throw Error('native_model_usage_invalid');
+   for(const [n,upper] of [[u.prompt_cache_hit_tokens,input],[u.prompt_cache_miss_tokens,input],[u.completion_tokens_details?.reasoning_tokens,output]])if(n!==undefined&&(!Number.isSafeInteger(n)||n<0||n>upper))throw Error('native_model_usage_invalid');
+   found={input,output};
+  }
+ }
+ if(!found||!finished||!done)throw Error('native_model_usage_missing');return found;
+}
 function rejection(overflow=false){
  const code=overflow?'context_length_exceeded':'native_model_uncertain';
  return Response.json({error:{code,type:'invalid_request_error',message:overflow?'context_length_exceeded (request_too_large)':code}},{status:overflow?400:409});
@@ -92,10 +121,11 @@ async function buffered(response:Response,limit:number,signal:AbortSignal){
  * protocol, tools, tool outputs, history, reasoning and compaction. No flattening.
  * Client/Flue retries see the same durable receipt and cannot pay twice.
  * No durable response replay: a known completed retry is explicit and blocked. */
-export function createConversationProvider(config:ConversationProviderOptions):Provider<'openai-responses'>{
+export function createConversationProvider(config:ConversationProviderOptions):Provider<NativeModelApi>{
  if(!config.apiKey)throw Error('native_model_key_missing');
- const native=openaiProvider(),catalog=native.getModels().find(m=>m.id===MODEL);
- if(!catalog||catalog.baseUrl!=='https://api.openai.com/v1')throw Error('native_model_catalog_missing');
+ const vendor=config.provider??'openai';
+ if(vendor!=='openai'&&vendor!=='deepseek')throw Error('native_model_configuration_invalid');
+ const {native,model:catalog,endpoint:ENDPOINT,priceVersion,inputMicroUSD,outputMicroUSD}=nativeModelCatalog(vendor),MODEL=catalog.id;
  // The installed catalog and consumer model views are mutable. Keep a private
  // deep snapshot and close monetary ceilings over validated numeric values.
  const model=structuredClone(catalog),contextWindow=model.contextWindow,maxTokens=model.maxTokens;
@@ -106,7 +136,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
   // Lazy Pi loading may postpone onPayload; consume rejection immediately.
   void hostPromise.catch(()=>{});
   let admitted:{host:ConversationProviderHost;body:string;requestHash:string;operationKey:string;ceiling:number}|undefined;
-  return {...original,apiKey:config.apiKey,env:{},headers:{},maxRetries:0,transport:'sse' as const,
+  return {...original,...(vendor==='deepseek'?{reasoning:'high' as const,reasoningEffort:'high' as const}:{}),apiKey:config.apiKey,env:{},headers:{},maxRetries:0,transport:'sse' as const,
    onResponse:undefined,onProviderStreamEvent:undefined,
    async onPayload(payload:unknown){
     const host=await hostPromise;
@@ -116,11 +146,16 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     const p=payload as Record<string,unknown>;
     if(!p||p.model!==MODEL||p.stream!==true||p.store===true||p.background===true||(p.service_tier!==undefined&&p.service_tier!=='default')||(p.tools!==undefined&&(!Array.isArray(p.tools)||p.tools.some(t=>!t||t.type!=='function'))))throw Error('native_model_payload_denied');
     // The default tier is required for the pinned conservative tariff.
-    p.service_tier='default';
+    if(vendor==='openai')p.service_tier='default';
+    else if((p.n!==undefined&&p.n!==1)||(p.stream_options as any)?.include_usage!==true||p.max_completion_tokens!==undefined||!Array.isArray(p.messages)||p.messages.some((m:any)=>!['system','user','assistant','tool'].includes(m.role))||
+     (p.tools as any[]|undefined)?.some(t=>t.function?.strict===true)||
+     (p.thinking as any)?.type!=='enabled'||!['low','high','max'].includes(String(p.reasoning_effort))||
+     (p.tool_choice!==undefined&&p.tool_choice!=='auto'&&p.tool_choice!=='none'))throw Error('native_model_payload_denied');
     // Host owns output spend, including native compaction. All other native
     // declarations and history remain byte-for-byte JSON values.
-    p.max_output_tokens=Math.min(typeof p.max_output_tokens==='number'?p.max_output_tokens:host.maxOutputTokens,host.maxOutputTokens);
-    positive(p.max_output_tokens as number);
+    const outputField=vendor==='deepseek'?'max_tokens':'max_output_tokens';
+    p[outputField]=Math.min(typeof p[outputField]==='number'?p[outputField] as number:host.maxOutputTokens,host.maxOutputTokens);
+    positive(p[outputField] as number);
     // Use Pi's own context estimator and its safety buffer. A tool loop can
     // cross the remaining headroom before Flue's idle compaction check. Ask
     // Flue for native overflow recovery BEFORE reserving/paying; do not infer
@@ -128,16 +163,16 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     const desired=Math.min(original?.maxTokens??maxTokens,host.maxOutputTokens);
     const body=stable(p);
     if(new TextEncoder().encode(body).byteLength>host.maxRequestBytes||body.includes(config.apiKey))throw Error('native_model_payload_denied');
-    const requestHash=await hash(stable({payload:p,priceVersion:NATIVE_MODEL_PRICE_VERSION}));
+    const requestHash=await hash(stable({payload:p,priceVersion}));
     const operationKey='native:'+await hash(stable(keys(host)));
     // Full installed context is a conservative input ceiling (also images,
     // tool declarations and protocol overhead); no reduced history/corpus cap.
-    const ceiling=Math.ceil(contextWindow*.25+(p.max_output_tokens as number)*.75);
+    const ceiling=Math.ceil(contextWindow*inputMicroUSD+(p[outputField] as number)*outputMicroUSD);
     await current(config.db,host);
     // Known attempts must stop for reconciliation even if a later view of
     // this same turn is full. Overflow must never bypass their custody.
     const existing=await conversationModelReceipt(config.db,host);
-    if(existing){if(existing.request_hash!==requestHash||existing.price_version!==NATIVE_MODEL_PRICE_VERSION||existing.ceiling_units!==ceiling)throw Error('native_model_request_conflict');throw Error('native_model_'+existing.state);}
+    if(existing){if(existing.request_hash!==requestHash||existing.price_version!==priceVersion||existing.ceiling_units!==ceiling)throw Error('native_model_request_conflict');throw Error('native_model_'+existing.state);}
     const prior=await config.db.prepare('SELECT state,request_hash,ceiling_units FROM assistant_budget_reservations WHERE installation_id=? AND generation=? AND operation_key=?')
      .bind(host.scope.installationId,host.scope.generation,operationKey).first<{state:string;request_hash:string;ceiling_units:number}>();
     if(prior){if(prior.request_hash!==requestHash||prior.ceiling_units!==ceiling)throw Error('native_model_request_conflict');if(prior.state!=='reserved')throw Error('native_model_'+prior.state);}
@@ -159,7 +194,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      const claim=await jsonStatement(config.db,`INSERT INTO assistant_native_model_receipts
       (installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state)
       SELECT ?,?,?,?,?,?,?,?,?,?,'attempting' WHERE ${g.sql} ON CONFLICT DO NOTHING RETURNING state`,
-      [...keys(host),operationKey,host.scope.period,requestHash,NATIVE_MODEL_PRICE_VERSION,ceiling,...g.values]).first();
+      [...keys(host),operationKey,host.scope.period,requestHash,priceVersion,ceiling,...g.values]).first();
      if(!claim)throw Error('native_model_claim_denied');claimed=true;
      // Repeat runtime authority immediately at the irreversible boundary. The
      // SQL claim also closes owner restore/hold and global-budget races.
@@ -181,8 +216,10 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      if(response.redirected||!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))throw Error('native_model_response_invalid');
      const text=await buffered(response,host.maxResponseBytes,signal);
      if(text.includes(config.apiKey))throw Error('native_model_response_denied');
-     const u=usage(text,failure);
-     const actual=Math.ceil(u.input*.25+u.output*.75);
+     const u=vendor==='deepseek'?deepseekUsage(text,failure):usage(text,failure);
+     // Peak, noncached rates conservatively bound every native DeepSeek call.
+     // Discounts need no guessed clock/cache attribution in the pilot ledger.
+     const actual=Math.ceil(u.input*inputMicroUSD+u.output*outputMicroUSD);
      await host.budget.settle(operationKey,requestHash,actual);
      await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='complete',input_tokens=?,output_tokens=?,actual_units=? WHERE ${ns} AND state='attempting' AND request_hash=?`)
       .bind(u.input,u.output,actual,...keys(host),requestHash).run();

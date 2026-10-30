@@ -17,6 +17,9 @@ export interface AssistantEnv {
   INSTALLATION_ID?: string;
   OPERATIONAL_GENERATION?: string;
   OPENAI_API_KEY?: string;
+  DEEPSEEK_API_KEY?: string;
+  /** Explicit native model migration; no silent provider fallback. */
+  NATIVE_MODEL_PROVIDER?: string;
   FLUE_EPISODES_ENABLED?: string;
   /** Staged OFF by default; no native provider or ingress is admitted otherwise. */
   NATIVE_CONVERSATIONS_MODE?: string;

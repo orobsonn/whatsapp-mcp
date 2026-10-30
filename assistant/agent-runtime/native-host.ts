@@ -48,7 +48,7 @@ export class NativeApplicationHost {
  constructor(private readonly env:AssistantEnv){
   this.scope=nativeScope(env);
   if(!env.DB||!env.CAPTURE_READER||!env.BRIDGE_SECRET||nativeMode(env)==='off')throw Error('native_unconfigured');this.db=env.DB;
-  this.configured=[this.db,env.CAPTURE_READER,env.BRIDGE_SECRET,env.OPENAI_API_KEY,env.NATIVE_CONTEXT_ADMIN_SECRET,env.NATIVE_CONVERSATIONS_MODE,env.TELEGRAM_BOT_INSTANCE,env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_WEBHOOK_SECRET,env.WHATSAPP_APPROVED_SEND,env.WHATSAPP_APPROVED_SEND_SECRET,env.NATIVE_CURATOR_RESUME_REQUEST];
+  this.configured=[this.db,env.CAPTURE_READER,env.BRIDGE_SECRET,env.OPENAI_API_KEY,env.DEEPSEEK_API_KEY,env.NATIVE_MODEL_PROVIDER,env.NATIVE_CONTEXT_ADMIN_SECRET,env.NATIVE_CONVERSATIONS_MODE,env.TELEGRAM_BOT_INSTANCE,env.TELEGRAM_BOT_TOKEN,env.TELEGRAM_WEBHOOK_SECRET,env.WHATSAPP_APPROVED_SEND,env.WHATSAPP_APPROVED_SEND_SECRET,env.NATIVE_CURATOR_RESUME_REQUEST];
   this.origin=new OriginGuard(this.db,()=>this.currentScope(),env.CAPTURE_READER,env.BRIDGE_SECRET,2000,'owner_read');
   this.retention=new NativeConversationRetention(this.db!,()=>this.currentScope(),this.origin,nativeContextDestroyPort(env));
   this.runtime=new ConversationRuntime(this.db!,{retention:this.retention,authority:async identity=>(await this.authority(identity)).authority,
@@ -57,7 +57,7 @@ export class NativeApplicationHost {
    knowledge:task=>configuredKnowledgeService(env,this.currentScope(),task.knowledge.client),assertTask:async task=>{await this.tasks().guardForTask(task);}});
  }
  currentScope(){
-  const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET,e.NATIVE_CURATOR_RESUME_REQUEST];
+  const e=this.env,now=[e.DB,e.CAPTURE_READER,e.BRIDGE_SECRET,e.OPENAI_API_KEY,e.DEEPSEEK_API_KEY,e.NATIVE_MODEL_PROVIDER,e.NATIVE_CONTEXT_ADMIN_SECRET,e.NATIVE_CONVERSATIONS_MODE,e.TELEGRAM_BOT_INSTANCE,e.TELEGRAM_BOT_TOKEN,e.TELEGRAM_WEBHOOK_SECRET,e.WHATSAPP_APPROVED_SEND,e.WHATSAPP_APPROVED_SEND_SECRET,e.NATIVE_CURATOR_RESUME_REQUEST];
   if(now.some((v,i)=>v!==this.configured[i])||JSON.stringify(nativeScope(e))!==JSON.stringify(this.scope)||nativeMode(e)==='off')throw Error('native_configuration_changed');
   return this.scope;
  }

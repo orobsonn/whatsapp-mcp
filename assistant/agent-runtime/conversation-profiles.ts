@@ -11,6 +11,7 @@ import {curatorInstructions,isCuratorPrincipal,type KnowledgeCurator} from '../k
 import {useCuratorTools} from '../knowledge/curator-tools';
 import {nativeCalendarMutationInput} from './native-calendar';
 import {useNativeTaskTools,type NativeTaskCapabilities} from './native-task-tools';
+import {nativeModelSelection} from './conversation-model';
 
 const seedSchema=v.strictObject({version:v.literal(1),installationId:v.string(),generation:v.string(),
  channel:v.picklist(['whatsapp','telegram']),principalOrChatId:v.string(),contextEpoch:v.string()});
@@ -41,7 +42,8 @@ export function ConversationRuntimeAgent(){
  // host's responsibility. This is the real native Pi model/tool loop from P0.
  // Use Flue's model-aware compaction defaults. The provider still owns the
  // effective output/spend ceiling, including its summarization turns.
- useModel('openai/gpt-6-luna',{thinkingLevel:'low'});
+ const selectedModel=nativeModelSelection(getCloudflareContext().env);
+ useModel(selectedModel.model,{thinkingLevel:selectedModel.thinkingLevel});
  async function host(){
   const resolver=configuredResolver;if(!resolver)throw Error('conversation_resolver_unconfigured');
   const {env}=getCloudflareContext(),identity=getDurableObjectIdentity();
