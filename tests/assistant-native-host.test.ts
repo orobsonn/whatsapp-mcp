@@ -104,6 +104,24 @@ describe('native application composition on real D1 and Source reads',()=>{
   await f.append('Already answered','5585999999999',false,true);f.own.CAPTURE_READER!.readConversationActivity=activity;
   expect(await f.host.receiveCapture(f.incoming.sequence)).toMatchObject({state:'superseded'});expect(transport.dispatch).not.toHaveBeenCalled();
  });
+ it('does not revive a blocked original after Source recovers and the owner has already replied',async()=>{
+  const f=await fixture(),incoming=await f.append('Old question'),original=f.own.CAPTURE_READER!.readSnapshot;
+  f.own.CAPTURE_READER!.readSnapshot=async()=>{throw Error('temporary_source_failure');};const host=f.host();
+  for(let attempt=1;attempt<=3;attempt++){
+   expect(await host.receiveCapture(incoming.sequence)).toMatchObject({state:'unavailable'});
+   await env.DB.prepare(`UPDATE assistant_materialization_results SET next_retry_at=0 WHERE installation_id=? AND generation=? AND sequence=?`).bind(f.scope.installationId,f.scope.generation,incoming.sequence).run();
+  }
+  await f.append('Already answered','5585999999999',false,true);f.own.CAPTURE_READER!.readSnapshot=original;
+  expect(await host.receiveCapture(incoming.sequence)).toMatchObject({state:'superseded'});expect(transport.dispatch).not.toHaveBeenCalled();
+  expect(await env.DB.prepare(`SELECT attempts FROM assistant_materialization_results WHERE installation_id=? AND generation=? AND sequence=?`).bind(f.scope.installationId,f.scope.generation,incoming.sequence).first('attempts')).toBe(4);
+ });
+ it('leaves a blocked source in its persisted backoff instead of spending a native cron slot on it',async()=>{
+  const f=await fixture(),incoming=await f.append('Question'),original=f.own.CAPTURE_READER!.readSnapshot;
+  f.own.CAPTURE_READER!.readSnapshot=async()=>{throw Error('temporary_source_failure');};const host=f.host();await host.receiveCapture(incoming.sequence);
+  await env.DB.prepare(`UPDATE assistant_materialization_results SET next_retry_at=? WHERE installation_id=? AND generation=? AND sequence=?`).bind(Date.now()+3600000,f.scope.installationId,f.scope.generation,incoming.sequence).run();
+  const reads=vi.fn(original);f.own.CAPTURE_READER!.readSnapshot=reads;
+  const tick=await host.tick();expect(tick.outcomes).toEqual([]);expect(reads).not.toHaveBeenCalled();expect(transport.dispatch).not.toHaveBeenCalled();
+ });
  it('recovers the missing caption when the actual ready-file event arrives',async()=>{
   const f=await lateImageCaption(),sequence=await stageReadyImage(f);
   expect(await f.host.receiveCapture(sequence)).toMatchObject({state:'admitted'});

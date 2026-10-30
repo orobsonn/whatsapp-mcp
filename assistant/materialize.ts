@@ -29,7 +29,7 @@ export class CaptureMaterializer {
     validateLimit(limit, 5);
     const scope = activeOrigin(this.getScope);
     const rows = await this.sql(`SELECT sequence FROM assistant_materialization_results WHERE ${originScopeSql}
-      AND state='blocked' AND attempts<3 AND next_retry_at<=? ORDER BY next_retry_at,sequence LIMIT ?`, ...scopeKeys(scope), this.clock(), limit).all<{ sequence: number }>();
+      AND state='blocked' AND next_retry_at<=? ORDER BY next_retry_at,sequence LIMIT ?`, ...scopeKeys(scope), this.clock(), limit).all<{ sequence: number }>();
     const results = [];
     for (const row of rows.results) results.push(await this.process(row.sequence, true));
     return results;
@@ -45,6 +45,10 @@ export class CaptureMaterializer {
     if (JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(keys)) return { sequence, state: "stale" };
     if(refreshApplied&&event.application_state!=='applied')return {sequence,state:event.application_state};
     if ((event.application_state === "applied"&&!refreshApplied) || (event.application_state === "blocked" && !retry)) return { sequence, state: event.application_state };
+    if(event.application_state==='blocked'&&retry){
+      const result=await this.sql(`SELECT next_retry_at FROM assistant_materialization_results WHERE ${originScopeSql} AND sequence=?`,...keys,sequence).first<{next_retry_at:number|null}>();
+      if(result?.next_retry_at!==null&&result?.next_retry_at!==undefined&&result.next_retry_at>this.clock())return {sequence,state:'blocked'};
+    }
     const ref: OriginRef = { sourceKind: event.source_kind, sourceId: event.source_id, chatId: event.chat_id };
     return {sequence,...await this.project(scope,ref,{event,retry,refreshApplied})};
   }
@@ -142,7 +146,7 @@ export class CaptureMaterializer {
       WHERE ${originScopeSql} AND sequence=? AND application_state=? AND ${sourceFence} AND ${chatFence}
       ON CONFLICT(installation_id,generation,source_epoch,source_generation,sequence) DO UPDATE SET token=excluded.token,state='admitted',
         attempts=assistant_materialization_results.attempts+1,observed_at=excluded.observed_at,watermark=excluded.watermark,observation_hash=excluded.observation_hash
-      WHERE (assistant_materialization_results.state='applied' AND ?=1) OR (assistant_materialization_results.state='blocked' AND assistant_materialization_results.attempts<3 AND assistant_materialization_results.next_retry_at<=?)`,
+      WHERE (assistant_materialization_results.state='applied' AND ?=1) OR (assistant_materialization_results.state='blocked' AND assistant_materialization_results.next_retry_at<=?)`,
     token, now, observed.watermark, observed.hash, ...keys, sequence, live!.refreshApplied?'applied':live!.retry ? "blocked" : "pending", ...sourceValues, ...chatValues,live!.refreshApplied?1:0, now));
     const watermark = Math.max(sequence, observed.watermark ?? 0, chat?.watermark ?? 0);
     const conversationWithdrawn = withdrawn && (ref.sourceKind === "conversation" || observed.conversationWithdrawn);
@@ -200,8 +204,11 @@ export class CaptureMaterializer {
       ON CONFLICT(installation_id,generation,source_epoch,source_generation) DO UPDATE SET evaluated_sequence=excluded.evaluated_sequence`, ...keys, ...keys, ...keys));
     batch.push(gated(`UPDATE assistant_capture_streams SET applied_sequence=${prefix("u.application_state<>'applied'")}
       WHERE ${originScopeSql} AND $gate`, ...keys, ...keys, ...keys));
-    batch.push(this.sql(`UPDATE assistant_materialization_results SET state=?,last_gap_reason=COALESCE(?,last_gap_reason),next_retry_at=? WHERE token=? AND state='admitted'`,
-      state, observed.reason, state === "blocked" ? now + 1000 : null, token));
+    // Retry failed reads indefinitely, with a persisted exponential delay up
+    // to one hour. This is transport pacing, never a terminal source verdict.
+    // Use the attempts admitted by this transaction, including concurrent retries.
+    batch.push(this.sql(`UPDATE assistant_materialization_results SET state=?,last_gap_reason=COALESCE(?,last_gap_reason),next_retry_at=CASE WHEN ?='blocked' THEN ?+MIN(3600000,1000*(1 << MIN(attempts-1,12))) ELSE NULL END WHERE token=? AND state='admitted'`,
+      state, observed.reason,state,now,token));
     }else batch.push(this.sql(`UPDATE assistant_archive_import_latches SET state='applied' WHERE ${originScopeSql} AND token=? AND state='admitted'`,...keys,token));
     if (JSON.stringify(scopeKeys(activeOrigin(this.getScope))) !== JSON.stringify(keys)) return { state: "stale" };
     let results:D1Result[];

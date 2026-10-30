@@ -145,8 +145,9 @@ export class NativeApplicationHost {
   const content=input.snapshot?.content;
   if(!content||content.fromMe!==input.fromMe||content.messageId!==input.originalMessageId||(content.authorId??null)!==input.authorId||input.text!==(typeof content.text==='string'?content.text:null))return finish('unavailable','source_reader_invalid');
   // A transient failure may replace the original recovery gap. Every resumed
-  // applied intake still requires current activity, including after a crash.
-  if(row.application_state==='applied'&&saved){
+  // intake still requires current activity, including blocked-source recovery
+  // and a crash that left its intake pending.
+  if(saved){
    let activity;
    try{activity=captureConversationActivity.parse(await this.env.CAPTURE_READER!.readConversationActivity?.({secret:this.env.BRIDGE_SECRET!,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,chatId:row.chat_id}));}
    catch{return finish('unavailable','source_activity_unavailable');}
@@ -317,9 +318,11 @@ export class NativeApplicationHost {
   // Persistent per-item gaps and least-recently-attempted ordering keep an
   // unavailable media item from blocking unrelated conversations forever.
   const capture=await this.db!.prepare(`SELECT i.sequence FROM assistant_capture_inbox i LEFT JOIN assistant_native_capture_intake n USING(installation_id,generation,source_epoch,source_generation,sequence)
+   LEFT JOIN assistant_materialization_results r USING(installation_id,generation,source_epoch,source_generation,sequence)
    WHERE i.installation_id=? AND i.generation=? AND i.source_epoch=? AND i.source_generation=? AND i.sequence>?
    AND (n.state IS NULL OR n.state NOT IN ('admitted','excluded','withdrawn','metadata_only','superseded','before_activation'))
-   ORDER BY COALESCE(n.updated_at,0),i.sequence LIMIT 10`).bind(...scopeKeys(this.scope),Number(cut)).all<{sequence:number}>();
+   AND (r.state IS NULL OR r.state<>'blocked' OR r.next_retry_at IS NULL OR r.next_retry_at<=?)
+   ORDER BY COALESCE(n.updated_at,0),i.sequence LIMIT 10`).bind(...scopeKeys(this.scope),Number(cut),Date.now()).all<{sequence:number}>();
   const outcomes=[];for(const row of capture.results)try{outcomes.push(await this.receiveCapture(row.sequence));}catch{outcomes.push({state:'unavailable'});}
   const fence=await nativeOwnerFence(this.env,this.currentScope()),activation=await nativeTelegramActivation(this.env,this.currentScope(),fence);
   const ownerUpdates=await this.db!.prepare(`SELECT update_id FROM assistant_telegram_updates u WHERE installation_id=? AND generation=? AND bot_instance=? AND source_epoch=? AND source_generation=? AND link_revision=? AND user_id=? AND chat_id=? AND message_date>? AND received_at>=? AND outcome='pending' AND state='pending'

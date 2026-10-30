@@ -135,6 +135,25 @@ it("keeps a gap visible while a later authenticated withdrawal bypasses a failed
   expect(await materializer.retry(1)).toMatchObject([{ state: "applied" }]);
   expect(await materializer.progress()).toEqual({ received: 20, evaluated: 20, applied: 20, gaps: 0 });
 });
+it('recovers after more than three failed observations without resetting the original receipt',async()=>{
+  const available=snapshots.get('message:message');snapshots.delete('message:message');
+  await event();expect(await materializer.process(10)).toMatchObject({state:'blocked'});
+  for(let attempt=2;attempt<=3;attempt++){
+    now=(await query('SELECT next_retry_at FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first<number>('next_retry_at'))!;
+    expect(await materializer.retry(1)).toMatchObject([{state:'blocked'}]);
+  }
+  snapshots.set('message:message',available!);
+  now=(await query('SELECT next_retry_at FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first<number>('next_retry_at'))!;
+  expect(await materializer.retry(1)).toMatchObject([{state:'applied'}]);
+  expect(await query('SELECT attempts,state FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first()).toEqual({attempts:4,state:'applied'});
+  expect(await canonical()).toMatchObject({revision:1,current_version:1});
+});
+it('does not reread Source or increment attempts before the persisted retry deadline',async()=>{
+  snapshots.clear();await event();await materializer.process(10);let reads=0;
+  const base=reader.readSnapshot;reader.readSnapshot=async q=>{reads++;return base(q);};
+  expect(await materializer.process(10,true)).toMatchObject({state:'blocked'});
+  expect(reads).toBe(0);expect(await query('SELECT attempts FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first('attempts')).toBe(1);
+});
 it("does not resurrect a tombstone even if replay later returns available content", async () => {
   await event(10, 0, "message", "message", "withdraw"); await materializer.drain();
   snapshots.set("message:message", snapshot("message", "message", 20));
