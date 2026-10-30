@@ -20,4 +20,8 @@ Referências oficiais: [visão e tokenização](https://api-docs.deepseek.com/gu
 
 ## Verificação
 
+Em30/10/2026, o bot executou a leitura de um JPEG real pelo DeepSeek na Cloudflare e respondeu no Telegram identificando o aviso da tela. Recibo visual concluído:426microUSD; a conversa do agente tem custo separado. A evidência185 registra o escopo e as limitações.
+
+A legenda mantém texto e referência próprios. A ferramenta aceita a referência da mensagem ou do arquivo, confere seu vínculo e usa o mesmo parent/recibo da imagem. Quando os bytes ficam prontos depois da mensagem, a projeção é reconciliada; uma conversa já respondida não é reativada por essa recuperação. Foto sem legenda retorna ausência explícita.
+
 Os testes dirigidos cobrem protocolo/endpoint, JSON inválido e truncamento com cobrança preservada, cache do artefato, custódia entre configurações, legado e isolamento de PDF. A regressão concorrente primeiro mostrou dois uploads e passou com um upload após o guard atômico. A prova real deve registrar separadamente a interpretação útil pelo bot, seu recibo e sua reutilização; testes locais não bastam para anunciar entrega.

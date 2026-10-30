@@ -19,6 +19,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
 
 ### Fixed
+- Leitura de imagens respeita o provedor DeepSeek selecionado, conserva recibos e reutiliza o mesmo arquivo. Legenda original acompanha a interpretação, inclusive quando o anexo fica pronto depois; recuperação de entrada já respondida termina sem nova inferência.
 - Recebimento confirma o registro durável antes da admissão nativa, com recuperação da ponte sem confundir ACK com processamento pela IA.
 - Primeira identidade de cada entrada Telegram e canal do dono são fixados atomicamente; replay anterior à retirada não reabre contexto removido. Falha de turno do SDK não descarta a próxima entrada válida.
 - Correção/retirada de fontes invalida uso e aprovação em contextos dependentes, incluindo histórico/compaction. Purga preserva recibos mínimos, custos e tombstones de idempotência.
@@ -28,6 +29,7 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 - Aviso do curador conclui a revisão remota antes do prazo de transporte Telegram, conserva a verificação local final de todas as dependências e impede envio tardio depois de cancelamento ou pausa.
 
 ### Validation
+- Imagem real interpretada pelo DeepSeek no Worker e explicada no Telegram; recuperação da legenda, ausência de legenda e reutilização/retirada do arquivo verificadas separadamente. Evidência185.
 - MCP real criou relações consultadas pelo bot; correção e retirada foram verificadas em nova resposta e os dados fictícios foram limpos. Curador escolheu cinco relações legítimas posteriormente consultadas pelo MCP. Evidências158 e160.
 - Bot real explicou código GitHub, consultou títulos/horários, criou/editou/excluiu o mesmo evento Calendar com leitura independente no Google e enviou lembrete confirmado pelo dono. Evidências161,165 e166.
 - Janela real de1499 alterações terminou com114 conteúdos avaliados e38 indisponíveis, mantendo cobertura parcial. Aviso isolado aceito pelo Telegram; primeira execução diária admitida pelo agendador, ainda em processamento. Nenhum aprendizado foi inventado para preencher o ensaio. Custos medidos e projeção separados de fatura reconciliada. Evidências167,169 e170.
