@@ -1,6 +1,8 @@
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {Provider} from '@earendil-works/pi-ai/models';
 import type {SimpleStreamOptions,StreamOptions} from '@earendil-works/pi-ai';
+import type {TranscriptContext} from '@earendil-works/pi-ai';
+import {clampMaxTokensToContext} from '@earendil-works/pi-ai/api/simple-options';
 import {InferenceBudget,type BudgetScope} from '../budget';
 import type {AccessGuard} from '../access';
 import {retentionExecutionGuard} from '../retention-execution';
@@ -68,8 +70,12 @@ function usage(sse:string){
  }
  if(!found)throw Error('native_model_usage_missing');return found;
 }
+function rejection(overflow=false){
+ const code=overflow?'context_length_exceeded':'native_model_uncertain';
+ return Response.json({error:{code,type:'invalid_request_error',message:overflow?'context_length_exceeded (request_too_large)':code}},{status:overflow?400:409});
+}
 async function buffered(response:Response,limit:number,signal:AbortSignal){
- if(response.status!==200||response.redirected||!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')||!response.body)throw Error('native_model_response_invalid');
+ if(!response.body)throw Error('native_model_response_invalid');
  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let bytes=0;
  const cancel=()=>{void reader.cancel().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
  try{while(true){signal.throwIfAborted();const next=await reader.read();signal.throwIfAborted();if(next.done)break;bytes+=next.value.byteLength;if(bytes>limit)throw Error('native_model_response_limit');chunks.push(next.value);}}
@@ -89,7 +95,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
  // deep snapshot and close monetary ceilings over validated numeric values.
  const model=structuredClone(catalog),contextWindow=model.contextWindow,maxTokens=model.maxTokens;
  positive(contextWindow);positive(maxTokens);
- function options(original:StreamOptions|SimpleStreamOptions|undefined){
+ function options(original:StreamOptions|SimpleStreamOptions|undefined,context:TranscriptContext){
   // Calling the resolver now captures the instrument's async-local operation.
   const hostPromise=Promise.resolve(config.resolveHost());
   // Lazy Pi loading may postpone onPayload; consume rejection immediately.
@@ -110,6 +116,11 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     // declarations and history remain byte-for-byte JSON values.
     p.max_output_tokens=Math.min(typeof p.max_output_tokens==='number'?p.max_output_tokens:host.maxOutputTokens,host.maxOutputTokens);
     positive(p.max_output_tokens as number);
+    // Use Pi's own context estimator and its safety buffer. A tool loop can
+    // cross the remaining headroom before Flue's idle compaction check. Ask
+    // Flue for native overflow recovery BEFORE reserving/paying; do not infer
+    // overflow from a legitimate explicitly small output-token request.
+    const desired=Math.min(original?.maxTokens??maxTokens,host.maxOutputTokens);
     const body=stable(p);
     if(new TextEncoder().encode(body).byteLength>host.maxRequestBytes||body.includes(config.apiKey))throw Error('native_model_payload_denied');
     const requestHash=await hash(stable({payload:p,priceVersion:NATIVE_MODEL_PRICE_VERSION}));
@@ -118,15 +129,22 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     // tool declarations and protocol overhead); no reduced history/corpus cap.
     const ceiling=Math.ceil(contextWindow*.25+(p.max_output_tokens as number)*.75);
     await current(config.db,host);
-    const reservation=await host.budget.reserve(operationKey,requestHash,ceiling);
+    // Known attempts must stop for reconciliation even if a later view of
+    // this same turn is full. Overflow must never bypass their custody.
     const existing=await conversationModelReceipt(config.db,host);
     if(existing){if(existing.request_hash!==requestHash||existing.price_version!==NATIVE_MODEL_PRICE_VERSION||existing.ceiling_units!==ceiling)throw Error('native_model_request_conflict');throw Error('native_model_'+existing.state);}
+    const prior=await config.db.prepare('SELECT state,request_hash,ceiling_units FROM assistant_budget_reservations WHERE installation_id=? AND generation=? AND operation_key=?')
+     .bind(host.scope.installationId,host.scope.generation,operationKey).first<{state:string;request_hash:string;ceiling_units:number}>();
+    if(prior){if(prior.request_hash!==requestHash||prior.ceiling_units!==ceiling)throw Error('native_model_request_conflict');if(prior.state!=='reserved')throw Error('native_model_'+prior.state);}
+    if(clampMaxTokensToContext(model,context,desired)<desired)throw Error('context_length_exceeded (request_too_large)');
+    const reservation=await host.budget.reserve(operationKey,requestHash,ceiling);
     if(reservation.state!=='reserved')throw Error('native_model_'+reservation.state);
     admitted={host,body,requestHash,operationKey,ceiling};return p;
    },
    async fetch(input:RequestInfo|URL,init?:RequestInit){
-    const a=admitted;admitted=undefined;if(!a)throw Error('native_model_not_admitted');
+    const a=admitted;admitted=undefined;if(!a)return rejection();
     const {host,requestHash,operationKey,ceiling}=a;let claimed=false;
+    let overflow=false,httpStatus:number|undefined,stage='admission';
     try{
      const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
      const method=init?.method??(input instanceof Request?input.method:'GET');
@@ -143,7 +161,19 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      await current(config.db,host);
      const signal=AbortSignal.any([AbortSignal.timeout(host.timeoutMs),...(original?.signal?[original.signal]:[]),...(init?.signal?[init.signal]:[])]);
      signal.throwIfAborted();
+     stage='transport';
      const response=await (config.fetch??globalThis.fetch)(ENDPOINT,{method:'POST',body,headers:{'Content-Type':'application/json',Accept:'text/event-stream',Authorization:'Bearer '+config.apiKey},redirect:'manual',signal});
+     httpStatus=response.status;stage='response';
+     if(response.status!==200){
+      // Only a structured rejection from the fixed provider endpoint grants
+      // the native SDK overflow signal. Never inspect untrusted prompt text,
+      // provider messages or generated output for a matching phrase.
+      if(response.status===400&&!response.redirected&&response.headers.get('content-type')?.toLowerCase().startsWith('application/json')){
+       const error=JSON.parse(await buffered(response,8192,signal));overflow=error?.error?.code==='context_length_exceeded';
+      }
+      throw Error('native_model_response_invalid');
+     }
+     if(response.redirected||!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))throw Error('native_model_response_invalid');
      const text=await buffered(response,host.maxResponseBytes,signal);
      if(text.includes(config.apiKey))throw Error('native_model_response_denied');
      const u=usage(text);
@@ -155,9 +185,15 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      await current(config.db,host);signal.throwIfAborted();
      return new Response(text,{status:200,headers:{'Content-Type':'text/event-stream'}});
     }catch{
-     await host.budget.uncertain(operationKey);
-     if(claimed)await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='uncertain' WHERE ${ns} AND state='attempting' AND request_hash=?`).bind(...keys(host),requestHash).run();
-     throw Error('native_model_uncertain');
+     let pending=false;
+     try{await host.budget.uncertain(operationKey);}catch{pending=true;}
+     if(claimed)try{await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='uncertain' WHERE ${ns} AND state='attempting' AND request_hash=?`).bind(...keys(host),requestHash).run();}catch{pending=true;}
+     // A fetch throw is wrapped by the OpenAI client as "Connection error",
+     // which Flue retries with NEW turn IDs. A fixed nonretryable response
+     // keeps this paid attempt's custody, including when bookkeeping is down.
+     // Logs carry only host metadata, never provider bodies or raw errors.
+     console.warn('assistant_native_model_failure',{stage,httpStatus,overflow,ledgerPending:pending,turnId:host.turnId});
+     return rejection(overflow);
     }
    },
   };
@@ -166,11 +202,11 @@ export function createConversationProvider(config:ConversationProviderOptions):P
   auth:{apiKey:{name:'Host admission',resolve:async()=>({auth:{}})}},getModels:()=>[structuredClone(model)],
   stream:(requested,context,opts)=>{
    if(requested.id!==MODEL||requested.provider!==native.id||requested.api!==model.api||requested.baseUrl!==model.baseUrl)throw Error('native_model_denied');
-   return native.stream(model,context,options(opts));
+   return native.stream(model,context,options(opts,context));
   },
   streamSimple:(requested,context,opts)=>{
    if(requested.id!==MODEL||requested.provider!==native.id||requested.api!==model.api||requested.baseUrl!==model.baseUrl)throw Error('native_model_denied');
-   return native.streamSimple(model,context,options(opts));
+   return native.streamSimple(model,context,options(opts,context));
   },
  };
 }

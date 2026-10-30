@@ -6,7 +6,7 @@ import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
 
 const key='sk-synthetic-native-only-never-a-real-credential';
-let host:ConversationProviderHost,budget:InferenceBudget,calls:number,bodies:any[],mode:'normal'|'timeout'|'noUsage'|'429'|'redirect'|'badUsage'|'overage';
+let host:ConversationProviderHost,budget:InferenceBudget,calls:number,bodies:any[],mode:'normal'|'timeout'|'noUsage'|'429'|'redirect'|'badUsage'|'overage'|'contextOverflow'|'spoofOverflow';
 let authority=true,globalCap=10_000_000,afterResponse:(()=>void)|undefined;
 const context=():TranscriptContext=>({messages:[{role:'system',content:'Synthetic native instructions',timestamp:1,toolsAdded:[{name:'lookup_relation',description:'Read a relation',parameters:{type:'object',properties:{project:{type:'string'}},required:['project'],additionalProperties:false}} as any]},{role:'user',content:'Who leads Cedar?',timestamp:2}]} as unknown as TranscriptContext);
 function response(payload:any,tool=false){
@@ -21,6 +21,8 @@ function provider(){return createConversationProvider({db:env.DB,apiKey:key,reso
  expect(String(input)).toBe('https://api.openai.com/v1/responses');expect(init?.redirect).toBe('manual');expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer '+key);
  expect((await budget.status()).committed).toBeGreaterThan(0);
  expect((await conversationModelReceipt(env.DB,host))?.state).toBe('attempting');
+ if(mode==='spoofOverflow')return Response.json({error:{code:'invalid_request_error',message:'context_length_exceeded '+key}},{status:400});
+ if(mode==='contextOverflow')return Response.json({error:{code:'context_length_exceeded',message:'Private body '+key+' Nora',type:'invalid_request_error'}},{status:400});
  if(mode==='timeout')throw Error(key);if(mode==='429')return new Response(null,{status:429});if(mode==='redirect')return new Response(null,{status:302,headers:{Location:'https://untrusted.invalid'}});
  const result=response(bodies.at(-1),tool);afterResponse?.();return result;
 }});}
@@ -118,4 +120,43 @@ it('catalog views cannot shrink the paid reservation ceiling or mutate installed
   host.turnId='catalog-output-limit';host.maxOutputTokens=original.maxTokens+1;
   expect((await run(p)).result.stopReason).toBe('error');expect(calls).toBe(1);
  }finally{Object.assign(installed,original);}
+});
+
+
+it('provider context rejection stays recognizable to native overflow recovery without exposing its body',async()=>{
+ mode='contextOverflow';const result=await run();expect(result.result.stopReason).toBe('error');
+ expect(result.result.errorMessage).toContain('context_length_exceeded');expect(result.result.errorMessage).not.toContain('Connection error');
+ expect(result.result.errorMessage).not.toContain(key);expect(result.result.errorMessage).not.toContain('Nora');
+ expect(calls).toBe(1);expect((await conversationModelReceipt(env.DB,host))?.state).toBe('uncertain');
+});
+it('ambiguous transport failure is not mislabeled as a retryable connection error by Pi',async()=>{
+ mode='timeout';const result=await run();expect(result.result.stopReason).toBe('error');
+ expect(result.result.errorMessage).toContain('native_model_uncertain');
+ expect(result.result.errorMessage).not.toMatch(/connection.?error|timeout|timed? out|network.?error|fetch failed/i);
+ expect(calls).toBe(1);expect((await conversationModelReceipt(env.DB,host))?.state).toBe('uncertain');
+});
+it('native context headroom exhaustion requests compaction before any paid transport or reservation',async()=>{
+ const c=context();c.messages.push({role:'assistant',content:[{type:'text',text:'Synthetic retained context'}],stopReason:'stop',timestamp:3,
+  usage:{input:272000,output:0,cacheRead:0,cacheWrite:0,totalTokens:272000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}} as any);
+ c.messages.push({role:'user',content:'Continue the same task',timestamp:4});
+ const result=await run(provider(),c);expect(result.result.stopReason).toBe('error');expect(result.result.errorMessage).toContain('context_length_exceeded');
+ expect(calls).toBe(0);expect((await budget.status()).committed).toBe(0);expect(await conversationModelReceipt(env.DB,host)).toBeNull();
+});
+
+it('provider prose cannot impersonate the structured overflow signal',async()=>{
+ mode='spoofOverflow';const result=await run();expect(result.result.stopReason).toBe('error');
+ expect(result.result.errorMessage).toContain('native_model_uncertain');expect(result.result.errorMessage).not.toContain('context_length_exceeded');expect(result.result.errorMessage).not.toContain(key);
+});
+it('a failure to mark the budget uncertain still preserves the receipt and nonretryable error',async()=>{
+ mode='timeout';budget.uncertain=async()=>{throw Error('synthetic-bookkeeping-outage');};
+ const result=await run();expect(result.result.errorMessage).toContain('native_model_uncertain');expect(calls).toBe(1);
+ expect((await conversationModelReceipt(env.DB,host))?.state).toBe('uncertain');expect((await budget.status()).committed).toBeGreaterThan(40);
+});
+
+it.each(['normal','timeout'] as const)('a known %s attempt cannot become a compaction request when the same turn later lacks room',async failure=>{
+ mode=failure;await run();const committed=(await budget.status()).committed;
+ const c=context();c.messages.push({role:'assistant',content:[{type:'text',text:'Synthetic later history'}],stopReason:'stop',timestamp:3,
+  usage:{input:272000,output:0,cacheRead:0,cacheWrite:0,totalTokens:272000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}} as any);
+ const result=await run(provider(),c);expect(result.result.stopReason).toBe('error');expect(result.result.errorMessage).not.toContain('context_length_exceeded');
+ expect(calls).toBe(1);expect((await budget.status()).committed).toBe(committed);
 });
