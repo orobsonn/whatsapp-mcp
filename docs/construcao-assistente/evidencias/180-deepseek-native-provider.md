@@ -11,3 +11,5 @@ Verificação local: 134 testes em quatro arquivos, TypeScript e build passaram.
 Revisão adversarial sem achados críticos/importantes de seleção, autoridade ou custos. O timeout de transporte de90s permanece uma limitação operacional observável; resultado incerto não é repetido automaticamente. O envio autônomo WhatsApp permanece desligado. Mídia e componentes legados não são ativados pela troca do modelo.
 
 Fontes oficiais: [modelos e tarifas](https://api-docs.deepseek.com/quick_start/pricing/), [thinking e continuidade das ferramentas](https://api-docs.deepseek.com/guides/thinking_mode/), [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/).
+
+Publicação confirmada no Own: `8d5e8a79-76f5-44ed-884e-74244eb00599`, com `NATIVE_MODEL_PROVIDER=deepseek` e secret DEEPSEEK_API_KEY presente. Demais bindings, runtime, agenda do curador e modo de aprovação foram preservados. Health confirma autonomia de envio falsa. Essa leitura de configuração ainda não é prova de uma resposta real produzida pelo DeepSeek; a próxima interação do bot precisa ter seu recibo de modelo verificado.
