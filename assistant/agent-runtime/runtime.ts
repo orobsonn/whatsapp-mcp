@@ -7,19 +7,22 @@ import { assertRestoredGeneration } from "../retention-runtime";
 import type { ModelAdapter } from "../model-broker";
 import {outgoingPort} from '../outgoing';
 import { onceScope, onceKey, readOncePlan, readOnceGrant, onceAuthority } from "../owner-once-guard";
-import { jobRequest } from "../agent/contracts";
+import { jobRequest,parseBinding,type BoundEpisode } from "../agent/contracts";
 import { bridgeHash } from "../ingress";
+import {assertProactiveEpisode} from '../proactive-pilot';
+import type {GroupScope} from '../group-scope';
 /** No router or generic binding. Existing account limits must already be
  * configured; this factory neither configures a budget nor activates capture. */
-export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter } = {}) {
+export function runtimeHost(env: AssistantEnv, purpose: Purpose, options: { clock?: () => number; model?: ModelAdapter;contextMode?:'conversation_manifest';groupScope?:GroupScope } = {}) {
   if (env.FLUE_EPISODES_ENABLED !== "shadow" || !env.DB || !env.INSTALLATION_ID || !env.OPERATIONAL_GENERATION || !env.OPENAI_API_KEY) throw new Error("episode_unconfigured");
-  const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock);
+  const clock = options.clock ?? Date.now, { scope, search } = hostConfiguredSearch(env, purpose, clock,options.contextMode,options.groupScope);
   class PausedRestoreEpisode extends EpisodeController {
+    protected override async check(episode:BoundEpisode){const started=clock();try{await assertProactiveEpisode(env,episode.id);}catch{console.warn('episode_check_denied',{stage:'pilot',episodeId:episode.id,elapsedMs:clock()-started});return false;}return super.check(episode);}
     override async prepare(...args: Parameters<EpisodeController["prepare"]>) { await assertRestoredGeneration(env); return super.prepare(...args); }
-    override async dispatch(...args: Parameters<EpisodeController["dispatch"]>) { await assertRestoredGeneration(env); return super.dispatch(...args); }
-    override async model(...args: Parameters<EpisodeController["model"]>) { await assertRestoredGeneration(env); return super.model(...args); }
-    override async publish(...args: Parameters<EpisodeController["publish"]>) { await assertRestoredGeneration(env); return super.publish(...args); }
-    override async read(...args: Parameters<EpisodeController["read"]>) { await assertRestoredGeneration(env); return super.read(...args); }
+    override async dispatch(...args: Parameters<EpisodeController["dispatch"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.dispatch(...args); }
+    override async model(...args: Parameters<EpisodeController["model"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.model(...args); }
+    override async publish(...args: Parameters<EpisodeController["publish"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.publish(...args); }
+    override async read(...args: Parameters<EpisodeController["read"]>) { await assertRestoredGeneration(env); await assertProactiveEpisode(env,args[0]);return super.read(...args); }
     override async reconcile(...args: Parameters<EpisodeController["reconcile"]>) { await assertRestoredGeneration(env); return super.reconcile(...args); }
   }
   const adapter = options.model ?? createOpenAIAdapter(env.OPENAI_API_KEY);
@@ -56,8 +59,11 @@ export async function resolveRuntimeEpisode(raw: Record<string, unknown>, identi
   const row = await env.DB.prepare("SELECT id,binding_json FROM assistant_episodes WHERE installation_id=? AND generation=? AND profile=? AND runtime_id=?")
     .bind(env.INSTALLATION_ID, env.OPERATIONAL_GENERATION, identity.profile, identity.runtimeId).first<{ id: string; binding_json: string }>();
   if (!row) throw new Error("episode_denied");
-  const { purpose } = z.object({ purpose: z.enum(["automation", "owner_read"]) }).parse(JSON.parse(row.binding_json));
-  return { host: runtimeHost(env, purpose), episodeId: row.id };
+  const binding=parseBinding(JSON.parse(row.binding_json));
+  const ledger=await env.DB.prepare('SELECT request_json,request_hash FROM assistant_job_ledger WHERE installation_id=? AND generation=? AND job_id=?').bind(env.INSTALLATION_ID,env.OPERATIONAL_GENERATION,binding.lease.id).first<{request_json:string;request_hash:string}>();
+  if(!ledger||await bridgeHash(JSON.parse(ledger.request_json))!==ledger.request_hash)throw Error('episode_denied');const request=jobRequest.parse(JSON.parse(ledger.request_json));
+  if(request.contextMode!==binding.contextMode||JSON.stringify(request.sourceRefs)!==JSON.stringify(binding.sourceRefs)||JSON.stringify(request.groupScope)!==JSON.stringify(binding.groupScope))throw Error('context_mode_denied');
+  return { host: runtimeHost(env, binding.purpose,{...(binding.contextMode?{contextMode:binding.contextMode,...(binding.groupScope?{groupScope:binding.groupScope}:{})}:{})}), episodeId: row.id };
 }
 /** Installed dispatcher keeps the legacy shadow-controller contract separate. */
 export async function resolveInstalledRuntime(raw: Record<string, unknown>, identity: RuntimeIdentity) {

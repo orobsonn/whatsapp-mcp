@@ -1,0 +1,5 @@
+# Application-tested override of Cognee 1.6.5's Linux Ladybug 0.19.0 pin.
+# Only CPython 3.12 / Linux x86_64. Preserve upstream package metadata.
+# Evidence 177 distinguishes this tested combination from upstream support.
+ladybug==0.22.1 \
+    --hash=sha256:63f236ebeb5d5013ba88387da54ce7a9df2bde8577428c751177b5f024397a31

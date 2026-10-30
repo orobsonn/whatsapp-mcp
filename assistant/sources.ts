@@ -33,7 +33,9 @@ const inputSchema = z.object({ originKey: labelSchema.min(1), text: z.string().m
     audience: visibility.default("owner"), projectId: labelSchema.optional(), conversationId: labelSchema.optional() }).strict();
 export const sourceCommandSchema = z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("source.create"), operationId: id, input: inputSchema }).strict(),
+    z.object({ kind: z.literal("source.report"), operationId: id, input: inputSchema }).strict(),
     z.object({ kind: z.literal("source.correct"), operationId: id, id, expectedRevision: revision, text: z.string().max(32768), occurredAt: time }).strict(),
+    z.object({ kind: z.literal("source.correct_report"), operationId: id, id, expectedRevision: revision, text: z.string().max(32768), occurredAt: time }).strict(),
     z.object({ kind: z.literal("source.change_audience"), operationId: id, id, expectedRevision: revision, audience: visibility }).strict(),
     z.object({ kind: z.literal("source.withdraw"), operationId: id, id, expectedRevision: revision }).strict(),
 ]);
@@ -108,11 +110,11 @@ export class SourceController {
         const contentHash = await sourceTextHash(input.text);
         return { input, metadata, contentHash, requestHash: await sha256(JSON.stringify([contentHash, ...metadata])) };
     }
-    private creation(s: Statement, id: string, data: Awaited<ReturnType<SourceController["prepared"]>>, now: number) {
+    private creation(s: Statement, id: string, data: Awaited<ReturnType<SourceController["prepared"]>>, now: number, origin: "owner_note" | "owner_report" = "owner_note") {
         const { input, metadata, contentHash, requestHash } = data, [title, conversation, project, visibility, authorId, authorLabel] = metadata, keys = this.keys();
         return [
             s(`INSERT INTO assistant_sources(installation_id,generation,id,origin,origin_key,title,conversation_id,project_id,audience)
-        SELECT ?,?,?,'owner_note',?,?,?,?,? WHERE $gate ON CONFLICT(installation_id,generation,origin,origin_key) DO NOTHING`, ...keys, id, input.originKey, title, conversation, project, visibility),
+        SELECT ?,?,?,?,?,?,?,?,? WHERE $gate ON CONFLICT(installation_id,generation,origin,origin_key) DO NOTHING`, ...keys, id, origin, input.originKey, title, conversation, project, visibility),
             s(`INSERT INTO assistant_source_versions(installation_id,generation,source_id,version,author_id,author_label,original_text,content_hash,occurred_at)
         SELECT installation_id,generation,id,1,?,?,?,?,? FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND $gate`, authorId, authorLabel, input.text, contentHash, input.occurredAt, ...keys, id),
             s(`INSERT INTO assistant_source_admissions SELECT installation_id,generation,id,? FROM assistant_sources
@@ -121,23 +123,26 @@ export class SourceController {
         SELECT installation_id,generation,id,1,1,'created',? FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND $gate`, now, ...keys, id),
         ];
     }
-    private origin(key: string) {
+    private origin(key: string, origin: "owner_note" | "owner_report" = "owner_note") {
         return this.statement(`SELECT s.id,s.revision,s.current_version AS version,a.request_hash FROM assistant_sources s
       JOIN assistant_source_admissions a ON a.installation_id=s.installation_id AND a.generation=s.generation AND a.source_id=s.id
-      WHERE s.installation_id=? AND s.generation=? AND s.origin='owner_note' AND s.origin_key=?`, ...this.keys(), key)
+      WHERE s.installation_id=? AND s.generation=? AND s.origin=? AND s.origin_key=?`, ...this.keys(), origin, key)
             .first<SourceRef & {
             request_hash: string;
         }>();
     }
-    async create(input: SourceInput): Promise<SourceRef> {
+    async create(input: SourceInput): Promise<SourceRef> { return this.createKind(input,"owner_note"); }
+    /** Context explicitly supplied through the owner's MCP session, not a direct note or policy. */
+    async createReport(input: SourceInput): Promise<SourceRef> { return this.createKind(input,"owner_report"); }
+    private async createKind(input: SourceInput, origin: "owner_note" | "owner_report"): Promise<SourceRef> {
         this.direct();
         input = { ...input };
         const now = this.clock();
         integer(now);
         const data = await this.prepared(input);
-        await this.retirement?.allow('owner_note', input.originKey);
-        await this.db.batch(this.creation(this.plain, crypto.randomUUID(), data, now));
-        const row = await this.origin(input.originKey);
+        await this.retirement?.allow(origin, input.originKey);
+        await this.db.batch(this.creation(this.plain, crypto.randomUUID(), data, now, origin));
+        const row = await this.origin(input.originKey,origin);
         if (!row || row.request_hash !== data.requestHash)
             throw new Error("source_origin_conflict");
         return { id: row.id, revision: 1, version: 1 };
@@ -150,20 +155,19 @@ export class SourceController {
     private correction(s: Statement, id: string, expected: number, input: {
         text: string;
         occurredAt: number;
-    }, hash: string, now: number) {
+    }, hash: string, now: number, origin: "owner_note" | "owner_report" = "owner_note") {
         return [s(`INSERT INTO assistant_source_versions(installation_id,generation,source_id,version,author_id,author_label,original_text,content_hash,occurred_at)
       SELECT s.installation_id,s.generation,s.id,s.current_version+1,v.author_id,v.author_label,?,?,?
       FROM assistant_sources s JOIN assistant_source_versions v ON v.installation_id=s.installation_id AND v.generation=s.generation
       AND v.source_id=s.id AND v.version=s.current_version WHERE s.installation_id=? AND s.generation=? AND s.id=?
-      AND s.revision=? AND s.status='active' AND s.origin='owner_note' AND $gate`, input.text, hash, input.occurredAt, ...this.keys(), id, expected),
+      AND s.revision=? AND s.status='active' AND s.origin=? AND $gate`, input.text, hash, input.occurredAt, ...this.keys(), id, expected, origin),
             s(`UPDATE assistant_sources SET revision=revision+1,current_version=current_version+1
-      WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND origin='owner_note' AND $gate
-      RETURNING id,revision,current_version AS version`, ...this.keys(), id, expected), this.change(s, id, expected, "corrected", now)];
+      WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND origin=? AND $gate
+      RETURNING id,revision,current_version AS version`, ...this.keys(), id, expected, origin), this.change(s, id, expected, "corrected", now)];
     }
-    async correct(id: string, expected: number, input: {
-        text: string;
-        occurredAt: number;
-    }): Promise<SourceRef> {
+    async correct(id: string, expected: number, input: { text: string; occurredAt: number }): Promise<SourceRef> { return this.correctKind(id,expected,input,"owner_note"); }
+    async correctReport(id: string, expected: number, input: { text: string; occurredAt: number }): Promise<SourceRef> { return this.correctKind(id,expected,input,"owner_report"); }
+    private async correctKind(id: string, expected: number, input: { text: string; occurredAt: number }, origin: "owner_note" | "owner_report"): Promise<SourceRef> {
         this.direct();
         input = { ...input };
         integer(expected, 1);
@@ -172,7 +176,7 @@ export class SourceController {
         integer(now);
         const hash = await sourceTextHash(input.text);
         await this.retirementCheck(id, expected);
-        const results = await this.db.batch(this.correction(this.plain, id, expected, input, hash, now));
+        const results = await this.db.batch(this.correction(this.plain, id, expected, input, hash, now, origin));
         const changed = results[1].results[0] as SourceRef | undefined;
         if (!changed)
             throw new Error("source_revision_conflict");
@@ -217,32 +221,34 @@ export class SourceController {
             return ledger.admit(result, now, guard ? `(${condition}) AND (${guard.sql})` : condition, guard ? [...values, ...guard.values] : values);
         };
         let batch: D1PreparedStatement[];
-        if (item.kind === 'source.create') {
-            const data = await this.prepared(item.input), existing = await this.origin(item.input.originKey);
-            await this.retirement?.allow('owner_note', item.input.originKey);
+        const correctionOrigin = item.kind === 'source.correct_report' ? 'owner_report' : 'owner_note';
+        if (item.kind === 'source.create' || item.kind === 'source.report') {
+            const origin = item.kind === 'source.report' ? 'owner_report' : 'owner_note';
+            const data = await this.prepared(item.input), existing = await this.origin(item.input.originKey, origin);
+            await this.retirement?.allow(origin, item.input.originKey);
             if (existing && existing.request_hash !== data.requestHash)
                 throw new Error("source_origin_conflict");
-            const condition = `NOT EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND origin='owner_note' AND origin_key=?)
+            const condition = `NOT EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND origin=? AND origin_key=?)
         OR EXISTS(SELECT 1 FROM assistant_sources s JOIN assistant_source_admissions a ON a.installation_id=s.installation_id AND a.generation=s.generation AND a.source_id=s.id
-        WHERE s.installation_id=? AND s.generation=? AND s.origin='owner_note' AND s.origin_key=? AND a.request_hash=?)`;
-            batch = [admit({}, condition, [...this.keys(), item.input.originKey, ...this.keys(), item.input.originKey, data.requestHash]),
-                ...this.creation(s, crypto.randomUUID(), data, now),
+        WHERE s.installation_id=? AND s.generation=? AND s.origin=? AND s.origin_key=? AND a.request_hash=?)`;
+            batch = [admit({}, condition, [...this.keys(), origin, item.input.originKey, ...this.keys(), origin, item.input.originKey, data.requestHash]),
+                ...this.creation(s, crypto.randomUUID(), data, now, origin),
                 // Resolve a concurrent origin alias inside the admitting transaction.
                 s(`UPDATE assistant_owner_commands SET result_json=(SELECT json_object('operationId',?,'kind',?,'id',id,'revision',1,'version',1,'shadow',json('true'))
-          FROM assistant_sources WHERE installation_id=? AND generation=? AND origin='owner_note' AND origin_key=?)
-          WHERE installation_id=? AND generation=? AND operation_id=? AND $gate`, item.operationId, item.kind, ...this.keys(), item.input.originKey, ...this.keys(), item.operationId)];
+          FROM assistant_sources WHERE installation_id=? AND generation=? AND origin=? AND origin_key=?)
+          WHERE installation_id=? AND generation=? AND operation_id=? AND $gate`, item.operationId, item.kind, ...this.keys(), origin, item.input.originKey, ...this.keys(), item.operationId)];
         }
         else {
             const row = await this.statement(`SELECT id,revision,current_version AS version FROM assistant_sources WHERE installation_id=? AND generation=? AND id=?`, ...this.keys(), item.id).first<SourceRef>();
             if (!row)
                 throw new Error("source_revision_conflict");
             await this.retirementCheck(item.id, item.expectedRevision);
-            const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' ? 1 : 0), shadow: true };
+            const result: SourceCommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, revision: item.expectedRevision + 1, version: row.version + (item.kind === 'source.correct' || item.kind === 'source.correct_report' ? 1 : 0), shadow: true };
             // A future expectedRevision must not make a previously read version
             // valid after somebody else's correction wins before this batch.
-            batch = [admit(result, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' ? "AND origin='owner_note'" : "AND origin<>'owner_request'"})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
-            if (item.kind === 'source.correct')
-                batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now));
+            batch = [admit(result, `EXISTS(SELECT 1 FROM assistant_sources WHERE installation_id=? AND generation=? AND id=? AND revision=? AND status='active' AND current_version=? ${item.kind === 'source.correct' || item.kind === 'source.correct_report' ? `AND origin='${correctionOrigin}'` : "AND origin<>'owner_request'"})`, [...this.keys(), item.id, item.expectedRevision, row.version])];
+            if (item.kind === 'source.correct' || item.kind === 'source.correct_report')
+                batch.push(...this.correction(s, item.id, item.expectedRevision, item, await sourceTextHash(item.text), now, correctionOrigin));
             else
                 batch.push(...this.updatePlan(s, item.id, item.expectedRevision, 'access_changed', "audience=?", [item.audience], now));
             // A restored public/restricted audience is historical until this

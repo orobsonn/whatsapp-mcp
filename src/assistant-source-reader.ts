@@ -1,10 +1,13 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { readConversationActivity } from "./conversation-activity";
 import { z } from "zod";
 import type { Env } from "./env";
 import { assertActive, currentFence, safeEqual } from "./core";
-import { resolveRuntimeEnv } from "./connection";
+import { resolveRuntimeEnv, runtimeConnectionGuard } from "./connection";
+import {snapshotProofRequest,snapshotFields,snapshotDigest,blockedObservation,PROOF_PAGE_BYTES,type CaptureIdentity,type CaptureReference,type SnapshotProofPage} from "./capture-snapshot-contract";
 import {readRecipientEnvelope} from './assistant-recipient-reader';
 import {readCaptureConversationSearch} from './assistant-search-reader';
+import {readNativeCaptureInput} from './native-input-reader';
 
 const MAX_BYTES = 32768;
 const id = z.string().min(1).max(256);
@@ -88,14 +91,21 @@ export async function readCaptureSnapshot(rawEnv: Env, input: unknown): Promise<
   try { assertActive(env); } catch { return { observation: "capture_snapshot", state: "blocked", reason: "reader_unavailable" }; }
   const fence = currentFence(env);
   if (query.sourceEpoch !== fence.epoch || query.sourceGeneration !== fence.generation) throw new Error("reader_denied");
-  const base: CaptureSnapshot = { observation: "capture_snapshot", state: "blocked", sourceEpoch: fence.epoch,
-    sourceGeneration: fence.generation, sourceKind: query.sourceKind, sourceId: query.sourceId, chatId: query.chatId, watermark: null };
+  const base = snapshotBase(query,fence);
   let row: SnapshotRow | null;
   try {
-    row = await env.DB.prepare(snapshotSql(query.sourceKind)).bind(
-      ...(query.sourceKind === "conversation" ? [] : [query.sourceId]), query.chatId, fence.epoch, fence.generation,
-    ).first<SnapshotRow>();
+    row = await snapshotStatement(env.DB,query,fence).first<SnapshotRow>();
   } catch { return { ...base, reason: "source_unavailable" }; }
+  return projectSnapshot(base,query,row);
+}
+function snapshotBase(query:CaptureReference,fence:{epoch:string;generation:string}):CaptureSnapshot {
+ return { observation: "capture_snapshot", state: "blocked", sourceEpoch: fence.epoch,
+    sourceGeneration: fence.generation, sourceKind: query.sourceKind, sourceId: query.sourceId, chatId: query.chatId, watermark: null };
+}
+function snapshotStatement(db:D1Database,query:CaptureReference,fence:{epoch:string;generation:string}){
+ return db.prepare(snapshotSql(query.sourceKind)).bind(...(query.sourceKind==='conversation'?[]:[query.sourceId]),query.chatId,fence.epoch,fence.generation);
+}
+function projectSnapshot(base:CaptureSnapshot,query:CaptureReference,row:SnapshotRow|null):CaptureSnapshot {
   if (!row) return { ...base, state: "withdrawn", reason: "conversation_missing" };
   base.watermark = row.watermark; base.sourceVersion = row.source_version;
   base.conversationKind = row.conversation_kind === "individual" ? "private" : "group";
@@ -133,6 +143,43 @@ export async function readCaptureSnapshot(rawEnv: Env, input: unknown): Promise<
   return new TextEncoder().encode(JSON.stringify(result)).length > MAX_BYTES ? blocked("snapshot_too_large") : result;
 }
 
+/** Hash-only private proof page. Two consistent D1 observations detect source
+ * changes while hashing; no message/document body crosses this RPC. */
+export async function readCaptureSnapshotProofs(rawEnv:Env,input:unknown):Promise<SnapshotProofPage>{
+ let serialized:string;try{serialized=JSON.stringify(input);}catch{throw Error('reader_invalid_input');}
+ if(new TextEncoder().encode(serialized).length>PROOF_PAGE_BYTES)throw Error('reader_invalid_input');
+ const parsed=snapshotProofRequest.safeParse(JSON.parse(serialized));if(!parsed.success)throw Error('reader_invalid_input');
+ const q=parsed.data,secret=rawEnv.ASSISTANT_READER_SECRET;
+ if(typeof secret!=='string'||secret.length<32||!await safeEqual(secret,q.secret))throw Error('reader_denied');
+ const blocked=(reason:'reader_unavailable'|'reader_changed'|'source_unavailable'):SnapshotProofPage=>({observation:'capture_snapshot_proofs',state:'blocked',reason});
+ const env=await resolveRuntimeEnv(rawEnv);try{assertActive(env);}catch{return blocked('reader_unavailable');}
+ const fence=currentFence(env);if(q.sourceEpoch!==fence.epoch||q.sourceGeneration!==fence.generation)throw Error('reader_denied');
+ const identities:CaptureIdentity[]=q.refs.map(ref=>({...ref,sourceEpoch:fence.epoch,sourceGeneration:fence.generation}));
+ const project=(results:D1Result<SnapshotRow>[])=>{
+  if(results.length!==q.refs.length||results.some(r=>!r.success))throw Error('source_batch_unavailable');
+  return results.map((r,i)=>snapshotFields(projectSnapshot(snapshotBase(q.refs[i],fence),q.refs[i],r.results[0]??null),identities[i]));
+ };
+ try{
+  const connection=await runtimeConnectionGuard(env);
+  const first=project(await env.DB.batch<SnapshotRow>(q.refs.map(ref=>snapshotStatement(env.DB,ref,fence))));
+  const hashes=await Promise.all(first.map(p=>p.digestInput===undefined?null:snapshotDigest(p.digestInput)));
+  // The final Source snapshot and dynamic connection guard share a D1 batch.
+  const final=await env.DB.batch([...q.refs.map(ref=>snapshotStatement(env.DB,ref,fence)),env.DB.prepare(`SELECT CASE WHEN (${connection.sql}) THEN 1 ELSE 0 END current`).bind(...connection.values)]);
+  const runtime=final.at(-1)?.results[0] as {current?:number}|undefined;
+  if(!runtime||runtime.current!==1||rawEnv.ASSISTANT_READER_SECRET!==secret||rawEnv.INSTALLATION_EPOCH!==fence.epoch||rawEnv.MAINTENANCE==='true')return blocked('reader_changed');
+  // No awaits after this point: comparisons refer to the final observation.
+  const after=project(final.slice(0,-1) as D1Result<SnapshotRow>[]);
+  const items=after.map((p,i)=>{
+   const before=first[i],a=before.observation,b=p.observation;
+   const stable=before.digestInput===p.digestInput&&a.state===b.state&&a.reason===b.reason&&a.kind===b.kind&&a.sourceVersion===b.sourceVersion&&a.conversationWithdrawn===b.conversationWithdrawn;
+   const observed=b.state==='withdrawn'?b:stable?{...b,hash:hashes[i]}:blockedObservation('snapshot_changed');
+   const {content,...proof}=observed;return {...q.refs[i],...proof};
+  });
+  const result:SnapshotProofPage={observation:'capture_snapshot_proofs',state:'available',sourceEpoch:fence.epoch,sourceGeneration:fence.generation,items};
+  return new TextEncoder().encode(JSON.stringify(result)).length>PROOF_PAGE_BYTES?blocked('source_unavailable'):result;
+ }catch{return blocked('source_unavailable');}
+}
+
 /** Bootstrap only through the named read capability with its fresh shared key.
  * No body, provider credential, phone, URL or public HTTP endpoint is involved. */
 export async function readInstallationAffinity(rawEnv: Env, input: unknown): Promise<CaptureInstallationAffinity> {
@@ -151,8 +198,31 @@ export async function readInstallationAffinity(rawEnv: Env, input: unknown): Pro
   return { observation: "capture_installation_affinity", state: "available", fence };
 }
 
+/** Prospective cutoff on the Source stream, including changes not yet received by Own. */
+export async function readCaptureStreamHead(rawEnv: Env,input:unknown) {
+  const parsed=z.object({secret:z.string().max(256),sourceEpoch:id,sourceGeneration:id}).strict().safeParse(input);
+  if(!parsed.success)throw Error('reader_invalid_input');
+  const secret=rawEnv.ASSISTANT_READER_SECRET;
+  if(typeof secret!=='string'||secret.length<32||!await safeEqual(secret,parsed.data.secret))throw Error('reader_denied');
+  const env=await resolveRuntimeEnv(rawEnv),blocked=(reason:string)=>({observation:'capture_stream_head' as const,state:'blocked' as const,reason});
+  try{assertActive(env);}catch{return blocked('reader_unavailable');}
+  const fence=currentFence(env);
+  if(fence.epoch!==parsed.data.sourceEpoch||fence.generation!==parsed.data.sourceGeneration)throw Error('reader_denied');
+  const sequence=await env.DB.prepare('SELECT COALESCE(MAX(sequence),0) n FROM assistant_capture_changes WHERE epoch=? AND generation=?').bind(fence.epoch,fence.generation).first<number>('n');
+  const current=await resolveRuntimeEnv(rawEnv);try{assertActive(current);}catch{return blocked('reader_unavailable');}
+  if(rawEnv.ASSISTANT_READER_SECRET!==secret||!await safeEqual(secret,parsed.data.secret))throw Error('reader_denied');
+  const after=currentFence(current);
+  if(after.epoch!==fence.epoch||after.generation!==fence.generation)return blocked('reader_changed');
+  if(sequence===null||!Number.isSafeInteger(sequence)||sequence<0)return blocked('source_unavailable');
+  return {observation:'capture_stream_head' as const,state:'available' as const,sourceEpoch:fence.epoch,sourceGeneration:fence.generation,sequence:sequence!};
+}
+
 /** Named RPC capability only. Never bind an agent to the archive's default Fetcher. */
 export class CaptureReader extends WorkerEntrypoint<Env> {
+  readSnapshotProofs(input:unknown){return readCaptureSnapshotProofs(this.env,input);}
+  readNativeInput(input:unknown){return readNativeCaptureInput(this.env,input);}
+  readConversationActivity(input:unknown){return readConversationActivity(this.env,input);}
+  streamHead(input:unknown){return readCaptureStreamHead(this.env,input);}
   searchConversations(input: unknown) { return readCaptureConversationSearch(this.env, input); }
   readRecipientEnvelope(input:unknown){return readRecipientEnvelope(this.env,input);}
   readSnapshot(input: unknown): Promise<CaptureSnapshot> { return readCaptureSnapshot(this.env, input); }

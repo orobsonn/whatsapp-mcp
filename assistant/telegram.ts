@@ -20,7 +20,7 @@ export const telegramReviewCommand=z.discriminatedUnion("kind",[
 const titles={general:"Geral",summaries:"Resumos",pending:"Pendências",missions:"Missões e retornos"};
 type Slot=z.infer<typeof telegramSlot>;
 type Buttons={text:string;callback_data:string}[][];
-export interface TelegramApi { inspect():Promise<boolean>;createTopic(chat:string,name:string):Promise<number>;send(chat:string,thread:number|null,text:string,buttons:Buttons):Promise<number>;answer(id:string):Promise<void> }
+export interface TelegramApi { inspect():Promise<boolean>;createTopic(chat:string,name:string):Promise<number>;send(chat:string,thread:number|null,text:string,buttons:Buttons):Promise<number>;answer(id:string,text?:string):Promise<void> }
 /** Fixed provider surface. No arbitrary URLs, methods or model-visible token. */
 export class TelegramBotApi implements TelegramApi {
  constructor(private token:string|undefined,private bot:string,private fetcher:typeof fetch=fetch,private effectCheck?:()=>Promise<void>,private parseMode?:"HTML"){}
@@ -46,7 +46,7 @@ export class TelegramBotApi implements TelegramApi {
  async createTopic(chat:string,name:string){const result=await this.call("createForumTopic",{chat_id:chat,name}) as {message_thread_id?:number;name?:string};if(result.name!==name)throw new Error("telegram_topic_mismatch");return positive.parse(result.message_thread_id);}
  async send(chat:string,thread:number|null,text:string,buttons:Buttons){const result=await this.call("sendMessage",{chat_id:chat,...(thread===null?{}:{message_thread_id:thread}),text,...(this.parseMode?{parse_mode:this.parseMode}:{}),protect_content:true,...(buttons.length?{reply_markup:{inline_keyboard:buttons}}:{})}) as {message_id?:number;message_thread_id?:number;chat?:{id?:number;type?:string}};
   if(String(result.chat?.id)!==chat||result.chat?.type!=="private"||(thread===null?result.message_thread_id!==undefined:result.message_thread_id!==thread))throw new Error("telegram_message_mismatch");return positive.parse(result.message_id);}
- async answer(id:string){if(await this.call("answerCallbackQuery",{callback_query_id:id,text:"Revisão registrada em modo sombra."})!==true)throw new Error("telegram_answer_unavailable");}
+ async answer(id:string,text="Revisão registrada em modo sombra."){if(await this.call("answerCallbackQuery",{callback_query_id:id,text})!==true)throw new Error("telegram_answer_unavailable");}
 }
 type Notice={id:string;operation_key:string;request_hash:string;fence_json:string;slot:Slot;thread_id:number;decision_id:string;proposal_hash:string;expires_at:number;review_hash:string;simulate_hash:string;state:string;preflights:number;attempt_token:string|null;message_id:number|null;review_state:string};
 type Topic={slot:Slot;fence_json:string;state:string;thread_id:number|null;preflights:number};
@@ -115,10 +115,13 @@ export class TelegramReview {
   let detail:Awaited<ReturnType<ReviewJournal["get"]>>;
   try{if(!await this.api.inspect())throw 0;detail=await this.journal.get(notice.decision_id);if(!("proposal"in detail)||detail.freshness!=="current"||await bridgeHash(detail.proposal)!==notice.proposal_hash)throw 0;}
   catch{await this.sql(`UPDATE assistant_telegram_notifications SET state=CASE WHEN preflights=3 THEN 'failed' ELSE state END WHERE ${ns} AND id=? AND state='prepared'`,...this.keys(),id).run();return {id,state:"blocked"};}
-  const body=`[Sombra · ${titles[notice.slot]}]\n${detail.proposal!.decision==="no_reply"?"Silêncio proposto.":detail.proposal!.text}`;
+  const clarification=detail.proposal!.decision==='waiting_context';
+  if(clarification&&!detail.proposal!.text.trim())return {id,state:'blocked'};
+  const body=clarification?`❓ PRECISO DA SUA ORIENTAÇÃO\n\n${detail.proposal!.text}\n\nNenhuma mensagem foi preparada para enviar. Sua resposta livre ainda não retoma esta análise automaticamente.`:`[Sombra · ${titles[notice.slot]}]\n${detail.proposal!.decision==="no_reply"?"Silêncio proposto.":detail.proposal!.text}`;
   if(new TextEncoder().encode(body).length>4096){await this.sql(`UPDATE assistant_telegram_notifications SET state='failed' WHERE ${ns} AND id=? AND state='prepared'`,...this.keys(),id).run();return {id,state:"failed"};}
-  const buttons:Buttons=[[{text:"Registrar revisão",callback_data:await this.capability(notice,"reviewed")},{text:"Aprovar simulação",callback_data:await this.capability(notice,"simulated")}]];
-  if(await bridgeHash(buttons[0][0].callback_data)!==notice.review_hash||await bridgeHash(buttons[0][1].callback_data)!==notice.simulate_hash){await this.sql(`UPDATE assistant_telegram_notifications SET state='cancelled' WHERE ${ns} AND id=? AND state='prepared'`,...this.keys(),id).run();return {id,state:"cancelled"};}
+  const reviewCap=await this.capability(notice,'reviewed'),simulateCap=await this.capability(notice,'simulated');
+  const buttons:Buttons=clarification?[]:[[{text:"Registrar revisão",callback_data:reviewCap},{text:"Aprovar simulação",callback_data:simulateCap}]];
+  if(await bridgeHash(reviewCap)!==notice.review_hash||await bridgeHash(simulateCap)!==notice.simulate_hash){await this.sql(`UPDATE assistant_telegram_notifications SET state='cancelled' WHERE ${ns} AND id=? AND state='prepared'`,...this.keys(),id).run();return {id,state:"cancelled"};}
   const token=crypto.randomUUID();
   const admitted=await this.journal.admitReview(notice.decision_id,notice.proposal_hash,guard=>{const effect=this.effectGuard();return [this.sql(`UPDATE assistant_telegram_notifications SET state='attempting',attempt_token=? WHERE ${ns} AND id=? AND state='prepared' AND proposal_hash=? AND expires_at>? AND ${guard.sql} AND ${link.sql} AND ${topic.sql} AND (${effect.sql}) RETURNING id`,token,...this.keys(),id,notice.proposal_hash,this.clock(),...guard.values,...link.values,...topic.values,...effect.values)];});
   if(!admitted?.[0].results.length){await this.failPreflight(id);return {id,state:"blocked"};}

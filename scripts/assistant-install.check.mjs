@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, stat, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, stat, readFile, rm, writeFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ const manifest = () => ({ schema: 1, accountId: "ab9f6d8988145943bf8bbab313e45e6
   databaseId: "11111111-1111-4111-8111-111111111111", imageDigest: `registry.cloudflare.com/ab9f6d8988145943bf8bbab313e45e6e/assistant-cognee@sha256:${"a".repeat(64)}`,
   archiveBaseline: { versionId: "22222222-2222-4222-8222-222222222222", settingsHash: "b".repeat(64) } });
 test("artifact rendering is private, idempotent, local-only and refuses a changed plan instead of overwriting", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "assistant-install-check-"));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), "assistant-install-check-"));
   try {
     const result = await renderInstallation(manifest(), directory, "/synthetic/root", "synthetic-head");
     assert.equal(result.state, "rendered_only"); assert.equal(result.deployment, "not_performed");
@@ -19,7 +19,7 @@ test("artifact rendering is private, idempotent, local-only and refuses a change
     await assert.rejects(renderInstallation({ ...manifest(), generation: "other" }, directory, "/synthetic/root", "synthetic-head"));
     const review = JSON.parse(await readFile(join(directory, "review.json"), "utf8")); assert.equal(review.sourceHead, "synthetic-head");
     const config = JSON.parse(await readFile(join(directory, "assistant.wrangler.jsonc"), "utf8"));
-    assert.deepEqual(config.migrations.map(migration => migration.tag), ["flue-runtime-v1", "assistant-shadow-host-v2", "assistant-owner-dialogue-v3"]);
+    assert.deepEqual(config.migrations.map(migration => migration.tag), ["flue-runtime-v1", "assistant-shadow-host-v2", "assistant-owner-dialogue-v3", "assistant-native-conversation-v4"]);
     assert.deepEqual(config.migrations[0].new_sqlite_classes, ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"]);
     assert.deepEqual(config.migrations[2].new_sqlite_classes, ["FlueOwnerDialogueRuntimeAgent"]);
     assert.throws(() => validateAssistantInstallConfig({ ...config, migrations: config.migrations.slice(0, 2) }, "/synthetic/root"));
@@ -29,7 +29,7 @@ test("artifact rendering is private, idempotent, local-only and refuses a change
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 test("bridge credentials are prepared once in private files, recover exact aliases and pin affinity without automatic rotation", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "assistant-install-check-"));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), "assistant-install-check-"));
   try {
     const first = await prepareBridge(manifest(), directory, "/synthetic/root"), assistant = JSON.parse(await readFile(join(directory, "assistant.bridge.secrets.json"), "utf8")), archive = JSON.parse(await readFile(join(directory, "archive.bridge.secrets.json"), "utf8"));
     assert.match(assistant.BRIDGE_SECRET, /^[a-f0-9]{64}$/); assert.equal(archive.ASSISTANT_READER_SECRET, assistant.BRIDGE_SECRET); assert.equal(archive.ASSISTANT_BRIDGE_SECRET, assistant.BRIDGE_SECRET);
@@ -45,7 +45,7 @@ test("bridge credentials are prepared once in private files, recover exact alias
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 test("CLI rejects cloud apply and credential-bearing manifests without printing their values", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "assistant-install-check-"));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), "assistant-install-check-"));
   try {
     const path = join(directory, "manifest.json"); await writeFile(path, JSON.stringify({ ...manifest(), OPENAI_API_KEY: "synthetic-do-not-print" }));
     const result = spawnSync(process.execPath, [new URL("./assistant-install.mjs", import.meta.url).pathname, "plan", "--manifest", path], { encoding: "utf8" });

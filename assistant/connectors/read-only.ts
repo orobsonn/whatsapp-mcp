@@ -9,7 +9,10 @@ export type ReadFetch = (request: Request) => Promise<Response>;
 export type OwnerReadBoundary = { signal?: AbortSignal; deadlineAt: number; check: () => Promise<void>; request?: ReadFetch };
 
 /** No model receives this transport or its credentials. All callers build fixed GET endpoints. */
-export async function readJson(url: URL, headers: HeadersInit, request: ReadFetch, maximum = 262144, timeoutMs = 8000): Promise<unknown> {
+export async function readJson(url: URL, headers: HeadersInit, request: ReadFetch, maximum = 262144, timeoutMs = 8000, beforeRequest?: () => Promise<void>): Promise<unknown> {
+  // An authorization proof may perform its own bounded RPCs. Its caller owns
+  // that deadline; it must not consume the allowance for the subsequent HTTP.
+  await beforeRequest?.();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("connector_timeout")); }, timeoutMs); });

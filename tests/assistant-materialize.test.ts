@@ -95,6 +95,21 @@ it("preserves original and corrected versions while an old event observes curren
   expect((await query("SELECT original_text,author_id FROM assistant_source_versions WHERE installation_id=? AND generation=? ORDER BY version", scope.installationId, scope.generation).all()).results)
     .toEqual([{ original_text: "Synthetic original", author_id: "author" }, { original_text: "Corrected synthetic", author_id: "author" }]);
 });
+it('reconciles a captured image caption after its attachment becomes ready without inventing another capture event',async()=>{
+  snapshots.set('message:message',{...snapshot(),content:{...snapshot().content,kind:'image',text:'What does this warning mean?'}});
+  await event();await materializer.drain();const first=(await canonical())!;
+  snapshots.set('message:message',{...snapshot('message','message',20),content:{...snapshot().content,kind:'image',text:first.original_text,
+    media:{id:'photo',version:1,hash:'b'.repeat(64),size:100,mime:'image/png'}}});
+  snapshots.set('conversation:chat',snapshot('conversation','chat',20));
+  expect(await guard.check((await guard.fence(first.id))!)).toBe(false);
+  expect(await materializer.reconcile(10)).toMatchObject({state:'applied',canonicalId:first.id});
+  expect(await canonical()).toMatchObject({id:first.id,revision:2,current_version:2,original_text:first.original_text});
+  expect(await guard.check((await guard.fence(first.id))!)).toBe(true);
+  await materializer.reconcile(10);
+  expect(await canonical()).toMatchObject({revision:2,current_version:2});
+  expect(await query('SELECT COUNT(*) n FROM assistant_capture_inbox WHERE installation_id=?',scope.installationId).first('n')).toBe(1);
+  expect((await materializer.progress()).received).toBe(10);
+});
 it("stores media and derivative dependencies without downloading a file", async () => {
   const media = snapshot("media", "media");
   const mediaMetadata = { id: "media", version: 1, hash: "a".repeat(64), size: 100, mime: "audio/ogg" };
@@ -119,6 +134,25 @@ it("keeps a gap visible while a later authenticated withdrawal bypasses a failed
   now = 1200;
   expect(await materializer.retry(1)).toMatchObject([{ state: "applied" }]);
   expect(await materializer.progress()).toEqual({ received: 20, evaluated: 20, applied: 20, gaps: 0 });
+});
+it('recovers after more than three failed observations without resetting the original receipt',async()=>{
+  const available=snapshots.get('message:message');snapshots.delete('message:message');
+  await event();expect(await materializer.process(10)).toMatchObject({state:'blocked'});
+  for(let attempt=2;attempt<=3;attempt++){
+    now=(await query('SELECT next_retry_at FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first<number>('next_retry_at'))!;
+    expect(await materializer.retry(1)).toMatchObject([{state:'blocked'}]);
+  }
+  snapshots.set('message:message',available!);
+  now=(await query('SELECT next_retry_at FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first<number>('next_retry_at'))!;
+  expect(await materializer.retry(1)).toMatchObject([{state:'applied'}]);
+  expect(await query('SELECT attempts,state FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first()).toEqual({attempts:4,state:'applied'});
+  expect(await canonical()).toMatchObject({revision:1,current_version:1});
+});
+it('does not reread Source or increment attempts before the persisted retry deadline',async()=>{
+  snapshots.clear();await event();await materializer.process(10);let reads=0;
+  const base=reader.readSnapshot;reader.readSnapshot=async q=>{reads++;return base(q);};
+  expect(await materializer.process(10,true)).toMatchObject({state:'blocked'});
+  expect(reads).toBe(0);expect(await query('SELECT attempts FROM assistant_materialization_results WHERE installation_id=? AND sequence=10',scope.installationId).first('attempts')).toBe(1);
 });
 it("does not resurrect a tombstone even if replay later returns available content", async () => {
   await event(10, 0, "message", "message", "withdraw"); await materializer.drain();

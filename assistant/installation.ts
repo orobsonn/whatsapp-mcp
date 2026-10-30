@@ -17,11 +17,12 @@ const services = [
   { binding: "CAPTURE_READER", service: INSTALLATION.archive, entrypoint: "CaptureReader" },
   { binding: "CAPTURE_MEDIA_READER", service: INSTALLATION.archive, entrypoint: "CaptureMediaReader" },
   { binding: "MEDIA_PDF_PARSER", service: INSTALLATION.pdf, entrypoint: "MediaPdfParser" },
+  { binding: "WHATSAPP_APPROVED_SEND", service: INSTALLATION.archive, entrypoint: "ApprovedSendActuator" },
 ] as const;
 export const INSTALLATION_SECRET_NAMES = Object.freeze({
   assistant: ["BRIDGE_SECRET", "BRIDGE_SOURCE_EPOCH", "BRIDGE_SOURCE_GENERATION", "OPENAI_API_KEY", "RETENTION_BOOTSTRAP_SEAL"],
   archive: ["ASSISTANT_READER_SECRET", "ASSISTANT_BRIDGE_SECRET"],
-  optional: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_BOT_INSTANCE", "GITHUB_READ_TOKEN", "GITHUB_READ_REPOSITORIES", "CALENDAR_READ_CALENDARS",
+  optional: ["WHATSAPP_APPROVED_SEND_SECRET", "ASSISTANT_APPROVED_SEND_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_BOT_INSTANCE", "GITHUB_READ_TOKEN", "GITHUB_READ_REPOSITORIES", "CALENDAR_READ_CALENDARS",
     "CALENDAR_OAUTH_CLIENT_ID", "CALENDAR_OAUTH_CLIENT_SECRET", "CALENDAR_OAUTH_REFRESH_TOKEN", "CALENDAR_OAUTH_ENCRYPTION_KEY", "CALENDAR_OAUTH_CONFIGURATION_VERSION", "CALENDAR_OAUTH_SECRET_EPOCH", "CALENDAR_OAUTH_CREDENTIAL_GENERATION"],
 });
 export function installationConfigs(input: unknown, repositoryRoot: string) {
@@ -32,7 +33,8 @@ export function installationConfigs(input: unknown, repositoryRoot: string) {
     compatibility_date: "2026-10-25", compatibility_flags: ["nodejs_compat"], workers_dev: false, preview_urls: false, observability: { enabled: false },
     migrations: [{ tag: "flue-runtime-v1", new_sqlite_classes: ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] },
       { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) },
-      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] }],
+      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] },
+      { tag: "assistant-native-conversation-v4", new_sqlite_classes: ["FlueConversationRuntimeAgent"] }],
     durable_objects: { bindings: ownBindings.map(binding => ({ ...binding })) },
     containers: [{ name: `${INSTALLATION.worker}-cognee`, class_name: "CogneeContainer", scheduling_policy: "durable_object", images: { cognee: { image: manifest.imageDigest } }, observability: { enabled: false, logs: { enabled: false } } }],
     d1_databases: [{ binding: "DB", database_name: INSTALLATION.database, database_id: manifest.databaseId, migrations_dir: `${root}/assistant/migrations` }],
@@ -54,7 +56,7 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
   const config = z.object({ name: z.literal(INSTALLATION.worker), account_id: z.literal(INSTALLATION.accountId), workers_dev: z.literal(false), preview_urls: z.literal(false),
     routes: z.array(z.never()).optional(), d1_databases: z.tuple([z.object({ binding: z.literal("DB"), database_name: z.literal(INSTALLATION.database), database_id: database,
       migrations_dir: z.string().min(1) }).strict()]), r2_buckets: z.tuple([z.object({ binding: z.literal("ARTIFACTS"), bucket_name: z.literal(INSTALLATION.artifacts) }).strict()]),
-    services: z.array(z.object({ binding: z.string(), service: z.string(), entrypoint: z.string() }).strict()).length(3),
+    services: z.array(z.object({ binding: z.string(), service: z.string(), entrypoint: z.string() }).strict()).length(4),
     durable_objects: z.object({ bindings: z.array(z.object({ name: z.string(), class_name: z.string() }).strict()).length(3) }).strict(),
     containers: z.tuple([z.object({ name: z.literal(`${INSTALLATION.worker}-cognee`), class_name: z.literal("CogneeContainer"), scheduling_policy: z.literal("durable_object"),
       images: z.object({ cognee: z.object({ image }).strict() }).strict(), observability: z.object({ enabled: z.literal(false), logs: z.object({ enabled: z.literal(false) }).strict() }).strict() }).strict()]),
@@ -62,12 +64,13 @@ export function validateAssistantInstallConfig(input: unknown, repositoryRoot: s
       ROUTINES_ENABLED: z.literal("off"), ROUTINES_PAUSED: z.literal("true"), TELEGRAM_SUMMARIES_ENABLED: z.literal("false"), MEDIA_CONTEXT_ENABLED: z.literal("false"), RETENTION_AUTHORITY_REQUIRED: z.literal("true") }).strict(),
     $schema: z.string(), compatibility_date: z.literal("2026-10-25"), compatibility_flags: z.tuple([z.literal("nodejs_compat")]),
     observability: z.object({ enabled: z.literal(false) }).strict(), triggers: z.object({ crons: z.tuple([z.literal("* * * * *")]) }).strict(),
-    migrations: z.array(z.object({ tag: z.string(), new_sqlite_classes: z.array(z.string()) }).strict()).length(3),
+    migrations: z.array(z.object({ tag: z.string(), new_sqlite_classes: z.array(z.string()) }).strict()).length(4),
   }).strict().parse(input);
   if (JSON.stringify(config.services) !== JSON.stringify(services) || JSON.stringify(config.durable_objects.bindings) !== JSON.stringify(ownBindings) ||
     JSON.stringify(config.migrations) !== JSON.stringify([{ tag: "flue-runtime-v1", new_sqlite_classes: ["FlueOwnerRuntimeAgent", "FlueInterlocutorRuntimeAgent"] },
       { tag: "assistant-shadow-host-v2", new_sqlite_classes: ownBindings.map(binding => binding.class_name) },
-      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] }])) throw new Error("installation_capability_config");
+      { tag: "assistant-owner-dialogue-v3", new_sqlite_classes: ["FlueOwnerDialogueRuntimeAgent"] },
+      { tag: "assistant-native-conversation-v4", new_sqlite_classes: ["FlueConversationRuntimeAgent"] }])) throw new Error("installation_capability_config");
   if (config.vars.ARTIFACTS_INSTALLATION_ID !== config.vars.INSTALLATION_ID || config.vars.ARTIFACTS_GENERATION !== config.vars.OPERATIONAL_GENERATION) throw new Error("installation_artifact_affinity");
   const root = repositoryRoot.replace(/\/$/, "");
   if (config.d1_databases[0].migrations_dir !== `${root}/assistant/migrations` || config.$schema !== `${root}/node_modules/wrangler/config-schema.json`) throw new Error("installation_config_path");

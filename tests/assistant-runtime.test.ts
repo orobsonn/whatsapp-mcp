@@ -1,3 +1,4 @@
+import { createExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import assistant from "../assistant/index";
 
@@ -8,12 +9,13 @@ describe("assistant shadow boundary", () => {
     const response = await assistant.fetch(
       new Request("https://assistant.example/health"),
       {},
+      createExecutionContext(),
     );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       mode: "shadow",
-      capabilities: { whatsappSend: false, calendarWrite: false },
+      capabilities: { whatsappSend: false, whatsappAutonomousSend: false, calendarWrite: false },
     });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
@@ -40,6 +42,7 @@ describe("assistant shadow boundary", () => {
         ...(method !== "GET" ? { body: '{"approved":true,"mode":"live"}' } : {}),
       }),
       {},
+      createExecutionContext(),
     );
 
     expect(response.status).toBe(403);

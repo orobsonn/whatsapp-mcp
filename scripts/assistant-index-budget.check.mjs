@@ -28,7 +28,7 @@ async function fixture(origin,warm,mutation){
   if(sql.startsWith("SELECT 1 FROM assistant_retention_installation_gate"))return null;
   if(sql.startsWith("SELECT s.id")){const id=values[2];seen.add(id);if(state.withdrawn===id||state.revoked===id)return null;return {id,revision:1,version:1,content_hash:"a".repeat(64),audience:"owner",origin,conversation_id:origin==="whatsapp"?"chat":null,project_id:null,original_text:"PRIVATE-DO-NOT-RETURN",author_id:null,author_label:null,occurred_at:1};}
   if(sql.startsWith("SELECT 1 WHERE"))return state.revoked!==null&&values.includes(state.revoked)?null:{allowed:1};
-  if(sql.startsWith("SELECT o.source_kind")){const id=values[4];return {source_kind:"message",source_id:id,chat_id:"chat",watermark:10,observation_hash:hashes.get(id),revision:1,current_version:1,kind:"private",chat_watermark:10,access_state:"available",policy_kind:null,policy_revision:0,policy_mode:"attend"};}
+  if(sql.startsWith("SELECT o.canonical_id,o.source_kind")){const id=values[4];return {canonical_id:id,source_kind:"message",source_id:id,chat_id:"chat",watermark:10,observation_hash:hashes.get(id),revision:1,current_version:1,kind:"private",chat_watermark:10,access_state:"available",policy_kind:null,policy_revision:0,policy_mode:"attend"};}
   throw Error("unexpected_SQL");
  };
  const env={INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,OPENAI_API_KEY:"synthetic-never-used",BRIDGE_SECRET:"synthetic",BRIDGE_SOURCE_EPOCH:"epoch",BRIDGE_SOURCE_GENERATION:"capture"};

@@ -2,19 +2,35 @@ import type { AssistantEnv } from "./env";
 import { receiveCapture } from "./ingress";
 import { receiveTelegram } from "./telegram-webhook";
 import { runScheduledAssistant } from "./scheduler";
+import {importArchivedReference} from './archive-import';
 export { CogneeContainer, CogneeBroker } from "./container";
 
 export default {
   async scheduled(_controller: ScheduledController, env: AssistantEnv, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
+      if(env.NATIVE_CONVERSATIONS_MODE&&env.NATIVE_CONVERSATIONS_MODE!=='off'){
+        const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+        const host=new NativeApplicationHost(env);
+        // Pausing inference/effects must not strand physical cleanup of an
+        // already tombstoned native context. This path never admits input.
+        if(env.ROUTINES_PAUSED==='true')await host.sweepRetiredContexts();
+        else await host.tick();
+        // One inference path per input. Legacy materialization and native
+        // canonical intake share the same capture store, never duplicate jobs.
+        return;
+      }
       if (env.TELEGRAM_OWNER_DIALOGUE_ENABLED === "shadow") {
         const { tickOwnerDialogues } = await import("./telegram-dialogue-runtime");
         await tickOwnerDialogues(env);
       }
       await runScheduledAssistant(env);
+      if(env.WHATSAPP_APPROVED_SEND_ENABLED==='true'&&env.ROUTINES_PAUSED!=='true'){
+        const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+        await (await createTelegramApprovedSendReview(env,{installationId:env.INSTALLATION_ID!,generation:env.OPERATIONAL_GENERATION!,sourceEpoch:env.BRIDGE_SOURCE_EPOCH!,sourceGeneration:env.BRIDGE_SOURCE_GENERATION!})).reconcile();
+      }
     })());
   },
-  async fetch(request: Request, env: AssistantEnv): Promise<Response> {
+  async fetch(request: Request, env: AssistantEnv, ctx: ExecutionContext): Promise<Response> {
     const headers = {
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
@@ -23,14 +39,24 @@ export default {
       return Response.json(
         {
           mode: "shadow",
-          capabilities: { whatsappSend: false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
+          capabilities: { whatsappSend: env.WHATSAPP_APPROVED_SEND_ENABLED==='true'&&!!env.WHATSAPP_APPROVED_SEND&&env.ROUTINES_PAUSED!=='true',whatsappAutonomousSend:false, calendarWrite: env.CALENDAR_OAUTH_PERMISSION === "write_owned" && !!env.CALENDAR_WRITE_CALENDAR },
         },
         { headers },
       );
     }
 
     if (request.method === "POST" && new URL(request.url).pathname === "/internal/capture")
-      return receiveCapture(request, env);
+      return receiveCapture(request, env, async sequence => {
+        // The Source bridge waits only for the durable metadata receipt. Its
+        // 2s transport deadline must not cancel canonical/native admission.
+        // waitUntil extends this attempt; the durable inbox/cron owns recovery.
+        ctx.waitUntil((async()=>{
+          const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+          await new NativeApplicationHost(env).receiveCapture(sequence);
+        })().catch(()=>{/* Closed admission gaps remain in the durable inbox. */}));
+      });
+
+    if(new URL(request.url).pathname==='/internal/archive-import')return importArchivedReference(request,env);
 
     if (request.method === "POST" && new URL(request.url).pathname === "/webhooks/telegram")
       return receiveTelegram(request, env);

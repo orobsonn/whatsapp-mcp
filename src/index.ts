@@ -18,6 +18,7 @@ import {
   publicOrigin,
 } from "./auth";
 import { ingestEvent, ingestStatus, normalizeZapiEvent } from "./capture";
+import { observeAuthenticatedRelationshipCallback } from "./conversation-activity";
 import { getAction, approveAction, reconcileActions } from "./actions";
 import { mcpFetch } from "./mcp";
 import { getChat } from "./store";
@@ -111,12 +112,14 @@ async function webhook(
   if (body.connectedPhone !== env.CONNECTED_PHONE || !env.CONNECTED_PHONE)
     throw new AppError("device_changed", 403);
   try {
+    const event=normalizeZapiEvent(body);
     const result = await ingestEvent(
       env,
       currentFence(env),
-      normalizeZapiEvent(body),
+      event,
       true,
     );
+    await observeAuthenticatedRelationshipCallback(env,body);
     return json({ accepted: true, captured: result.captured });
   } catch (error) {
     // No payload, names, addresses or exception messages in metrics. DB outages may also prevent this counter.
@@ -464,5 +467,6 @@ export default {
 };
 
 export { CaptureReader } from "./assistant-source-reader";
+export { ApprovedSendActuator } from "./assistant-approved-send";
 export { CaptureMediaReader } from "./assistant-media-reader";
 export { OAuthCoordinator } from "./oauth-coordinator";

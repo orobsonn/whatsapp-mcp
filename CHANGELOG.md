@@ -4,6 +4,46 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-30
+
+### Added
+- Sessões contínuas nativas do Flue por conversa WhatsApp e uma sessão do dono no Telegram entre tópicos. A IA escolhe ferramentas, consulta originais e conhecimento, aprende relações e pode responder, silenciar ou pedir orientação.
+- Cognee compartilhado entre bots, curador e GPT pelo MCP existente `assistente_memoria`, com entidades, relações, evidências e operações idempotentes de consulta, ensino, correção e retirada.
+- Curador nativo incremental com janela civil America/Fortaleza, decisões de aprendizado da IA, recibos por fonte e resumo privado. Rotina habilitada para03:00; transição de resumo diário para somente erros/ajuda exige confirmação posterior do dono.
+- Sugestões WhatsApp no Telegram mostram destinatário, mensagem ou tipo do anexo recebido, legenda verificável, resumo da IA e resposta integral. A aprovação vale somente para aquele texto/destino; descarte não envia.
+- Conversas individuais são analisadas por padrão com exclusões persistentes; grupos entram por inclusão explícita e podem receber sugestões relevantes sem menção. Leitura autorizada de outra conversa não concede permissão para participar dela.
+- Ferramentas nativas GitHub somente leitura, Calendar com títulos e gestão autorizada de eventos próprios únicos, além de missões/retornos explicitamente vinculados à sessão do dono. Agendamento não executa o backlog legado de FUP.
+
+### Changed
+- DeepSeek selecionada como padrão das sessões e da interpretação visual, preservando histórico Flue, ferramentas, reservas e recibos anteriores.
+- O contexto fixo de três textos/8KiB foi substituído por busca e leitura paginadas escolhidas pelo agente, com continuidade/compaction nativas. Paginação operacional não é limite total do acervo.
+- Inferência mantém reserva antes do transporte, recibos e teto histórico global de testes; dados financeiros incertos não são apagados por retomada, migração ou retirada de contexto.
+
+### Fixed
+- Validade de autorização de envio é conferida após o retorno do Own; consulta lenta não invalida prova recém-emitida nem aceita prova vencida em trânsito. Aprovação, limite de validade e claim único permanecem obrigatórios.
+- `assistente_controlar` diferencia a ausência da política necessária a `fup.put` de uma falha interna genérica; datas com timezone, referências e replays foram verificados sem executar follow-ups reais.
+- Conversas nativas herdam a recuperação do Flue após interrupção. A leitura de mídia remove uma conferência completa duplicada, preservando a releitura da fonte, a autorização posterior e o guard final. As etapas internas da percepção conferem a tarefa e o arquivo, mantendo a verificação completa do histórico na entrada/saída e antes de seu uso.
+- Materialização de captura volta a tentar leituras indisponíveis após três falhas, com backoff persistido e sem reativar mensagens já respondidas. O agendador respeita o próximo prazo antes de ocupar a fila.
+- Leitura de imagens respeita o provedor DeepSeek selecionado, conserva recibos e reutiliza o mesmo arquivo. Legenda original acompanha a interpretação, inclusive quando o anexo fica pronto depois; recuperação de entrada já respondida termina sem nova inferência.
+- Recebimento confirma o registro durável antes da admissão nativa, com recuperação da ponte sem confundir ACK com processamento pela IA.
+- Primeira identidade de cada entrada Telegram e canal do dono são fixados atomicamente; replay anterior à retirada não reabre contexto removido. Falha de turno do SDK não descarta a próxima entrada válida.
+- Correção/retirada de fontes invalida uso e aprovação em contextos dependentes, incluindo histórico/compaction. Purga preserva recibos mínimos, custos e tombstones de idempotência.
+- Resposta manual, entrada nova, alteração de destino/autorização ou prova telefone/LID contraditória invalidam propostas. Source conserva preparo idempotente, claim único e reconciliação de aceito/entregue/incerto, sem repetir efeitos incertos.
+- Prévia de imagens/PDFs usa observação Source autenticada; metadados e interpretação visual não são exibidos como citação literal. Assinaturas de nome e conteúdo recebido são escapados corretamente no Telegram.
+- Curadoria confirma páginas em uma chamada com resultados por item, conserva recusas/pendências e evita chamadas paralelas redundantes. Prazo total artificial de120s foi retirado; cancelamento e proteção operacional nativa permanecem.
+- Aviso do curador conclui a revisão remota antes do prazo de transporte Telegram, conserva a verificação local final de todas as dependências e impede envio tardio depois de cancelamento ou pausa.
+
+### Validation
+- Imagem real interpretada pelo DeepSeek no Worker e explicada no Telegram; recuperação da legenda, ausência de legenda e reutilização/retirada do arquivo verificadas separadamente. Evidência185.
+- MCP real criou relações consultadas pelo bot; correção e retirada foram verificadas em nova resposta e os dados fictícios foram limpos. Curador escolheu cinco relações legítimas posteriormente consultadas pelo MCP. Evidências158 e160.
+- Bot real explicou código GitHub, consultou títulos/horários, criou/editou/excluiu o mesmo evento Calendar com leitura independente no Google e enviou lembrete confirmado pelo dono. Evidências161,165 e166.
+- Curadoria real concluiu no Flue com cobertura parcial:158avaliadas,1aprendizado creditado,88indisponíveis e204lacunas de captura explícitas. O agente gravou memória adicional recuperada pelo MCP; o resumo anterior desse dia já estava aceito, sem novo aviso nesta retomada. Evidências170 e187.
+- Pergunta real ao dono recebeu orientação vinculada, retomou a mesma conversa e gerou sugestão. O dono aprovou; após corrigir o relógio da autorização, a mesma ação foi retomada operacionalmente e aceita pelo provedor, com uma mensagem enviada capturada e texto exato. Isso não comprova entrega/leitura nem callback ininterrupto após a correção. Evidência188.
+
+### Notes
+- Marco de uso em aprovação: continuidade, ferramentas, memória compartilhada, orientação e envio aprovado possuem provas reais. Curadoria conserva cobertura parcial. Crescimento/restauração, divulgação e decisões de autonomia também têm ensaios controlados, sem promessa de escala ilimitada ou confidencialidade perfeita. Custos medidos e projeção permanecem separados de fatura reconciliada.
+- Respostas autônomas permanecem desligadas. Aceito pelo provedor não equivale a entregue/lido. Contratação de infraestrutura não foi autorizada por esta implementação.
+
 ## [0.51.0] - 2026-10-28
 
 ### Added

@@ -1,5 +1,5 @@
 import { init } from "@flue/runtime";
-import { OwnerRuntime, InterlocutorRuntime } from "./profiles";
+import { OwnerRuntime, InterlocutorRuntime } from "./entry";
 const valid = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 /** Host-only address construction. Admission/authorization belongs to #44;
  * an address, a receipt and a validated proposal are separate states. */

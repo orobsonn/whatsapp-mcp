@@ -27,6 +27,8 @@ import { retentionServices, assertRestoredGeneration } from "./retention-runtime
 import { snapshotCommand } from "./retention-snapshot";
 import { restoreCommand } from "./retention-restore-contract";
 import { OwnerOnce } from "./owner-once";
+import {knowledgeCommand} from './knowledge/contracts';
+import {configuredKnowledge} from './knowledge/configured';
 
 const id = z.string().min(1).max(256);
 export const ownerAffinitySchema = z.object({ installationId: id, generation: id, sourceEpoch: id, sourceGeneration: id }).strict();
@@ -50,6 +52,8 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  nativeReplyAuthorization?(expected:OwnerAffinity,input:import('../src/native-reply-contract').NativeReplyAuthorizationRequest):Promise<import('../src/native-reply-contract').NativeReplyAuthorization>;
+  approvedSendAuthorization(expected: OwnerAffinity, input: {secret:string;approvalId:string;actionId:string;hash:string}): Promise<import('../src/approved-send-contract').ApprovedSendAuthorization>;
   installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
   retention?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   ownerOnce?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
@@ -57,6 +61,7 @@ export interface OwnerAssistantRPC {
   telegramReview(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   evaluate(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   source(expected: OwnerAffinity, command: unknown): Promise<unknown>;
+  knowledge?(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   control(expected: OwnerAffinity, command: unknown): Promise<unknown>;
   query(expected: OwnerAffinity, input: unknown): Promise<unknown>;
 }
@@ -93,7 +98,7 @@ export class OwnerQueries {
       if (first.fence.source.origin === "whatsapp") {
         const fence = await this.origin?.fence(query.id);
         if (!fence || !await this.origin?.check(fence)) return { state: "unavailable", reason: "origin_unavailable" };
-      } else if (first.fence.source.origin !== "owner_note") return { state: "unavailable", reason: "origin_guard_unavailable" };
+      } else if (first.fence.source.origin !== "owner_note" && first.fence.source.origin !== "owner_report") return { state: "unavailable", reason: "origin_guard_unavailable" };
       const current = await access.read(actor, query.id, first.fence.source.revision);
       if (!current || JSON.stringify(current) !== JSON.stringify(first)) return { state: "unavailable", reason: "source_changed" };
       const canonicalCandidates=await readOwnerCanonical(this.db,this.scope,current,{origin:this.origin});
@@ -173,6 +178,16 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     const scope = this.#affinity(expected);
     return (await createTelegramReview(this.env, scope)).execute(command);
   }
+  async approvedSendAuthorization(expected:OwnerAffinity,input:{secret:string;approvalId:string;actionId:string;hash:string}){
+    const scope=this.#affinity(expected);
+    const {createTelegramApprovedSendReview}=await import('./telegram-approved-send');
+    return (await createTelegramApprovedSendReview(this.env,scope)).authorize(input);
+  }
+  async nativeReplyAuthorization(expected:OwnerAffinity,input:import('../src/native-reply-contract').NativeReplyAuthorizationRequest){
+    this.#affinity(expected);
+    const {NativeApplicationHost}=await import('./agent-runtime/native-host'),host=new NativeApplicationHost(this.env);
+    return input.authority.kind==='human_approval'?(await host.review()).authorize(input):host.actions().authorize(input);
+  }
   async ownerOnce(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);
     return new OwnerOnce(this.env, scope).execute(command);
@@ -180,6 +195,10 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   async source(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
     return new SourceController(this.env.DB!, scope, { kind: "owner" }, Date.now, configuredRetirementGuard(this.env)).execute(input);
+  }
+  async knowledge(expected:OwnerAffinity,input:unknown){
+    const scope=this.#affinity(expected),command=knowledgeCommand.parse(input);
+    return configuredKnowledge(this.env,scope,'owner_mcp').execute(command);
   }
   async retention(expected: OwnerAffinity, raw: unknown) {
     const scope = this.#affinity(expected), input = z.union([purgeCommand, objectCommand, snapshotCommand, restoreCommand]).parse(raw);

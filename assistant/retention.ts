@@ -3,12 +3,13 @@ import { bridgeHash } from "./ingress";
 import type { TrustedActor } from "./access";
 import type { SourceScope } from "./sources";
 import { canonicalSnapshotTables, financialTables } from "./retention-snapshot-contract";
+import { nativeConversationChildTables } from "./retention-namespace";
 
 const chunkBytes = 24576;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const stateSchema = z.object({ version: z.literal(2), scope: digest, schema: digest, table: z.number().int().nonnegative().safe(),
   row: z.number().int().safe().nullable(), offset: z.number().int().nonnegative().safe(), hash: digest.nullable() }).strict();
-const installationWide = new Set(["assistant_budget_accounts", "assistant_budget_reservations", "assistant_retention_barriers", "assistant_retention_installation_gate", "assistant_retention_runtime_hold", "assistant_retention_active_generation"]);
+const installationWide = new Set([...financialTables, "assistant_retention_barriers", "assistant_retention_installation_gate", "assistant_retention_runtime_hold", "assistant_retention_active_generation"]);
 type CursorState = z.infer<typeof stateSchema>;
 const encode = (bytes: Uint8Array) => {
   let binary = "";
@@ -32,7 +33,9 @@ export class AssistantExport {
   private async catalog() {
     // The archive Worker has two transport tables using this prefix. They belong
     // to its source namespace, never to the assistant's restorable DB catalog.
-    const catalogRows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors') ORDER BY name LIMIT 129")
+    // The fixed archive FTS index and its shadows are rebuilt from canonical
+    // versions and must never be exported or restored as source authority.
+    const catalogRows = (await this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' AND name NOT IN ('assistant_capture_changes','assistant_bridge_cursors','assistant_archive_text','assistant_archive_text_data','assistant_archive_text_idx','assistant_archive_text_docsize','assistant_archive_text_config') ORDER BY name LIMIT 129")
       .all<{ name: string; sql: string }>()).results;
     if (catalogRows.length > 128 || catalogRows.some(row => !/^assistant_[a-z0-9_]+$/.test(row.name) || /WITHOUT\s+ROWID/i.test(row.sql))) throw new Error("export_schema_unsupported");
     const rows = this.purpose === "all" ? catalogRows : catalogRows.filter(row => canonicalSnapshotTables.has(row.name) || financialTables.has(row.name));
@@ -42,7 +45,10 @@ export class AssistantExport {
     const metadata = rows.length ? await this.db.batch(rows.map(row => this.db.prepare(`PRAGMA table_info("${row.name}")`))) : [];
     const unsupported = metadata.flatMap((result, index) => {
       const names = new Set(result.results.map(row => z.object({ name: z.string() }).parse(row).name.toLowerCase()));
-      return !names.has("installation_id") || (!installationWide.has(rows[index].name) && !names.has("generation")) || ["rowid", "_rowid_", "oid", "__export_row"].some(name => names.has(name)) ? [rows[index].name] : [];
+      const scoped = nativeConversationChildTables.has(rows[index].name)
+        ? names.has("conversation_id") && rows.some(row => row.name === "assistant_native_conversations")
+        : names.has("installation_id") && (installationWide.has(rows[index].name) || names.has("generation"));
+      return !scoped || rows[index].name === "assistant_native_conversations" && !names.has("id") || ["rowid", "_rowid_", "oid", "__export_row"].some(name => names.has(name)) ? [rows[index].name] : [];
     });
     if (unsupported.length) throw new Error("export_schema_unsupported:" + unsupported.join(","));
     return this.catalogCache = { tables: rows.map(row => row.name), hash };
@@ -70,7 +76,10 @@ export class AssistantExport {
     while (state.table < catalog.tables.length && parts.length < input.limit) {
       const table = catalog.tables[state.table];
       const allGenerations = installationWide.has(table);
-      const stored = await this.db.prepare(`SELECT rowid AS __export_row,* FROM ${table} WHERE installation_id=? ${allGenerations ? "" : "AND generation=?"}
+      const predicate = nativeConversationChildTables.has(table)
+        ? "conversation_id IN (SELECT id FROM assistant_native_conversations WHERE installation_id=? AND generation=?)"
+        : `installation_id=? ${allGenerations ? "" : "AND generation=?"}`;
+      const stored = await this.db.prepare(`SELECT rowid AS __export_row,* FROM ${table} WHERE ${predicate}
         AND (? IS NULL OR rowid${state.offset ? "=" : ">"}?) ORDER BY rowid LIMIT 1`)
         .bind(this.scope.installationId, ...(allGenerations ? [] : [this.scope.generation]), state.row, state.row).first<Record<string, unknown> & { __export_row: number }>();
       if (!stored) {

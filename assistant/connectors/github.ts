@@ -26,7 +26,7 @@ export class GitHubReader {
   private readonly repositories: z.infer<typeof githubRepository>[];
   private readonly access: ConnectorAccess;
   constructor(db: D1Database, scope: SourceScope, repositories: unknown, private readonly token?: string,
-    private readonly request: ReadFetch = request => fetch(request), private readonly clock = Date.now) {
+    private readonly request: ReadFetch = request => fetch(request), private readonly clock = Date.now, private readonly beforeRequest?: () => Promise<void>) {
     this.repositories = z.array(githubRepository).max(20).parse(repositories);
     if (new Set(this.repositories.map(item => item.id)).size !== this.repositories.length) throw new Error("github_configuration");
     this.access = new ConnectorAccess(db, scope, clock);
@@ -43,10 +43,10 @@ export class GitHubReader {
       commit: query.commit, path: query.path, audience: "owner" as const, execution: "unconfirmed" as const, deployment: "not_observed" as const };
     try {
       if (repository.ownerId !== undefined) {
-        verifyGitHubOwner(repository, await readJson(new URL(`https://api.github.com/repos/${repository.owner}/${repository.repo}`), headers, this.request, 65536));
+        verifyGitHubOwner(repository, await readJson(new URL(`https://api.github.com/repos/${repository.owner}/${repository.repo}`), headers, this.request, 65536, 8000, this.beforeRequest));
         if (!await this.access.current(actor, fence)) return { state: "unavailable", reason: "source_changed" };
       }
-      const raw = await readJson(url, headers, this.request, query.kind === "github.list" ? 2097152 : 65536);
+      const raw = await readJson(url, headers, this.request, query.kind === "github.list" ? 2097152 : 65536, 8000, this.beforeRequest);
       let result: unknown;
       if (query.kind === "github.read") {
         const file = entry.extend({ encoding: z.literal("base64"), content: z.string().max(45000) }).parse(raw);

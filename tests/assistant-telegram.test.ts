@@ -11,9 +11,9 @@ import linkSchema from "../assistant/migrations/0018_telegram_owner_link.sql?raw
 // @ts-expect-error SQL.
 import reviewSchema from "../assistant/migrations/0021_telegram_review.sql?raw";
 let scope:{installationId:string;generation:string;sourceEpoch:string;sourceGeneration:string},now:number,review:TelegramReview,api:TelegramApi;
-let current:boolean,version:number,beforeAdmission:()=>Promise<void>;
+let current:boolean,version:number,classification:string,questionText:string|undefined,beforeAdmission:()=>Promise<void>;
 const bot="synthetic_bot",secret="synthetic-private-telegram-review-secret",query=(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(scope.installationId,scope.generation,bot,...args);
-const proposal=()=>({decision:"proposed",text:`Synthetic proposal ${version}`});
+const proposal=()=>({decision:classification,text:questionText??`Synthetic proposal ${version}`});
 let journal:Pick<DecisionJournal,"get"|"admitReview">;
 async function activate(){
  const link=new TelegramLink(env.DB,scope,bot,secret,()=>now);
@@ -24,7 +24,7 @@ async function activate(){
  expect(await link.receive(message(2,b.link))).toBe("linked");now+=1000;
 }
 beforeEach(async()=>{
- scope={installationId:crypto.randomUUID(),generation:"g1",sourceEpoch:"epoch",sourceGeneration:"capture"};now=2000000;current=true;version=1;beforeAdmission=async()=>{};
+ scope={installationId:crypto.randomUUID(),generation:"g1",sourceEpoch:"epoch",sourceGeneration:"capture"};now=2000000;current=true;version=1;classification='proposed';questionText=undefined;beforeAdmission=async()=>{};
  await env.DB.exec("CREATE TABLE IF NOT EXISTS assistant_owner_commands (installation_id TEXT,generation TEXT,operation_id TEXT,request_hash TEXT,token TEXT,result_json TEXT,created_at INTEGER,PRIMARY KEY(installation_id,generation,operation_id));CREATE TABLE IF NOT EXISTS telegram_test_sources (installation_id TEXT PRIMARY KEY,revision INTEGER,active INTEGER);");
  for(const sql of [linkSchema,reviewSchema])await env.DB.batch(sql.replace(/^--.*$/gm,"").trim().split(/;\s*(?=CREATE|$)/).filter((s:string)=>s.trim()).map((s:string)=>env.DB.prepare(s)));
  await env.DB.prepare("INSERT INTO telegram_test_sources VALUES(?,1,1)").bind(scope.installationId).run();
@@ -42,6 +42,15 @@ async function notify(key="notice",topic="pending"){
  const result=await review.execute({kind:"notification.prepare",operationId:key,topic,decisionId:"decision-1",expiresAt:now+10000}) as {id:string};return result.id;
 }
 async function sent(){await setup();const id=await notify();expect(await review.execute({kind:"notification.dispatch",id})).toEqual({id,state:"sent"});return id;}
+it('publishes a clarification to the owner without simulation or send buttons',async()=>{
+ classification='waiting_context';const id=await sent();const call=vi.mocked(api.send).mock.calls[0];
+ expect(call[2]).toContain('PRECISO DA SUA ORIENTAÇÃO');expect(call[2]).toContain('Synthetic proposal 1');expect(call[3]).toEqual([]);
+ await review.execute({kind:'notification.dispatch',id});expect(api.send).toHaveBeenCalledTimes(1);
+});
+it.each([{name:'empty',text:'',state:'blocked'},{name:'oversized',text:'x'.repeat(4097),state:'failed'}])('preserves an explicit gap for $name clarification text',async sample=>{
+ classification='waiting_context';questionText=sample.text;await setup();const id=await notify();
+ expect(await review.execute({kind:'notification.dispatch',id})).toEqual({id,state:sample.state});expect(api.send).not.toHaveBeenCalled();
+});
 async function hold(){await env.DB.prepare("INSERT INTO assistant_retention_runtime_hold VALUES(?,'restore','next',1,100) ON CONFLICT DO NOTHING").bind(scope.installationId).run();}
 function callback(action=0){const wire=vi.mocked(api.send).mock.calls[0];return {update_id:100,callback_query:{id:"query-100",from:{id:101,is_bot:false},chat_instance:"synthetic-private",data:wire[3][0][action].callback_data,message:{message_id:200,date:Math.floor(now/1000),message_thread_id:wire[1],chat:{id:101,type:"private"}}}};}
 it("requires completed linking rather than an observed ID",async()=>{

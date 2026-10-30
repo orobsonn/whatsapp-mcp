@@ -52,6 +52,31 @@ it('reserves before inference, persists receipt and reuses without inference whi
   expect(parent).toEqual(before); const evidence = await context.read(owner, parent); expect(evidence?.text).toContain('NÃO'); expect(evidence?.parent.hash).toBe(parent.fence.source.hash); expect(evidence?.textHash).not.toBe(evidence?.parent.hash);
   expect((await budget.status()).committed).toBe(70);
 });
+it('interprets an image with the selected DeepSeek protocol and reuses its exact billed artifact',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(12000);
+ port.mockResolvedValue({status:200,body:JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({observations:'Há um aviso de falha.',pages:[{page:1,state:'readable',text:'Não foi possível atualizar.'}]})}}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}})});
+ const ds=new MediaContext(env.DB,scope,{...options,modelProvider:'deepseek'}),result=await ds.interpret(owner,sourceId);
+ expect(result.state).toBe('complete');expect(await ds.interpret(owner,sourceId)).toEqual(result);expect(port).toHaveBeenCalledTimes(1);
+ expect((await budget.status()).committed).toBe(54);expect(JSON.parse(port.mock.calls[0][0].body).model).toBe('deepseek-flash');
+});
+it('does not bypass an unresolved attempt by changing the media provider configuration',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(600000);port.mockRejectedValue(Error('synthetic unknown acknowledgement'));
+ expect(await context.interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_uncertain'});
+ expect(await new MediaContext(env.DB,scope,{...options,modelProvider:'deepseek'}).interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_prior_attempt_unresolved'});
+ expect(port).toHaveBeenCalledTimes(1);expect((await budget.status()).committed).toBe(530000);
+});
+it('allows only one provider upload when concurrent media configurations passed their earlier checks',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ let readers=0,calls=0,releaseReaders!:()=>void,releaseModels!:()=>void,firstModel!:()=>void,secondModel!:()=>void;
+ const readerGate=new Promise<void>(resolve=>{releaseReaders=resolve}),modelGate=new Promise<void>(resolve=>{releaseModels=resolve});
+ const first=new Promise<void>(resolve=>{firstModel=resolve}),second=new Promise<void>(resolve=>{secondModel=resolve});
+ const reader={readBoundedMedia:async(q:Parameters<typeof options.reader.readBoundedMedia>[0])=>{if(++readers===2)releaseReaders();await readerGate;return options.reader.readBoundedMedia(q);}};
+ const model=(deepseek:boolean):MediaModelPort=>async()=>{if(++calls===1)firstModel();else secondModel();await modelGate;return {status:200,body:deepseek?JSON.stringify({choices:[{finish_reason:'stop',message:{role:'assistant',content:JSON.stringify({observations:'Aviso visível.',pages:[{page:1,state:'readable',text:'Erro'}]})}}],usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120}}):response()};};
+ const one=new MediaContext(env.DB,scope,{...options,reader,model:model(false)}).interpret(owner,sourceId);
+ const two=new MediaContext(env.DB,scope,{...options,reader,model:model(true),modelProvider:'deepseek'}).interpret(owner,sourceId);
+ try{await first;await Promise.race([second,one.then(()=>{}),two.then(()=>{})]);}finally{releaseModels();}
+ await Promise.all([one,two]);expect(calls).toBe(1);
+});
 it('normalizes SourceAccess fences from two-field, origin and budget scopes without weakening their comparison',async()=>{
   const plain=new SourceAccess(env.DB,{installationId:scope.installationId,generation:scope.generation}),canonical=(await plain.read(owner,sourceId))!;
   for(const input of [{installationId:scope.installationId,generation:scope.generation,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration},scope,{sourceGeneration:scope.sourceGeneration,sourceEpoch:scope.sourceEpoch,period:scope.period,generation:scope.generation,installationId:scope.installationId}]){
@@ -82,6 +107,57 @@ it('keeps revision, extra fence fields, generation, origin and revoked ACL denie
 it('budget0 calls no endpoint', async () => {
   const budget = new InferenceBudget(env.DB, scope); await budget.configure(0);
   expect((await context.interpret(owner, sourceId)).state).toBe('pending'); expect(port).not.toHaveBeenCalled();
+});
+it('native media uses analysis policy before reading bytes and refuses excluded private originals',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ await env.DB.prepare(`INSERT INTO assistant_conversation_policies VALUES(?,?,?,'private',1,'ignore',1)`).bind(scope.installationId,scope.generation,'chat').run();
+ const bytes=vi.spyOn(options.reader,'readBoundedMedia');
+ expect(await new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:()=>({sql:'1',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending',reason:'media_source_unavailable'});
+ expect(bytes).not.toHaveBeenCalled();expect(port).not.toHaveBeenCalled();
+});
+it('native media honors the global spend latch after reservation without a model attempt or ledger reset',async()=>{
+ const budget=new InferenceBudget(env.DB,scope);await budget.configure(600000);
+ expect(await new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'0',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending'});
+ expect(port).not.toHaveBeenCalled();expect((await budget.status()).committed).toBe(530000);
+});
+it.each(['source','context'] as const)('does not upload media when its %s is retired inside the final spend-query await',async subject=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ if(subject==='context')await env.DB.prepare(`INSERT INTO assistant_native_conversations(id,installation_id,generation,identity_json,created_at) VALUES('media-context-test',?,?,?,1)`)
+  .bind(scope.installationId,scope.generation,JSON.stringify({version:1,...scope,channel:'whatsapp',principalOrChatId:'chat',contextEpoch:'context-test'})).run();
+ const authority=()=>subject==='context'?{sql:`EXISTS(SELECT 1 FROM assistant_native_conversations WHERE id=? AND tombstoned_at IS NULL)`,values:['media-context-test']}:{sql:'1',values:[]};
+ const prepare=env.DB.prepare.bind(env.DB);let withdrew=false;
+ const db={prepare:(sql:string)=>{
+  const statement=prepare(sql);if(!sql.startsWith('SELECT 1 WHERE')||!sql.includes('native-final-spend-test'))return statement;
+  const wrap=(current:D1PreparedStatement):D1PreparedStatement=>new Proxy(current,{get(value,key){
+   if(key==='bind')return(...args:unknown[])=>wrap(value.bind(...args));
+   if(key==='first')return async(...args:Parameters<D1PreparedStatement['first']>)=>{withdrew=true;
+    if(subject==='source')await new SourceController(env.DB,scope,owner).withdraw(sourceId,1);
+    else await env.DB.prepare(`UPDATE assistant_native_conversations SET tombstoned_at=2 WHERE id='media-context-test'`).run();
+    return value.first(...args);
+   };
+   const member=Reflect.get(value,key,value);return typeof member==='function'?member.bind(value):member;
+  }});return wrap(statement);
+ },batch:env.DB.batch.bind(env.DB)} as D1Database;
+ expect(await new MediaContext(db,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{},authorityGuard:authority,modelGuard:()=>({sql:'1 /* native-final-spend-test */',values:[]})}).interpret(owner,sourceId)).toMatchObject({state:'pending'});
+ expect(withdrew).toBe(true);expect(port).not.toHaveBeenCalled();
+});
+it('native media releases derived observations with the original binary parent and reuses them without inference',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);const assert=vi.fn(async()=>{});
+ const native=new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:assert,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
+ const output=await native.interpret(owner,sourceId);expect(output.state).toBe('complete');expect(await native.interpret(owner,sourceId)).toEqual(output);expect(port).toHaveBeenCalledTimes(1);expect(assert).toHaveBeenCalled();
+ if(output.state!=='complete')throw Error('fixture_native_media');
+ const original=await new SourceAccess(env.DB,scope,Date.now,'knowledge').read(owner,sourceId);expect(original?.text).not.toContain('Órbita');expect(output.evidence.parent.hash).toBe(original!.fence.source.hash);expect(output.evidence.text).toContain('Órbita');
+});
+it('cached native media checks global authority once after each fresh source proof',async()=>{
+ await new InferenceBudget(env.DB,scope).configure(600000);
+ expect((await context.interpret(owner,sourceId)).state).toBe('complete');
+ const parent=(await new SourceAccess(env.DB,scope,Date.now,'knowledge').read(owner,sourceId))!;
+ const order:string[]=[],check=origin.check.bind(origin);
+ vi.spyOn(origin,'check').mockImplementation(async(...args)=>{const current=await check(...args);order.push('source');return current;});
+ const native=new MediaContext(env.DB,scope,{...options,accessPurpose:'knowledge',assertAuthority:async()=>{order.push('authority');expect(order.at(-2)).toBe('source');},authorityGuard:()=>({sql:'1',values:[]})});
+ expect(await native.read(owner,parent)).not.toBeNull();
+ expect(order).toEqual(['source','authority','source','authority']);
+ expect(port).toHaveBeenCalledTimes(1);
 });
 afterEach(() => vi.restoreAllMocks());
 it.each(['hold', 'generation'])('restore %s after OCR reservation prevents its adapter attempt and preserves commitment', async kind => {

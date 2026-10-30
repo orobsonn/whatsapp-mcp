@@ -22,7 +22,7 @@ export default{async fetch(request,env){const input=await request.json();const s
 try{if(input.op==='inspect')return Response.json(await stub.inspect());if(input.op==='interrupt')return Response.json(await stub.interrupt());if(input.op==='public')return stub.fetch('https://synthetic.invalid/');return Response.json(await stub.token({...affinity,...input.affinity}))}catch{return Response.json({state:'denied'},{status:403})}}};`;
   const app = join(scratch, "app.ts"), bundle = join(scratch, "app.mjs");
   await writeFile(app, source);
-  execFileSync(join(root, "node_modules/esbuild/bin/esbuild"), [app, "--bundle", "--format=esm", "--external:cloudflare:workers", "--outfile=" + bundle], { cwd: root, stdio: "pipe" });
+  execFileSync(join(root, "node_modules/esbuild/bin/esbuild"), [app, "--bundle", "--format=esm", "--external:cloudflare:workers", "--external:node:async_hooks", "--outfile=" + bundle], { cwd: root, stdio: "pipe" });
   const script = await readFile(bundle, "utf8");
   const start = (credentialGeneration = affinity.generation) => new Miniflare({ ...convertV4MiniflareOptions({ modules: true, script, compatibilityDate: "2026-10-25", compatibilityFlags: ["nodejs_compat"],
     durableObjects: { CALENDAR_OAUTH: { className: "Probe", useSQLite: true } }, bindings: { INSTALLATION_ID: affinity.installationId, OPERATIONAL_GENERATION: affinity.generation,

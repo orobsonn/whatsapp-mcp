@@ -31,9 +31,15 @@ export interface Env extends AuthorityEnv {
   ZAPI_CLIENT_TOKEN?: string;
   WEBHOOK_SECRET?: string;
   ASSISTANT_READER_SECRET?: string;
+  ASSISTANT_APPROVED_SEND_SECRET?: string;
+  ASSISTANT_NATIVE_AUTONOMOUS_ENABLED?: string;
   ASSISTANT_OWNER?: OwnerAssistantRPC;
   ASSISTANT_INGRESS?: Pick<Fetcher, "fetch">;
   ASSISTANT_BRIDGE_SECRET?: string;
+  /** Host-only metadata page size for controlled catch-up; not a corpus limit. */
+  ASSISTANT_BRIDGE_BATCH_SIZE?: string;
   ASSISTANT_INSTALLATION_ID?: string;
   ASSISTANT_GENERATION?: string;
+  /** Advertise only after the Own knowledge capability is configured/verified. */
+  ASSISTANT_KNOWLEDGE_ENABLED?: string;
 }

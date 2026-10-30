@@ -1,0 +1,30 @@
+[Unit]
+Description=Personal assistant native Cognee knowledge service
+After=network.target
+
+[Service]
+Type=simple
+User=robson-cognee
+Group=robson-cognee
+WorkingDirectory=/opt/robson-assistant-cognee/app
+EnvironmentFile=/opt/robson-assistant-cognee/secrets/service.env
+Environment=TIKTOKEN_CACHE_DIR=/opt/robson-assistant-cognee/tokenizers
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/robson-assistant-cognee/venv/bin/python /opt/robson-assistant-cognee/app/knowledge_service.py --root ${KNOWLEDGE_ROOT} --installation-id ${KNOWLEDGE_INSTALLATION_ID} --generation ${KNOWLEDGE_SPACE_GENERATION} --token-file /opt/robson-assistant-cognee/secrets/knowledge.token --port 8981
+Restart=on-failure
+RestartSec=5
+# A stopped writer must flush rather than be killed mid-transaction.
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/robson-assistant-cognee/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# This first graph-only primitive makes no inference or embedding calls.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target
