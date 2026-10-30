@@ -51,13 +51,18 @@ async function current(db:D1Database,host:ConversationProviderHost){
  await host.assertAuthority();const g=guard(host);
  if(!await jsonStatement(db,`SELECT 1 WHERE ${g.sql}`,g.values).first())throw Error('native_model_authority_denied');
 }
-function usage(sse:string){
+type FailureDetails={responseState?:'incomplete'|'failed'|'error';incompleteReason?:'max_output_tokens'|'content_filter'|'other'};
+function usage(sse:string,failure:FailureDetails){
  let found:{input:number;output:number}|undefined;
  for(const frame of sse.split(/\r?\n\r?\n/)){
   const data=frame.split(/\r?\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');
   if(!data||data==='[DONE]')continue;
   const e=JSON.parse(data);
-  if(e.type==='error'||e.type==='response.failed'||e.type==='response.incomplete')throw Error('native_model_response_invalid');
+  if(e.type==='error'||e.type==='response.failed'||e.type==='response.incomplete'){
+   failure.responseState=e.type==='response.incomplete'?'incomplete':e.type==='response.failed'?'failed':'error';
+   if(e.type==='response.incomplete'){const reason=e.response?.incomplete_details?.reason;failure.incompleteReason=reason==='max_output_tokens'||reason==='content_filter'?reason:'other';}
+   throw Error('native_model_response_invalid');
+  }
   if(e.type!=='response.completed')continue;
   if(found||e.response?.status!=='completed')throw Error('native_model_response_invalid');
   const u=e.response.usage,input=u?.input_tokens,output=u?.output_tokens,total=u?.total_tokens;
@@ -144,7 +149,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
    async fetch(input:RequestInfo|URL,init?:RequestInit){
     const a=admitted;admitted=undefined;if(!a)return rejection();
     const {host,requestHash,operationKey,ceiling}=a;let claimed=false;
-    let overflow=false,httpStatus:number|undefined,stage='admission';
+    let overflow=false,httpStatus:number|undefined,stage='admission';const failure:FailureDetails={};
     try{
      const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
      const method=init?.method??(input instanceof Request?input.method:'GET');
@@ -176,7 +181,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      if(response.redirected||!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))throw Error('native_model_response_invalid');
      const text=await buffered(response,host.maxResponseBytes,signal);
      if(text.includes(config.apiKey))throw Error('native_model_response_denied');
-     const u=usage(text);
+     const u=usage(text,failure);
      const actual=Math.ceil(u.input*.25+u.output*.75);
      await host.budget.settle(operationKey,requestHash,actual);
      await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='complete',input_tokens=?,output_tokens=?,actual_units=? WHERE ${ns} AND state='attempting' AND request_hash=?`)
@@ -192,7 +197,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      // which Flue retries with NEW turn IDs. A fixed nonretryable response
      // keeps this paid attempt's custody, including when bookkeeping is down.
      // Logs carry only host metadata, never provider bodies or raw errors.
-     console.warn('assistant_native_model_failure',{stage,httpStatus,overflow,ledgerPending:pending,turnId:host.turnId});
+     console.warn('assistant_native_model_failure',{stage,httpStatus,...failure,overflow,ledgerPending:pending,turnId:host.turnId});
      return rejection(overflow);
     }
    },

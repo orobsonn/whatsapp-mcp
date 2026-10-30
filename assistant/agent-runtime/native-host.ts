@@ -78,7 +78,7 @@ export class NativeApplicationHost {
   if(isNativeTaskDue(event)){await this.tasks().authorizeEvent(event);return;}
   if(isCuratorPrincipal(event.identity.principalOrChatId)){
    const {authority}=await this.authority(event.identity);
-   if(event.revision===2){const selected=await this.curatorResumeSelection();if(event.eventId!==selected.event.eventId||JSON.stringify(event.identity)!==JSON.stringify(selected.event.identity))throw Error('native_curator_resume_denied');await selected.curator.authorizeEvent(event,authority.ownerId,2);}
+   if(event.revision!==1){const selected=await this.curatorResumeSelection();if(event.revision!==selected.event.revision||event.eventId!==selected.event.eventId||JSON.stringify(event.identity)!==JSON.stringify(selected.event.identity))throw Error('native_curator_resume_denied');await selected.curator.authorizeEvent(event,authority.ownerId,selected.event.revision);}
    else await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
   }
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch);
@@ -450,22 +450,25 @@ export class NativeApplicationHost {
   }catch{await curator.settleNotice(receipt.id,'uncertain');return {state:'uncertain'};}
  }
  /** An explicit operator request, not an agent tool or automatic retry loop.
-  * Only the original revision1 receipt can select the one continuation2. */
+  * The exact selected predecessor fixes one next revision; cron never advances it. */
  private async curatorResumeSelection(){
   const request=nativeCuratorDispatchRequest(this.env);if(request.kind!=='resume')throw Error('native_curator_resume_denied');
-  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope),row=await this.db.prepare(`SELECT c.id session_id,c.identity_json,e.authority_json,e.receipt_json,e.event_json,r.state run_state
-   FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=1
+  const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope),row=await this.db.prepare(`SELECT c.id session_id,c.identity_json,e.authority_json,e.receipt_json,e.event_json,e.revision predecessor_revision,r.state run_state,
+    (SELECT MAX(later.revision) FROM assistant_native_conversation_events later WHERE later.conversation_id=c.id AND later.event_id=e.event_id) max_revision
+   FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id
    JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
    WHERE r.installation_id=? AND r.generation=? AND r.source_epoch=? AND r.source_generation=? AND r.id=? AND r.run_kind='daily'
-    AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND e.event_json IS NOT NULL`)
-   .bind(...scopeKeys(scope),request.request.runId).first<{session_id:string;identity_json:string;authority_json:string;receipt_json:string;event_json:string;run_state:string}>();
-  this.currentScope();if(!row)throw Error('native_curator_resume_denied');
-  const receipt=curatorDispatchReceipt.parse(JSON.parse(row.receipt_json)),identity=conversationIdentity.parse(JSON.parse(row.identity_json));
+    AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND e.event_json IS NOT NULL
+    AND json_extract(CASE WHEN json_valid(e.receipt_json) THEN e.receipt_json ELSE '{}' END,'$.submissionId')=?`)
+   .bind(...scopeKeys(scope),request.request.runId,request.request.previousSubmissionId).first<{session_id:string;identity_json:string;authority_json:string;receipt_json:string;event_json:string;predecessor_revision:number;max_revision:number;run_state:string}>();
+  this.currentScope();if(!row||!Number.isSafeInteger(row.predecessor_revision)||row.predecessor_revision<1||!Number.isSafeInteger(row.predecessor_revision+1)
+   ||(row.max_revision!==row.predecessor_revision&&row.max_revision!==row.predecessor_revision+1))throw Error('native_curator_resume_denied');
+  const revision=row.predecessor_revision+1,receipt=curatorDispatchReceipt.parse(JSON.parse(row.receipt_json)),identity=conversationIdentity.parse(JSON.parse(row.identity_json));
   if(receipt.submissionId!==request.request.previousSubmissionId||identity.channel!=='telegram'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_curator_resume_denied');
   const {authority}=await this.authority(identity),current=await this.retention.currentIdentity('telegram',identity.principalOrChatId);this.currentScope();
   if(JSON.stringify(authority)!==row.authority_json||JSON.stringify(current)!==JSON.stringify(identity))throw Error('native_curator_resume_denied');
-  const curator=await this.curator(identity);await curator.authorizeEvent(JSON.parse(row.event_json),fence.userId);
-  const event={...await curator.event(request.request.runId,identity,fence.userId),revision:2};this.currentScope();
+  const curator=await this.curator(identity);await curator.authorizeEvent(JSON.parse(row.event_json),fence.userId,row.predecessor_revision);
+  const event={...await curator.event(request.request.runId,identity,fence.userId),revision};this.currentScope();
   return {sessionId:row.session_id,identity,receipt,curator,event,runState:row.run_state,runId:request.request.runId};
  }
  async dispatchCurator(now=Date.now()){
@@ -474,7 +477,7 @@ export class NativeApplicationHost {
   if(request.kind==='resume'){
    const selected=await this.curatorResumeSelection();
    if(selected.runState==='complete')return {state:'complete' as const,runId:selected.runId};
-   const existing=await this.db.prepare("SELECT state FROM assistant_native_conversation_events WHERE conversation_id=? AND event_id=? AND revision=2").bind(selected.sessionId,selected.event.eventId).first<{state:string}>();this.currentScope();
+   const existing=await this.db.prepare("SELECT state FROM assistant_native_conversation_events WHERE conversation_id=? AND event_id=? AND revision=?").bind(selected.sessionId,selected.event.eventId,selected.event.revision).first<{state:string}>();this.currentScope();
    if(existing?.state==='withdrawn')throw Error('native_curator_resume_denied');
    if(!existing){
     const outcome=await observeCuratorSettlement({instance:nativeConversationInstance,read:(id,receipt,signal)=>openNativeConversation(id).read(receipt,{signal})},selected.sessionId,selected.receipt);this.currentScope();

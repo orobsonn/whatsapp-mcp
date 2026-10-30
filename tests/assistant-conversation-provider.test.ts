@@ -1,18 +1,18 @@
 import {env} from 'cloudflare:test';
-import {beforeEach,it,expect} from 'vitest';
+import {beforeEach,it,expect,vi} from 'vitest';
 import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/agent-runtime/conversation-provider';
 import {InferenceBudget} from '../assistant/budget';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
 
 const key='sk-synthetic-native-only-never-a-real-credential';
-let host:ConversationProviderHost,budget:InferenceBudget,calls:number,bodies:any[],mode:'normal'|'timeout'|'noUsage'|'429'|'redirect'|'badUsage'|'overage'|'contextOverflow'|'spoofOverflow';
+let host:ConversationProviderHost,budget:InferenceBudget,calls:number,bodies:any[],mode:'normal'|'timeout'|'noUsage'|'429'|'redirect'|'badUsage'|'overage'|'contextOverflow'|'spoofOverflow'|'incomplete';
 let authority=true,globalCap=10_000_000,afterResponse:(()=>void)|undefined;
 const context=():TranscriptContext=>({messages:[{role:'system',content:'Synthetic native instructions',timestamp:1,toolsAdded:[{name:'lookup_relation',description:'Read a relation',parameters:{type:'object',properties:{project:{type:'string'}},required:['project'],additionalProperties:false}} as any]},{role:'user',content:'Who leads Cedar?',timestamp:2}]} as unknown as TranscriptContext);
 function response(payload:any,tool=false){
  const id='resp_synthetic',item=tool?{type:'function_call',id:'fc_synthetic',call_id:'call_synthetic',name:'lookup_relation',arguments:'{"project":"Cedar"}',status:'completed'}:{type:'message',id:'msg_synthetic',role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text:'Nora leads Cedar.',annotations:[]}]};
  const usage=mode==='noUsage'?undefined:{input_tokens:mode==='overage'?300000:100,output_tokens:20,total_tokens:mode==='overage'?300020:mode==='badUsage'?121:120,input_tokens_details:{cached_tokens:30},output_tokens_details:{reasoning_tokens:10}};
- const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(tool?{arguments:''}:{content:[]})}},...(tool?[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]:[{type:'response.output_text.delta',output_index:0,content_index:0,delta:'Nora leads Cedar.'}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage}}];
+ const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(tool?{arguments:''}:{content:[]})}},...(tool?[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]:[{type:'response.output_text.delta',output_index:0,content_index:0,delta:'Nora leads Cedar.'}]),{type:'response.output_item.done',output_index:0,item},{type:mode==='incomplete'?'response.incomplete':'response.completed',response:{id,status:mode==='incomplete'?'incomplete':'completed',incomplete_details:mode==='incomplete'?{reason:'max_output_tokens',private:'PRIVATE_PROVIDER_SENTINEL'}:null,output:[item],usage}}];
  return new Response(events.map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}});
 }
 let tool=false;
@@ -159,4 +159,12 @@ it.each(['normal','timeout'] as const)('a known %s attempt cannot become a compa
   usage:{input:272000,output:0,cacheRead:0,cacheWrite:0,totalTokens:272000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}} as any);
  const result=await run(provider(),c);expect(result.result.stopReason).toBe('error');expect(result.result.errorMessage).not.toContain('context_length_exceeded');
  expect(calls).toBe(1);expect((await budget.status()).committed).toBe(committed);
+});
+
+it('incomplete summary diagnostics retain only safe enums and preserve the paid ceiling',async()=>{
+ const log=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ try{mode='incomplete';const result=await run();expect(result.result.errorMessage).toContain('native_model_uncertain');
+  expect(log).toHaveBeenCalledWith('assistant_native_model_failure',expect.objectContaining({httpStatus:200,responseState:'incomplete',incompleteReason:'max_output_tokens'}));
+  expect(JSON.stringify(log.mock.calls)).not.toContain(key);expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE_PROVIDER_SENTINEL');expect((await conversationModelReceipt(env.DB,host))?.state).toBe('uncertain');
+ }finally{log.mockRestore();}
 });

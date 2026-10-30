@@ -39,7 +39,9 @@ export function ConversationRuntimeAgent(){
  const [,setEffects]=usePersistentState<{contextRef:string|null;remindedRef:string|null}>('conversation-effect-completion-v1',{contextRef:null,remindedRef:null});
  // Provider registration and its pre-transport budget authorization remain the
  // host's responsibility. This is the real native Pi model/tool loop from P0.
- useModel('openai/gpt-6-luna',{thinkingLevel:'low',compaction:{reserveTokens:2048,keepRecentTokens:1024}});
+ // Use Flue's model-aware compaction defaults. The provider still owns the
+ // effective output/spend ceiling, including its summarization turns.
+ useModel('openai/gpt-6-luna',{thinkingLevel:'low'});
  async function host(){
   const resolver=configuredResolver;if(!resolver)throw Error('conversation_resolver_unconfigured');
   const {env}=getCloudflareContext(),identity=getDurableObjectIdentity();

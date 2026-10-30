@@ -273,11 +273,30 @@ describe('native application composition on real D1 and Source reads',()=>{
   if(mode==='wrong_submission')f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:'not-the-original'});
   await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
  });
- it('never turns the second receipt into a third revision or changes an existing resume grant',async()=>{
+ it('requires another explicit terminal predecessor selection for revision3 and replays that exact continuation',async()=>{
   const f=await resumableDaily(),next=await f.host().dispatchCurator();if(next.state!=='admitted'||!next.receipt)throw Error('fixture_resume');
+  // The old configuration only ever replays2; it never increments by itself.
+  expect(await f.host().dispatchCurator()).toEqual(next);
   transport.dispatch.mockClear();f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:next.receipt.submissionId});
+  // Still observing revision1 cannot authorize a continuation of revision2.
   await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
-  expect(await env.DB.prepare("SELECT MAX(revision) n FROM assistant_native_conversation_events WHERE event_id=?").bind('curator-run:'+f.runId).first('n')).toBe(2);
+  transport.read.mockRejectedValue(Object.assign(Error('second terminal'),{name:'AgentRunError',outcome:'failed',submissionId:next.receipt.submissionId}));
+  const host=f.host(),third=await host.dispatchCurator();if(third.state!=='admitted')throw Error('fixture_resume');
+  expect(third.sessionId).toBe(next.sessionId);const task=await latestTask(host,third.taskRef);expect(task.cohort.at(-1)?.revision).toBe(3);expect((await host.frame(task)).curator?.runId).toBe(f.runId);
+  expect(await host.dispatchCurator()).toEqual(third);expect(transport.dispatch).toHaveBeenCalledOnce();
+  expect(await env.DB.prepare('SELECT receipt_json FROM assistant_native_conversation_events WHERE task_ref=?').bind(next.taskRef).first('receipt_json')).toBe(JSON.stringify(next.receipt));
+  f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify(f.request);
+  await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');
+ });
+ it('concurrent explicit continuations after revision2 converge on one revision3 and cannot select a completed predecessor',async()=>{
+  const f=await resumableDaily(),second=await f.host().dispatchCurator();if(second.state!=='admitted'||!second.receipt)throw Error('fixture_resume');
+  f.own.NATIVE_CURATOR_RESUME_REQUEST=JSON.stringify({...f.request,previousSubmissionId:second.receipt.submissionId});transport.dispatch.mockClear();
+  transport.read.mockResolvedValue({submissionId:second.receipt.submissionId,uid:second.receipt.uid});
+  await expect(f.host().dispatchCurator()).rejects.toThrow('native_curator_resume');expect(transport.dispatch).not.toHaveBeenCalled();
+  transport.read.mockRejectedValue(Object.assign(Error('terminal'),{name:'AgentRunError',outcome:'aborted',submissionId:second.receipt.submissionId}));
+  const results=await Promise.all([f.host().dispatchCurator(),f.host().dispatchCurator()]);expect(results[0].state).toBe('admitted');expect(results[1].state).toBe('admitted');
+  const keys=transport.dispatch.mock.calls.map(([_session,q])=>q.idempotencyKey);expect(new Set(keys).size).toBe(1);
+  expect(await env.DB.prepare('SELECT count(*) n FROM assistant_native_conversation_events WHERE event_id=? AND revision=3').bind('curator-run:'+f.runId).first('n')).toBe(1);
  });
  it('replays an uncertain resume with the exact same native idempotency key, without another predecessor read',async()=>{
   const f=await resumableDaily(),open=await import('../assistant/agent-runtime/native-transport'),original=open.openNativeConversation;
