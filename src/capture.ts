@@ -180,11 +180,9 @@ export async function ingestEvent(
     : null;
   const unavailable = event.viewOnce
     ? "view_once"
-    : event.temporary
-      ? "temporary"
-      : (event.unavailableReason ??
-        (event.kind !== "text" && !event.media ? "missing_media" : null));
-  const privacyLocked = event.viewOnce || event.temporary ? 1 : 0;
+    : (event.unavailableReason ??
+      (event.kind !== "text" && !event.media ? "missing_media" : null));
+  const privacyLocked = event.viewOnce ? 1 : 0;
   const kind = unavailable ? "unavailable" : event.kind;
   const text = event.deleted || privacyLocked ? null : (event.text ?? null);
   const now = Date.now();

@@ -96,6 +96,29 @@ describe("arquivo D1 com isolamento e fences", () => {
       "read",
     );
   });
+  it("arquiva texto com prazo de desaparecimento recebido do provedor", async () => {
+    const a = await chat("expiring-text");
+    await setCapture(e, a.id, true, fence);
+    await ingestEvent(e, fence, normalizeZapiEvent({
+      phone: "expiring-text", messageId: "expiring", isGroup: true,
+      fromMe: false, momment: 100, messageExpirationSeconds: 86400,
+      text: { message: "correção sintética" },
+    }));
+    expect((await queryMessages(e, { chatId: a.id, term: "correção" })).items[0])
+      .toMatchObject({ kind: "text", text: "correção sintética", unavailableReason: null });
+  });
+  it("arquiva anexo temporário e enfileira download", async () => {
+    const a = await chat("expiring-media");
+    await setCapture(e, a.id, true, fence);
+    await event("expiring-media", "image", {
+      temporary: true, kind: "image", text: "legenda",
+      media: { url: "https://media.example/file", mime: "image/jpeg" },
+    });
+    expect((await queryMessages(e, { chatId: a.id })).items[0])
+      .toMatchObject({ kind: "image", text: "legenda", unavailableReason: null });
+    expect((await e.DB.prepare("SELECT id FROM media_jobs WHERE status='pending'").all()).results)
+      .toHaveLength(1);
+  });
   it("status sem conversa anterior ao corpo concilia só com candidato único", async () => {
     const a = await chat("group-a");
     await setCapture(e, a.id, true, fence);
@@ -217,7 +240,7 @@ describe("arquivo D1 com isolamento e fences", () => {
       (await queryMessages(e, { chatId: a.id })).items[0]!.text,
     ).toBeNull();
   });
-  it("marcador temporário tardio invalida mídia pronta, trabalhos e derivados da mesma versão", async () => {
+  it("visualização única tardia invalida mídia pronta, trabalhos e derivados da mesma versão", async () => {
     const a = await chat("privacy-late");
     await setCapture(e, a.id, true, fence);
     await event("privacy-late", "one", {
@@ -239,7 +262,7 @@ describe("arquivo D1 com isolamento e fences", () => {
     await event("privacy-late", "one", {
       kind: "image",
       text: undefined,
-      temporary: true,
+      viewOnce: true,
       media: { url: "https://media.example/private" },
     });
     expect((await queryMessages(e, { chatId: a.id })).items[0]).toMatchObject({
