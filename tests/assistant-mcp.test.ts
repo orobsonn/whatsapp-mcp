@@ -19,6 +19,26 @@ function request(method: string, params: unknown = {}, origin?: string) {
     ...(origin ? { Origin: origin } : {}),
   }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
 }
+it.each(["ASSISTANT_INSTALLATION_ID", "ASSISTANT_GENERATION"] as const)("reports missing %s as server configuration, never invalid model input", async key => {
+  const { settings, rpc } = setup();
+  delete settings[key];
+  const calls = [
+    { name: "assistente_consultar", arguments: { query: { kind: "projects" } } },
+    { name: "assistente_consultar", arguments: { query: { kind: "follow_ups" } } },
+    { name: "assistente_consultar", arguments: { query: { kind: "follow_up", id: "synthetic-fup" } } },
+    { name: "assistente_controlar", arguments: { command: { kind: "fup.put", operationId: "synthetic-fup", id: "synthetic-fup", expectedVersion: 0,
+      conversationId: "synthetic-chat", policyRevision: 1, source: { id: "synthetic-note", revision: 1 }, purpose: "Synthetic follow-up",
+      dueAt: "2026-11-03T10:00:00-03:00", timezone: "America/Fortaleza", precision: "exact" } } },
+  ];
+  for (const call of calls) {
+    const response = await mcpFetch(request("tools/call", call), settings, owner);
+    const body = await response.json() as any;
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toEqual({ error: "assistant_unconfigured" });
+  }
+  expect(rpc.query).not.toHaveBeenCalled();
+  expect(rpc.control).not.toHaveBeenCalled();
+});
 it("does not infer owner capability from an Env binding alone", async () => {
   const { settings, rpc } = setup(), server = createMcpServer(settings);
   const [a, b] = InMemoryTransport.createLinkedPair();

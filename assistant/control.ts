@@ -35,7 +35,7 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
 ]);
 export type OwnerCommand = z.input<typeof ownerCommandSchema>;
 type RevisionKind = "mission.put" | "mission.set_state" | "policy.put";
-export type CommandReceipt = { operationId: string; id: string; shadow: true; fupProvenance?: 1 } & (
+export type CommandReceipt = { operationId: string; id: string; shadow: true; fupProvenance?: 1; native?: 'enrolled' } & (
   { kind: RevisionKind; revision: number; version?: never } |
   { kind: Exclude<OwnerCommand["kind"], RevisionKind>; version: number; revision?: never });
 const ns = "installation_id=? AND generation=?";
@@ -44,7 +44,7 @@ type Value = string | number | null;
 export type OwnerControlScope = SourceScope & { sourceEpoch?: string; sourceGeneration?: string };
 /** Fixed by the native authenticated owner adapter. Not a command field. A
  * mission and its native enrollment commit under the SAME command ledger. */
-export type NativeMissionEnrollment={id:string;sourceRefJSON:string;authorizationRefJSON:string;ownerFenceJSON:string;
+export type NativeTaskEnrollment={kind:'mission'|'follow_up';id:string;sourceRefJSON:string;authorizationRefJSON:string;ownerFenceJSON:string;
  activationKey:string;activationJSON:string;principalId:string;threadId:string|null};
 function bounded(value: unknown, depth = 0, budget = { nodes: 0 }): void {
   if (++budget.nodes > 512 || depth > 5) throw new Error("control_input");
@@ -81,7 +81,7 @@ export class OwnerControl {
   private readonly scope: OwnerControlScope;
   private readonly principal: TrustedActor;
   constructor(private readonly db: D1Database, scope: OwnerControlScope, principal: TrustedActor, private readonly clock = Date.now,private readonly outgoing?:OutgoingPort,
-    private readonly admission?: () => AccessGuard,private readonly nativeMission?:NativeMissionEnrollment) {
+    private readonly admission?: () => AccessGuard,private readonly nativeTask?:NativeTaskEnrollment) {
     if (![scope.installationId, scope.generation].every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
     const origin = [scope.sourceEpoch, scope.sourceGeneration];
     if (origin.some(value => value !== undefined) && !origin.every(value => typeof value === "string" && value.length > 0 && value.length <= 256)) throw new Error("control_scope");
@@ -89,10 +89,17 @@ export class OwnerControl {
       sourceEpoch: scope.sourceEpoch, sourceGeneration: scope.sourceGeneration }); this.principal = Object.freeze({ ...principal });
   }
   private keys() { return [this.scope.installationId, this.scope.generation]; }
+  /** Receipt recovery is read-only and uses the exact mutation normalization.
+   * An unavailable current scheduler never licenses a second write after ACK loss. */
+  async recover(input: unknown): Promise<CommandReceipt | null> {
+    if (this.principal.kind !== 'owner') throw Error('owner_required');
+    const item = command(input);
+    return new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item)).recover<CommandReceipt>();
+  }
   async execute(input: unknown): Promise<CommandReceipt> {
     if (this.principal.kind !== "owner") throw new Error("owner_required");
     const item = command(input);
-    if(this.nativeMission&&item.kind!=='mission.put')throw Error('native_task_command_denied');
+    if(this.nativeTask&&!((item.kind==='mission.put'&&this.nativeTask.kind==='mission')||(item.kind==='fup.put'&&this.nativeTask.kind==='follow_up')))throw Error('native_task_command_denied');
     if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0)throw Error('control_policy_required');
     if (item.kind === "policy.put" && (!this.scope.sourceEpoch || !this.scope.sourceGeneration)) throw new Error("control_origin_unconfigured");
     const ledger = new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item));
@@ -100,6 +107,7 @@ export class OwnerControl {
     const now = this.clock(); if (!Number.isSafeInteger(now) || now < 0) throw new Error("control_clock");
     const expected = "expectedRevision" in item ? item.expectedRevision : item.expectedVersion, next = expected + 1;
     const result: CommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, shadow: true,
+      ...(this.nativeTask ? { native: 'enrolled' as const } : {}),
       ...("expectedRevision" in item ? { revision: next } : { version: next }) } as CommandReceipt;
     const conditions: string[] = [], values: Value[] = [];
     const require = (sql: string, ...binds: Value[]) => { conditions.push(sql); values.push(...binds); };
@@ -165,11 +173,6 @@ export class OwnerControl {
       else if (expected === 0) batch.push(gated(`INSERT INTO assistant_missions SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE $gate`, ...this.keys(), item.id, next, item.objective, item.source.id, item.source.revision, item.project?.id ?? null, item.stopCondition ?? null, item.state, item.nextEvaluationAt ?? null));
       else batch.push(gated(`UPDATE assistant_missions SET revision=?,objective=?,source_id=?,source_revision=?,project_id=?,stop_condition=?,state=?,next_evaluation_at=? WHERE ${ns} AND id=? AND $gate`, next, item.objective, item.source.id, item.source.revision, item.project?.id ?? null, item.stopCondition ?? null, item.state, item.nextEvaluationAt ?? null, ...this.keys(), item.id));
       batch.push(gated(`INSERT INTO assistant_mission_versions SELECT installation_id,generation,id,revision,json_object('objective',objective,'sourceId',source_id,'sourceRevision',source_revision,'projectId',project_id,'stopCondition',stop_condition,'state',state,'nextEvaluationAt',next_evaluation_at),? FROM assistant_missions WHERE ${ns} AND id=? AND $gate`, now, ...this.keys(), item.id));
-      if(this.nativeMission&&item.kind==='mission.put'){
-        const n=this.nativeMission;
-        batch.push(gated(`INSERT INTO assistant_native_task_bindings(installation_id,generation,id,kind,resource_id,resource_version,source_ref_json,authorization_ref_json,owner_fence_json,activation_key,activation_json,principal_id,thread_id,created_at)
-          SELECT ?,?,?,'mission',?,?,?,?,?,?,?,?,?,? WHERE $gate ON CONFLICT DO NOTHING`,...this.keys(),n.id,item.id,next,n.sourceRefJSON,n.authorizationRefJSON,n.ownerFenceJSON,n.activationKey,n.activationJSON,n.principalId,n.threadId,now));
-      }
       // A mission revision invalidates its work. Traverse canonical occurrences;
       // a source can support several independent missions.
       const occurrences = `SELECT o.id FROM assistant_fup_occurrences o JOIN assistant_follow_ups f ON f.installation_id=o.installation_id AND f.generation=o.generation AND f.id=o.follow_up_id AND f.version=o.follow_up_version WHERE ${scoped("o")} AND f.mission_id=?`;
@@ -211,6 +214,11 @@ export class OwnerControl {
         AND occurrence_id IN (SELECT id FROM assistant_fup_occurrences WHERE ${ns} 
         AND follow_up_id=? AND follow_up_version<=?) AND $gate`, ...this.keys(), ...this.keys(), item.id, item.expectedVersion));
       batch.push(gated(`UPDATE assistant_fup_occurrences SET state='cancelled' WHERE ${ns} AND follow_up_id=? AND follow_up_version<=? AND state IN ('pending','blocked','paused') AND $gate`, ...this.keys(), item.id, item.expectedVersion));
+    }
+    if(this.nativeTask){
+      const n=this.nativeTask;
+      batch.push(gated(`INSERT INTO assistant_native_task_bindings(installation_id,generation,id,kind,resource_id,resource_version,source_ref_json,authorization_ref_json,owner_fence_json,activation_key,activation_json,principal_id,thread_id,created_at)
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE $gate`,...this.keys(),n.id,n.kind,item.id,next,n.sourceRefJSON,n.authorizationRefJSON,n.ownerFenceJSON,n.activationKey,n.activationJSON,n.principalId,n.threadId,now));
     }
     await this.db.batch(batch);
     if(provenance?.body.outgoing&&!await this.outgoing!.check(provenance.body.outgoing))throw Error('control_precondition');

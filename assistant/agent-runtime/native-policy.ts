@@ -48,7 +48,7 @@ export async function nativeTelegramActivation(env:AssistantEnv,scope:OriginScop
  let cut:z.infer<typeof activationSchema>;try{cut=activationSchema.parse(JSON.parse(raw));}catch{throw Error('native_telegram_cut_unconfigured');}
  for(const key of ['sourceEpoch','sourceGeneration','botInstance','linkRevision','userId','chatId'] as const)if(cut[key]!==fence[key])throw Error('native_telegram_cut_denied');
  const guard:AccessGuard={sql:'EXISTS(SELECT 1 FROM assistant_native_host_state WHERE installation_id=? AND generation=? AND telegram_activation_json=?)',values:[scope.installationId,scope.generation,raw]};
- return {key:await bridgeHash(['native-telegram-activation-v1',scope,cut]),guard,activatedAt:cut.activatedAt,cutSecond:Math.floor(cut.activatedAt/1000)};
+ return {key:await bridgeHash(['native-telegram-activation-v1',scope,cut]),json:raw,guard,activatedAt:cut.activatedAt,cutSecond:Math.floor(cut.activatedAt/1000)};
 }
 /** Current host authority has no dependency on transcript claims, mentions or
  * owner-looking message signatures. A readable group is not a reply grant. */

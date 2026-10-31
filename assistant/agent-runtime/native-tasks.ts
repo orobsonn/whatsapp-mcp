@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import {OwnerControl,type NativeMissionEnrollment} from '../control';
+import {OwnerControl,type NativeTaskEnrollment} from '../control';
 import {CommandLedger} from '../command-ledger';
 import {compactStatement,jsonStatement} from '../d1-statement';
 import {SourceAccess,type AccessGuard,type SourceRead} from '../access';
@@ -98,10 +98,10 @@ export class NativeTasks {
   return {...context,ref:context.ref,text:context.text,occurredAt:context.occurredAt};
  }
  private async binding(type:z.infer<typeof kind>,key:string,v:number){return this.sql('SELECT * FROM assistant_native_task_bindings WHERE installation_id=? AND generation=? AND kind=? AND resource_id=? AND resource_version=?',...this.keys(),type,key,v).first<Binding>();}
- private async enrollment(task:TaskContext,type:z.infer<typeof kind>,key:string,v:number,work:Ref,context:Awaited<ReturnType<NativeTasks['ownerContext']>>):Promise<NativeMissionEnrollment>{
+ private async enrollment(task:TaskContext,type:z.infer<typeof kind>,key:string,v:number,work:Ref,context:Awaited<ReturnType<NativeTasks['ownerContext']>>):Promise<NativeTaskEnrollment>{
   if(!context.ref)throw Error('native_task_owner_required');
   const raw=await this.sql('SELECT telegram_activation_json FROM assistant_native_host_state WHERE installation_id=? AND generation=?',...this.keys()).first<string>('telegram_activation_json');if(!raw)throw Error('native_task_owner_required');
-  return {id:'native-task-binding:'+await bridgeHash([this.keys(),type,key,v]),sourceRefJSON:JSON.stringify(work),authorizationRefJSON:JSON.stringify(context.ref),ownerFenceJSON:JSON.stringify(context.fence),activationKey:context.activation.key,activationJSON:raw,principalId:task.ownerId,threadId:task.returnChannel.threadId??null};
+  return {kind:type,id:'native-task-binding:'+await bridgeHash([this.keys(),type,key,v]),sourceRefJSON:JSON.stringify(work),authorizationRefJSON:JSON.stringify(context.ref),ownerFenceJSON:JSON.stringify(context.fence),activationKey:context.activation.key,activationJSON:raw,principalId:task.ownerId,threadId:task.returnChannel.threadId??null};
  }
  async save(task:TaskContext,raw:unknown){
   const input=nativeMissionSave.parse(raw),context=await this.ownerContext(task,true);

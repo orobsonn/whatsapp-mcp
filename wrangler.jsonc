@@ -35,6 +35,12 @@
   "ai": { "binding": "AI" },
   "vars": {
     "RUNTIME_CONFIG": "database",
+    // Non-secret affinity and discovery settings must survive normal deploys.
+    // Keep these pinned to the existing assistant installation, never regenerate.
+    "ASSISTANT_INSTALLATION_ID": "personal-shadow-20261026",
+    "ASSISTANT_GENERATION": "shadow-g1-20261026",
+    "ASSISTANT_KNOWLEDGE_ENABLED": "true",
+    "ASSISTANT_BRIDGE_BATCH_SIZE": "100",
     "GPT_PLUGIN_URL": "https://chatgpt.com/plugins/plugin_asdk_app_6ad665e79d8c81919153d6c969ee9d64",
     "PUBLIC_ORIGIN": "https://whatsapp.robsonlins.com",
     "ACCESS_ISSUER": "https://orobsonn.cloudflareaccess.com",
