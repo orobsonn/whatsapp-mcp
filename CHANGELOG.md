@@ -4,6 +4,14 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.3] - 2026-10-31
+
+### Fixed
+- Curadoria diária usa contexto privado novo por passagem e conserva a mesma sessão na retomada, sem apagar o conhecimento compartilhado ou invalidar recibos antigos.
+- Diário da curadoria registra assunto, escolha e motivo, incluindo não aprender; vincula fonte/versionamento, modelo/instruções e todas as operações de conhecimento. Confirmação de escrita continua dependendo dos recibos reais, com retirada dos textos derivados.
+- Resumos privados no Telegram mostram exemplos concretos do que foi guardado/não guardado, motivos e referências. Separam pendências técnicas de uma pergunta ou ação explícita do dono; execuções antigas sem descrição não recebem justificativa inventada.
+
+
 ## [0.52.2] - 2026-10-31
 
 ### Fixed

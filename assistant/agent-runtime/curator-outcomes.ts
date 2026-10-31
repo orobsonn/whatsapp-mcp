@@ -1,4 +1,5 @@
 import {z} from 'zod';
+import {ownsCuratorPrincipal} from '../knowledge/curator';
 import type {DispatchReceipt,AgentReply,AgentInstanceInfo} from '@flue/runtime';
 import type {AccessGuard} from '../access';
 import type {OriginScope} from '../origin-guard';
@@ -32,29 +33,23 @@ export async function observeCuratorSettlement(host:Pick<Host,'instance'|'read'>
 }
 export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
  host.assertCurrent();const s=host.scope,keys=[s.installationId,s.generation];
- const owner=await host.ownerFence(),principal='curator:'+owner.userId;
- // Compute the current grant from a real retained identity, without opening
- // its Source-dependent frame. Obsolete link grants never occupy a work page.
- const identityRow=await host.db.prepare(`SELECT identity_json FROM assistant_native_conversations WHERE installation_id=? AND generation=? AND tombstoned_at IS NULL
-  AND json_extract(CASE WHEN json_valid(identity_json) THEN identity_json ELSE '{}' END,'$.channel')='telegram'
-  AND json_extract(CASE WHEN json_valid(identity_json) THEN identity_json ELSE '{}' END,'$.principalOrChatId')=? LIMIT 1`).bind(...keys,principal).first<{identity_json:string}>();
- if(!identityRow)return {checked:0,notified:0};
- const grant=await host.authority(conversationIdentity.parse(JSON.parse(identityRow.identity_json)));
+ const owner=await host.ownerFence();
  // Least recently checked first: ten is a work page, never a corpus cutoff.
  const rows=await host.db.prepare(`SELECT r.id,r.day,r.source_epoch,r.source_generation,e.task_ref,e.conversation_id,c.identity_json,e.authority_json,e.receipt_json,o.outcome,o.notice_state
   FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=1
   JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
   LEFT JOIN assistant_curator_outcomes o ON o.installation_id=r.installation_id AND o.generation=r.generation AND o.run_id=r.id
   WHERE r.installation_id=? AND r.generation=? AND r.source_epoch=? AND r.source_generation=? AND r.run_kind='daily'
-   AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND e.authority_json=?
-   AND json_extract(CASE WHEN json_valid(c.identity_json) THEN c.identity_json ELSE '{}' END,'$.principalOrChatId')=?
+   AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND json_extract(e.authority_json,'$.ownerId')=? AND json_extract(e.authority_json,'$.policyRevision')=?
+   AND json_extract(e.authority_json,'$.sourceEpoch')=? AND json_extract(e.authority_json,'$.sourceGeneration')=?
+   AND json_extract(CASE WHEN json_valid(c.identity_json) THEN c.identity_json ELSE '{}' END,'$.principalOrChatId') IN (?, 'curator:'||?||':run:'||r.id)
    AND (o.outcome IS NULL OR o.notice_state='prepared')
-  ORDER BY COALESCE(o.last_checked_at,0),r.created_at,r.id LIMIT 10`).bind(...keys,s.sourceEpoch,s.sourceGeneration,JSON.stringify(grant.authority),principal).all<Candidate>();
+  ORDER BY COALESCE(o.last_checked_at,0),r.created_at,r.id LIMIT 10`).bind(...keys,s.sourceEpoch,s.sourceGeneration,owner.userId,owner.linkRevision,s.sourceEpoch,s.sourceGeneration,'curator:'+owner.userId,owner.userId).all<Candidate>();
  let checked=0,notified=0;
  for(const row of rows.results){
   host.assertCurrent();let receipt:DispatchReceipt,identity:ConversationIdentity;
   try{receipt=curatorDispatchReceipt.parse(JSON.parse(row.receipt_json));identity=conversationIdentity.parse(JSON.parse(row.identity_json));}catch{continue;}
-  const fence=await host.ownerFence();if(identity.channel!=='telegram'||identity.principalOrChatId!=='curator:'+fence.userId)continue;
+  const fence=await host.ownerFence();if(identity.channel!=='telegram'||!ownsCuratorPrincipal(identity.principalOrChatId,fence.userId,row.id))continue;
   const gate=async()=>{
    host.assertCurrent();const now=await host.ownerFence(),current=await host.authority(identity);
    if(JSON.stringify(now)!==JSON.stringify(fence)||JSON.stringify(current.authority)!==row.authority_json)throw Error('curator_outcome_authority_changed');
@@ -82,9 +77,11 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
   try{
    const n=await host.db.prepare(`SELECT (SELECT COUNT(*) FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND state IN ('pending','presented','indexing','unavailable'))
     +(SELECT COUNT(*) FROM assistant_curator_capture_gaps WHERE installation_id=? AND generation=? AND run_id=? AND state='pending') n`).bind(...keys,row.id,...keys,row.id).first<number>('n');
+   const counts=await host.db.prepare(`SELECT state,COUNT(*) n FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? GROUP BY state`).bind(...keys,row.id).all<{state:string;n:number}>();
+   const count=(state:string)=>counts.results.find(r=>r.state===state)?.n??0;
    const day=/^\d{4}-\d{2}-\d{2}$/.test(row.day)?row.day:'dia registrado';
    const api=host.api(async()=>{const g=join(await gate(),topicGuard);if(!await jsonStatement(host.db,`SELECT 1 WHERE (${g.sql})`,g.values).first())throw Error('curator_outcome_authority_changed');});
-   const message=await api.send(fence.chatId,topic,`⚠️ <b>Revisão da memória — ${day}</b>\n\nA execução foi interrompida.\n${n??0} pendências registradas.\n\nO trabalho já registrado foi preservado.`,[]);
+   const message=await api.send(fence.chatId,topic,`⚠️ <b>Revisão da memória — ${day}</b>\n\nA execução foi interrompida.\n${count('evaluated')+count('learned')} fontes avaliadas; ${count('learned')} com aprendizado confirmado.\n${n??0} pendências registradas.\n\nO trabalho já registrado foi preservado. A interrupção é técnica; este aviso não pede uma decisão sua. Os detalhes das decisões só podem ser exibidos quando as fontes estiverem acessíveis. Referência: ${row.id.slice(0,8)}.`,[]);
    await host.db.prepare("UPDATE assistant_curator_outcomes SET notice_state='accepted',message_id=? WHERE installation_id=? AND generation=? AND run_id=? AND notice_state='attempting'").bind(message,...keys,row.id).run();notified++;
   }catch{await host.db.prepare("UPDATE assistant_curator_outcomes SET notice_state='uncertain' WHERE installation_id=? AND generation=? AND run_id=? AND notice_state='attempting'").bind(...keys,row.id).run();}
  }

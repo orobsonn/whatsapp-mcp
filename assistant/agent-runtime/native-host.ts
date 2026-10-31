@@ -1,5 +1,6 @@
 import type {DeliveredMessage} from '@flue/runtime';
 import {SourceAccess,type AccessGuard} from '../access';
+import {nativeModelSelection} from './conversation-model';
 import {InferenceBudget} from '../budget';
 import type {AssistantEnv} from '../env';
 import {bridgeHash} from '../ingress';
@@ -22,8 +23,9 @@ import {SourceController,sourceTextHash} from '../sources';
 import {configuredRetirementGuard} from '../retention-authority';
 import type {NativeCaptureInput} from '../../src/native-input-reader';
 import {CaptureMaterializer} from '../materialize';
+import {curatorSummaryText} from '../knowledge/curator-summary';
 import {telegramText} from '../telegram-format';
-import {KnowledgeCurator,isCuratorPrincipal,type CuratorReceipt} from '../knowledge/curator';
+import {KnowledgeCurator,isCuratorPrincipal,curatorPrincipal,ownsCuratorPrincipal,type CuratorReceipt} from '../knowledge/curator';
 import {nativeMediaCapability} from './native-media';
 import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
@@ -458,7 +460,7 @@ export class NativeApplicationHost {
  private async curatorFrame(task:TaskContext){
   const latest=task.cohort.at(-1);if(!latest||latest.author.kind!=='system'||!latest.eventId.startsWith('curator-run:'))throw Error('native_curator_denied');
   const curator=await this.curator(task.identity),runId=latest.eventId.slice(12);
-  return {curator,runId,finish:async(input:{needsHelp?:boolean},signal?:AbortSignal)=>{
+  return {curator,runId,finish:async(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>{
    signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();const receipt=await curator.finish(runId,input);signal?.throwIfAborted();
    const notice=await this.curatorSummary(task,curator,receipt,signal);return {...receipt,notice};
   }};
@@ -469,10 +471,8 @@ export class NativeApplicationHost {
   const topic=await this.db!.prepare(`SELECT thread_id FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND link_revision=? AND slot='summaries' AND state='ready' AND fence_json=? AND (${link.sql})`)
    .bind(this.scope.installationId,this.scope.generation,this.env.TELEGRAM_BOT_INSTANCE!,fence.linkRevision,JSON.stringify(fence),...link.values).first<number>('thread_id');
   if(!topic)return {state:'unavailable',reason:'summary_topic_unavailable'};
+  const text=await curatorSummaryText(curator,receipt);
   if(!await curator.claimNotice(receipt.id))return {state:'already_claimed'};
-  const c=receipt.counts,pending=c.pending+c.presented+c.unavailable+c.indexing+c.capturePending;
-  const heading=receipt.kind==='sample'?'AMOSTRA DA MEMÓRIA':'REVISÃO DA MEMÓRIA',scope=receipt.kind==='sample'?`\n\nSomente a janela (${receipt.window.fromSequence}, ${receipt.window.toSequence}] compõe esta amostra. Este ensaio não ativa a rotina diária.`:'';
-  const text=`${receipt.state==='complete'?'✅':'⏳'} <b>${heading} — ${telegramText(receipt.window.day)}</b>\n\n${c.evaluated+c.learned} fontes avaliadas; ${c.learned} fontes com aprendizado confirmado.\n${pending} pendências${receipt.needsHelp?' — preciso da sua ajuda':''}.${scope}`;
   try{
    // Remote dependency checks may exceed the transport's ten-second deadline.
    // Complete them first; cancellation still prevents any subsequent fetch.
@@ -510,7 +510,7 @@ export class NativeApplicationHost {
   this.currentScope();if(!row||!Number.isSafeInteger(row.predecessor_revision)||row.predecessor_revision<1||!Number.isSafeInteger(row.predecessor_revision+1)
    ||(row.max_revision!==row.predecessor_revision&&row.max_revision!==row.predecessor_revision+1))throw Error('native_curator_resume_denied');
   const revision=row.predecessor_revision+1,receipt=curatorDispatchReceipt.parse(JSON.parse(row.receipt_json)),identity=conversationIdentity.parse(JSON.parse(row.identity_json));
-  if(receipt.submissionId!==request.request.previousSubmissionId||identity.channel!=='telegram'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_curator_resume_denied');
+  if(receipt.submissionId!==request.request.previousSubmissionId||identity.channel!=='telegram'||!ownsCuratorPrincipal(identity.principalOrChatId,fence.userId,request.request.runId))throw Error('native_curator_resume_denied');
   const {authority}=await this.authority(identity),current=await this.retention.currentIdentity('telegram',identity.principalOrChatId);this.currentScope();
   if(JSON.stringify(authority)!==row.authority_json||JSON.stringify(current)!==JSON.stringify(identity))throw Error('native_curator_resume_denied');
   const curator=await this.curator(identity);await curator.authorizeEvent(JSON.parse(row.event_json),fence.userId,row.predecessor_revision);
@@ -536,36 +536,36 @@ export class NativeApplicationHost {
    }
    return this.runtime.deliverConversation(verifiedConversationEvent(selected.event));
   }
-  if(request.kind==='sample'){
-   // No identity()/registration before the run CAS. Even a contender which
-   // observed no previous run must adopt the winner's immutable native epoch.
-   const candidate=await this.retention.currentIdentity('telegram','curator:'+fence.userId)??conversationIdentity.parse({version:1,installationId:scope.installationId,generation:scope.generation,channel:'telegram',principalOrChatId:'curator:'+fence.userId,contextEpoch:crypto.randomUUID()});
-   const {guard}=await this.authority(candidate);
-   // Admission metadata only: this object cannot release or expose originals.
-   const admission=new KnowledgeCurator(this.db,()=>this.currentScope(),{assertCurrent:async()=>{await this.authority(candidate);},authorityGuard:()=>guard,
-    verifySource:async()=>{throw Error('native_curator_admission_only');},exposePage:async()=>{throw Error('native_curator_admission_only');}});
-   const run=await admission.beginSample(request.request),bound=await admission.bindSampleIdentity(run.id,candidate);
-   const prior=await this.db.prepare(`SELECT c.tombstoned_at,e.state,e.task_ref FROM assistant_native_conversations c
-    LEFT JOIN assistant_native_conversation_events e ON e.conversation_id=c.id AND e.event_id=?
-    WHERE c.id=? AND c.installation_id=? AND c.generation=? ORDER BY e.sequence LIMIT 1`)
-    .bind('curator-run:'+run.id,bound.sessionId,scope.installationId,scope.generation).first<{tombstoned_at:number|null;state:string|null;task_ref:string|null}>();this.currentScope();
-   if(prior&&(prior.tombstoned_at!==null||prior.state==='withdrawn'))return {state:'retired' as const,runId:run.id,sessionId:bound.sessionId,...(prior.task_ref?{taskRef:prior.task_ref}:{})};
-   await this.authority(bound.identity);await this.retention.register(bound.identity);
-   const curator=await this.curator(bound.identity);
-   if(prior?.task_ref){
-    await this.registered(bound.sessionId);
-    await curator.reconcileReady(run.id);
-    await curator.finish(run.id); // Accounting only; a claimed notice is not resent.
-   }
-   return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
-  }
-  const identity=await this.identity('telegram','curator:'+fence.userId),curator=await this.curator(identity),run=await curator.beginDue(now);
+  // Admission needs current owner authority, not an already registered context.
+  // Constructing this candidate does not create a session or release originals.
+  const admissionIdentity=conversationIdentity.parse({version:1,installationId:scope.installationId,generation:scope.generation,channel:'telegram',principalOrChatId:'curator:'+fence.userId,contextEpoch:crypto.randomUUID()});
+  const {guard}=await this.authority(admissionIdentity);
+  const admission=new KnowledgeCurator(this.db,()=>this.currentScope(),{
+   assertCurrent:async()=>{await this.authority(admissionIdentity);},authorityGuard:()=>guard,
+   verifySource:async()=>{throw Error('native_curator_admission_only');},exposePage:async()=>{throw Error('native_curator_admission_only');}});
+  const run=request.kind==='sample'?await admission.beginSample(request.request):await admission.beginDue(now);
   if(!run)return {state:'not_due' as const};
-  const completed=await this.db.prepare("SELECT 1 FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=? AND state='complete'").bind(scope.installationId,scope.generation,run.id).first();this.currentScope();
-  if(completed)return {state:'complete' as const,runId:run.id};
-  // The curator's system job is not a fact SourceRef, owner request or policy.
-  return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,identity,fence.userId)));
+  // Recover legacy daily bindings from admitted events before choosing a new identity.
+  const legacy=await this.db.prepare(`SELECT c.identity_json FROM assistant_native_conversation_events e JOIN assistant_native_conversations c ON c.id=e.conversation_id
+   WHERE c.installation_id=? AND c.generation=? AND e.event_id=? ORDER BY e.revision LIMIT 1`)
+   .bind(scope.installationId,scope.generation,'curator-run:'+run.id).first<{identity_json:string}>();
+  const candidate=legacy?conversationIdentity.parse(JSON.parse(legacy.identity_json)):{...admissionIdentity,principalOrChatId:curatorPrincipal(fence.userId,run.id)};
+  const bound=await admission.bindIdentity(run.id,candidate,nativeModelSelection(this.env).model);
+  const prior=await this.db.prepare(`SELECT c.tombstoned_at,e.state,e.task_ref FROM assistant_native_conversations c
+   LEFT JOIN assistant_native_conversation_events e ON e.conversation_id=c.id AND e.event_id=?
+   WHERE c.id=? AND c.installation_id=? AND c.generation=? ORDER BY e.revision DESC LIMIT 1`)
+   .bind('curator-run:'+run.id,bound.sessionId,scope.installationId,scope.generation).first<{tombstoned_at:number|null;state:string|null;task_ref:string|null}>();this.currentScope();
+  if(prior&&(prior.tombstoned_at!==null||prior.state==='withdrawn'))return {state:'retired' as const,runId:run.id,sessionId:bound.sessionId,...(prior.task_ref?{taskRef:prior.task_ref}:{})};
+  await this.authority(bound.identity);await this.retention.register(bound.identity);
+  const curator=await this.curator(bound.identity);
+  if(request.kind==='sample'&&prior?.task_ref){await this.registered(bound.sessionId);await curator.reconcileReady(run.id);await curator.finish(run.id);}
+  if(request.kind==='daily'){
+   const completed=await this.db.prepare("SELECT 1 FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=? AND state='complete'").bind(scope.installationId,scope.generation,run.id).first();this.currentScope();
+   if(completed)return {state:'complete' as const,runId:run.id};
+  }
+  return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
  }
+
  async respondOwner(task:TaskContext,text:string){
   if(task.identity.channel!=='telegram'||typeof text!=='string'||!text.trim()||text.length>4096)throw Error('native_owner_response_denied');
   const fence=await nativeOwnerFence(this.env,this.scope);if(task.returnChannel.id!==fence.userId)throw Error('native_owner_response_denied');
