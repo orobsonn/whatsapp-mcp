@@ -480,8 +480,12 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
   );
   if (trustedOwnerProps !== undefined) {
     requireMcpOwner(trustedOwnerProps, env);
-    const affinity = () => ownerAffinitySchema.parse({ installationId: env.ASSISTANT_INSTALLATION_ID,
-      generation: env.ASSISTANT_GENERATION, sourceEpoch: env.INSTALLATION_EPOCH, sourceGeneration: env.CONNECTION_GENERATION });
+    const affinity = () => {
+      const parsed = ownerAffinitySchema.safeParse({ installationId: env.ASSISTANT_INSTALLATION_ID,
+        generation: env.ASSISTANT_GENERATION, sourceEpoch: env.INSTALLATION_EPOCH, sourceGeneration: env.CONNECTION_GENERATION });
+      if (!parsed.success) throw new AppError("assistant_unconfigured", 503);
+      return parsed.data;
+    };
     const binding = () => { if (!env.ASSISTANT_OWNER) throw new AppError("assistant_unconfigured", 503); return env.ASSISTANT_OWNER; };
     tool("assistente_telegram", "Vincula ou revoga o chat privado do dono por dois desafios entre este MCP autenticado e o mesmo chat Telegram. begin e confirm retornam links privados; status mostra estado e revisão. Texto recebido nunca autoriza vincular ou revogar.",
       z.object({ command: telegramLinkCommandSchema }).strict(), false, input => binding().telegramLink(affinity(), input.command));

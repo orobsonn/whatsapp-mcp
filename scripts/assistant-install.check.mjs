@@ -6,6 +6,19 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { renderInstallation, prepareBridge, pinAffinity } from "./assistant-install.mjs";
 import { validateAssistantInstallConfig } from "../assistant/installation.ts";
+import ts from "typescript";
+test("production MCP declares assistant affinity and discovery flags so a normal deploy cannot erase them", async () => {
+  const parsed = ts.parseConfigFileTextToJson("wrangler.jsonc", await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  assert.equal(parsed.error, undefined);
+  const config = parsed.config;
+  for (const key of ["ASSISTANT_INSTALLATION_ID", "ASSISTANT_GENERATION"]) {
+    assert.equal(typeof config.vars[key], "string", key);
+    assert.ok(config.vars[key].length > 0 && !["pending", "unconfigured"].includes(config.vars[key]), key);
+  }
+  assert.equal(config.vars.ASSISTANT_KNOWLEDGE_ENABLED, "true");
+  assert.equal(config.vars.ASSISTANT_BRIDGE_BATCH_SIZE, "100");
+  assert.ok(config.services.some(binding => binding.binding === "ASSISTANT_OWNER" && binding.service === "personal-assistant-shadow" && binding.entrypoint === "OwnerAssistant"));
+});
 const manifest = () => ({ schema: 1, accountId: "ab9f6d8988145943bf8bbab313e45e6e", installationId: "synthetic-install", generation: "g1",
   databaseId: "11111111-1111-4111-8111-111111111111", imageDigest: `registry.cloudflare.com/ab9f6d8988145943bf8bbab313e45e6e/assistant-cognee@sha256:${"a".repeat(64)}`,
   archiveBaseline: { versionId: "22222222-2222-4222-8222-222222222222", settingsHash: "b".repeat(64) } });

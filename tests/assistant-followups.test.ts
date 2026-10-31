@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, createExecutionContext } from "cloudflare:test";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { OwnerControl } from "../assistant/control";
 import { SourceController } from "../assistant/sources";
@@ -6,7 +6,9 @@ import { Relations } from "../assistant/relations";
 import { SourceAccess } from "../assistant/access";
 import * as followups from "../assistant/followups";
 import { JobQueue } from "../assistant/queue";
-import { OwnerQueries } from "../assistant/mcp";
+import { OwnerAssistant, OwnerQueries } from "../assistant/mcp";
+import { mcpFetch } from "../src/mcp";
+import type { Env } from "../src/env";
 import { OriginGuard } from "../assistant/origin-guard";
 import { CaptureMaterializer } from "../assistant/materialize";
 let scope: { installationId: string; generation: string; sourceEpoch: string; sourceGeneration: string }, control: OwnerControl, sources: SourceController, source: { id: string; revision: number; version: number }, now: number;
@@ -20,6 +22,35 @@ beforeEach(async () => {
   await control.execute({ kind: "policy.put", operationId: "policy", id: "chat", expectedRevision: 0, conversationKind: "private" });
 });
 afterEach(() => vi.restoreAllMocks());
+it.each(["2026-11-03T10:00:00-03:00", "2026-11-05T10:00:00-03:00"])("persists and rereads an idempotent FUP for %s through HTTP MCP and the real owner handler", async dueAt => {
+  const rpc = new OwnerAssistant(createExecutionContext(), { DB: env.DB, INSTALLATION_ID: scope.installationId,
+    OPERATIONAL_GENERATION: scope.generation, BRIDGE_SOURCE_EPOCH: scope.sourceEpoch, BRIDGE_SOURCE_GENERATION: scope.sourceGeneration });
+  const owner = { sub: "synthetic-owner", epoch: scope.sourceEpoch };
+  const settings = { ...env, PUBLIC_ORIGIN: "https://assistant-mcp.invalid", OWNER_SUB: owner.sub, INSTALLATION_EPOCH: scope.sourceEpoch,
+    CONNECTION_GENERATION: scope.sourceGeneration, MAINTENANCE: "false", ASSISTANT_INSTALLATION_ID: scope.installationId,
+    ASSISTANT_GENERATION: scope.generation, ASSISTANT_OWNER: rpc } as Env;
+  const call = async (name: string, arguments_: unknown) => {
+    const response = await mcpFetch(new Request("https://assistant-mcp.invalid/mcp", { method: "POST", headers: {
+      "Content-Type": "application/json", Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25",
+    }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: arguments_ } }) }), settings, owner);
+    const body = await response.json() as any;
+    expect(body.result.isError).not.toBe(true);
+    return JSON.parse(body.result.content[0].text);
+  };
+  expect(await call("assistente_consultar", { query: { kind: "projects" } })).toMatchObject({ items: [] });
+  expect(await call("assistente_consultar", { query: { kind: "follow_ups" } })).toMatchObject({ items: [] });
+  expect(await call("assistente_consultar", { query: { kind: "follow_up", id: "fup" } })).toEqual({ state: "unavailable" });
+  const command = fup({ dueAt, timezone: "America/Fortaleza" });
+  const receipt = await call("assistente_controlar", { command });
+  expect(receipt).toMatchObject({ id: "fup", version: 1 });
+  expect(await call("assistente_controlar", { command })).toEqual(receipt);
+  expect(await call("assistente_consultar", { query: { kind: "follow_up", id: "fup" } })).toMatchObject({
+    id: "fup", version: 1, obligationState: "scheduled", dueAt: Date.parse(dueAt), timezone: "America/Fortaleza", precision: "exact",
+    provenance: { evidenceKind: "owner_directive" },
+  });
+  expect(await call("assistente_consultar", { query: { kind: "follow_ups" } })).toMatchObject({ items: [{ id: "fup", version: 1 }] });
+  expect(await sql("SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=? AND generation=?").first("n")).toBe(1);
+});
 it("normalizes explicit civil time in the declared zone before recording a durable owner command", async () => {
   await expect(control.execute(fup({ dueAt: "2026-10-26T09:00:00-03:00", timezone: "America/Fortaleza" }))).resolves.toMatchObject({ version: 1 });
   expect(await sql("SELECT due_at,timezone FROM assistant_follow_ups WHERE installation_id=? AND generation=?").first()).toEqual({ due_at: Date.UTC(2026, 9, 26, 12), timezone: "America/Fortaleza" });
