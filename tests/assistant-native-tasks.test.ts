@@ -1,4 +1,5 @@
-import {env} from 'cloudflare:test';
+import {env,createExecutionContext} from 'cloudflare:test';
+import {OwnerAssistant,OwnerQueries} from '../assistant/mcp';
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import type {DeliveredMessage} from '@flue/runtime';
 import {NativeApplicationHost} from '../assistant/agent-runtime/native-host';
@@ -52,6 +53,67 @@ async function fixture(){
 async function saved(f:Awaited<ReturnType<typeof fixture>>,task:TaskContext,objective='Pesquisar informação sintética',at=localISO(Date.now()-60000)){
  return await f.host.tasks().save(task,{objective,at}) as {id:string;revision:number;scheduledAt:number};
 }
+async function mcpFixture(){
+ const f=await fixture();await f.ownerInput();
+ const source=await new SourceController(env.DB,f.scope,{kind:'owner'}).create({originKey:'mcp-request',text:'Pedido do dono: lembrar privadamente sobre o retorno combinado.',occurredAt:Date.now(),audience:'owner'});
+ await f.control.execute({kind:'policy.put',operationId:'mcp-policy',id:'synthetic-chat',expectedRevision:0,conversationKind:'private'});
+ const command={kind:'fup.put' as const,operationId:'mcp-fup',id:'mcp-fup',expectedVersion:0,conversationId:'synthetic-chat',policyRevision:1,source:{id:source.id,revision:1},purpose:'Retorno privado ao dono',dueAt:localISO(Date.now()-60000),timezone:'America/Fortaleza',precision:'exact' as const,state:'scheduled' as const};
+ const rpc=new OwnerAssistant(createExecutionContext(),f.settings);
+ return {...f,source,command,rpc};
+}
+it('enrolls an authenticated MCP FUP atomically and wakes only the existing private owner session',async()=>{
+ const f=await mcpFixture(),first=await f.rpc.control(f.scope,f.command);
+ expect(first).toMatchObject({id:'mcp-fup',version:1,native:'enrolled'});
+ expect(await f.rpc.control(f.scope,f.command)).toEqual(first);
+ expect(await f.count('assistant_follow_ups')).toBe(1);expect(await f.count('assistant_native_task_bindings')).toBe(1);
+ const due=await f.wake();expect(due.returnChannel).toEqual({channel:'telegram',id:'101'});
+ expect(due.cohort[0]).toMatchObject({kind:'fup_due',author:{kind:'system'},workRef:{kind:'follow_up',id:'mcp-fup',version:1}});
+ await expect(f.host.tasks().save(due,{objective:'Deadline is not a new owner request'})).rejects.toThrow('native_task_owner_required');
+ expect(await f.count('assistant_jobs')).toBe(0);
+ expect(await new OwnerQueries(env.DB,f.scope).execute({kind:'follow_up',id:'mcp-fup'})).toMatchObject({native:'enrolled'});
+});
+it.each(['link','activation','source','retention'] as const)('rejects an MCP FUP and its binding together when %s changes during admission',async change=>{
+ const f=await mcpFixture(),original=OwnerControl.prototype.execute;
+ vi.spyOn(OwnerControl.prototype,'execute').mockImplementation(async function(this:OwnerControl,input:unknown){
+  if(change==='link')await env.DB.prepare("UPDATE assistant_telegram_links SET revision=revision+1 WHERE installation_id=?").bind(f.scope.installationId).run();
+  if(change==='activation')await env.DB.prepare("UPDATE assistant_native_host_state SET telegram_activation_json=NULL WHERE installation_id=?").bind(f.scope.installationId).run();
+  if(change==='source')await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-during-mcp',id:f.source.id,expectedRevision:1});
+  if(change==='retention')await env.DB.prepare('INSERT INTO assistant_retention_runtime_hold(installation_id,operation_id,target_generation,active,created_at) VALUES(?,?,?,1,?)').bind(f.scope.installationId,'test','next',Date.now()).run();
+  return original.call(this,input);
+ });
+ await expect(f.rpc.control(f.scope,f.command)).rejects.toThrow('control_precondition');
+ expect(await f.count('assistant_follow_ups')).toBe(0);expect(await f.count('assistant_native_task_bindings')).toBe(0);
+});
+it.each(['paused','session','link','activation'] as const)('does not persist a scheduled MCP FUP when the native scheduler is unavailable: %s',async missing=>{
+ const f=await mcpFixture();
+ if(missing==='paused')f.settings.ROUTINES_PAUSED='true';
+ else if(missing==='session')await env.DB.prepare('DELETE FROM assistant_native_context_channels WHERE installation_id=?').bind(f.scope.installationId).run();
+ else if(missing==='link')await env.DB.prepare('DELETE FROM assistant_telegram_links WHERE installation_id=?').bind(f.scope.installationId).run();
+ else await env.DB.prepare('UPDATE assistant_native_host_state SET telegram_activation_json=NULL WHERE installation_id=?').bind(f.scope.installationId).run();
+ await expect(f.rpc.control(f.scope,f.command)).rejects.toThrow('control_scheduler_unavailable');
+ expect(await f.count('assistant_follow_ups')).toBe(0);expect(await f.count('assistant_native_task_bindings')).toBe(0);
+});
+it('invalidates an old MCP wake on reschedule and refuses a withdrawn support source',async()=>{
+ const f=await mcpFixture();await f.rpc.control(f.scope,f.command);const old=await f.wake();
+ await f.rpc.control(f.scope,{...f.command,operationId:'mcp-reschedule',expectedVersion:1,dueAt:localISO(Date.now()-30000)});
+ await expect(f.host.tasks().guardForTask(old)).rejects.toThrow();
+ const next=await f.wake();expect(next.cohort[0].workRef).toMatchObject({version:2});
+ await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-mcp-support',id:f.source.id,expectedRevision:1});
+ await expect(f.host.tasks().guardForTask(next)).rejects.toThrow();
+});
+it('recovers the exact admitted MCP receipt after support withdrawal and scheduler pause without reenrolling',async()=>{
+ const f=await mcpFixture(),first=await f.rpc.control(f.scope,f.command);
+ await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-receipt-support',id:f.source.id,expectedRevision:1});
+ f.settings.ROUTINES_PAUSED='true';
+ expect(await f.rpc.control(f.scope,f.command)).toEqual(first);
+ expect(await f.count('assistant_follow_ups')).toBe(1);expect(await f.count('assistant_native_task_bindings')).toBe(1);
+});
+it('accepts the same activation with a different stored JSON field order',async()=>{
+ const f=await mcpFixture(),raw=JSON.stringify(Object.fromEntries(Object.entries(f.activation).reverse()));
+ await env.DB.prepare('UPDATE assistant_native_host_state SET telegram_activation_json=? WHERE installation_id=?').bind(raw,f.scope.installationId).run();
+ expect(await f.rpc.control(f.scope,f.command)).toMatchObject({native:'enrolled'});
+ expect((await f.wake()).cohort[0].workRef).toMatchObject({id:'mcp-fup'});
+});
 
 it('creates mission plus explicit enrollment atomically, with deterministic retries and preserved edit deadline',async()=>{
  const f=await fixture(),owner=await f.ownerInput(),input={objective:'Objetivo sintético',at:localISO(Date.now()-60000)};

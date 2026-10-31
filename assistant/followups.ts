@@ -90,7 +90,8 @@ export class FollowUps {
     const key=z.string().min(1).max(256).parse(id),row=await this.statement(`SELECT * FROM assistant_follow_ups WHERE ${ns} AND id=? ORDER BY version DESC LIMIT 1`,key).first<DueRow & {due_at:number|null;window_end:number|null;timezone:string;precision:string;condition_text:string|null}>();
     if(!row)return {state:"unavailable"};
     const evaluation=await this.statement(`SELECT j.state FROM assistant_fup_occurrences o LEFT JOIN assistant_jobs j ON j.installation_id=o.installation_id AND j.generation=o.generation AND j.occurrence_id=o.id WHERE o.${ns.replace(" AND "," AND o.")} AND o.follow_up_id=? AND o.follow_up_version=? ORDER BY o.due_at DESC LIMIT 1`,key,row.version).first<{state:string|null}>();
-    const metadata={id:key,version:row.version,obligationState:row.state,evaluationState:evaluation?.state??"not_evaluated",dueAt:row.due_at,windowEnd:row.window_end,nextEvaluationAt:row.next_evaluation_at,timezone:row.timezone,precision:row.precision};
+    const enrolled=await this.statement("SELECT 1 FROM assistant_native_task_bindings WHERE installation_id=? AND generation=? AND kind='follow_up' AND resource_id=? AND resource_version=?",key,row.version).first();
+    const metadata={id:key,version:row.version,obligationState:row.state,evaluationState:evaluation?.state??"not_evaluated",native:enrolled?'enrolled':'not_enrolled',dueAt:row.due_at,windowEnd:row.window_end,nextEvaluationAt:row.next_evaluation_at,timezone:row.timezone,precision:row.precision};
     const access=new SourceAccess(this.db,this.scope),source=await access.read({kind:"owner"},row.source_id,row.source_revision);
     if(!source)return {...metadata,provenance:{state:"unavailable"}};
     const stored=await this.statement(`SELECT body_json,command_operation_id FROM assistant_fup_provenance WHERE ${ns} AND fup_id=? AND version=?`,key,row.version).first<{body_json:string;command_operation_id:string}>();

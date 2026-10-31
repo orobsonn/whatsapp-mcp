@@ -3,7 +3,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { z } from "zod";
 import type { AssistantEnv } from "./env";
 import { SourceController } from "./sources";
-import { OwnerControl } from "./control";
+import { OwnerControl, ownerCommandSchema } from "./control";
 import { SourceAccess } from "./access";
 import {outgoingPort,type OutgoingPort} from './outgoing';
 import { OriginGuard } from "./origin-guard";
@@ -209,7 +209,15 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    return new OwnerControl(this.env.DB!, scope, { kind: "owner" },Date.now,outgoingPort(this.env)).execute(input);
+    const command = ownerCommandSchema.parse(input);
+    const scheduled = command.kind === 'fup.put' && command.dueAt !== undefined && ['scheduled','awaiting_condition'].includes(command.state);
+    if (scheduled) {
+      const previous = await new OwnerControl(this.env.DB!, scope, {kind:'owner'}).recover(command);
+      if (previous) return previous;
+    }
+    const native = scheduled && this.env.NATIVE_CONVERSATIONS_MODE && this.env.NATIVE_CONVERSATIONS_MODE !== 'off'
+      ? await (await import('./mcp-followup')).prepareMcpFollowUp(this.env, scope, command) : undefined;
+    return new OwnerControl(this.env.DB!, scope, { kind: "owner" },Date.now,outgoingPort(this.env),native?.admission,native?.enrollment).execute(command);
   }
   async evaluate(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected), { origin, semantic, ownerOncePlan } = hostConfiguredSearch(this.env, "owner_read");
