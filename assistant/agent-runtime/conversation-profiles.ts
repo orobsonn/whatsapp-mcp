@@ -18,7 +18,7 @@ const seedSchema=v.strictObject({version:v.literal(1),installationId:v.string(),
 export type ConversationApplicationFrame={reads:ConversationReadCapabilities;
  media:{read(ref:unknown):Promise<unknown>};
  tasks?:NativeTaskCapabilities;
- curator?:{curator:KnowledgeCurator;runId:string;finish(input:{needsHelp?:boolean},signal?:AbortSignal):Promise<unknown>};
+ curator?:{curator:KnowledgeCurator;runId:string;finish(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal):Promise<unknown>};
  effects:{reply(input:unknown):Promise<unknown>;respondOwner(text:string):Promise<unknown>;askOwner(question:string):Promise<unknown>;calendarChange(mutation:unknown):Promise<unknown>;reassessWhatsApp?(ref:unknown):Promise<unknown>}};
 export type ConversationResolver=(env:Record<string,unknown>,sessionId:string,delivery:DeliveredMessage)=>Promise<{
  runtime:ConversationRuntime;
@@ -79,7 +79,7 @@ export function ConversationRuntimeAgent(){
   // Capture the exact authenticated frame BEFORE the knowledge operation. A
   // later join must not rebind an already committed write to a different run.
   const frame=await binding.frame(binding.task),curator=frame.curator;
-  return {...binding,...(curator?{onKnowledgeReady:(operationId:string)=>curator.curator.reflectReady(curator.runId,operationId)}:{})};
+  return {...binding,...(curator?{onKnowledgeIntent:(operationId:string,input:Parameters<KnowledgeCurator['recordLearning']>[2])=>curator.curator.recordLearning(curator.runId,operationId,input),onKnowledgeReady:(operationId:string)=>curator.curator.reflectReady(curator.runId,operationId)}:{})};
  });
  async function application(){const binding=await bound();if(!binding.frame)throw Error('conversation_application_unconfigured');return {...binding,...await binding.frame(binding.task)};}
  useConversationReadTools(application);

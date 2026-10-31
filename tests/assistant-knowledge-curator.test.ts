@@ -166,7 +166,7 @@ it('starts with daily summaries and changes to errors/help-only only through an 
  const run=await due();expect((await curator.finish(run.id)).shouldNotify).toBe(true);
  await expect(curator.confirmNoticePreference('errors_help',false)).rejects.toThrow('curator_owner_confirmation');
  await curator.confirmNoticePreference('errors_help',true);expect((await curator.finish(run.id)).shouldNotify).toBe(false);
- expect((await curator.finish(run.id,{needsHelp:true})).shouldNotify).toBe(true);
+ expect((await curator.finish(run.id,{needsHelp:true,helpRequest:'Qual identidade corresponde a Nora?'})).shouldNotify).toBe(true);
 });
 it('binds a private curator event to a persisted window and never accepts owner/person text as curation authority',async()=>{
  const run=await due(),identity={version:1 as const,installationId:scope.installationId,generation:scope.generation,channel:'telegram' as const,principalOrChatId:'curator:owner-1',contextEpoch:'c1'};
@@ -220,7 +220,10 @@ async function uncertainLearning(){
  let ready=false;
  const port:KnowledgePort={remember:async()=>{throw Error('synthetic ACK loss');},status:async operationId=>({operationId,state:ready?'ready':'indexing'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async operationId=>({operationId,state:'ready'})};
  const service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),port,()=>now);
- const result=await service.execute({kind:'remember',operationId:'uncertain-real-service',entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:item.sourceRef,quote:'exact original evidence'}]}]});
+ const input={entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:item.sourceRef,quote:'exact original evidence'}]}]};
+ await curator.recordLearning(run.id,'uncertain-real-service',input as Parameters<KnowledgeCurator['recordLearning']>[2]);
+ const result=await service.execute({kind:'remember',operationId:'uncertain-real-service',...input} as Parameters<KnowledgeService['execute']>[0]);
+ expect((await curator.decisions(run.id)).items[0]).toMatchObject({state:'presented',operationIds:['uncertain-real-service'],decision:{category:'learn'}});
  expect(result).toEqual({operationId:'uncertain-real-service',state:'uncertain'});
  const durable=await sql('SELECT state,error,response_json,normalized_json,source_fences_json FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=?','uncertain-real-service').first<Record<string,unknown>>();
  expect(durable).toMatchObject({state:'uncertain',error:'outcome_uncertain',response_json:null});expect(durable?.normalized_json).toBeTruthy();expect(durable?.source_fences_json).toBeTruthy();
@@ -255,10 +258,17 @@ async function readyLearning(client:'curator'|'owner_mcp'='curator',outsideWindo
 }
 it('reflects the original host ready receipt after a model mangles its opaque id, without another knowledge write',async()=>{
  const setup=await readyLearning(),mangled=setup.operationId.replace('596','');
+ const operation=await sql('SELECT request_json FROM assistant_knowledge_operations WHERE installation_id=? AND generation=? AND id=?',setup.operationId).first<string>('request_json');
+ const {kind:_,operationId:__,...input}=JSON.parse(operation!);await curator.recordLearning(setup.run.id,setup.operationId,input);
  await expect(curator.acknowledge(setup.run.id,setup.item.sequence,{state:'learned',operationIds:[mangled]})).rejects.toThrow('curator_knowledge_receipt');
  expect(await curator.reflectReady(setup.run.id,setup.operationId)).toMatchObject({state:'reflected',learned:1,pending:0});
  expect((await curator.status(setup.run.id)).counts.learned).toBe(1);expect(setup.calls).toHaveLength(1);
- expect(await sql('SELECT operation_ids_json FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=?',setup.run.id).first('operation_ids_json')).toBe(JSON.stringify([setup.operationId]));
+ const second='second-real-operation';const port:KnowledgePort={remember:async id=>({operationId:id,state:'ready'}),status:async id=>({operationId:id,state:'ready'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async id=>({operationId:id,state:'ready'})};
+ await curator.recordLearning(setup.run.id,second,input);
+ const service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),port,()=>now);await service.execute({...input,kind:'remember',operationId:second});
+ await curator.reflectReady(setup.run.id,second);
+ expect((await curator.decisions(setup.run.id)).items[0].operationIds.sort()).toEqual([setup.operationId,second].sort());
+ expect(await sql('SELECT operation_ids_json FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=?',setup.run.id).first('operation_ids_json')).toBe(JSON.stringify([setup.operationId,'second-real-operation']));
 });
 it('does not reflect a different client receipt',async()=>{
  const wrong=await readyLearning('owner_mcp');await expect(curator.reflectReady(wrong.run.id,wrong.operationId)).rejects.toThrow('curator_knowledge_receipt');
@@ -273,6 +283,7 @@ it('reflects indexing to ready only after genuine reconciliation',async()=>{
  await expect(curator.reflectReady(setup.run.id,'uncertain-real-service')).rejects.toThrow('curator_knowledge_receipt');
  setup.ready();await setup.service.execute({kind:'status',operationId:'uncertain-real-service'});
  expect(await curator.reflectReady(setup.run.id,'uncertain-real-service')).toMatchObject({state:'reflected',learned:1,pending:0});
+ expect((await curator.decisions(setup.run.id)).items[0]).toMatchObject({state:'learned',operationIds:['uncertain-real-service'],decision:{category:'learn'}});
 });
 it('keeps reflection pending after original evidence is revoked',async()=>{
  const revoked=await readyLearning();await sources.withdraw(revoked.item.sourceRef.id,revoked.item.sourceRef.revision);
@@ -292,4 +303,19 @@ it('does not recover a ready receipt which predates the current passage',async()
  const service=new KnowledgeService(env.DB,()=>({scope,client:'curator'}),{remember:async operationId=>({operationId,state:'ready'}),status:async operationId=>({operationId,state:'ready'}),query:async()=>({claims:[]}),find_entities:async()=>({entities:[]}),get_entity:async()=>null,withdraw:async operationId=>({operationId,state:'ready'})},()=>now);
  await service.execute({kind:'remember',operationId:'before-current-passage',entities:[{key:'person',kind:'person',name:'Synthetic Person'},{key:'project',kind:'project',name:'Synthetic Project'}],relations:[{subjectId:'person',predicate:'works_on',objectId:'project',classification:'reported',evidence:[{sourceRef:ref,quote:'Original evidence for learning.'}]}]});
  const run=await due();await curator.next(run.id);expect(await curator.reconcileReady(run.id)).toMatchObject({learned:0,pending:0});expect((await curator.status(run.id)).counts.presented).toBe(1);
+});
+
+it('records semantic decisions only with an accepted exact-source acknowledgement and hides withdrawn details',async()=>{
+ const source=await note('decision-log-source','Conversa passageira');const run=await due(),item=(await curator.next(run.id)).items[0];
+ const decision={category:'not_useful' as const,summary:'Cumprimento de Nora',reason:'Não contém informação duradoura.'};
+ const result=await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'evaluated',decision},{sequence:item.sequence+99,state:'evaluated',decision}]);
+ expect(result).toMatchObject({recorded:1,refused:1});
+ let log=await curator.decisions(run.id);expect(log.items).toHaveLength(1);expect(log.items[0]).toMatchObject({sequence:item.sequence,state:'evaluated',decision,sourceRef:item.sourceRef});
+ await sources.withdraw(source.id,1);log=await curator.decisions(run.id);expect(log.items).toHaveLength(0);
+ expect(await sql('SELECT COUNT(*) n FROM assistant_curator_decisions WHERE installation_id=? AND generation=? AND run_id=?',run.id).first('n')).toBe(0);
+});
+it('requires an actionable owner request when marking human help and keeps it separate from technical pending work',async()=>{
+ await note('help');const run=await due();await expect(curator.finish(run.id,{needsHelp:true})).rejects.toThrow('curator_help_request');
+ const receipt=await curator.finish(run.id,{needsHelp:true,helpRequest:'Nora é a mesma pessoa do projeto Cedar?'});
+ expect(receipt).toMatchObject({needsHelp:true,helpRequest:'Nora é a mesma pessoa do projeto Cedar?'});
 });

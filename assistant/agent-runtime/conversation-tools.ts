@@ -16,6 +16,7 @@ const relation=v.strictObject({subjectId:id,predicate:name,objectId:id,classific
 type ToolValue=ToolRunEnvelope<undefined>['output'];
 export type ConversationToolBinding={runtime:ConversationRuntime;task:TaskContext;
  /** Optional host callback closes over this exact private-curator run/task. */
+ onKnowledgeIntent?:(operationId:string,input:Omit<ReturnType<typeof knowledgeRemember.parse>,'operationId'>)=>Promise<void>;
  onKnowledgeReady?:(operationId:string)=>Promise<ToolValue>};
 /** The resolver closes over this native render's delivery. It may resolve a
  * host-recorded consumed cohort, but must never read a mutable "active task". */
@@ -50,6 +51,7 @@ export function useConversationKnowledgeTools(resolve:()=>Promise<ConversationTo
    const {operationId:_,...input}=knowledgeRemember.parse({...data,operationId:'host-normalization'});
    const operationId='conversation-knowledge-v1-'+await bridgeHash([task.contextRef,input]);
    const command={...input,operationId},knowledge=await runtime.knowledge(task);
+   await binding.onKnowledgeIntent?.(operationId,input);
    return output(binding,await knowledge.execute({kind:'remember',...command}),operationId);
   }});
  useTool({name:'knowledge_status',description:'Reconcile an existing knowledge operation by its exact operationId. accepted and indexing do not mean ready; uncertainty does not authorize another operation.',

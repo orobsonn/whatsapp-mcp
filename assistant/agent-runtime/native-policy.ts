@@ -5,7 +5,7 @@ import {retentionExecutionGuard} from '../retention-execution';
 import type {AccessGuard} from '../access';
 import {bridgeHash} from '../ingress';
 import {conversationAddress,type ConversationAuthority,type ConversationIdentity} from './conversation';
-import {isCuratorPrincipal,curatorSampleRequest,type CuratorSampleRequest} from '../knowledge/curator';
+import {isCuratorPrincipal,ownsCuratorPrincipal,curatorSampleRequest,type CuratorSampleRequest} from '../knowledge/curator';
 import {z} from 'zod';
 
 export type NativeMode='off'|'shadow'|'approval'|'autonomous';
@@ -59,7 +59,7 @@ export async function nativeAuthority(env:AssistantEnv,identity:ConversationIden
  let revision=fence.linkRevision,policy='owner',replyMode=mode,activationKey:string|null=null;let channel:AccessGuard;
  if(identity.channel==='telegram'){
   if(isCuratorPrincipal(identity.principalOrChatId)){
-   if(env.NATIVE_CURATOR_ENABLED!=='true'||identity.principalOrChatId!=='curator:'+fence.userId)throw Error('native_principal_denied');
+   if(env.NATIVE_CURATOR_ENABLED!=='true'||!ownsCuratorPrincipal(identity.principalOrChatId,fence.userId))throw Error('native_principal_denied');
    replyMode='shadow';policy='private_curator';
   }else if(identity.principalOrChatId!==fence.userId)throw Error('native_principal_denied');
   if(isCuratorPrincipal(identity.principalOrChatId))channel={sql:'1',values:[]};

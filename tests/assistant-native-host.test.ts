@@ -353,7 +353,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   const f=await fixture();expect(await f.host().dispatchCurator()).toEqual({state:'disabled'});expect(transport.dispatch).not.toHaveBeenCalled();
   f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-evidence',text:'Nora participa do projeto Cedar.',occurredAt:1});
   const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(receipt.state!=='admitted'&&receipt.state!=='uncertain')throw Error('fixture_curator');
-  const task=await latestTask(host,receipt.taskRef);expect(task.identity.principalOrChatId).toBe('curator:101');expect(task.knowledge.client).toBe('curator');expect(task.authority.mode).toBe('shadow');expect(task.cohort[0].author).toEqual({kind:'system',id:'curator-host'});expect(task.cohort[0].sourceRef).toBeUndefined();
+  const task=await latestTask(host,receipt.taskRef);expect(task.identity.principalOrChatId).toBe('curator:101:run:'+task.cohort[0].eventId.slice(12));expect(task.knowledge.client).toBe('curator');expect(task.authority.mode).toBe('shadow');expect(task.cohort[0].author).toEqual({kind:'system',id:'curator-host'});expect(task.cohort[0].sourceRef).toBeUndefined();
   const frame=await host.frame(task);expect(frame.curator).toBeDefined();const page=await frame.curator!.curator.next(frame.curator!.runId);expect(page.items).toHaveLength(1);expect(page.items[0].text).toBe('Nora participa do projeto Cedar.');
   await expect(frame.effects.reply({decision:'respond',text:'Terceiro'})).rejects.toThrow('native_reply_channel_denied');
   await expect(frame.effects.respondOwner('Destino livre')).rejects.toThrow('native_owner_response_denied');
@@ -452,13 +452,25 @@ describe('native application composition on real D1 and Source reads',()=>{
   f.own.NATIVE_CURATOR_RESUME_REQUEST=undefined;
   expect(await f.host().dispatchCurator(Date.parse('2031-01-01T06:00:00Z'))).toEqual({state:'complete',runId:f.runId});expect(transport.dispatch).not.toHaveBeenCalled();
  });
+ it('starts a fresh private context per daily passage and reuses the admitted context on replay',async()=>{
+  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
+  const host=f.host(),first=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));
+  if(first.state!=='admitted')throw Error('fixture_curator');
+  const replay=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));
+  const second=await host.dispatchCurator(Date.parse('2031-01-02T06:00:00Z'));
+  if(second.state!=='admitted'||replay.state!=='admitted')throw Error('fixture_curator');
+  expect(replay.sessionId).toBe(first.sessionId);expect(second.sessionId).not.toBe(first.sessionId);
+  const a=await latestTask(host,first.taskRef),b=await latestTask(host,second.taskRef);
+  expect(b.cohort).toHaveLength(1);expect(b.knowledge.scope).toEqual(a.knowledge.scope);
+  expect(a.identity.principalOrChatId).toBe('curator:101:run:'+a.cohort[0].eventId.slice(12));
+ });
  it('curator finish produces one short daily summary in the fixed owner summary topic',async()=>{
   const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'curator-source',text:'Contexto do projeto.',occurredAt:1});
   const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
   await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
   const host=f.host(),receipt=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(receipt.state!=='admitted'&&receipt.state!=='uncertain')throw Error('fixture_curator');
-  const task=await latestTask(host,receipt.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
-  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).not.toContain('Contexto do projeto.');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
+  const task=await latestTask(host,receipt.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated',decision:{category:'not_useful',summary:'Conversa sobre o projeto Cedar',reason:'Não contém acordo ou informação duradoura.'}});
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body).toMatchObject({chat_id:'101',message_thread_id:42,parse_mode:'HTML'});expect(body.text).toContain('1 fontes avaliadas');expect(body.text).toContain('Conversa sobre o projeto Cedar');expect(body.text).toContain('Não contém acordo');expect(body.text).toContain('Não guardei');expect(body.text).not.toContain('preciso da sua ajuda');return Response.json({ok:true,result:{message_id:100,message_thread_id:42,chat:{id:101,type:'private'}}});});
   expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'accepted'}});expect(await curator.finish({})).toMatchObject({state:'complete',notice:{state:'already_claimed'}});expect(fetch).toHaveBeenCalledTimes(1);
  });
  it('reports a proven curator failure before broken source guards, independently of summary preference and without a model retry',async()=>{
@@ -472,9 +484,9 @@ describe('native application composition on real D1 and Source reads',()=>{
   vi.spyOn(host.retention,'assertCurrent').mockRejectedValue(Error('conversation_context_unavailable'));
   const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:200,message_thread_id:42,chat:{id:101,type:'private'}}}));
   const dispatches=transport.dispatch.mock.calls.length;
-  await expect(host.tick()).rejects.toThrow('conversation_context_unavailable');
+  expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});
   expect(fetch).toHaveBeenCalledOnce();const body=JSON.parse(String(fetch.mock.calls[0][1]?.body));expect(body.text).toContain('execução foi interrompida');expect(body.text).toContain('1 pendência');expect(body.text).not.toContain('PRIVATE_');
-  await expect(host.tick()).rejects.toThrow('conversation_context_unavailable');expect(fetch).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
+  expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});expect(fetch).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
   const row=await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(runId).first();expect(row).toEqual({outcome:'failed',notice_state:'accepted'});
  });
  it.each(['completed','wrong_submission','wrong_uid','aborted','lost_notice'] as const)('curator settlement keeps %s distinct from coverage, retry authority and notification certainty',async mode=>{
@@ -563,7 +575,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   const task=await latestTask(host,a.taskRef),frame=await host.frame(task),curator=frame.curator!,page=await curator.curator.next(curator.runId);expect(page.items).toHaveLength(1);expect(page.coverage.scope).toBe('sample_window');
   expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_curator_state WHERE installation_id=?').bind(f.scope.installationId).first('n')).toBe(0);
   await curator.curator.acknowledge(curator.runId,page.items[0].sequence,{state:'evaluated'});
-  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body.text).toContain('AMOSTRA DA MEMÓRIA');expect(body.text).toContain('Somente a janela');expect(body.text).not.toContain('REVISÃO DA MEMÓRIA');return Response.json({ok:true,result:{message_id:101,message_thread_id:42,chat:{id:101,type:'private'}}});});
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{const body=JSON.parse(String(init?.body));expect(body.text).toContain('AMOSTRA DA MEMÓRIA');expect(body.text).toContain('amostra pontual');expect(body.text).not.toContain('REVISÃO DA MEMÓRIA');return Response.json({ok:true,result:{message_id:101,message_thread_id:42,chat:{id:101,type:'private'}}});});
   expect(await curator.finish({})).toMatchObject({kind:'sample',state:'complete',notice:{state:'accepted'}});expect(fetch).toHaveBeenCalledTimes(1);
  });
  it('keeps a sample bound to its original native receipt after context retirement without creating another epoch or model attempt',async()=>{
