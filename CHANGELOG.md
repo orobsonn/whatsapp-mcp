@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-30
+
+### Fixed
+- Mensagens com prazo de desaparecimento passam a ser arquivadas e consultadas normalmente, incluindo anexos. Removido o bloqueio indevido de captura; visualização única e registros antigos já descartados continuam protegidos.
+
 ## [0.52.0] - 2026-10-30
 
 ### Added
