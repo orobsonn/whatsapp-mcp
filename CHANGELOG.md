@@ -9,9 +9,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 ### Fixed
 - Configuração da instalação da assistente e descoberta de memória ficam declaradas no Worker MCP, impedindo que uma publicação normal remova a ligação necessária a consultas e cadastros de FUP.
 - Afinidade do servidor ausente ou inválida retorna `assistant_unconfigured`, preservando `invalid_input` para erro no pedido do cliente. Nenhum valor de configuração é exposto.
+- Cadastro autenticado de FUP com data passa a inscrevê-lo atomicamente no agendador nativo ativo, para retorno privado ao dono no Telegram. A inscrição conserva vínculo, sessão, fonte, retenção, revisão e idempotência; não adota backlog nem autoriza envio WhatsApp.
 
 ### Validation
 - Regressão na configuração real de publicação e nas consultas `projects`, `follow_ups` e `follow_up`. Cadastro, releitura e repetição idempotente de FUP com datas civis passam pela entrada HTTP MCP e pelo handler real com D1 sintético.
+- Prazo de FUP cadastrado pelo MCP gera evento privado na sessão do dono. Troca de vínculo/ativação, pausa, retirada da fonte, retenção e reagendamento são verificados; recuperação do recibo independe de permissões posteriores, sem repetir a escrita.
 
 ## [0.52.1] - 2026-10-30
 
