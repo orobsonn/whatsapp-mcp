@@ -23,4 +23,12 @@ As regressões foram observadas falhando antes da correção: ausência das duas
 
 Um teste de timeout do operador teve falha transitória por prazo curto sob carga; o conjunto completo de instalação passou na repetição, sem alterar esse teste nem o operador.
 
-Publicação e consultas reais devem ser registradas separadamente. Cadastro de FUP em modo sombra não comprova execução futura, envio de WhatsApp ou inscrição no agendador nativo. Não ativar backlog legado para comprovar a correção.
+## Produção e limite confirmado
+
+Gateway v0.52.2 publicado em 100% na versão `dc074934-464b-473c-a948-80fb4bb88eff`. A versão sem tráfego foi inspecionada antes da promoção: somente as quatro variáveis esperadas diferiam; todos os segredos e service bindings foram preservados. URLs de preview continuam desabilitadas. `/health` confirmou a versão, conexão configurada e manutenção desligada.
+
+Pelo Zap conectado desta conversa, `projects`, `follow_ups`, `policies`, `source` e `follow_up` voltaram a responder. A listagem completa comprovou ausência dos dois acompanhamentos pedidos. Ambos foram cadastrados, relidos por ID com data/fuso/estado `scheduled`, e repetidos com os mesmos operationIds: mesmos recibos e versão 1, sem duplicidade na listagem final. As duas políticas privadas ausentes foram explicitadas com revisão esperada zero e sem remover exclusões; privados já tinham padrão `attend`. Nenhum envio foi executado, nenhuma identidade foi fundida por nome e nenhum dado privado desses registros foi versionado.
+
+**Limite:** cadastro em modo sombra não comprova execução futura nem inscrição no agendador nativo. O Worker atual usa o caminho nativo quando habilitado; esse caminho admite apenas tarefas explicitamente inscritas em `assistant_native_task_bindings`. `fup.put` pelo MCP grava o modelo legado sem essa inscrição. Não foi ativado backlog legado nem alterada autonomia para contornar isso. Os dois registros estão persistidos, mas lembrete/avaliação automática pelo runtime nativo continua pendente.
+
+Validação local final: 2.293 testes gerais, 13 de OAuth, 77 do runtime e 40 de instalação passaram; TypeScript, verificações de conectores, ambos os builds e audit sem vulnerabilidades também passaram.
