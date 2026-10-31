@@ -550,7 +550,7 @@ export class NativeApplicationHost {
    WHERE c.installation_id=? AND c.generation=? AND e.event_id=? ORDER BY e.revision LIMIT 1`)
    .bind(scope.installationId,scope.generation,'curator-run:'+run.id).first<{identity_json:string}>();
   const candidate=legacy?conversationIdentity.parse(JSON.parse(legacy.identity_json)):{...admissionIdentity,principalOrChatId:curatorPrincipal(fence.userId,run.id)};
-  const bound=await admission.bindIdentity(run.id,candidate,nativeModelSelection(this.env).model);
+  const bound=await admission.bindIdentity(run.id,candidate,legacy?undefined:nativeModelSelection(this.env).model);
   const prior=await this.db.prepare(`SELECT c.tombstoned_at,e.state,e.task_ref FROM assistant_native_conversations c
    LEFT JOIN assistant_native_conversation_events e ON e.conversation_id=c.id AND e.event_id=?
    WHERE c.id=? AND c.installation_id=? AND c.generation=? ORDER BY e.revision DESC LIMIT 1`)

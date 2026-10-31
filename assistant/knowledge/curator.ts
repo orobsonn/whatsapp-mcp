@@ -97,7 +97,7 @@ export class KnowledgeCurator {
   if(candidate.installationId!==scope.installationId||candidate.generation!==scope.generation||candidate.channel!=='telegram'||!isCuratorPrincipal(candidate.principalOrChatId))throw Error('curator_sample_binding_denied');
   const sessionId=await conversationAddress(candidate,candidate.channel,candidate.principalOrChatId,candidate.contextEpoch);this.current(scope);const guard=this.host.authorityGuard();
   await this.db.prepare(`UPDATE assistant_curator_runs SET native_identity_json=?,native_session_id=?,model_id=?,instructions_hash=? WHERE installation_id=? AND generation=? AND id=?
-   AND native_identity_json IS NULL AND native_session_id IS NULL AND (${guard.sql})`).bind(JSON.stringify(candidate),sessionId,modelId??null,await bridgeHash(curatorInstructions),...this.keys(scope),runId,...guard.values).run();
+   AND native_identity_json IS NULL AND native_session_id IS NULL AND (${guard.sql})`).bind(JSON.stringify(candidate),sessionId,modelId??null,modelId?await bridgeHash(curatorInstructions):null,...this.keys(scope),runId,...guard.values).run();
   const bound=await this.run(scope,runId);if(!bound.native_identity_json||!bound.native_session_id)throw Error('curator_sample_binding_denied');
   const identity=conversationIdentity.parse(JSON.parse(bound.native_identity_json)),actual=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch);this.current(scope);
   if(actual!==bound.native_session_id||identity.installationId!==scope.installationId||identity.generation!==scope.generation||identity.channel!=='telegram'||identity.principalOrChatId!==candidate.principalOrChatId)throw Error('curator_sample_binding_denied');
