@@ -20,16 +20,18 @@
 
 Arquivos: `assistant/mcp.ts`, novo `assistant/mcp-followup.ts`, `assistant/control.ts`, `assistant/followups.ts`, `assistant/control-errors.ts`, `assistant/agent-runtime/native-tasks.ts`, `tests/assistant-native-tasks.test.ts`.
 
-- [ ] Escrever teste via OwnerAssistant real: cadastro, binding, replay e prazo produzem evento privado na sessão existente; observar falha antes da correção.
-- [ ] Conferir recusa sem sessão/vínculo, pausa, corrida de vínculo/ativação/fonte/retenção, retirada posterior e reagendamento.
-- [ ] Derivar enrollment no host, mantendo os schemas públicos e os guards de eventos nativos atuais.
-- [ ] Gravar binding com o FUP na transação do ledger; expor inscrição na leitura individual.
-- [ ] Rodar testes de MCP, FUP e tarefas nativas, TypeScript e revisão adversarial do diff.
+- [x] Escrever teste via OwnerAssistant real: cadastro, binding, replay e prazo produzem evento privado na sessão existente; observar falha antes da correção.
+- [x] Conferir recusa sem sessão/vínculo, pausa, corrida de vínculo/ativação/fonte/retenção, retirada posterior e reagendamento.
+- [x] Derivar enrollment no host, mantendo os schemas públicos e os guards de eventos nativos atuais.
+- [x] Gravar binding com o FUP na transação do ledger; expor inscrição na leitura individual.
+- [x] Rodar testes de MCP, FUP e tarefas nativas, TypeScript e revisão adversarial do diff.
 
 ## Tarefa 2: entrega e prova operacional
 
-- [ ] Completar suítes e builds relevantes.
-- [ ] Conferir configuração privada de publicação contra bindings/variáveis atuais, preservar segredos e todos os recursos; sem migração.
-- [ ] Publicar somente os componentes modificados e validar código/configuração em produção.
-- [ ] Atualizar os dois registros existentes por revisão esperada; consultar inscrição nativa e ausência de duplicidade. Nenhum teste envia WhatsApp.
-- [ ] Registrar limites, release e evidências sem dados privados no Git.
+- [x] Completar suítes e builds relevantes.
+- [x] Conferir configuração privada de publicação contra bindings/variáveis atuais, preservar segredos e todos os recursos; sem migração.
+- [x] Publicar somente os componentes modificados e validar código/configuração em produção.
+- [x] Atualizar os dois registros existentes por revisão esperada; consultar inscrição nativa e ausência de duplicidade. Nenhum teste envia WhatsApp.
+- [x] Registrar limites, release e evidências sem dados privados no Git.
+
+Execução concluída em 31/10/2026. Evidências e fronteira de entrega em [192](192-mcp-fup-config-regression.md).
