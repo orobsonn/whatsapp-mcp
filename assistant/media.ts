@@ -1,5 +1,5 @@
 import { SourceAccess, type TrustedActor,type AccessGuard } from "./access";
-import { InferenceBudget, type BudgetScope } from "./budget";
+import { InferenceBudget, type BudgetScope,type BudgetMode } from "./budget";
 import { bridgeHash } from "./ingress";
 import { sourceTextHash } from "./sources";
 import type { OriginFence, OriginGuard, OriginScope } from "./origin-guard";
@@ -12,7 +12,7 @@ import { retentionExecutionGuard } from "./retention-execution";
 import {compactStatement} from './d1-statement';
 import {sqlAnd} from './sql-conjunction';
 export interface MediaReader { readBoundedMedia(input: { secret: string; sourceEpoch: string; sourceGeneration: string; chatId: string; mediaId: string; expectedMessageVersion: number; expectedMediaVersion: number; expectedBlobHash: string }): Promise<CaptureMediaResult> }
-type Options = { origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; modelProvider?:MediaModelProvider;pdfParser?: PdfAdmissionReader; timeoutMs?: number;
+type Options = { budgetMode?:BudgetMode;origin: OriginGuard; reader: MediaReader; secret: string; model: MediaModelPort; modelProvider?:MediaModelProvider;pdfParser?: PdfAdmissionReader; timeoutMs?: number;
  accessPurpose?:'archive'|'knowledge';assertAuthority?:()=>Promise<void>;authorityGuard?:()=>AccessGuard;modelGuard?:()=>AccessGuard };
 type Outcome = { state: "complete"; evidence: MediaEvidence; coverage: { complete: boolean; unreadablePages: number[] } } | { state: "pending"; reason: string; operationKey?: string } | { state: "existing_audio"; source: RetrievedSource };
 type Receipt = { state: string; request_hash: string | null; admission_json: string | null; response_json: string | null; actual_units: number | null; reason: string | null };
@@ -27,7 +27,7 @@ export class MediaContext {
   private readonly budget: InferenceBudget;
   private readonly timeout: number;
   constructor(private readonly db: D1Database, scope: BudgetScope & OriginScope, private readonly options: Options, private readonly clock = Date.now) {
-    this.scope = Object.freeze({ ...scope }); this.access = new SourceAccess(db, scope, clock,options.accessPurpose??'archive'); this.budget = new InferenceBudget(db, scope);
+    this.scope = Object.freeze({ ...scope }); this.access = new SourceAccess(db, scope, clock,options.accessPurpose??'archive'); this.budget = new InferenceBudget(db, scope,options.budgetMode);
     this.timeout = options.timeoutMs ?? 45000;
     if (!Number.isSafeInteger(this.timeout) || this.timeout < 1 || this.timeout > 60000) throw new Error("media_configuration");
   }

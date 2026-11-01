@@ -1,3 +1,4 @@
+import {inferenceBudgetMode} from '../budget';
 import type {AssistantEnv} from '../env';
 import {activeOrigin,type OriginScope} from '../origin-guard';
 import {telegramLinkGuard,type TelegramLinkFence} from '../telegram-auth';
@@ -99,6 +100,7 @@ export function nativeGlobalBudgetGuard(env:AssistantEnv):AccessGuard {
  const raw=env.NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD;
  if(typeof raw!=='string'||!/^\d+$/.test(raw)||!Number.isSafeInteger(Number(raw)))throw Error('native_budget_carry_unconfigured');
  const carry=Number(raw),cap=10000000;
+ if(inferenceBudgetMode(env.INFERENCE_BUDGET_MODE)==='metered')return {sql:'1',values:[]};
  if(carry>cap)throw Error('native_budget_exhausted');
  // A different installation's blocked account is not a global prohibition.
  // InferenceBudget enforces this operation's own account/namespace block.

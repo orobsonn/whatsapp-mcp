@@ -1,3 +1,4 @@
+import {inferenceBudgetMode} from '../budget';
 import {sourceRef} from '../source-proof-contract';
 import {SourceAccess,type AccessGuard} from '../access';
 import type {AssistantEnv} from '../env';
@@ -55,7 +56,7 @@ export function nativeMediaCapability(options:{env:AssistantEnv;task:TaskContext
   await retention.expose(task.identity,exposure);
   const model=createMediaModelPort(selected.apiKey,globalThis.fetch.bind(globalThis),selected.provider);
   const media=new MediaContext(db,{...scope,period:new Date().toISOString().slice(0,10)},{origin,reader:env.CAPTURE_MEDIA_READER,secret:env.BRIDGE_SECRET!,model,pdfParser:env.MEDIA_PDF_PARSER,
-   accessPurpose:'knowledge',modelProvider:selected.provider,assertAuthority:()=>runtime.assertTaskAuthority(task),authorityGuard:options.authorityGuard,modelGuard:options.modelGuard});
+   accessPurpose:'knowledge',budgetMode:inferenceBudgetMode(env.INFERENCE_BUDGET_MODE),modelProvider:selected.provider,assertAuthority:()=>runtime.assertTaskAuthority(task),authorityGuard:options.authorityGuard,modelGuard:options.modelGuard});
   const output=await media.interpret({kind:'owner'},parentRef.id);
   await runtime.assertTaskCurrent(task);
   if((await origin.checkContext(fence)).state!=='current')throw Error('native_media_source_changed');

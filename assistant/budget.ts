@@ -1,4 +1,10 @@
 export type BudgetScope = { installationId: string; generation: string; period: string };
+export type BudgetMode = 'capped' | 'metered';
+export function inferenceBudgetMode(value?:string):BudgetMode {
+  if(value===undefined||value==='capped')return 'capped';
+  if(value==='metered')return 'metered';
+  throw Error('invalid_budget_mode');
+}
 type State = "reserved" | "uncertain" | "settled";
 type Reservation = { period: string; request_hash: string; ceiling_units: number; state: State; actual_units: number | null };
 const namespace = "installation_id=? AND generation=?";
@@ -16,11 +22,16 @@ function requestKey(key: string, hash?: string): void {
 /** Host-only microUSD ledger. No expiry frees an uncertain reservation. */
 export class InferenceBudget {
   private readonly scope: Readonly<BudgetScope>;
-  constructor(private readonly db: D1Database, scope: BudgetScope) {
+  constructor(private readonly db: D1Database, scope: BudgetScope, readonly mode:BudgetMode='capped') {
+    inferenceBudgetMode(mode);
     if (!scope || ![scope.installationId, scope.generation, scope.period].every(identifier)) throw new Error("invalid_budget_scope");
     this.scope = Object.freeze({ ...scope });
   }
   private keys() { return [this.scope.installationId, this.scope.generation]; }
+  private async ensurePeriod(){
+    if(this.mode==='metered')await this.db.prepare(`INSERT INTO assistant_budget_accounts(installation_id,generation,period,cap_units)
+      VALUES(?,?,?,0) ON CONFLICT DO NOTHING`).bind(...this.keys(),this.scope.period).run();
+  }
   private reservation(key: string) {
     return this.db.prepare(`SELECT period,request_hash,ceiling_units,state,actual_units FROM assistant_budget_reservations
       WHERE ${namespace} AND operation_key=?`).bind(...this.keys(), key).first<Reservation>();
@@ -33,15 +44,16 @@ export class InferenceBudget {
   }
   async reserve(key: string, hash: string, ceiling: number): Promise<{ created: boolean; state: State }> {
     requestKey(key, hash); units(ceiling);
+    await this.ensurePeriod();
     const inserted = await this.db.prepare(`INSERT INTO assistant_budget_reservations
       (installation_id,generation,operation_key,period,request_hash,ceiling_units)
       SELECT a.installation_id,a.generation,?,a.period,?,? FROM assistant_budget_accounts a
       WHERE a.installation_id=? AND a.generation=? AND a.period=?
       AND NOT EXISTS(SELECT 1 FROM assistant_budget_accounts b WHERE b.installation_id=a.installation_id AND b.generation=a.generation AND b.blocked=1)
-      AND ?<=a.cap_units-COALESCE((SELECT SUM(${charge}) FROM assistant_budget_reservations r
-        WHERE r.installation_id=a.installation_id AND r.generation=a.generation AND r.period=a.period),0)
+      AND (?=1 OR ?<=a.cap_units-COALESCE((SELECT SUM(${charge}) FROM assistant_budget_reservations r
+        WHERE r.installation_id=a.installation_id AND r.generation=a.generation AND r.period=a.period),0))
       ON CONFLICT DO NOTHING RETURNING state`)
-      .bind(key, hash, ceiling, ...this.keys(), this.scope.period, ceiling).all<{ state: State }>();
+      .bind(key, hash, ceiling, ...this.keys(), this.scope.period, this.mode==='metered'?1:0,ceiling).all<{ state: State }>();
     if (inserted.results.length === 1) return { created: true, state: inserted.results[0].state };
     const existing = await this.reservation(key);
     if (existing) {
@@ -64,16 +76,17 @@ export class InferenceBudget {
       this.db.prepare(`UPDATE assistant_budget_reservations SET state='settled',actual_units=?
         WHERE ${namespace} AND operation_key=? AND request_hash=? AND state IN ('reserved','uncertain') RETURNING period`)
         .bind(actual, ...this.keys(), key, hash),
-      this.db.prepare(`UPDATE assistant_budget_accounts SET blocked=1 WHERE ${namespace}
+      this.db.prepare(`UPDATE assistant_budget_accounts SET blocked=1 WHERE ${namespace} AND ?=1
         AND period=(SELECT period FROM assistant_budget_reservations WHERE ${namespace}
           AND operation_key=? AND request_hash=? AND state='settled' AND actual_units=? AND actual_units>ceiling_units)
-        RETURNING period`).bind(...this.keys(), ...this.keys(), key, hash, actual),
+        RETURNING period`).bind(...this.keys(),this.mode==='capped'?1:0, ...this.keys(), key, hash, actual),
     ]);
     const stored = await this.reservation(key);
     if (!stored) throw new Error("reservation_missing");
     if (stored.request_hash !== hash || stored.state !== "settled" || stored.actual_units !== actual) throw new Error("settlement_conflict");
   }
-  async status(): Promise<{ cap: number; committed: number; blocked: boolean }> {
+  async status(): Promise<{ cap: number; committed: number; blocked: boolean;limitEnforced?:false }> {
+    await this.ensurePeriod();
     const row = await this.db.prepare(`SELECT cap_units AS cap,
       COALESCE((SELECT SUM(${charge}) FROM assistant_budget_reservations WHERE ${namespace} AND period=?),0) AS committed,
       EXISTS(SELECT 1 FROM assistant_budget_accounts WHERE ${namespace} AND blocked=1) AS blocked
@@ -82,6 +95,6 @@ export class InferenceBudget {
       .first<{ cap: number; committed: number; blocked: number }>();
     if (!row) throw new Error("budget_unconfigured");
     if (!Number.isSafeInteger(row.committed)) throw new Error("unsafe_budget_total");
-    return { cap: row.cap, committed: row.committed, blocked: row.blocked === 1 };
+    return { cap: row.cap, committed: row.committed, blocked: row.blocked === 1,...(this.mode==='metered'?{limitEnforced:false as const}:{}) };
   }
 }

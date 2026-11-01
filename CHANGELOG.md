@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.4] - 2026-11-01
+
+### Changed
+- A instalação própria passa a contabilizar inferência sem veto monetário diário ou global, por decisão explícita do dono. Histórico, reservas e custos incertos permanecem registrados; períodos novos abrem somente a conta de contabilização.
+- Modelo nativo, compactação e mídia respeitam a configuração de contabilização. O comportamento com teto continua disponível quando escolhido explicitamente; pausa, retenção, autorizações e prevenção de duplicação permanecem ativos.
+
+### Fixed
+- Gasto conhecido acima da estimativa reservada não descarta a resposta nem bloqueia automaticamente a conta quando a instalação está sem teto monetário. O consumo real continua sendo registrado.
+
 ## [0.52.3] - 2026-10-31
 
 ### Fixed

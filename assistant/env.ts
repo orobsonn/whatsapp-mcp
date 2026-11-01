@@ -26,6 +26,8 @@ export interface AssistantEnv {
   ASSISTANT_NATIVE_AUTONOMOUS_ENABLED?: string;
   /** Reconciled historical charges outside this DB, including uncertain costs. */
   NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD?: string;
+  /** Owner-selected accounting without monetary veto; absent retains capped behavior. */
+  INFERENCE_BUDGET_MODE?: string;
   NATIVE_CONTEXT_ADMIN_SECRET?: string;
   /** Explicit cut of the verified Source stream at native activation. */
   NATIVE_CAPTURE_START_AFTER_SEQUENCE?: string;
