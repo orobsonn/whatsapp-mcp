@@ -50,6 +50,12 @@ it('denies exhausted budget and stale authority before any fetch',async()=>{
  await budget.reserve('prior','a'.repeat(64),1_000_000);expect((await run()).result.stopReason).toBe('error');expect(calls).toBe(0);
  host.scope={...host.scope,installationId:crypto.randomUUID()};authority=false;expect((await run()).result.stopReason).toBe('error');expect(calls).toBe(0);
 });
+it('metered mode settles usage above its estimate without blocking or dropping the answer',async()=>{
+ budget=new InferenceBudget(env.DB,host.scope,'metered');host.budget=budget;host.globalBudgetGuard=()=>({sql:'1',values:[]});mode='overage';
+ expect((await run()).result.stopReason).toBe('stop');expect(calls).toBe(1);
+ expect(await budget.status()).toMatchObject({committed:75015,blocked:false,limitEnforced:false});
+ expect(await conversationModelReceipt(env.DB,host)).toMatchObject({state:'complete',actual_units:75015});
+});
 it('concurrent duplicate native operation claims exactly one paid transport',async()=>{
  const results=await Promise.all([run(),run()]);expect(calls).toBe(1);expect(results.filter(r=>r.result.stopReason==='stop')).toHaveLength(1);
  expect((await conversationModelReceipt(env.DB,host))?.state).toBe('complete');expect((await budget.status()).committed).toBe(40);

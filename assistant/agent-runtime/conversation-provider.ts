@@ -223,7 +223,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      await host.budget.settle(operationKey,requestHash,actual);
      await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='complete',input_tokens=?,output_tokens=?,actual_units=? WHERE ${ns} AND state='attempting' AND request_hash=?`)
       .bind(u.input,u.output,actual,...keys(host),requestHash).run();
-     if(actual>ceiling||u.output>host.maxOutputTokens)throw Error('native_model_ceiling_exceeded');
+     if((host.budget.mode==='capped'&&actual>ceiling)||u.output>host.maxOutputTokens)throw Error('native_model_ceiling_exceeded');
      await current(config.db,host);signal.throwIfAborted();
      return new Response(text,{status:200,headers:{'Content-Type':'text/event-stream'}});
     }catch{

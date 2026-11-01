@@ -13,7 +13,7 @@ import { EpisodeController,type EpisodeDriver } from "./agent/controller";
 import { episodeDriver } from "./agent-runtime/driver";
 import { jobRequest,type DecisionSubject } from "./agent/contracts";
 import { JobQueue } from "./queue";
-import { InferenceBudget } from "./budget";
+import { inferenceBudgetMode, InferenceBudget } from "./budget";
 import { DEFAULT_BROKER_CONFIG,createOpenAIAdapter } from "./model-transport";
 import {CanonicalCandidateExtractor,CANONICAL_EXTRACTION_CONFIG} from './canonical-extraction';
 import { runtimeHost } from "./agent-runtime/runtime";
@@ -325,10 +325,10 @@ export class AssistantScheduler {
   const source=await this.access.read(binding.actor,item.source_id,item.source_revision);if(!source||source.fence.source.version!==binding.source.version||source.fence.source.hash!==binding.source.hash)return this.gap(cycle,item.id,"source_changed");
   if(binding.subject.kind==="capture_event"&&!await new Conversations(this.env.DB!,()=>this.scope).fence(binding.subject.chatId))return this.gap(cycle,item.id,"conversation_pending");
   if(!item.job_id){if(reconcileOnly)return "uncertain";item.job_id=await this.ensureJob(cycle,item,binding);}else{const ledger=await host.queue.ledger(item.job_id);if(!ledger||ledger.state!=="prepared")return this.gap(cycle,item.id,"missing_or_uncertain_episode",true);}
-  if(!reconcileOnly)try{const budget=await new InferenceBudget(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)}).status();if(budget.blocked||budget.committed>=budget.cap)return this.gap(cycle,item.id,"budget_blocked");}catch{return this.gap(cycle,item.id,"budget_unconfigured");}
+  if(!reconcileOnly)try{const budget=await new InferenceBudget(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},inferenceBudgetMode(this.env.INFERENCE_BUDGET_MODE)).status();if(budget.blocked||(budget.limitEnforced!==false&&budget.committed>=budget.cap))return this.gap(cycle,item.id,"budget_blocked");}catch{return this.gap(cycle,item.id,"budget_unconfigured");}
   if(configured.origin&&this.env.MEDIA_CONTEXT_ENABLED==="true"&&this.env.CAPTURE_MEDIA_READER){
    const origin=await configured.origin.fence(source.id);if(origin?.sourceKind==="media"){
-    await this.routines.phase(cycle,"media",item.id);const model=createMediaModelPort(this.env.OPENAI_API_KEY),media=new MediaContext(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},{origin:configured.origin,reader:this.env.CAPTURE_MEDIA_READER,secret:this.env.BRIDGE_SECRET!,model:async request=>{await assertRestoredGeneration(this.env);return model(request);},pdfParser:this.env.MEDIA_PDF_PARSER},this.clock);
+    await this.routines.phase(cycle,"media",item.id);const model=createMediaModelPort(this.env.OPENAI_API_KEY),media=new MediaContext(this.env.DB!,{...this.scope,period:new Date(this.clock()).toISOString().slice(0,10)},{budgetMode:inferenceBudgetMode(this.env.INFERENCE_BUDGET_MODE),origin:configured.origin,reader:this.env.CAPTURE_MEDIA_READER,secret:this.env.BRIDGE_SECRET!,model:async request=>{await assertRestoredGeneration(this.env);return model(request);},pdfParser:this.env.MEDIA_PDF_PARSER},this.clock);
     if(reconcileOnly){if(!await media.read(binding.actor,{...source,origin}))return "uncertain";}
     else{const result=await media.interpret(binding.actor,source.id);if(result.state==="pending")return this.gap(cycle,item.id,result.reason,result.reason.includes("uncertain"));}
    }

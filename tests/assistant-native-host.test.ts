@@ -272,6 +272,15 @@ describe('native application composition on real D1 and Source reads',()=>{
   const guard=nativeGlobalBudgetGuard({...f.own,NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD:'133000'});
   expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).toBeNull();
  });
+ it('uses explicit metered mode without the historical global ceiling',async()=>{
+  const f=await fixture();f.own.INFERENCE_BUDGET_MODE='metered';
+  const message=await f.append('Pergunta do dono'),host=f.host(),admitted=await host.receiveCapture(message.sequence);
+  const task=await latestTask(host,admitted.taskRef!);const model=await host.modelHost(task.sessionId,'metered-turn');
+  expect((await model.budget.status()).limitEnforced).toBe(false);
+  const guard=nativeGlobalBudgetGuard({...f.own,NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD:'11000000'});
+  expect(await env.DB.prepare(`SELECT 1 WHERE ${guard.sql}`).bind(...guard.values).first()).not.toBeNull();
+  expect(()=>nativeGlobalBudgetGuard({...f.own,INFERENCE_BUDGET_MODE:'typo'})).toThrow('invalid_budget_mode');
+ });
  it('counts a blocked historical account without inheriting its unrelated block into the current account',async()=>{
   const f=await fixture(),old=new InferenceBudget(env.DB,{installationId:'old-account',generation:'old-g',period:'2026-01-01'});
   await old.configure(1000);await old.reserve('old-charge','a'.repeat(64),500);await old.settle('old-charge','a'.repeat(64),600);

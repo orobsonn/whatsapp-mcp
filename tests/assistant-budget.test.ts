@@ -28,6 +28,23 @@ beforeEach(async()=>{
  if(statements.length)await env.DB.batch(statements.map((s:string)=>env.DB.prepare(s)));
  installationId=crypto.randomUUID();budget=new InferenceBudget(env.DB,{installationId,generation:'g',period:'pilot'});
 });
+it('metered mode preserves the ledger and uncertain reservations without enforcing historical caps',async()=>{
+ const scope={installationId,generation:'g',period:'pilot'};
+ await budget.configure(100);await budget.reserve('old',hash,80);await budget.uncertain('old');
+ const metered=new InferenceBudget(env.DB,scope,'metered');
+ expect(await metered.reserve('new',hash,200)).toMatchObject({created:true});
+ await metered.settle('new',hash,250);
+ expect(await metered.status()).toMatchObject({cap:100,committed:330,blocked:false,limitEnforced:false});
+ expect(await metered.reserve('old',hash,80)).toEqual({created:false,state:'uncertain'});
+ await expect(metered.reserve('old','b'.repeat(64),80)).rejects.toThrow('reservation_conflict');
+});
+it('metered mode opens a new accounting period without a cap and still respects manual blocking',async()=>{
+ const metered=new InferenceBudget(env.DB,{installationId,generation:'g',period:'future'},'metered');
+ expect(await metered.reserve('future',hash,11000000)).toMatchObject({created:true});
+ expect(await metered.status()).toMatchObject({committed:11000000,limitEnforced:false});
+ await env.DB.prepare('UPDATE assistant_budget_accounts SET blocked=1 WHERE installation_id=?').bind(installationId).run();
+ await expect(metered.reserve('blocked',hash,1)).rejects.toThrow('budget_blocked');
+});
 it('blocks inference at the queue boundary while capture and its pending item survive',async()=>{
  for(const sql of [sources,policies,work,inbox,jobs,controls]){
   await env.DB.batch(sql.replace(/^--.*$/gm,'').trim().split(/;\s*(?=CREATE|$)/).filter((s:string)=>s.trim()).map((s:string)=>env.DB.prepare(s)));
