@@ -1,6 +1,6 @@
 import {useTool} from '@flue/runtime';
 import * as v from 'valibot';
-import type {KnowledgeCurator} from './curator';
+import type {KnowledgeCurator} from '../../knowledge/curator';
 type Binding={curator:KnowledgeCurator;runId:string;finish?:(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>Promise<unknown>};
 const decision=v.strictObject({category:v.picklist(['learn','already_known','not_useful','insufficient_evidence','defer']),summary:v.pipe(v.string(),v.minLength(1),v.maxLength(240)),reason:v.pipe(v.string(),v.minLength(1),v.maxLength(400))});
 const sequence=v.pipe(v.number(),v.integer(),v.minValue(1),v.safeInteger());

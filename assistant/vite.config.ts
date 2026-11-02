@@ -12,7 +12,7 @@ const configPath = supplied ? resolve(supplied) : `${root}wrangler.jsonc`;
 if (supplied) validateAssistantInstallConfig(JSON.parse(readFileSync(configPath, "utf8")), resolve(root, ".."));
 export default defineConfig({
   root, envDir: false,
-  plugins: [flueTurnEndSeam(), flue({ target: "cloudflare", agents: "agent-runtime/entry.ts", providers: [], tracing: false }),
+  plugins: [flueTurnEndSeam(), flue({ target: "cloudflare", agents: fileURLToPath(new URL(".flue/agents/index.ts", import.meta.url)), providers: [], tracing: false }),
     cloudflare({ configPath, config: flueWorkerConfig(), persistState: false })],
   build: { outDir: fileURLToPath(new URL("../dist/assistant", import.meta.url)), emptyOutDir: true },
 });

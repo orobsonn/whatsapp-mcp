@@ -1,6 +1,6 @@
 import {env} from 'cloudflare:test';
 import {beforeEach,it,expect,vi} from 'vitest';
-import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/agent-runtime/conversation-provider';
+import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/.flue/providers/conversation';
 import {InferenceBudget} from '../assistant/budget';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
@@ -16,7 +16,7 @@ function response(payload:any,tool=false){
  return new Response(events.map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}});
 }
 let tool=false;
-function provider(){return createConversationProvider({db:env.DB,apiKey:key,resolveHost:()=>({...host}),fetch:async(input,init)=>{
+function provider(openaiModel?:'gpt-6.1-sol'){return createConversationProvider({db:env.DB,apiKey:key,openaiModel,resolveHost:()=>({...host}),fetch:async(input,init)=>{
  new Request(input,init);calls++;bodies.push(JSON.parse(init!.body as string));
  expect(String(input)).toBe('https://api.openai.com/v1/responses');expect(init?.redirect).toBe('manual');expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer '+key);
  expect((await budget.status()).committed).toBeGreaterThan(0);
@@ -45,6 +45,31 @@ it('native Pi preserves function declarations and tool-call/result protocol; act
  const c=context();c.messages.push(first.result,{role:'toolResult',toolCallId:(first.result.content.find((x:any)=>x.type==='toolCall') as any).id,toolName:'lookup_relation',content:[{type:'text',text:'Nora leads Cedar: original-1'}],isError:false,timestamp:3});
  host.turnId='turn-2';tool=false;expect((await run(p,c)).result.stopReason).toBe('stop');expect(calls).toBe(2);
  expect(bodies[1].input).toContainEqual(expect.objectContaining({type:'function_call_output',output:expect.stringContaining('original-1')}));
+});
+it('Sol uses the selected model and price through the real tool/result protocol',async()=>{
+ tool=true;const p=provider('gpt-6.1-sol'),first=await run(p);
+ expect(first.result.stopReason,first.result.errorMessage).toBe('toolUse');
+ expect(bodies[0].model).toBe('gpt-6.1-sol');
+ expect(await conversationModelReceipt(env.DB,host)).toMatchObject({state:'complete',actual_units:450,price_version:expect.stringContaining('gpt-6.1-sol')});
+ const c=context(),call=first.result.content.find((item:any)=>item.type==='toolCall') as any;
+ c.messages.push(first.result,{role:'toolResult',toolCallId:call.id,toolName:'lookup_relation',content:[{type:'text',text:'Nora leads Cedar: source-sol'}],isError:false,timestamp:3});
+ host.turnId='sol-tool-result';tool=false;expect((await run(p,c)).result.stopReason).toBe('stop');
+ expect(bodies[1].input).toContainEqual(expect.objectContaining({type:'function_call_output',output:expect.stringContaining('source-sol')}));
+ expect((await budget.status()).committed).toBe(900);
+ const luna=openaiProvider().getModels().find(model=>model.id==='gpt-6-luna')!;
+ expect(()=>p.streamSimple(luna,c)).toThrow('native_model_denied');
+});
+it('Sol continues DeepSeek history with paired tool results without foreign provider signatures',async()=>{
+ const c=context();c.messages.push({role:'assistant',api:'openai-completions',provider:'deepseek',model:'deepseek-flash',content:[{type:'thinking',thinking:'Prior working note',thinkingSignature:'PRIVATE_FOREIGN_SIGNATURE'},{type:'text',text:'Prior agreement: Nora leads Cedar.'},{type:'toolCall',id:'call_prior',name:'lookup_relation',arguments:{project:'Cedar'}}],usage:{input:100,output:20,cacheRead:0,cacheWrite:0,totalTokens:120,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'toolUse',timestamp:3} as any,{role:'toolResult',toolCallId:'call_prior',toolName:'lookup_relation',content:[{type:'text',text:'Prior source supports Nora'}],isError:false,timestamp:4},{role:'user',content:'Continue the same conversation',timestamp:5});
+ const result=await run(provider('gpt-6.1-sol'),c);expect(result.result.stopReason,result.result.errorMessage).toBe('stop');
+ expect(JSON.stringify(bodies[0].input)).toContain('Prior agreement');expect(JSON.stringify(bodies[0].input)).not.toContain('PRIVATE_FOREIGN_SIGNATURE');
+ const call=bodies[0].input.find((item:any)=>item.type==='function_call'),output=bodies[0].input.find((item:any)=>item.type==='function_call_output');
+ expect(call.call_id).toBe(output.call_id);expect(output.output).toContain('Prior source');
+});
+it('Sol accounts for the long-context tier if actual usage exceeds the estimate',async()=>{
+ budget=new InferenceBudget(env.DB,host.scope,'metered');host.budget=budget;host.globalBudgetGuard=()=>({sql:'1',values:[]});mode='overage';
+ expect((await run(provider('gpt-6.1-sol'))).result.stopReason).toBe('stop');
+ expect(await conversationModelReceipt(env.DB,host)).toMatchObject({state:'complete',actual_units:1_500_300});
 });
 it('denies exhausted budget and stale authority before any fetch',async()=>{
  await budget.reserve('prior','a'.repeat(64),1_000_000);expect((await run()).result.stopReason).toBe('error');expect(calls).toBe(0);

@@ -1,8 +1,10 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
+import {markdownImportPlugin} from '@flue/vite/internal';
 const migrations = await readD1Migrations("./migrations");
 export default defineConfig({
   plugins: [
+    markdownImportPlugin(),
     cloudflareTest({
       main: "./src/index.ts",
       miniflare: {

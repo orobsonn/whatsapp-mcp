@@ -8,7 +8,7 @@ import {createMediaModelPort} from '../media-model';
 import type {ConversationRuntime,TaskContext} from './conversation';
 import type {NativeConversationRetention} from './conversation-retention';
 import {assertReadExposureCurrent} from '../knowledge/read-exposure';
-import {nativeModelSelection} from './conversation-model';
+import {nativeModelSelection} from '../.flue/providers/model-selection';
 
 /** Model-chosen perception, reusing the installed image/PDF pipeline. The
  * original binary's parent remains the evidence; OCR is explicitly derived. */

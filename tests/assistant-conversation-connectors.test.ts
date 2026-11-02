@@ -5,7 +5,7 @@ import {configuredGitHub} from '../assistant/connectors/configured-github';
 import {SourceController,sourceTextHash} from '../assistant/sources';
 import {OriginGuard,type OriginScope} from '../assistant/origin-guard';
 import {ConversationArchive} from '../assistant/knowledge/archive';
-import {createConversationReadCapabilities} from '../assistant/agent-runtime/conversation-connectors';
+import {createConversationReadCapabilities} from '../assistant/.flue/tools/read';
 let scope:OriginScope,sources:SourceController,archive:ConversationArchive;
 const owner={kind:'owner'} as const;
 // Explicit synthetic host boundary; production supplies its native epoch guard.

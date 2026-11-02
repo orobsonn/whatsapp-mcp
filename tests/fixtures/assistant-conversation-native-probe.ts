@@ -7,7 +7,7 @@ import {OriginGuard} from '../../assistant/origin-guard';
 import {KnowledgeService} from '../../assistant/knowledge/service';
 import {HttpKnowledgePort} from '../../assistant/knowledge/http-port';
 import {InferenceBudget} from '../../assistant/budget';
-import type {ConversationProviderHost} from '../../assistant/agent-runtime/conversation-provider';
+import type {ConversationProviderHost} from '../../assistant/.flue/providers/conversation';
 import type {KnowledgeContext} from '../../assistant/knowledge/contracts';
 
 export type NativeProbeRun={run:string;setupState?:'pending'|'ready';predicate:string;scope:{installationId:string;generation:string;sourceEpoch:string;sourceGeneration:string};sourceRef:{id:string;revision:number;version:number;hash:string};a:ConversationIdentity;b:ConversationIdentity};

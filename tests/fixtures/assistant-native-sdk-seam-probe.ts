@@ -2,7 +2,7 @@
  * controlled SSE is test data, not an intelligent response or a paid model. */
 import {ConversationRuntime,conversationAddress,verifiedConversationEvent,type ConversationIdentity,type ConversationHandle,type TaskContext} from '../../assistant/agent-runtime/conversation';
 import {InferenceBudget} from '../../assistant/budget';
-import type {ConversationProviderHost} from '../../assistant/agent-runtime/conversation-provider';
+import type {ConversationProviderHost} from '../../assistant/.flue/providers/conversation';
 import {KnowledgeService} from '../../assistant/knowledge/service';
 export type SeamMode='error'|'normal'|'uncertain'|'overflow'|'headroom';
 export type SeamRun={run:string;mode:SeamMode;session_id:string;identity_json:string;released:number;cancelled:number};

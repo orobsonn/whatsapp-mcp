@@ -8,6 +8,10 @@ MCP para localizar conversas individuais e grupos, arquivar mensagens com autori
 
 [Fluxo de configuração e segurança](docs/26-setup.md). Você pode desativar a captura de qualquer conversa pelo Zap. Reativar não recupera mensagens do período desligado nem importa histórico retroativo.
 
+## Organização do assistente
+
+O bot pessoal usa Flue em [`assistant/.flue/`](assistant/.flue/README.md): agentes, ferramentas, skills, instruções e provedores em pastas próprias. O guia de escrita fica em [`escrever-como-robson/SKILL.md`](assistant/.flue/skills/escrever-como-robson/SKILL.md). Essa skill orienta respostas no WhatsApp, incluindo a proibição de travessões e de compromissos inventados em confirmações simples.
+
 ## Rodar e conferir
 
 Node 22+:

@@ -2,11 +2,11 @@ import type {Provider} from '@earendil-works/pi-ai/models';
 import type {SimpleStreamOptions,StreamOptions} from '@earendil-works/pi-ai';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
 import {clampMaxTokensToContext} from '@earendil-works/pi-ai/api/simple-options';
-import {InferenceBudget,type BudgetScope} from '../budget';
-import type {AccessGuard} from '../access';
-import {retentionExecutionGuard} from '../retention-execution';
-import {jsonStatement} from '../d1-statement';
-import {nativeModelCatalog,type NativeModelProvider,type NativeModelApi} from './conversation-model';
+import {InferenceBudget,type BudgetScope} from '../../budget';
+import type {AccessGuard} from '../../access';
+import {retentionExecutionGuard} from '../../retention-execution';
+import {jsonStatement} from '../../d1-statement';
+import {nativeModelCatalog,type NativeModelProvider,type NativeModelApi,type NativeOpenAIModel} from './model-selection';
 
 export const NATIVE_MODEL_PRICE_VERSION='pi-ai-1.1.0-gpt-6-luna-upper-input025-output075-v1';
 export type ConversationModelIdentity={scope:BudgetScope;sessionId:string;contextEpoch:string;turnId:string};
@@ -24,7 +24,7 @@ export type ConversationProviderHost=ConversationModelIdentity&{
  authorityGuard:()=>AccessGuard;
  maxOutputTokens:number;maxRequestBytes:number;maxResponseBytes:number;timeoutMs:number;
 };
-export type ConversationProviderOptions={db:D1Database;apiKey:string;provider?:NativeModelProvider;resolveHost:()=>Promise<ConversationProviderHost>|ConversationProviderHost;
+export type ConversationProviderOptions={db:D1Database;apiKey:string;provider?:NativeModelProvider;openaiModel?:NativeOpenAIModel;resolveHost:()=>Promise<ConversationProviderHost>|ConversationProviderHost;
  /** Host transport injection for synthetic tests. Never supplied by the model. */
  fetch?:typeof globalThis.fetch};
 type Receipt={state:'attempting'|'uncertain'|'complete';request_hash:string;price_version:string;ceiling_units:number;actual_units:number|null;input_tokens:number|null;output_tokens:number|null};
@@ -125,7 +125,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
  if(!config.apiKey)throw Error('native_model_key_missing');
  const vendor=config.provider??'openai';
  if(vendor!=='openai'&&vendor!=='deepseek')throw Error('native_model_configuration_invalid');
- const {native,model:catalog,endpoint:ENDPOINT,priceVersion,inputMicroUSD,outputMicroUSD}=nativeModelCatalog(vendor),MODEL=catalog.id;
+ const {native,model:catalog,endpoint:ENDPOINT,priceVersion,inputMicroUSD,outputMicroUSD,longContextPrice}=nativeModelCatalog(vendor,config.openaiModel),MODEL=catalog.id;
  // The installed catalog and consumer model views are mutable. Keep a private
  // deep snapshot and close monetary ceilings over validated numeric values.
  const model=structuredClone(catalog),contextWindow=model.contextWindow,maxTokens=model.maxTokens;
@@ -219,7 +219,10 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      const u=vendor==='deepseek'?deepseekUsage(text,failure):usage(text,failure);
      // Peak, noncached rates conservatively bound every native DeepSeek call.
      // Discounts need no guessed clock/cache attribution in the pilot ledger.
-     const actual=Math.ceil(u.input*inputMicroUSD+u.output*outputMicroUSD);
+     // The SDK estimates context before transport; settle observed tokens at
+     // the pinned upper tier if actual usage crosses its short-context limit.
+     const rate=longContextPrice&&u.input>longContextPrice.inputTokensAbove?longContextPrice:{inputMicroUSD,outputMicroUSD};
+     const actual=Math.ceil(u.input*rate.inputMicroUSD+u.output*rate.outputMicroUSD);
      await host.budget.settle(operationKey,requestHash,actual);
      await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='complete',input_tokens=?,output_tokens=?,actual_units=? WHERE ${ns} AND state='attempting' AND request_hash=?`)
       .bind(u.input,u.output,actual,...keys(host),requestHash).run();
