@@ -614,3 +614,20 @@ describe("mídia privada D1/R2", () => {
     ).toHaveLength(0);
   });
 });
+
+it('destrava downloads atrás de cinco jobs pendentes cujos arquivos já estão prontos',async()=>{
+ const fetched=vi.fn(async()=>new Response(png,{headers:{'content-type':'image/png'}}));
+ const readyIds:string[]=[];
+ for(let i=0;i<5;i++){
+  const item=await captured();readyIds.push(item.id);await processMediaJobs(e,fetched);
+  await env.DB.prepare("UPDATE media_jobs SET id=?,status='pending',attempts=0,lease_until=NULL,next_attempt_at=0 WHERE media_id=? AND kind='download'")
+   .bind('00000000-0000-4000-8000-00000000000'+i,item.id).run();
+ }
+ const waiting=await captured();await env.DB.prepare("UPDATE media_jobs SET id='ffffffff-ffff-4fff-8fff-ffffffffffff' WHERE media_id=? AND kind='download'").bind(waiting.id).run();
+ const before=await env.DB.prepare("SELECT id,sha256,object_key FROM media WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id").bind(JSON.stringify(readyIds)).all();
+ fetched.mockClear();expect(await processMediaJobs(e,fetched)).toEqual({processed:1,ready:1,failed:0});
+ expect(fetched).toHaveBeenCalledTimes(1);
+ expect(await env.DB.prepare("SELECT state FROM media WHERE id=?").bind(waiting.id).first('state')).toBe('ready');
+ expect((await env.DB.prepare("SELECT id,sha256,object_key FROM media WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id").bind(JSON.stringify(readyIds)).all()).results).toEqual(before.results);
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM media_jobs WHERE kind='download' AND status='ready'").first('n')).toBe(6);
+});

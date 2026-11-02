@@ -33,7 +33,7 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 ## Áudios
 
-Áudios novos recebidos em individuais e grupos entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).
+Áudios recebidos e enviados, capturados desde a ativação em individuais e grupos, entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).
 
 ## Geração com minha voz
 

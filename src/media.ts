@@ -640,6 +640,18 @@ export async function processMediaJobs(
   assertActive(env);
   const fence = currentFence(env);
   const now = Date.now();
+  // A captured file can already be ready while its old download job is pending.
+  // Settle that bookkeeping from the exact current file, without another fetch
+  // or taking a processing lease that is still live.
+  await env.DB.prepare(
+    `UPDATE media_jobs SET status='ready',lease_until=NULL,error=NULL
+     WHERE epoch=? AND generation=? AND kind='download'
+      AND (status IN ('pending','retry') OR (status='processing' AND lease_until<=?))
+      AND EXISTS(SELECT 1 FROM media m WHERE m.id=media_jobs.media_id
+       AND m.message_version=media_jobs.message_version AND m.epoch=media_jobs.epoch AND m.generation=media_jobs.generation
+       AND m.state='ready' AND length(m.object_key)>0 AND length(m.sha256)=64 AND m.sha256 NOT GLOB '*[^0-9a-f]*'
+       AND ${visible("m")})`,
+  ).bind(fence.epoch,fence.generation,now).run();
   // An expired final lease is terminal, including process death after the last attempt.
   await env.DB.batch([
     env.DB.prepare(
@@ -655,7 +667,11 @@ export async function processMediaJobs(
     .bind(fence.epoch, fence.generation)
     .run();
   const jobs = await env.DB.prepare(
-    "SELECT id FROM media_jobs WHERE epoch=? AND generation=? AND kind='download' AND attempts<? AND next_attempt_at<=? AND (status IN ('pending','retry') OR (status='processing' AND lease_until<=?)) ORDER BY next_attempt_at,id LIMIT ?",
+    `SELECT id FROM media_jobs WHERE epoch=? AND generation=? AND kind='download' AND attempts<? AND next_attempt_at<=?
+     AND (status IN ('pending','retry') OR (status='processing' AND lease_until<=?))
+     AND EXISTS(SELECT 1 FROM media m WHERE m.id=media_jobs.media_id AND m.message_version=media_jobs.message_version
+      AND m.epoch=media_jobs.epoch AND m.generation=media_jobs.generation AND m.state='pending' AND ${visible("m")})
+     ORDER BY next_attempt_at,id LIMIT ?`,
   )
     .bind(fence.epoch, fence.generation, LIMITS.attempts, now, now, LIMITS.jobs)
     .all<{ id: string }>();

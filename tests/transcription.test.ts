@@ -77,7 +77,7 @@ it("transcreve áudio novo, reusa cache e expõe derivado na consulta e busca", 
     },
   });
 });
-it("não processa passado, uploads ou mensagens enviadas pelo dono", async () => {
+it("preserva o marco de ativação e transcreve áudio enviado sem duplicar", async () => {
   await audio();
   await env.DB.prepare("UPDATE transcription_state SET enabled_since=?")
     .bind(Date.now() + 1)
@@ -88,9 +88,12 @@ it("não processa passado, uploads ou mensagens enviadas pelo dono", async () =>
   await env.DB.exec(
     "DELETE FROM media_jobs; DELETE FROM media; DELETE FROM message_versions; DELETE FROM messages",
   );
-  await audio(true);
+  const sent=await audio(true);
+  expect((await queryMessages(e,{chatId})).items[0]).toMatchObject({id:sent,fromMe:true,transcription:{status:'pending'}});
+  expect((await processTranscriptions(e)).ready).toBe(1);
   await processTranscriptions(e);
-  expect(run).not.toHaveBeenCalled();
+  expect(run).toHaveBeenCalledTimes(1);
+  expect((await queryMessages(e,{chatId})).items[0]).toMatchObject({id:sent,text:null,fromMe:true,transcription:{status:'ready'}});
 });
 it("quota esgotada mantém trabalho pendente sem consumir tentativas", async () => {
   await audio();
