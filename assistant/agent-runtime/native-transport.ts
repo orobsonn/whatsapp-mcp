@@ -1,6 +1,6 @@
 import {getAgentInstance,init,type DispatchReceipt} from '@flue/runtime';
 import type {AssistantEnv} from '../env';
-import {ConversationRuntimeAgent} from './entry';
+import {ConversationRuntimeAgent} from '../.flue/agents/index';
 import type {NativeContextDestroyPort} from './conversation-retention';
 
 export const openNativeConversation=(sessionId:string)=>init(ConversationRuntimeAgent,{id:sessionId});

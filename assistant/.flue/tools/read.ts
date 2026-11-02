@@ -1,14 +1,14 @@
 import {useTool} from '@flue/runtime';
 import * as v from 'valibot';
 import {z} from 'zod';
-import {SourceAccess,type SourceFence} from '../access';
-import type {AssistantEnv} from '../env';
-import {configuredGitHub} from '../connectors/configured-github';
-import {configuredCalendar} from '../connectors/configured-calendar';
-import {ConnectorAccess,type ConnectorAuthority,type ReadFetch} from '../connectors/read-only';
-import {ConversationArchive,type ReadPublicationBoundary,type ContextOriginReader,type ReadExposure} from '../knowledge/archive';
-import {assertReadExposureCurrent} from '../knowledge/read-exposure';
-import type {ConversationRuntime,TaskContext} from './conversation';
+import {SourceAccess,type SourceFence} from '../../access';
+import type {AssistantEnv} from '../../env';
+import {configuredGitHub} from '../../connectors/configured-github';
+import {configuredCalendar} from '../../connectors/configured-calendar';
+import {ConnectorAccess,type ConnectorAuthority,type ReadFetch} from '../../connectors/read-only';
+import {ConversationArchive,type ReadPublicationBoundary,type ContextOriginReader,type ReadExposure} from '../../knowledge/archive';
+import {assertReadExposureCurrent} from '../../knowledge/read-exposure';
+import type {ConversationRuntime,TaskContext} from '../../agent-runtime/conversation';
 
 const owner={kind:'owner'} as const;
 const repository=z.string().min(1).max(256),commit=z.string().regex(/^[a-f0-9]{40}$/);

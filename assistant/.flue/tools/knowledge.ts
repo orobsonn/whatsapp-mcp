@@ -1,8 +1,8 @@
 import { useTool,type ToolRunEnvelope } from '@flue/runtime';
 import * as v from 'valibot';
-import { bridgeHash } from '../ingress';
-import { knowledgeCommand, knowledgeQuery, knowledgeRemember } from '../knowledge/contracts';
-import type { ConversationRuntime, TaskContext } from './conversation';
+import { bridgeHash } from '../../ingress';
+import { knowledgeCommand, knowledgeQuery, knowledgeRemember } from '../../knowledge/contracts';
+import type { ConversationRuntime, TaskContext } from '../../agent-runtime/conversation';
 
 const id=v.pipe(v.string(),v.minLength(1),v.maxLength(256));
 const name=v.pipe(v.string(),v.minLength(1),v.maxLength(512));

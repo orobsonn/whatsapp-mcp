@@ -28,7 +28,7 @@ import { OriginGuard } from "../assistant/origin-guard";
 import {runtimeHost} from '../assistant/agent-runtime/runtime';
 import {readProactivePilot,pilotAllowsSubject,pilotBindingCurrent} from '../assistant/proactive-pilot';
 import {CanonicalCandidateExtractor} from '../assistant/canonical-extraction';
-import {OwnerRuntime,InterlocutorRuntime} from '../assistant/agent-runtime/profiles';
+import {OwnerRuntime,InterlocutorRuntime} from '../assistant/.flue/agents/shadow';
 import {TelegramApprovedSendReview} from '../assistant/telegram-approved-send';
 import {actionDigest} from '../src/send-envelope';
 const secret="synthetic-routines-private-capture-secret";let scope:OriginScope,settings:AssistantEnv,now:number,modelCalls:number,dispatches:number,modelFailure:boolean,withoutCitations:boolean,author:string|null,fromMe:boolean;

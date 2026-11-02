@@ -1,7 +1,7 @@
 import {env} from 'cloudflare:test';
 import {beforeEach,it,expect} from 'vitest';
-import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/agent-runtime/conversation-provider';
-import {nativeModelSelection} from '../assistant/agent-runtime/conversation-model';
+import {createConversationProvider,conversationModelReceipt,type ConversationProviderHost} from '../assistant/.flue/providers/conversation';
+import {nativeModelSelection} from '../assistant/.flue/providers/model-selection';
 import {InferenceBudget} from '../assistant/budget';
 import type {TranscriptContext} from '@earendil-works/pi-ai';
 

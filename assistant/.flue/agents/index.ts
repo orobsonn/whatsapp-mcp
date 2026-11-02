@@ -1,9 +1,9 @@
 'use agent';
 import {extend,type CloudflareAgentLike} from '@flue/runtime/cloudflare';
-import {OwnerRuntime as Owner,InterlocutorRuntime as Interlocutor,OwnerDialogueRuntime as Dialogue} from './profiles';
-import {ConversationRuntimeAgent as Conversation} from './conversation-profiles';
-import type {AssistantEnv} from '../env';
-import {safeEqual} from '../../src/core';
+import {OwnerRuntime as Owner,InterlocutorRuntime as Interlocutor,OwnerDialogueRuntime as Dialogue} from './shadow';
+import {ConversationRuntimeAgent as Conversation} from './conversation';
+import type {AssistantEnv} from '../../env';
+import {safeEqual} from '../../../src/core';
 
 // Flue's compiler discovers declarations in its entry file, not re-exports.
 // These shims retain the existing public runtime class names and exact hooks.

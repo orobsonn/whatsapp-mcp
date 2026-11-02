@@ -3,10 +3,10 @@
  * No WhatsApp/Telegram/calendar execution capability exists in this fixture. */
 import {z} from 'zod';
 import {ConversationRuntime,conversationAddress,verifiedConversationEvent,type ConversationIdentity,type ConversationHandle,type TaskContext} from '../../assistant/agent-runtime/conversation';
-import type {ConversationProviderHost} from '../../assistant/agent-runtime/conversation-provider';
-import type {ConversationApplicationFrame} from '../../assistant/agent-runtime/conversation-profiles';
+import type {ConversationProviderHost} from '../../assistant/.flue/providers/conversation';
+import type {ConversationApplicationFrame} from '../../assistant/.flue/agents/conversation';
 import {NativeConversationRetention} from '../../assistant/agent-runtime/conversation-retention';
-import {createConversationReadCapabilities} from '../../assistant/agent-runtime/conversation-connectors';
+import {createConversationReadCapabilities} from '../../assistant/.flue/tools/read';
 import {OriginGuard} from '../../assistant/origin-guard';
 import {SourceController} from '../../assistant/sources';
 import {SourceAccess} from '../../assistant/access';

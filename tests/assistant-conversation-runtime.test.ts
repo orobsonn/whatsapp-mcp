@@ -4,7 +4,7 @@ import * as v from 'valibot';
 import type { AgentHandleDispatchRequest, DeliveredMessage, DispatchReceipt } from '@flue/runtime';
 import { ConversationRuntime, conversationAddress, verifiedConversationEvent, type ConversationAuthority, type ConversationIdentity, type ConversationHost, type HostConversationEvent, type TaskContext } from '../assistant/agent-runtime/conversation';
 import { KnowledgeService } from '../assistant/knowledge/service';
-import {useConversationKnowledgeTools} from '../assistant/agent-runtime/conversation-tools';
+import {useConversationKnowledgeTools} from '../assistant/.flue/tools/knowledge';
 import type { KnowledgePort, NativeKnowledgeWrite } from '../assistant/knowledge/contracts';
 
 // Small hooks fixture. It verifies our mounted native definitions and closure
@@ -12,16 +12,17 @@ import type { KnowledgePort, NativeKnowledgeWrite } from '../assistant/knowledge
 // Miniflare probe, not asserted by these fake handles.
 const hooks=vi.hoisted(()=>({tools:[] as {name:string;input:v.GenericSchema;run:(ctx:{data:unknown;toolCallId:string})=>Promise<{output:unknown}>}[],
  starts:[] as (()=>Promise<void>)[],responseStarts:[] as ((ctx:{metadata:Record<string,unknown>})=>unknown)[],
- state:new Map<string,unknown>(),models:[] as unknown[][],seed:{} as unknown,delivery:{} as DeliveredMessage,name:'',opened:[] as string[]}));
+ state:new Map<string,unknown>(),models:[] as unknown[][],skills:[] as unknown[],seed:{} as unknown,delivery:{} as DeliveredMessage,name:'',opened:[] as string[]}));
 vi.mock('@flue/runtime',()=>({
  init:(_agent:unknown,options:{id:string})=>{hooks.opened.push(options.id);return {};},
  useInitialData:()=>hooks.seed,useDelivery:()=>hooks.delivery,useModel:(...args:unknown[])=>hooks.models.push(args),
+ useSkill:(skill:unknown)=>hooks.skills.push(skill),
  useTool:(tool:typeof hooks.tools[number])=>hooks.tools.push(tool),useAgentStart:(start:()=>Promise<void>)=>hooks.starts.push(start),
  usePersistentState:(name:string,initial:unknown)=>{const store=hooks.state;return [store.get(name)??initial,(next:unknown)=>store.set(name,typeof next==='function'?next(store.get(name)??initial):next)];},
  useResponseStart:(start:typeof hooks.responseStarts[number])=>hooks.responseStarts.push(start),useResponseFinish:()=>{},useAgentFinish:()=>{},
 }));
 vi.mock('@flue/runtime/cloudflare',()=>({getCloudflareContext:()=>({env:{}}),getDurableObjectIdentity:()=>({name:hooks.name,className:'FlueConversationRuntimeAgent'})}));
-import { ConversationRuntimeAgent, configureConversationResolver, conversationDriver } from '../assistant/agent-runtime/conversation-profiles';
+import { ConversationRuntimeAgent, configureConversationResolver, conversationDriver } from '../assistant/.flue/agents/conversation';
 
 let identity:ConversationIdentity,runtime:ConversationRuntime,authority:ConversationAuthority,writes:NativeKnowledgeWrite[],knowledgePort:KnowledgePort;
 let requests:{id:string;request:AgentHandleDispatchRequest}[],native:Map<string,{request:string;receipt:DispatchReceipt}>,lostAck:boolean,denied:boolean;
@@ -32,7 +33,7 @@ beforeEach(()=>{
  identity={version:1,installationId:crypto.randomUUID(),generation:'g1',channel:'whatsapp',principalOrChatId:'group-1',contextEpoch:'ctx1'};
  authority={ownerId:'owner-1',sourceEpoch:'source-e1',sourceGeneration:'source-g1',policyRevision:1,grantRef:'host-grant',mode:'shadow'};
  requests=[];native=new Map();lostAck=false;denied=false;writes=[];taskContexts=[];
- hooks.tools=[];hooks.starts=[];hooks.models=[];hooks.opened=[];
+ hooks.tools=[];hooks.starts=[];hooks.models=[];hooks.skills=[];hooks.opened=[];
  knowledgePort={async remember(operationId,input){writes.push(input);return {operationId,state:'ready'};},
   async status(operationId){return {operationId,state:'ready'};},async query(){return {claims:[]};},
   async get_entity(){return null;},async find_entities(){return {entities:[]};},async withdraw(operationId){return {operationId,state:'ready'};}};
