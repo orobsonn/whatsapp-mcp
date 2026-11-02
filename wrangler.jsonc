@@ -4,6 +4,10 @@
   "account_id": "ab9f6d8988145943bf8bbab313e45e6e",
   "routes": [{ "pattern": "whatsapp.robsonlins.com", "custom_domain": true }],
   "main": "src/index.ts",
+  // Archive-only build: shared schemas reach this import before tree shaking.
+  // This Worker does not run Flue agents. The assistant Vite build packages
+  // SKILL.md as a real SkillReference; Text here only resolves that graph.
+  "rules": [{ "type": "Text", "globs": ["**/escrever-como-robson/SKILL.md"], "fallthrough": true }],
   "compatibility_date": "2026-10-19",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": false,
