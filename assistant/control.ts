@@ -3,11 +3,13 @@ import type { SourceScope } from "./sources";
 import type { TrustedActor, AccessGuard } from "./access";
 import { bridgeHash } from "./ingress";
 import { CommandLedger } from "./command-ledger";
+import { requireFupPolicy,ownerReminderIntentGuard,type ReminderScope } from './fup-policy';
 import { fupInstant, prepareFupProvenance } from "./followups";
 import {outgoingInput,outgoingProof,outgoingPolicyGuard,outgoingAuthorityGuard,type OutgoingPort} from './outgoing';
 const id = z.string().min(1).max(256), version = z.number().int().min(0).max(2147483646);
 const time = z.number().int().nonnegative().safe(), revision = version.refine(n => n > 0);
 const reference = z.object({ id, revision }).strict();
+const sourceReference = z.strictObject({ id, revision },{error:'source aceita somente {id, revision}; version e hash são derivados pelo servidor.'});
 const base = { operationId: id, id, expectedVersion: version };
 const actions = z.enum(["reply_text", "reply_audio", "ask_clarification", "future_contact", "read_github", "read_calendar", "propose_calendar_change"]);
 export const ownerCommandSchema = z.discriminatedUnion("kind", [
@@ -23,7 +25,7 @@ export const ownerCommandSchema = z.discriminatedUnion("kind", [
     purpose: z.string().min(1).max(2048), expiresAt: time, status: z.enum(["draft", "active"]).default("draft"),
     actions: z.array(actions).max(7), sources: z.array(reference).max(32) }).strict(),
   z.object({ ...base, kind: z.literal("mandate.revoke"), expectedVersion: revision }).strict(),
-  z.object({ ...base, kind: z.literal("fup.put"), conversationId: id, policyRevision: version, source: reference,
+  z.object({ ...base, kind: z.literal("fup.put"), conversationId: id, policyRevision: z.number({error:'policyRevision deve ser uma revisão inteira não negativa; 0 representa ausência de política própria.'}).int().min(0).max(2147483646), source: sourceReference,
     project: reference.optional(), mission: reference.optional(), recipientId: id.optional(),
     mandate: z.object({ id, version: revision }).strict().optional(), purpose: z.string().min(1).max(2048),
     dueAt: z.union([time,z.string().max(40)]).optional(), windowEnd: z.union([time,z.string().max(40)]).optional(), timezone: id.default("UTC"), precision: z.enum(["unset", "exact", "day", "window"]).default("unset"),
@@ -55,7 +57,7 @@ function bounded(value: unknown, depth = 0, budget = { nodes: 0 }): void {
   let count = 0;
   for (const key in value) if (Object.hasOwn(value, key)) { if (++count > 24 || key.length > 64) throw new Error("control_input"); bounded((value as Record<string, unknown>)[key], depth + 1, budget); }
 }
-function command(input: unknown) {
+export function parseOwnerCommand(input: unknown) {
   try {
     bounded(input); const result = ownerCommandSchema.parse(input);
     if (new TextEncoder().encode(JSON.stringify(result)).length > 16384) throw 0;
@@ -73,7 +75,13 @@ function command(input: unknown) {
       if ((result.state === "scheduled" && result.dueAt === undefined) || (result.dueAt === undefined) !== (result.precision === "unset") || (result.windowEnd !== undefined && (result.dueAt === undefined || result.windowEnd < result.dueAt)) || (result.state === "awaiting_condition" && !result.condition)) throw 0;
     }
     return result;
-  } catch { throw new Error("control_input"); }
+  } catch(error) {
+    if(error instanceof z.ZodError){
+      if(error.issues.some(issue=>issue.path[0]==='policyRevision'))throw Error('control_policy_revision');
+      if(error.issues.some(issue=>issue.path[0]==='source'))throw Error('control_source_reference');
+    }
+    throw new Error("control_input");
+  }
 }
 /** Internal host API only. A supplied owner principal is NOT OAuth proof; #46
  * must derive it from the exclusive authenticated MCP service binding. No HTTP. */
@@ -93,17 +101,18 @@ export class OwnerControl {
    * An unavailable current scheduler never licenses a second write after ACK loss. */
   async recover(input: unknown): Promise<CommandReceipt | null> {
     if (this.principal.kind !== 'owner') throw Error('owner_required');
-    const item = command(input);
+    const item = parseOwnerCommand(input);
     return new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item)).recover<CommandReceipt>();
   }
   async execute(input: unknown): Promise<CommandReceipt> {
     if (this.principal.kind !== "owner") throw new Error("owner_required");
-    const item = command(input);
+    const item = parseOwnerCommand(input);
     if(this.nativeTask&&!((item.kind==='mission.put'&&this.nativeTask.kind==='mission')||(item.kind==='fup.put'&&this.nativeTask.kind==='follow_up')))throw Error('native_task_command_denied');
-    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0)throw Error('control_policy_required');
     if (item.kind === "policy.put" && (!this.scope.sourceEpoch || !this.scope.sourceGeneration)) throw new Error("control_origin_unconfigured");
     const ledger = new CommandLedger(this.db, this.scope, item.operationId, await bridgeHash(item));
     const previous = await ledger.recover<CommandReceipt>(); if (previous) return previous;
+    const reminderPolicy=item.kind==='fup.put'&&!item.outgoing?await requireFupPolicy(this.db,this.scope,item.conversationId,item.policyRevision):null;
+    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0&&item.candidate)throw Error('control_source_private_required');
     const now = this.clock(); if (!Number.isSafeInteger(now) || now < 0) throw new Error("control_clock");
     const expected = "expectedRevision" in item ? item.expectedRevision : item.expectedVersion, next = expected + 1;
     const result: CommandReceipt = { operationId: item.operationId, kind: item.kind, id: item.id, shadow: true,
@@ -112,6 +121,12 @@ export class OwnerControl {
     const conditions: string[] = [], values: Value[] = [];
     const require = (sql: string, ...binds: Value[]) => { conditions.push(sql); values.push(...binds); };
     const provenance=item.kind==="fup.put"?await prepareFupProvenance(this.db,this.scope,item as Parameters<typeof prepareFupProvenance>[2]):null;
+    if(item.kind==='fup.put'&&!item.outgoing&&item.policyRevision===0){
+      const source=provenance!.source.fence.source;
+      if(source.origin!=='owner_note'||source.audience!=='owner'||source.conversationId!==null)throw Error('control_source_private_required');
+      provenance!.body.ownerReminder={policyRevision:0};
+    }
+    if(reminderPolicy)require(reminderPolicy.sql,...reminderPolicy.values);
     if(item.kind==='fup.put'&&item.outgoing){
       if(!this.outgoing||item.outgoing.envelope.chatId!==item.conversationId||item.candidate||provenance?.source.fence.source.origin!=='owner_note'||provenance.source.fence.source.audience!=='owner')throw Error('control_precondition');
       const a=item.outgoing.authorization;if(a.kind==='mandate'&&(item.mandate?.id!==a.id||item.mandate.version!==a.version))throw Error('control_precondition');
@@ -147,7 +162,7 @@ export class OwnerControl {
         ...this.keys(), item.id, item.conversationKind, ...originKeys, item.conversationKind);
     }
     if (item.kind === "mandate.put" || item.kind === "fup.put") {
-      if(!(item.kind==='fup.put'&&item.outgoing))require(`EXISTS(SELECT 1 FROM assistant_conversation_policies WHERE ${ns} AND conversation_id=? AND revision=? AND excluded=0 AND (kind='private' OR group_mode<>'ignore'))`, ...this.keys(), item.conversationId, item.policyRevision);
+      if(item.kind==='mandate.put')require(`EXISTS(SELECT 1 FROM assistant_conversation_policies WHERE ${ns} AND conversation_id=? AND revision=? AND excluded=0 AND (kind='private' OR group_mode<>'ignore'))`, ...this.keys(), item.conversationId, item.policyRevision);
       const refs = item.kind === "mandate.put" ? item.sources : [item.source];
       require(`NOT EXISTS(SELECT 1 FROM json_each(?) r WHERE NOT EXISTS(
         SELECT 1 FROM assistant_sources s WHERE ${scoped("s")} AND s.id=json_extract(r.value,'$.id')
@@ -222,7 +237,12 @@ export class OwnerControl {
     }
     await this.db.batch(batch);
     if(provenance?.body.outgoing&&!await this.outgoing!.check(provenance.body.outgoing))throw Error('control_precondition');
-    const stored = await ledger.recover<CommandReceipt>(); if (!stored) throw new Error("control_precondition"); return stored;
+    const stored = await ledger.recover<CommandReceipt>();
+    if(!stored){
+      if(item.kind==='fup.put'&&!item.outgoing)await requireFupPolicy(this.db,this.scope,item.conversationId,item.policyRevision);
+      throw new Error('control_precondition');
+    }
+    return stored;
   }
 }
 export type WorkFence = Readonly<SourceScope & {
@@ -242,24 +262,27 @@ const workIntent = `j.kind='follow_up' AND o.state IN ('pending','blocked') AND 
 const workLive = `j.state IN ('pending','processing') AND ${workIntent}`;
 /** Null always denies a follow_up job, including a missing occurrence. This is
  * an evaluation fence, never a delegation: awaiting approval stays unapproved. */
-export async function captureWorkFence(db: D1Database, scope: SourceScope, job: { id: string; kind: "follow_up" }, now = Date.now()): Promise<WorkFence | null> {
+export async function captureWorkFence(db: D1Database, scope: ReminderScope, job: { id: string; kind: "follow_up" }, now = Date.now()): Promise<WorkFence | null> {
   if (!job || job.kind !== "follow_up" || typeof job.id !== "string" || !Number.isSafeInteger(now) || now < 0) return null;
   const keys = [scope.installationId, scope.generation];
+  const reminder=ownerReminderIntentGuard(scope);
   const row = await db.prepare(`SELECT j.id AS jobId,o.id AS occurrenceId,o.state AS occurrenceState,f.id AS followUpId,f.version,f.state,
     f.source_id AS sourceId,f.source_revision AS sourceRevision,f.mission_id AS missionId,m.revision AS missionRevision,
-    f.mandate_id AS mandateId,f.mandate_version AS mandateVersion ${workFrom} WHERE ${scoped("j")} AND j.id=? AND ${workLive}`).bind(...keys, job.id, now, now).first<Omit<WorkFence, keyof SourceScope | "kind">>();
+    f.mandate_id AS mandateId,f.mandate_version AS mandateVersion ${workFrom} WHERE ${scoped("j")} AND j.id=? AND ${workLive} AND (${reminder.sql})`).bind(...keys, job.id, now, now,...reminder.values).first<Omit<WorkFence, keyof SourceScope | "kind">>();
   return row ? Object.freeze({ installationId: keys[0], generation: keys[1], kind: "follow_up", ...row }) : null;
 }
 /** Compose this predicate into the same mutation that admits/publishes a result.
  * Lease, complete source-pack ACL and conversation/origin fences remain separate. */
-function workPredicate(fence: WorkFence, now: number, live: boolean): AccessGuard {
+function workPredicate(fence: WorkFence, now: number, live: boolean,scope:ReminderScope=fence): AccessGuard {
   if (!fence || fence.kind !== "follow_up" || !Number.isSafeInteger(now) || now < 0) return { sql: "0", values: [] };
   const copy = { ...fence };
+  if(scope.installationId!==copy.installationId||scope.generation!==copy.generation)return {sql:'0',values:[]};
+  const reminder=ownerReminderIntentGuard(scope);
   return { sql: `EXISTS(SELECT 1 ${workFrom} WHERE ${scoped("j")} AND j.id=? AND o.id=? AND o.state=? AND f.id=? AND f.version=? AND f.state=? AND f.source_id=? AND f.source_revision=?
-      AND f.mission_id IS ? AND m.revision IS ? AND f.mandate_id IS ? AND f.mandate_version IS ? AND ${live ? workLive : workIntent})`,
-    values: [copy.installationId, copy.generation, copy.jobId, copy.occurrenceId, copy.occurrenceState, copy.followUpId, copy.version, copy.state, copy.sourceId, copy.sourceRevision, copy.missionId, copy.missionRevision, copy.mandateId, copy.mandateVersion, now, now] };
+      AND f.mission_id IS ? AND m.revision IS ? AND f.mandate_id IS ? AND f.mandate_version IS ? AND ${live ? workLive : workIntent} AND (${reminder.sql}))`,
+    values: [copy.installationId, copy.generation, copy.jobId, copy.occurrenceId, copy.occurrenceState, copy.followUpId, copy.version, copy.state, copy.sourceId, copy.sourceRevision, copy.missionId, copy.missionRevision, copy.mandateId, copy.mandateVersion, now, now,...reminder.values] };
 }
 
-export const workGuard = (fence: WorkFence, now = Date.now()): AccessGuard => workPredicate(fence, now, true);
+export const workGuard = (fence: WorkFence, now = Date.now(),scope?:ReminderScope): AccessGuard => workPredicate(fence, now, true,scope);
 /** Current intent/permissions after computation; executor completion alone is not staleness. */
-export const workIntentGuard = (fence: WorkFence, now = Date.now()): AccessGuard => workPredicate(fence, now, false);
+export const workIntentGuard = (fence: WorkFence, now = Date.now(),scope?:ReminderScope): AccessGuard => workPredicate(fence, now, false,scope);

@@ -42,7 +42,7 @@ it.each([
 ])('diagnoses the %s revision-zero follow-up before any write, independently of its valid zoned date',async(id,dueAt)=>{
  const command={...fup('synthetic-'+id),id,policyRevision:0,dueAt,timezone:'America/Fortaleza',precision:'exact',state:'awaiting_approval'};
  expect(fupInstant(dueAt,'America/Fortaleza')).toBe(Date.parse(dueAt));
- for(let retry=0;retry<2;retry++)await expect(execute(command)).rejects.toThrow('control_policy_required');
+ for(let retry=0;retry<2;retry++)await expect(execute(command)).rejects.toThrow('control_policy_revision');
  expect(await statement('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=? AND generation=?').first('n')).toBe(0);
  expect(await statement('SELECT COUNT(*) n FROM assistant_owner_commands WHERE installation_id=? AND generation=?').first('n')).toBe(0);
  expect(await statement('SELECT COUNT(*) n FROM assistant_jobs WHERE installation_id=? AND generation=?').first('n')).toBe(0);
@@ -97,11 +97,12 @@ it("allows one CAS winner and refuses missing versions and namespace-crossed ref
   expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
   const { expectedVersion: _v, ...missing } = project("missing"); await expect(execute(missing)).rejects.toThrow("control_input");
   const outside = new OwnerControl(env.DB, { ...scope, generation: "g2" }, { kind: "owner" }, () => 1000);
-  await expect(outside.execute(fup() as OwnerCommand)).rejects.toThrow("control_precondition");
+  await expect(outside.execute(fup() as OwnerCommand)).rejects.toThrow("control_policy_revision");
 });
 it("checks source withdrawal and policy/project revisions inside admission, without partial receipts", async () => {
   await execute(project());
-  for (const command of [{ ...mandate("bad-project"), project: { id: "project", revision: 2 } }, { ...fup("bad-policy"), policyRevision: 2 }]) await expect(execute(command)).rejects.toThrow("control_precondition");
+  await expect(execute({ ...mandate('bad-project'), project: {id:'project',revision:2} })).rejects.toThrow('control_precondition');
+  await expect(execute({ ...fup('bad-policy'),policyRevision:2 })).rejects.toThrow('control_policy_revision');
   const batch = env.DB.batch.bind(env.DB);
   const fault = vi.spyOn(env.DB, "batch").mockImplementationOnce(async statements => {
     fault.mockRestore(); await owner.withdraw(sourceId, 1); return batch(statements);

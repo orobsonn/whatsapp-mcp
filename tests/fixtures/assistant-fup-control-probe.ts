@@ -15,11 +15,11 @@ export async function runFupControlProbe(db:D1Database,run:string){
   await control.execute({kind:'project.put',operationId:'project-'+id,id:'project-'+id,expectedVersion:0,name:'Synthetic '+id});
   const command={kind:'fup.put',operationId:'fup-'+id,id:'fup-'+id,expectedVersion:0,conversationId:'chat-'+id,policyRevision:0,source:{id:source.id,revision:1},project:{id:'project-'+id,revision:1},purpose:'Synthetic private review; never send.',dueAt,timezone:'America/Fortaleza',precision:'exact',state:'awaiting_approval'};
   let diagnostic;try{await control.execute(command);}catch(error){diagnostic=ownerControlDiagnostic(error);}
-  if(diagnostic?.error!=='control_policy_required')throw Error('synthetic_expected_policy_rejection');
+  if(diagnostic?.error!=='control_conversation_unavailable')throw Error('synthetic_expected_target_rejection');
   const prior=await db.prepare('SELECT COUNT(*) n FROM assistant_follow_ups WHERE installation_id=? AND generation=? AND id=?').bind(scope.installationId,run,command.id).first('n');
   if(prior!==0)throw Error('synthetic_unexpected_write');
-  await control.execute({kind:'policy.put',operationId:'policy-'+id,id:command.conversationId,expectedRevision:0,conversationKind:kind,groupMode:kind==='group'?'observe':'ignore'});
-  const valid={...command,policyRevision:1},receipt=await control.execute(valid),replayed=await control.execute(valid);
+  await db.prepare("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,?,'available')").bind(scope.installationId,run,scope.sourceEpoch,scope.sourceGeneration,command.conversationId,kind).run();
+  const receipt=await control.execute(command),replayed=await control.execute(command);
   if(JSON.stringify(receipt)!==JSON.stringify(replayed))throw Error('synthetic_replay_mismatch');
   const rows=await db.prepare('SELECT state,due_at,timezone FROM assistant_follow_ups WHERE installation_id=? AND generation=? AND id=?').bind(scope.installationId,run,command.id).all<{state:string;due_at:number;timezone:string}>();
   if(rows.results.length!==1||rows.results[0].state!=='awaiting_approval'||rows.results[0].due_at!==fupInstant(dueAt,command.timezone))throw Error('synthetic_persistence_mismatch');

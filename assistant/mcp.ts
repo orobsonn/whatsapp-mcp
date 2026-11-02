@@ -3,7 +3,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { z } from "zod";
 import type { AssistantEnv } from "./env";
 import { SourceController } from "./sources";
-import { OwnerControl, ownerCommandSchema } from "./control";
+import { OwnerControl, parseOwnerCommand } from "./control";
 import { SourceAccess } from "./access";
 import {outgoingPort,type OutgoingPort} from './outgoing';
 import { OriginGuard } from "./origin-guard";
@@ -209,7 +209,7 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
   }
   async control(expected: OwnerAffinity, input: unknown) {
     const scope = this.#affinity(expected);
-    const command = ownerCommandSchema.parse(input);
+    const command = parseOwnerCommand(input);
     const scheduled = command.kind === 'fup.put' && command.dueAt !== undefined && ['scheduled','awaiting_condition'].includes(command.state);
     if (scheduled) {
       const previous = await new OwnerControl(this.env.DB!, scope, {kind:'owner'}).recover(command);
