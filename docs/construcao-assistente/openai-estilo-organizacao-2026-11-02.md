@@ -34,3 +34,14 @@ Código preparado e verificado localmente não comprova publicação nem uso dos
 - A amostra e a captura de tela do dono não foram incluídas no pacote público. A skill contém somente tendências e exemplos sintéticos.
 
 Suíte completa: 122 arquivos e 2.341 testes passaram em 02/11. Um teste posterior confirmou o ajuste de contabilização do Sol quando o uso real atravessa a faixa de 272 mil tokens: taxas superiores conservadoras do catálogo Pi fixado, sem ampliar a janela configurada nem alterar a contabilização legada. A suíte focada do transporte, seleção e DeepSeek foi repetida após esse ajuste. Publicação ainda não realizada; código e chave locais não significam mudança do bot em produção.
+
+## Publicação e prova real, após a validação local
+
+- O dono autorizou publicação direta. A v0.53.0 foi publicada e os recibos da conversa real no Telegram confirmaram chamadas concluídas com Sol. A reavaliação de uma mensagem antiga respeitou o bloqueio por atividade mais recente; esse bloqueio não foi contornado.
+- O dono pediu um novo rascunho pelo Telegram e aprovou seu tom. A investigação identificou que esse caminho ainda não montava a skill. A v0.53.1 passou a disponibilizá-la também no Telegram privado, somente para textos em nome do dono destinados a terceiros. A curadoria continua excluída.
+- Na v0.53.1 publicada, uma execução real ativou `escrever-como-robson` com resultado disponível e a regra contra travessões carregada, antes de `respond_owner`, na mesma submissão concluída. Os recibos correspondentes confirmaram Sol. O rascunho aprovado foi preservado.
+- Uma pergunta posterior recebeu resposta na voz do assistente, confirmando que havia apenas rascunho no Telegram. Não houve envio WhatsApp nesses testes. Aprovar a qualidade do texto não foi tratado como autorização de envio.
+- A correção passou por revisão adversarial e independente, 23 testes focados, 5 testes do runtime nativo, TypeScript e ambos os builds. A publicação preservou demais bindings, runtime, contêiner e modo de aprovação. O CI da v0.53.0 passou; o CI da v0.53.1 ainda estava em execução no registro desta evidência.
+- A comprovação de ativação usou uma projeção privada e temporária do histórico, sem retornar texto ou dados de contatos. O recurso de inspeção foi removido após a leitura. Mensagens reais, capturas de tela e identificadores privados não foram versionados. A aceitação da chave não comprova saldo nem origem dos créditos de faturamento.
+
+As restrições de Telegram e o estado de publicação descritos nas seções anteriores registram o escopo inicial da v0.53.0 e a situação anterior à publicação; esta seção registra a evolução posterior.
