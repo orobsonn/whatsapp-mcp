@@ -4,6 +4,11 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-11-02
+
+### Fixed
+- A skill de escrita também fica disponível no Telegram privado quando o dono pede um rascunho em seu nome para outra pessoa. O estilo aplica-se ao trecho destinado ao terceiro; respostas e explicações ao dono continuam na voz do assistente. A curadoria permanece sem essa skill, e gerar ou aprovar um rascunho não autoriza envio.
+
 ## [0.53.0] - 2026-11-02
 
 ### Added

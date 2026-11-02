@@ -14,6 +14,6 @@ Esta é a aplicação Flue do assistente pessoal. O Vite tem `assistant/` como r
 
 Fora desta pasta, `assistant/` mantém armazenamento, integrações, permissões, recibos e controles de operação. O próprio Flue continua responsável pelas sessões, histórico e ciclo de ferramentas. Os arquivos em `agents/shadow.ts` mantêm compatibilidade com os fluxos anteriores; reorganizar não apaga conversas nem cria outro bot.
 
-Para entender ou ajustar a escrita, comece pela [skill](skills/escrever-como-robson/SKILL.md). Ela orienta o tom e não autoriza envios. Registrar uma skill a disponibiliza ao agente; o teste do runtime verifica seu carregamento real antes de uma proposta.
+Para entender ou ajustar a escrita, comece pela [skill](skills/escrever-como-robson/SKILL.md). Ela orienta o tom no WhatsApp e nos rascunhos pedidos pelo dono no Telegram, sem autorizar envios. As respostas do assistente ao dono mantêm seu papel próprio e a curadoria não monta essa skill. Registrar uma skill a disponibiliza ao agente; o teste do runtime verifica seu carregamento real antes de uma proposta.
 
 OpenAI direto: `NATIVE_MODEL_PROVIDER=openai`. Sol: `NATIVE_OPENAI_MODEL=gpt-6.1-sol`. As configurações existentes sem essa seleção conservam Luna. A chave permanece no cofre do Worker, nunca nesta pasta. Configuração local não comprova publicação nem vínculo da chave aos créditos da assinatura.

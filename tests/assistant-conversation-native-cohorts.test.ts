@@ -44,9 +44,9 @@ const model={...base,contextWindow:32768,maxTokens:512};
 function options(original){return {...original,apiKey:'synthetic-no-credential',maxRetries:0,transport:'sse',fetch:async(_url,request)=>{
  const {env}=getCloudflareContext(),p=JSON.parse(request.body),raw=JSON.stringify(p.input);
  const sequence=Math.max(...[...raw.matchAll(/synthetic-event-([0-9]+)/g)].map(m=>Number(m[1])));
- const writing=env.PROOF_CHANNEL==='whatsapp',finishing=sequence>=10;
+ const whatsapp=env.PROOF_CHANNEL==='whatsapp',writing=whatsapp||sequence===40,finishing=sequence>=10;
  const activated=p.input.some(item=>item.type==='function_call'&&item.name==='activate_skill');
- const called=p.input.some(item=>item.type==='function_call'&&(finishing?item.name===(writing?'propose_reply':'respond_owner')&&JSON.parse(item.arguments).text==='Synthetic completed delivery '+sequence:item.name==='knowledge_query'&&JSON.parse(item.arguments).predicate==='delivery-'+sequence));
+ const called=p.input.some(item=>item.type==='function_call'&&(finishing?item.name===(whatsapp?'propose_reply':'respond_owner')&&JSON.parse(item.arguments).text==='Synthetic completed delivery '+sequence:item.name==='knowledge_query'&&JSON.parse(item.arguments).predicate==='delivery-'+sequence));
  await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('transport',?)").bind(JSON.stringify({sequence,called,input:p.input,tools:(p.tools||[]).map(t=>t.name)})).run();
  if(sequence===1&&!called){
   const deadline=Date.now()+15000;while(!await env.DB.prepare("SELECT name FROM proof_flags WHERE name='release'").first()){
@@ -60,7 +60,7 @@ function options(original){return {...original,apiKey:'synthetic-no-credential',
  const id='resp_'+crypto.randomUUID().replaceAll('-',''),text='Synthetic completed delivery '+sequence;
  const firstFinish=finishing?await env.DB.prepare("INSERT INTO proof_flags(name) VALUES(?) ON CONFLICT DO NOTHING RETURNING name").bind('first-finish-'+sequence).first():false;
  const final=writing?called:called||finishing&&(!!firstFinish||sequence===11);
- const item=final?{type:'message',id:'msg_'+id,role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text,annotations:[]}]}:{type:'function_call',id:'fc_'+id,call_id:'call_'+id,name:writing?activated?'propose_reply':'activate_skill':finishing?'respond_owner':'knowledge_query',arguments:JSON.stringify(writing?activated?{decision:'respond',text}:{name:'escrever-como-robson'}:finishing?{text}:{predicate:'delivery-'+sequence}),status:'completed'};
+ const item=final?{type:'message',id:'msg_'+id,role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text,annotations:[]}]}:{type:'function_call',id:'fc_'+id,call_id:'call_'+id,name:writing?activated?whatsapp?'propose_reply':'respond_owner':'activate_skill':finishing?'respond_owner':'knowledge_query',arguments:JSON.stringify(writing?activated?whatsapp?{decision:'respond',text}:{text}:{name:'escrever-como-robson'}:finishing?{text}:{predicate:'delivery-'+sequence}),status:'completed'};
  const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(final?{content:[]}:{arguments:''})}},...(final?[{type:'response.output_text.delta',output_index:0,content_index:0,delta:text}]:[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}}];
  return new Response(events.map(e=>'data: '+JSON.stringify(e)+String.fromCharCode(10,10)).join(''),{headers:{'Content-Type':'text/event-stream'}});
  }};}
@@ -155,9 +155,27 @@ test('WhatsApp mounts and activates the real writing skill before reply, retaini
  const last=await db.prepare("SELECT detail FROM proof_events WHERE kind='transport' ORDER BY id DESC LIMIT 1").first<{detail:string}>();
  expect(last!.detail).toContain('Regra explícita do dono');expect(last!.detail).toContain('synthetic-event-20');
 });
-test('owner Telegram does not mount the WhatsApp writing skill',async()=>{
+test('owner Telegram can discover drafting skill without changing ordinary owner responses',async()=>{
  const db=await start();await initialize(db);
  const a=await call({action:'deliver',sequence:30});await call({action:'read',taskRef:a.taskRef});
  const row=await db.prepare("SELECT detail FROM proof_events WHERE kind='transport' AND json_extract(detail,'$.sequence')=30 ORDER BY id LIMIT 1").first<{detail:string}>();
- expect(JSON.parse(row!.detail).tools).not.toContain('activate_skill');expect(JSON.parse(row!.detail).tools).toContain('respond_owner');
+ expect(JSON.parse(row!.detail).tools).toContain('activate_skill');expect(JSON.parse(row!.detail).tools).toContain('respond_owner');expect(JSON.parse(row!.detail).tools).not.toContain('propose_reply');
+});
+
+test('Telegram activates writing for a draft and returns to owner answers in the same native session',async()=>{
+ const db=await start();await initialize(db);
+ const beforeReplies=await db.prepare("SELECT count(*) n FROM proof_events WHERE kind='reply'").first<number>('n');
+ const draft=await call({action:'deliver',sequence:40});await call({action:'read',taskRef:draft.taskRef});
+ const first=(await db.prepare("SELECT detail FROM proof_events WHERE kind='transport' AND json_extract(detail,'$.sequence')=40 ORDER BY id").all<{detail:string}>()).results.map(row=>JSON.parse(row.detail));
+ expect(first.some(row=>row.input.some((item:any)=>item.type==='function_call'&&item.name==='activate_skill'))).toBe(true);
+ expect(first.some(row=>row.input.some((item:any)=>item.type==='function_call_output'&&String(item.output).includes('Quando o pedido chega pelo Telegram')))).toBe(true);
+ const answer=await call({action:'deliver',sequence:41}),settled=await call({action:'read',taskRef:answer.taskRef});expect(answer.sessionId).toBe(draft.sessionId);
+ // Internal model text may include the finish-hook continuation. The actual
+ // owner delivery must happen once, and must not enter WhatsApp effects.
+ const ownerEffects=(await db.prepare("SELECT detail FROM proof_events WHERE kind='effect'").all<{detail:string}>()).results.map(row=>JSON.parse(row.detail));
+ expect(ownerEffects.filter(effect=>effect.text==='Synthetic completed delivery 41')).toHaveLength(1);
+ const last=JSON.parse((await db.prepare("SELECT detail FROM proof_events WHERE kind='transport' AND json_extract(detail,'$.sequence')=41 ORDER BY id DESC LIMIT 1").first<{detail:string}>())!.detail);
+ expect(last.tools).toContain('respond_owner');expect(last.tools).not.toContain('propose_reply');
+ const calls=last.input.filter((item:any)=>item.type==='function_call');expect(calls.filter((item:any)=>item.name==='activate_skill')).toHaveLength(1);
+ expect(await db.prepare("SELECT count(*) n FROM proof_events WHERE kind='reply'").first<number>('n')).toBe(beforeReplies);
 });
