@@ -24,7 +24,7 @@ async function deriveMcpFollowUp(env: AssistantEnv, scope: OwnerAffinity,
   const session = await conversationAddress(identity, 'telegram', fence.userId, identity.contextEpoch);
   const access = new SourceAccess(env.DB!, scope, Date.now, 'knowledge');
   const source = await access.read({ kind: 'owner' }, command.source.id, command.source.revision);
-  if (!source) throw Error('control_precondition');
+  if (!source) throw Error('control_source_unavailable');
   const guards = [access.guard({ kind: 'owner' }, source.fence, Date.now()), telegramLinkGuard(fence), activation.guard,
     retentionExecutionGuard(scope), host.retention.authorityGuard(session), {
       sql: "EXISTS(SELECT 1 FROM assistant_native_context_channels WHERE installation_id=? AND generation=? AND channel='telegram' AND principal_id=? AND conversation_id=?)",

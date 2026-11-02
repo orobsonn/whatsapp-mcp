@@ -117,12 +117,20 @@ beforeEach(async () => {
     await env.DB.batch(schema.replace(/^--.*$/gm, "").trim().split(/;\s*(?=CREATE|ALTER|INSERT|$)/).filter((part: string) => part.trim()).map((part: string) => env.DB.prepare(part)));
 });
 afterEach(() => vi.restoreAllMocks());
-it.each(['tutor-ronald','curso-lucas'])('returns a safe actionable %s policy diagnostic through MCP instead of operation_failed',async id=>{
+it.each(['synthetic-a','synthetic-b'])('returns a safe actionable %s revision diagnostic through MCP instead of operation_failed',async id=>{
  const {settings,rpc}=setup();rpc.control.mockImplementation(async(_affinity,command)=>new OwnerControl(env.DB,affinity,{kind:'owner'}).execute(command));
+ await env.DB.prepare("INSERT INTO assistant_conversation_policies(installation_id,generation,conversation_id,kind) VALUES(?,?,'synthetic-chat','private')").bind(affinity.installationId,affinity.generation).run();
  const command={kind:'fup.put',operationId:'synthetic-'+id,id,expectedVersion:0,conversationId:'synthetic-chat',policyRevision:0,source:{id:'synthetic-note',revision:1},project:{id:'synthetic-project',revision:1},purpose:'PRIVATE_SENTINEL',dueAt:id==='tutor-ronald'?'2026-11-03T10:00:00-03:00':'2026-11-05T10:00:00-03:00',timezone:'America/Fortaleza',precision:'exact',state:'awaiting_approval'};
  const r=await mcpFetch(request('tools/call',{name:'assistente_controlar',arguments:{command}}),settings,owner),body=await r.json() as any;
- expect(body.result.isError).toBe(true);expect(JSON.parse(body.result.content[0].text)).toMatchObject({error:'control_policy_required',field:'policyRevision',message:expect.any(String)});
+ expect(body.result.isError).toBe(true);expect(JSON.parse(body.result.content[0].text)).toMatchObject({error:'control_policy_revision',field:'policyRevision',message:expect.any(String)});
  expect(JSON.stringify(body)).not.toContain('PRIVATE_SENTINEL');
+});
+it.each([{version:1},{hash:'PRIVATE_SENTINEL'}])('rejects extra source fields at the published HTTP schema before RPC',async extra=>{
+ const {settings,rpc}=setup();
+ const command={kind:'fup.put',operationId:'bad-source',id:'bad-source',expectedVersion:0,conversationId:'group',policyRevision:0,source:{id:'note',revision:1,...extra},purpose:'Synthetic'};
+ const response=await mcpFetch(request('tools/call',{name:'assistente_controlar',arguments:{command}}),settings,owner),body=await response.json() as any;
+ expect(body.result.isError).toBe(true);expect(JSON.stringify(body)).toContain('source');expect(JSON.stringify(body)).toContain('id, revision');
+ expect(JSON.stringify(body)).not.toContain('PRIVATE_SENTINEL');expect(rpc.control).not.toHaveBeenCalled();
 });
 it('keeps arbitrary remote exceptions private and does not turn uncertain writes into safe retry advice',async()=>{
  const {settings,rpc}=setup();rpc.control.mockRejectedValue(Error('SECRET_SENTINEL timeout after commit'));

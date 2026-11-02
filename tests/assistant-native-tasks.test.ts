@@ -10,6 +10,7 @@ import {InferenceBudget} from '../assistant/budget';
 import {SourceController} from '../assistant/sources';
 import type {TaskContext} from '../assistant/agent-runtime/conversation';
 import {compactStatement} from '../assistant/d1-statement';
+import {nativeAuthority} from '../assistant/agent-runtime/native-policy';
 import {RetentionPurge} from '../assistant/retention-purge';
 const transport=vi.hoisted(()=>({deliveries:new Map<string,DeliveredMessage>(),accepted:new Map<string,unknown>(),lostAck:false,dispatch:vi.fn(),abort:vi.fn(),destroy:vi.fn()}));
 vi.mock('../assistant/agent-runtime/native-transport',()=>({
@@ -53,10 +54,10 @@ async function fixture(){
 async function saved(f:Awaited<ReturnType<typeof fixture>>,task:TaskContext,objective='Pesquisar informação sintética',at=localISO(Date.now()-60000)){
  return await f.host.tasks().save(task,{objective,at}) as {id:string;revision:number;scheduledAt:number};
 }
-async function mcpFixture(){
+async function mcpFixture(withPolicy=true){
  const f=await fixture();await f.ownerInput();
  const source=await new SourceController(env.DB,f.scope,{kind:'owner'}).create({originKey:'mcp-request',text:'Pedido do dono: lembrar privadamente sobre o retorno combinado.',occurredAt:Date.now(),audience:'owner'});
- await f.control.execute({kind:'policy.put',operationId:'mcp-policy',id:'synthetic-chat',expectedRevision:0,conversationKind:'private'});
+ if(withPolicy)await f.control.execute({kind:'policy.put',operationId:'mcp-policy',id:'synthetic-chat',expectedRevision:0,conversationKind:'private'});
  const command={kind:'fup.put' as const,operationId:'mcp-fup',id:'mcp-fup',expectedVersion:0,conversationId:'synthetic-chat',policyRevision:1,source:{id:source.id,revision:1},purpose:'Retorno privado ao dono',dueAt:localISO(Date.now()-60000),timezone:'America/Fortaleza',precision:'exact' as const,state:'scheduled' as const};
  const rpc=new OwnerAssistant(createExecutionContext(),f.settings);
  return {...f,source,command,rpc};
@@ -72,6 +73,18 @@ it('enrolls an authenticated MCP FUP atomically and wakes only the existing priv
  expect(await f.count('assistant_jobs')).toBe(0);
  expect(await new OwnerQueries(env.DB,f.scope).execute({kind:'follow_up',id:'mcp-fup'})).toMatchObject({native:'enrolled'});
 });
+it('schedules a private group reminder with no own policy and grants no group knowledge or command authority',async()=>{
+ const f=await mcpFixture(false);
+ await env.DB.prepare("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,?,1,'group','available')").bind(f.scope.installationId,f.scope.generation,f.scope.sourceEpoch,f.scope.sourceGeneration,'synthetic-chat').run();
+ const input={...f.command,policyRevision:0};expect(await f.rpc.control(f.scope,input)).toMatchObject({native:'enrolled',version:1});
+ expect(await f.count('assistant_conversation_policies')).toBe(0);expect(await f.count('assistant_mandates')).toBe(0);
+ await expect(nativeAuthority(f.settings,{version:1,installationId:f.scope.installationId,generation:f.scope.generation,channel:'whatsapp',principalOrChatId:'synthetic-chat',contextEpoch:'synthetic'})).rejects.toThrow('native_conversation_denied');
+ const due=await f.wake();expect(due.returnChannel).toEqual({channel:'telegram',id:'101'});
+ expect(due.cohort[0]).toMatchObject({kind:'fup_due',workRef:{id:'mcp-fup'}});
+ await expect(f.host.tasks().save(due,{objective:'Deadline cannot grant group access'})).rejects.toThrow('native_task_owner_required');
+ await f.control.execute({kind:'policy.put',operationId:'later-policy',id:'synthetic-chat',conversationKind:'group',groupMode:'observe',expectedRevision:0});
+ await expect(f.host.tasks().guardForTask(due)).rejects.toThrow();
+});
 it.each(['link','activation','source','retention'] as const)('rejects an MCP FUP and its binding together when %s changes during admission',async change=>{
  const f=await mcpFixture(),original=OwnerControl.prototype.execute;
  vi.spyOn(OwnerControl.prototype,'execute').mockImplementation(async function(this:OwnerControl,input:unknown){
@@ -81,7 +94,7 @@ it.each(['link','activation','source','retention'] as const)('rejects an MCP FUP
   if(change==='retention')await env.DB.prepare('INSERT INTO assistant_retention_runtime_hold(installation_id,operation_id,target_generation,active,created_at) VALUES(?,?,?,1,?)').bind(f.scope.installationId,'test','next',Date.now()).run();
   return original.call(this,input);
  });
- await expect(f.rpc.control(f.scope,f.command)).rejects.toThrow('control_precondition');
+ await expect(f.rpc.control(f.scope,f.command)).rejects.toThrow(change==='source'?'control_source_unavailable':'control_precondition');
  expect(await f.count('assistant_follow_ups')).toBe(0);expect(await f.count('assistant_native_task_bindings')).toBe(0);
 });
 it.each(['paused','session','link','activation'] as const)('does not persist a scheduled MCP FUP when the native scheduler is unavailable: %s',async missing=>{

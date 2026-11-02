@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.5] - 2026-11-01
+
+### Fixed
+- Pedido explícito do dono registra FUP privado sem política própria usando `policyRevision=0`, com ausência, conversa atual, pausa, quarentena e retenção protegidas atomicamente. Não cria política, observação, captura, mandato nem envio ao grupo.
+- A proveniência distingue esse lembrete: política criada posteriormente invalida a revisão zero no prazo, claim e publicação, inclusive no caminho legado. Fontes de grupo continuam sujeitas aos controles de conhecimento existentes.
+- Erros identificam `policyRevision`, `conversationId` ou `source` sem conteúdo privado. A entrada de fonte permanece estrita em `{id, revision}`, com versão e hash derivados no servidor; catálogo, skill e documentação foram reconciliados.
+
 ## [0.52.4] - 2026-11-01
 
 ### Changed

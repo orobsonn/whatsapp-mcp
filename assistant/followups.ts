@@ -7,6 +7,7 @@ import { seedDecisionJob } from "./decisions";
 import type { OriginGuard } from "./origin-guard";
 import { normalizeRetrievalInput } from "./retrieval";
 import {outgoingProof,outgoingGuard,type OutgoingPort} from './outgoing';
+import {absentReminderPredicate,type ReminderScope} from './fup-policy';
 const ns = "installation_id=? AND generation=?";
 const id = z.string().min(1).max(256), hash = z.string().regex(/^[a-f0-9]{64}$/), version = z.number().int().positive();
 export const fupProvenanceSchema = z.object({ evidenceKind: z.enum(["owner_directive", "attributed_candidate"]),
@@ -14,7 +15,7 @@ export const fupProvenanceSchema = z.object({ evidenceKind: z.enum(["owner_direc
   candidate: z.object({ batchKey: id, claimIndex: z.number().int().min(0).max(31), requestHash: hash, quote: z.string().min(1).max(4096) }).strict().nullable(),
   conditionStatus: z.enum(["none_explicit", "attributed", "unknown"]),
   temporal: z.object({ dueAt: z.number().int().nonnegative().safe().nullable(), windowEnd: z.number().int().nonnegative().safe().nullable(), timezone: id, precision: z.enum(["unset", "exact", "day", "window"]) }).strict(),
- outgoing:outgoingProof.optional(),}).strict();
+ ownerReminder:z.object({policyRevision:z.literal(0)}).strict().optional(),outgoing:outgoingProof.optional(),}).strict();
 /** Only an explicit offset plus an IANA-zone round trip can define civil time.
  * Numeric input remains an already resolved UTC instant, including legacy UTC. */
 export function fupInstant(value: number | string, timezone: string): number {
@@ -38,7 +39,7 @@ type FupInput = { source: { id: string; revision: number }; candidate?: { batchK
  * permission, origin or namespace is accepted. The command remains authority. */
 export async function prepareFupProvenance(db: D1Database, scope: SourceScope, item: FupInput) {
   const access = new SourceAccess(db, scope), source = await access.read({ kind: "owner" }, item.source.id, item.source.revision);
-  if (!source) throw new Error("control_precondition");
+  if (!source) throw new Error("control_source_unavailable");
   const guard = access.guard({ kind: "owner" }, source.fence, Date.now()), keys = [scope.installationId, scope.generation];
   let candidate: z.infer<typeof fupProvenanceSchema>["candidate"] = null;
   if (item.candidate) {
@@ -59,7 +60,9 @@ export async function prepareFupProvenance(db: D1Database, scope: SourceScope, i
 }
 /** Fixed admission predicate shared by occurrence creation and queue insertion.
  * A due observation never overrides current owner intent or a cancelled child. */
-export function dueFollowUpGuard(scope:SourceScope, ref:{id:string;version:number}, source:{id:string;revision:number}, now:number, occurrenceId?:string):AccessGuard {
+export function dueFollowUpGuard(scope:ReminderScope, ref:{id:string;version:number}, source:{id:string;revision:number}, now:number, occurrenceId?:string):AccessGuard {
+  const absent=absentReminderPredicate(scope);
+  const privateMarker=`EXISTS(SELECT 1 FROM assistant_fup_provenance rp WHERE rp.installation_id=f.installation_id AND rp.generation=f.generation AND rp.fup_id=f.id AND rp.version=f.version AND json_type(rp.body_json,'$.ownerReminder') IS NOT NULL)`;
   return {sql:`EXISTS(SELECT 1 FROM assistant_follow_ups f
     JOIN assistant_sources s ON s.installation_id=f.installation_id AND s.generation=f.generation AND s.id=f.source_id AND s.revision=f.source_revision AND s.status='active'
     LEFT JOIN assistant_missions m ON m.installation_id=f.installation_id AND m.generation=f.generation AND m.id=f.mission_id
@@ -67,7 +70,9 @@ export function dueFollowUpGuard(scope:SourceScope, ref:{id:string;version:numbe
     AND f.version=(SELECT MAX(version) FROM assistant_follow_ups v WHERE v.installation_id=f.installation_id AND v.generation=f.generation AND v.id=f.id)
     AND f.state IN ('scheduled','awaiting_condition') AND f.due_at IS NOT NULL AND f.due_at<=? AND f.next_evaluation_at<=?
     AND (f.mission_id IS NULL OR m.state='active')
-    AND (EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id AND p.excluded=0 AND (p.kind='private' OR p.group_mode<>'ignore')) OR (NOT EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id) AND EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version AND json_extract(p.body_json,'$.outgoing.policy.kind')='absent' AND json_extract(p.body_json,'$.outgoing.policy.revision')=0)))
+    AND ((${privateMarker} AND s.origin='owner_note' AND s.audience='owner' AND s.conversation_id IS NULL
+      AND EXISTS(SELECT 1 FROM assistant_fup_provenance rp WHERE rp.installation_id=f.installation_id AND rp.generation=f.generation AND rp.fup_id=f.id AND rp.version=f.version AND json_extract(rp.body_json,'$.ownerReminder.policyRevision')=0 AND json_type(rp.body_json,'$.outgoing') IS NULL)
+      AND (${absent.sql})) OR (NOT ${privateMarker} AND (EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id AND p.excluded=0 AND (p.kind='private' OR p.group_mode<>'ignore')) OR (NOT EXISTS(SELECT 1 FROM assistant_conversation_policies p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.conversation_id=f.conversation_id) AND EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version AND json_extract(p.body_json,'$.outgoing.policy.kind')='absent' AND json_extract(p.body_json,'$.outgoing.policy.revision')=0)))))
     AND (f.mandate_id IS NULL OR EXISTS(SELECT 1 FROM assistant_mandates g WHERE g.installation_id=f.installation_id AND g.generation=f.generation AND g.id=f.mandate_id AND g.version=f.mandate_version AND g.status='active' AND g.issued_at<=? AND g.expires_at>?
       AND g.version=(SELECT MAX(version) FROM assistant_mandates v WHERE v.installation_id=g.installation_id AND v.generation=g.generation AND v.id=g.id)))
     AND NOT EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version AND
@@ -75,7 +80,7 @@ export function dueFollowUpGuard(scope:SourceScope, ref:{id:string;version:numbe
     AND NOT(EXISTS(SELECT 1 FROM assistant_owner_commands c WHERE c.installation_id=f.installation_id AND c.generation=f.generation AND json_extract(c.result_json,'$.fupProvenance')=1 AND json_extract(c.result_json,'$.id')=f.id)
       AND NOT EXISTS(SELECT 1 FROM assistant_fup_provenance p WHERE p.installation_id=f.installation_id AND p.generation=f.generation AND p.fup_id=f.id AND p.version=f.version))
     ${occurrenceId ? `AND EXISTS(SELECT 1 FROM assistant_fup_occurrences o WHERE o.installation_id=f.installation_id AND o.generation=f.generation AND o.id=? AND o.follow_up_id=f.id AND o.follow_up_version=f.version AND o.due_at=f.next_evaluation_at AND o.state IN ('pending','blocked'))` : ""})`,
-    values:[scope.installationId,scope.generation,ref.id,ref.version,source.id,source.revision,now,now,now,now,...(occurrenceId?[occurrenceId]:[])]};
+    values:[scope.installationId,scope.generation,ref.id,ref.version,source.id,source.revision,now,now,...absent.values,now,now,...(occurrenceId?[occurrenceId]:[])]};
 }
 type DueRow={id:string;version:number;source_id:string;source_revision:number;next_evaluation_at:number;purpose:string;state:string;condition_text:string|null;condition_status:string;due_at:number|null;timezone:string};
 type DueItem={id:string;version:number;occurrenceId:string;state:"admitted"|"blocked"|"unavailable";jobId?:string;evaluationState?:string;reason?:"intent_changed"|"input_limit"|"admission_uncertain"};

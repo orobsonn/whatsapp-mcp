@@ -117,7 +117,7 @@ export class EpisodeController {
       if (binding.work.kind !== "follow_up") return null;
       const target = binding.work.target;
       const attestations: ["work_nonce" | "target_nonce", AccessGuard][] = [
-        ["work_nonce", binding.outgoing?merge(workGuard(binding.work.fence,now),outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,now,lease.source_id)):workGuard(binding.work.fence, now)],
+        ["work_nonce", binding.outgoing?merge(workGuard(binding.work.fence,now,this.scope),outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,now,lease.source_id)):workGuard(binding.work.fence, now,this.scope)],
         ["target_nonce", binding.outgoing?outgoingGuard(this.scope,{id:binding.work.fence.followUpId,version:binding.work.fence.version},binding.outgoing,now,lease.source_id):target.fence?merge(conversationGuard(target.fence), {
           sql: "EXISTS(SELECT 1 FROM assistant_conversation_modes WHERE installation_id=? AND generation=? AND conversation_id=? AND kind=? AND revision=? AND effective_mode=? AND effective_mode<>'ignore')",
           values: [this.scope.installationId, this.scope.generation, target.fence.chatId, target.policy.kind, target.policy.revision, target.policy.mode],
