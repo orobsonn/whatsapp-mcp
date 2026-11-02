@@ -260,3 +260,9 @@ it('does not reflect uncertain memory as learned and reflects a later ready stat
  const remember=hooks.tools.find(t=>t.name==='knowledge_remember')!,result=await remember.run({data:v.parse(remember.input,remembered(ref)),toolCallId:'uncertain'});expect(result).toMatchObject({output:{state:'uncertain'}});expect(reflect).not.toHaveBeenCalled();
  const operationId=(result.output as {operationId:string}).operationId,status=hooks.tools.find(t=>t.name==='knowledge_status')!;await status.run({data:{operationId},toolCallId:'reconcile'});expect(reflect).toHaveBeenCalledWith(operationId);
 });
+
+it('the private curator does not mount the personal writing skill',async()=>{
+ const admitted=await admit({identity:{...identity,channel:'telegram',principalOrChatId:'curator:owner-1'}});render(admitted);
+ expect(hooks.skills).toHaveLength(0);expect(hooks.tools.map(tool=>tool.name)).toContain('curator_next');
+ expect(hooks.tools.map(tool=>tool.name)).not.toContain('respond_owner');expect(hooks.tools.map(tool=>tool.name)).not.toContain('propose_reply');
+});

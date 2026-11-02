@@ -37,7 +37,8 @@ export function configureConversationResolver(resolve:ConversationResolver){
 }
 export function ConversationRuntimeAgent(){
  const seed=useInitialData<ConversationIdentity>(),delivery=useDelivery();
- if(seed.channel==='whatsapp')useSkill(robsonWriting);
+ const privateCurator=seed.channel==='telegram'&&isCuratorPrincipal(seed.principalOrChatId);
+ if(!privateCurator)useSkill(robsonWriting);
  const cohort=useConversationCohort();
  // Provider registration and its pre-transport budget authorization remain the
  // host's responsibility. This is the real native Pi model/tool loop from P0.
@@ -83,7 +84,6 @@ export function ConversationRuntimeAgent(){
   return {...binding,...(curator?{onKnowledgeIntent:(operationId:string,input:Parameters<KnowledgeCurator['recordLearning']>[2])=>curator.curator.recordLearning(curator.runId,operationId,input),onKnowledgeReady:(operationId:string)=>curator.curator.reflectReady(curator.runId,operationId)}:{})};
  });
  useConversationActionTools(seed,delivery,bound);
- const privateCurator=seed.channel==='telegram'&&isCuratorPrincipal(seed.principalOrChatId);
  if(privateCurator)return curatorInstructions;
  return conversationInstructions(seed.channel);
 }

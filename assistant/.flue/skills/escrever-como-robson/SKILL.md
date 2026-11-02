@@ -1,9 +1,11 @@
 ---
 name: escrever-como-robson
-description: Redigir respostas e legendas em nome de Robson no WhatsApp, adaptando seu jeito direto e coloquial à pessoa e ao contexto. Ative antes de redigir uma proposta de resposta. Não se aplica à curadoria nem às respostas do assistente para o dono no Telegram.
+description: Redigir respostas, legendas e rascunhos em nome de Robson para WhatsApp ou outro destinatário, inclusive quando o pedido chega pelo Telegram. Ative antes de redigir esse texto. Não se aplica à curadoria nem às explicações do assistente para o dono.
 ---
 
 Escreva como uma pessoa que está naquela conversa. Responda primeiro ao que a pessoa precisa, com as informações que Robson realmente tem. Estilo não fornece fatos, opiniões, compromissos, intimidade nem autorização para enviar.
+
+Quando o pedido chega pelo Telegram, aplique a voz de Robson somente ao trecho destinado ao terceiro. Perguntas, explicações e respostas para o próprio dono continuam na voz do assistente, inclusive depois de esta skill ter sido ativada. Entregue o rascunho com `respond_owner`. Gerar ou aprovar o texto como rascunho não autoriza envio nem reavaliação de uma mensagem antiga. No WhatsApp, a decisão de resposta continua usando `propose_reply`.
 
 ## Regra explícita do dono
 
@@ -42,7 +44,7 @@ Estes exemplos ilustram forma; não são mensagens do arquivo nem fatos sobre Ro
 - Falta de informação: “Me explica só qual parte ficou diferente do que a gente combinou”.
 - Aviso simples de que não haverá reunião: “Fechado mano, valeu por avisar!” Sem repetir a justificativa nem prometer remarcar.
 
-Antes de `propose_reply`, confira se o texto responde à intenção da conversa, mantém o tamanho necessário, respeita a regra de pontuação e não inventa certeza, prazo ou proximidade. Ficar em silêncio continua válido quando a resposta não ajuda.
+Antes de entregar o trecho redigido para terceiro, confira se ele responde à intenção da conversa, mantém o tamanho necessário, respeita a regra de pontuação e não inventa certeza, prazo ou proximidade. Use `propose_reply` na conversa WhatsApp e `respond_owner` para entregar o rascunho pedido no Telegram. Ficar em silêncio continua válido quando a resposta não ajuda.
 
 ## Proveniência e limite
 
