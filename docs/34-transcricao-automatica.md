@@ -7,6 +7,13 @@ salvando o resultado vinculado à mensagem. Suportar também os casos excepciona
 até dez minutos. Recuperar um áudio anterior escolhido pelo dono como teste pontual;
 isso não autoriza transcrição do histórico inteiro.
 
+## Correção autorizada — 02/11/2026
+
+O dono pediu corrigir o bloqueio da fila de downloads e a ausência de transcrição
+nos áudios enviados. A rotina passa a incluir áudios recebidos e enviados já
+capturados desde o mesmo marco de ativação. O backlog existente pode ser consumido;
+não há importação de histórico nem alteração do marco, cota ou tentativas.
+
 ## Implementação
 
 - `0010_auto_transcription.sql` fixa o marco de ativação no banco. A seleção usa o
@@ -29,8 +36,8 @@ isso não autoriza transcrição do histórico inteiro.
 - `consultar_mensagens` e exportação incluem `transcription` separado, com status,
   texto, erro sanitizado, `untrusted` e indicação de truncamento. Busca lexical inclui
   o texto derivado. O limite UTF8 da página continua valendo.
-- Mensagens enviadas pelo próprio dono e uploads sem mensagem recebida não entram no
-  automático. Captura desativada interrompe o processamento automático daquele chat.
+- Uploads sem mensagem capturada não entram no automático. Áudios enviados pelo
+  número conectado são elegíveis; `fromMe` não comprova autoria humana nem autorização. Captura desativada interrompe o processamento automático daquele chat.
 
 ## Correção de download
 

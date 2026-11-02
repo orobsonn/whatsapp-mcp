@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.52.6] - 2026-11-02
+
+### Fixed
+- Downloads pendentes deixam de ser bloqueados por jobs cujo arquivo já está pronto: a fila reconcilia esses recibos e seleciona somente mídia ainda pendente antes do limite de trabalho, sem baixar novamente arquivos prontos nem tomar leases ativos.
+- Transcrição automática inclui áudios enviados capturados desde o marco de ativação existente, com os mesmos limites, permissões, cota, cache e proteção por versão. Consultas passam a mostrar esses áudios elegíveis como pendentes em vez de não solicitados.
+
+
 ## [0.52.5] - 2026-11-01
 
 ### Fixed
