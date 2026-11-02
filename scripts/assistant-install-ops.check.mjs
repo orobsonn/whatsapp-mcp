@@ -2,9 +2,10 @@ import {test,after} from "node:test";
 import assert from "node:assert/strict";
 import {mkdtemp,rm,writeFile,readFile,stat,symlink,mkdir,realpath} from "node:fs/promises";
 import {tmpdir} from "node:os";
-import {join,resolve} from "node:path";
+import {join,resolve,dirname,basename} from "node:path";
 import {pathToFileURL} from "node:url";
 import {build} from "esbuild";
+import {parseSkillMarkdown,buildPackagedSkill} from '@flue/runtime/internal';
 import {createServer as httpServer} from "node:http";
 import {operatorConfig,operatorArgv,main} from "./assistant-install-ops.mjs";
 import {createOperatorLog,localOperatorReady,waitForOperator,postOperatorCommand} from "./assistant-operator-local.mjs";
@@ -13,7 +14,12 @@ const entry=join(directory,"fixture.ts"),output=join(directory,"fixture.mjs");
 await writeFile(entry,`export {OwnerAssistant} from ${JSON.stringify(resolve("assistant/mcp.ts"))};export {handleInstallationOperator} from ${JSON.stringify(resolve("assistant/installation-operator.ts"))};export {retirementBootstrapPlan,RetentionAuthorityCore} from ${JSON.stringify(resolve("assistant/retention-authority.ts"))};`,{mode:0o600});
 // Node tests exercise actual methods/helpers. This shim supplies only base-class
 // env storage, not Cloudflare runtime/transport, which still needs a live smoke.
-await build({entryPoints:[entry],outfile:output,platform:"node",target:"node22",format:"esm",bundle:true,logLevel:"silent",plugins:[{name:"worker-entrypoint-fixture",setup(build){build.onResolve({filter:/^cloudflare:workers$/},()=>({path:"workers",namespace:"fixture"}));build.onLoad({filter:/.*/,namespace:"fixture"},()=>({contents:"export class WorkerEntrypoint {constructor(ctx,env){this.ctx=ctx;this.env=env;}} export class DurableObject extends WorkerEntrypoint {}",loader:"js"}));}}]});
+await build({entryPoints:[entry],outfile:output,platform:"node",target:"node22",format:"esm",bundle:true,logLevel:"silent",plugins:[{name:"worker-entrypoint-fixture",setup(build){build.onResolve({filter:/^cloudflare:workers$/},()=>({path:"workers",namespace:"fixture"}));build.onLoad({filter:/.*/,namespace:"fixture"},()=>({contents:"export class WorkerEntrypoint {constructor(ctx,env){this.ctx=ctx;this.env=env;}} export class DurableObject extends WorkerEntrypoint {}",loader:"js"}));
+// This Node fixture uses esbuild instead of Flue's Vite pipeline. Package its
+// current single-file skill with the same SDK parser, not a fake empty module.
+build.onLoad({filter:/\/SKILL\.md$/},async({path})=>{const content=await readFile(path),parsed=parseSkillMarkdown(content.toString('utf8'),{directoryName:basename(dirname(path)),path});
+ const packaged=buildPackagedSkill({name:parsed.name,description:parsed.description,files:[{path:'SKILL.md',content:new Uint8Array(content)}]});
+ return {contents:`import {createSkillReference} from '@flue/runtime/internal';export default createSkillReference(${JSON.stringify(packaged)});`,loader:'js',resolveDir:dirname(path)};});}}]});
 const {OwnerAssistant,handleInstallationOperator,retirementBootstrapPlan,RetentionAuthorityCore}=await import(pathToFileURL(output).href);
 const expected={installationId:"synthetic-install",generation:"g1"},available={observation:"capture_installation_affinity",state:"available",fence:{epoch:"private-source-epoch",generation:"capture-g1"}},token="1".repeat(64);
 function fixture(){let queries=0,reads=0;const rows=[];const db={prepare(sql){assert.ok(sql.startsWith("SELECT generation,id,origin,origin_key,status,revision,current_version FROM assistant_sources"));queries++;return {bind:()=>({all:async()=>({results:rows})})};}};const env={DB:db,INSTALLATION_ID:expected.installationId,OPERATIONAL_GENERATION:expected.generation,BRIDGE_SECRET:"synthetic-bridge-key-only",CAPTURE_READER:{installationAffinity:async input=>{reads++;assert.deepEqual(input,{secret:env.BRIDGE_SECRET});return structuredClone(available);}},FLUE_EPISODES_ENABLED:"shadow",ROUTINES_ENABLED:"off",ROUTINES_PAUSED:"true",TELEGRAM_SUMMARIES_ENABLED:"false"};return {env,owner:new OwnerAssistant({},env),db,queries:()=>queries,reads:()=>reads};}

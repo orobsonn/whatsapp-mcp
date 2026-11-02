@@ -4,6 +4,19 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-11-02
+
+### Added
+- Seleção explícita de GPT-6.1 Sol na API direta da OpenAI para as conversas nativas, com histórico preservado e contabilização vinculada ao modelo, incluindo a faixa superior de contexto.
+- Skill de escrita em nome do dono no WhatsApp, com linguagem proporcional à conversa, proibição de travessões e orientação para não inventar providências, prazos ou remarcações. A base de estilo é preliminar e não comprova autoria humana de cada saída analisada.
+
+### Changed
+- Aplicação Flue organizada em `assistant/.flue/`, com agentes, ferramentas, skills, instruções e provedores em pastas próprias. Identidades, sessões, permissões e modo de aprovação existentes são preservados.
+- Respostas a lembretes e avisos simples recebem orientação para confirmar somente o necessário, sem repetir a explicação recebida. A skill de escrita não é montada no Telegram nem na curadoria.
+
+### Fixed
+- Ensaio Node do operador de instalação carrega a skill Markdown com o empacotador do SDK, mantendo a verificação dos métodos reais após a organização do Flue.
+
 ## [0.52.6] - 2026-11-02
 
 ### Fixed
