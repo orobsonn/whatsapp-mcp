@@ -319,3 +319,26 @@ it('requires an actionable owner request when marking human help and keeps it se
  const receipt=await curator.finish(run.id,{needsHelp:true,helpRequest:'Nora é a mesma pessoa do projeto Cedar?'});
  expect(receipt).toMatchObject({needsHelp:true,helpRequest:'Nora é a mesma pessoa do projeto Cedar?'});
 });
+
+it('reports repeated capture events as events with scoped reasons and scheduled retries',async()=>{
+ await sql('INSERT INTO assistant_capture_streams(installation_id,generation,source_epoch,source_generation,read_sequence) VALUES(?,?,?,?,2)',scope.sourceEpoch,scope.sourceGeneration).run();
+ for(const sequence of [1,2]){
+  await sql("INSERT INTO assistant_capture_inbox VALUES(?,?,?,?,?,?,'direct','same-media','media','upsert',?,?,?,'blocked')",scope.sourceEpoch,scope.sourceGeneration,sequence,sequence-1,now,'a'.repeat(64),now).run();
+  await sql("INSERT INTO assistant_materialization_results VALUES(?,?,?,?,?,?,'blocked','media_unavailable',1,?,?,NULL,NULL)",scope.sourceEpoch,scope.sourceGeneration,sequence,'result-'+sequence,now+60000,now).run();
+ }
+ await sql('INSERT INTO assistant_capture_streams(installation_id,generation,source_epoch,source_generation,read_sequence) VALUES(?,?,?,?,1)','old-epoch',scope.sourceGeneration).run();
+ await sql("INSERT INTO assistant_capture_inbox VALUES(?,?,?, ?,1,0,'direct','old-media','media','upsert',?,?,?,'blocked')",'old-epoch',scope.sourceGeneration,now,'b'.repeat(64),now).run();
+ await sql("INSERT INTO assistant_materialization_results VALUES(?,?,?,?,1,'old-result','blocked','reader_timeout',1,NULL,?,NULL,NULL)",'old-epoch',scope.sourceGeneration,now).run();
+ const run=await due(),receipt=await curator.status(run.id);
+ expect(receipt.captureDiagnostics).toEqual([{kind:'media',reason:'media_unavailable',events:2,references:1,retryScheduled:2}]);
+ const {curatorSummaryText}=await import('../assistant/knowledge/curator-summary');
+ const text=await curatorSummaryText(curator,receipt);
+ expect(text).toContain('2 eventos');expect(text).toContain('1 referência');expect(text).toContain('nova tentativa prevista');expect(text).not.toContain('2 conteúdos');
+});
+it('groups confirmed learning by explicit context and escapes its label',async()=>{
+ const setup=await uncertainLearning();setup.ready();await setup.service.execute({kind:'status',operationId:'uncertain-real-service'});
+ await curator.acknowledge(setup.run.id,setup.item.sequence,{state:'learned',operationIds:['uncertain-real-service'],decision:{category:'learn',context:'Cedar <projeto>',summary:'Acordo confirmado',reason:'Prazo explícito.'}});
+ const {curatorSummaryText}=await import('../assistant/knowledge/curator-summary');
+ const text=await curatorSummaryText(curator,await curator.status(setup.run.id));
+ expect(text).toContain('Cedar &lt;projeto&gt;');expect(text).toContain('🧠 Gravei na memória');expect(text).not.toContain('Aprendizado proposto');expect(text.length).toBeLessThan(4096);
+});
