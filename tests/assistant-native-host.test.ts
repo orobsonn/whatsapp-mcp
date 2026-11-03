@@ -715,4 +715,19 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect(body.kind).toBe('image');expect(body.media.id).toBe(mediaId);expect(body.text).toBeUndefined();expect(task.cohort[0].sourceRef).toBeDefined();expect(fetch).not.toHaveBeenCalled();
   expect(await(await host.frame(task)).media.read(task.cohort[0].sourceRef)).toEqual({state:'unavailable',reason:'media_context_unconfigured'});
  });
+
+it('refuses curator finish after a partially acknowledged page and resumes before the abandoned item',async()=>{
+ const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
+ for(let n=0;n<3;n++)await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'partial-page-'+n,text:'Fonte sintética '+n,occurredAt:1});
+ const host=f.host(),admitted=await host.dispatchCurator(Date.parse('2031-01-01T06:00:00Z'));if(admitted.state!=='admitted')throw Error('fixture_curator');
+ const task=await latestTask(host,admitted.taskRef),frame=await host.frame(task),c=frame.curator!,page=await c.curator.next(c.runId,{limit:2});
+ await c.curator.acknowledge(c.runId,page.items[0].sequence,{state:'evaluated'});
+ const refused=await c.finish({});expect(refused).toMatchObject({completion:'continue_required',counts:{pending:1,presented:1},nextInput:{after:page.items[1].sequence-1,limit:20}});
+ expect(await env.DB.prepare('SELECT finished_at FROM assistant_curator_runs WHERE id=?').bind(c.runId).first('finished_at')).toBeNull();
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_curator_notices WHERE run_id=?').bind(c.runId).first('n')).toBe(0);
+ const remaining=await c.curator.next(c.runId,(refused as {nextInput:{after:number;limit:number}}).nextInput);expect(remaining.items).toHaveLength(2);
+ await c.curator.acknowledgePage(c.runId,remaining.items.map(item=>({sequence:item.sequence,state:'evaluated' as const})));
+ expect(await c.finish({})).toMatchObject({completion:'finished',state:'complete',counts:{evaluated:3}});
+});
+
 });

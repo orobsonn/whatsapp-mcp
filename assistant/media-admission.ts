@@ -1,3 +1,4 @@
+import {jpegStructure} from '../src/jpeg';
 export interface PdfAdmissionReader { admitPdf(input: { bytes: Uint8Array }): Promise<unknown> }
 export type MediaAdmission = { kind: "image_context" | "pdf_context"; pages: number; width?: number; height?: number };
 /** Structural admission only. This is not a full image decoder or a PDF sandbox.
@@ -24,16 +25,8 @@ export async function admitMedia(input: Uint8Array, mime: string, pdfParser?: Pd
   let width = 0, height = 0;
   if (mime === "image/png" && bytes.length >= 45 && ascii(1, 3) === "PNG" && bytes[0] === 137 && ascii(4, 4) === "\r\n\x1a\n" && ascii(12, 4) === "IHDR" && view.getUint32(8) === 13 && ascii(bytes.length - 8, 4) === "IEND") {
     width = view.getUint32(16); height = view.getUint32(20);
-  } else if (mime === "image/jpeg" && bytes.length > 12 && view.getUint16(0) === 0xffd8 && view.getUint16(bytes.length - 2) === 0xffd9) {
-    let at = 2;
-    while (at + 4 <= bytes.length) {
-      if (bytes[at++] !== 0xff) throw new Error("media_format");
-      while (bytes[at] === 0xff) at++;
-      const marker = bytes[at++]; if (marker === 0xda || marker === 0xd9) break;
-      const length = view.getUint16(at); if (length < 2 || at + length > bytes.length) throw new Error("media_format");
-      if ([0xc0,0xc1,0xc2].includes(marker) && length >= 8) { height = view.getUint16(at + 3); width = view.getUint16(at + 5); break; }
-      at += length;
-    }
+  } else if (mime === "image/jpeg") {
+    const jpeg=jpegStructure(bytes);if(jpeg){width=jpeg.width;height=jpeg.height;}
   } else if (mime === "image/webp" && bytes.length >= 30 && ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP" && view.getUint32(4, true) + 8 === bytes.length) {
     const kind = ascii(12, 4), len = view.getUint32(16, true);
     if (len + 20 > bytes.length) throw new Error("media_format");

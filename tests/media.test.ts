@@ -3,7 +3,7 @@ import { env } from "cloudflare:test";
 import type { Env } from "../src/env";
 import { currentFence, sha256, LIMITS } from "../src/core";
 import { upsertDirectoryPage, setCapture } from "../src/directory";
-import { ingestEvent } from "../src/capture";
+import { ingestEvent, normalizeZapiEvent } from "../src/capture";
 import {
   getMedia,
   listUploadedMedia,
@@ -630,4 +630,19 @@ it('destrava downloads atrás de cinco jobs pendentes cujos arquivos já estão 
  expect(await env.DB.prepare("SELECT state FROM media WHERE id=?").bind(waiting.id).first('state')).toBe('ready');
  expect((await env.DB.prepare("SELECT id,sha256,object_key FROM media WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id").bind(JSON.stringify(readyIds)).all()).results).toEqual(before.results);
  expect(await env.DB.prepare("SELECT COUNT(*) n FROM media_jobs WHERE kind='download' AND status='ready'").first('n')).toBe(6);
+});
+
+it('downloads complete JPEG with trailing metadata and canonicalizes a mislabeled incoming image',async()=>{
+ const jpeg=Uint8Array.from(atob(encodedFixtures[0].base64),x=>x.charCodeAt(0));
+ const trailing=new Uint8Array(jpeg.length+10);trailing.set(jpeg);trailing.set([255,224,0,18,74,70,88,88,0,87],jpeg.length);
+ const first=await captured('https://media.example/trailing','image','image/jpeg','photo.jpg');
+ await processMediaJobs(e,async()=>new Response(trailing,{headers:{'content-type':'image/jpeg'}}));
+ expect(await getMedia(e,first.id)).toMatchObject({state:'ready',mime:'image/jpeg',size:trailing.length});
+ const {admitMedia}=await import('../assistant/media-admission');expect(await admitMedia(trailing,'image/jpeg')).toMatchObject({kind:'image_context',width:1,height:1});
+ const event=normalizeZapiEvent({phone:'group-a',messageId:'document-image',fromMe:false,momment:1,isGroup:true,document:{documentUrl:'https://media.example/mislabeled',mimeType:'image/png',fileName:'original.png'}});
+ expect(event.kind).toBe('image');await ingestEvent(e,currentFence(e),event);
+ await processMediaJobs(e,async()=>new Response(jpeg,{headers:{'content-type':'image/png'}}));
+ const second=await env.DB.prepare("SELECT a.id FROM media a JOIN messages m ON m.id=a.message_id WHERE m.external_id='document-image'").first<{id:string}>();
+ expect(await getMedia(e,second!.id)).toMatchObject({state:'ready',kind:'image',mime:'image/jpeg',filename:'original.png'});
+ await expect(uploadMedia(e,(await chat()).id,{bytes:jpeg,mime:'image/png',filename:'original.png'})).rejects.toHaveProperty('code','media_mime_mismatch');
 });

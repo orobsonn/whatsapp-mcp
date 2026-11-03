@@ -461,7 +461,8 @@ export class NativeApplicationHost {
   const latest=task.cohort.at(-1);if(!latest||latest.author.kind!=='system'||!latest.eventId.startsWith('curator-run:'))throw Error('native_curator_denied');
   const curator=await this.curator(task.identity),runId=latest.eventId.slice(12);
   return {curator,runId,finish:async(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>{
-   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();const receipt=await curator.finish(runId,input);signal?.throwIfAborted();
+   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();const receipt=await curator.finishPassage(runId,input);signal?.throwIfAborted();
+   if(receipt.completion==='continue_required')return receipt;
    const notice=await this.curatorSummary(task,curator,receipt,signal);return {...receipt,notice};
   }};
  }

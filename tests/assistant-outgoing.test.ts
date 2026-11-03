@@ -1,3 +1,4 @@
+import imageFixtures from './fixtures/assistant-media.json';
 import {env,applyD1Migrations,createExecutionContext} from 'cloudflare:test';
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import type {Env} from '../src/env';
@@ -157,7 +158,7 @@ it('checks the current production database connection version after provider awa
  await expect(readRecipientEnvelope(e,{secret,sourceEpoch:e.INSTALLATION_EPOCH,sourceGeneration:generation,envelope:command().outgoing.envelope},provider)).rejects.toThrow('reader_changed');expect(n).toBe(2);expect(await archive.prepare('SELECT COUNT(*) n FROM actions').first('n')).toBe(0);
 });
 it.each(['image','pdf','audio'] as const)('reuses the existing %s envelope validation and permits capture opt-out without making a send action',async kind=>{
- await setCapture(e,target,false,{epoch:e.INSTALLATION_EPOCH,generation:e.CONNECTION_GENERATION});const bytes=kind==='pdf'?new TextEncoder().encode('%PDF-1.4\nSynthetic\n%%EOF'):kind==='image'?new Uint8Array([255,216,255,0,0,0,0,0,0,0,255,217]):new Uint8Array([255,251,144,0,1,2,3,4]),mime=kind==='pdf'?'application/pdf':kind==='image'?'image/jpeg':'audio/mpeg',filename='synthetic.'+(kind==='pdf'?'pdf':kind==='image'?'jpg':'mp3');const media=await uploadMedia(e,target,{bytes,mime,filename,durationSeconds:1});
+ await setCapture(e,target,false,{epoch:e.INSTALLATION_EPOCH,generation:e.CONNECTION_GENERATION});const bytes=kind==='pdf'?new TextEncoder().encode('%PDF-1.4\nSynthetic\n%%EOF'):kind==='image'?Uint8Array.from(atob(imageFixtures.JPEG),c=>c.charCodeAt(0)):new Uint8Array([255,251,144,0,1,2,3,4]),mime=kind==='pdf'?'application/pdf':kind==='image'?'image/jpeg':'audio/mpeg',filename='synthetic.'+(kind==='pdf'?'pdf':kind==='image'?'jpg':'mp3');const media=await uploadMedia(e,target,{bytes,mime,filename,durationSeconds:1});
  const input={...command(),outgoing:{authorization:{kind:'owner_exact'},envelope:{kind,chatId:target,mediaId:media.id,mediaHash:media.sha256}}};await rpc.control(scope,input);const stored=JSON.parse((await env.DB.prepare('SELECT body_json FROM assistant_fup_provenance WHERE installation_id=?').bind(scope.installationId).first<string>('body_json'))!).outgoing;expect(stored.envelope.kind).toBe(kind);if(kind==='pdf')expect(stored.envelope.fileName).toBe(filename);expect(await outgoingPort(settings).check(stored)).toBe(true);
  await archive.prepare('UPDATE media SET version=version+1 WHERE id=?').bind(media.id).run();expect(await outgoingPort(settings).check(stored)).toBe(false);expect(await archive.prepare('SELECT COUNT(*) n FROM actions').first('n')).toBe(0);expect(await archive.prepare('SELECT capture_enabled FROM chats WHERE id=?').bind(target).first('capture_enabled')).toBe(0);
 });
