@@ -643,6 +643,7 @@ export async function executeGroupAction(
   id: string,
   provider: GroupProvider = defaultProvider(env),
   confirmation?: ChatConfirmation,
+  hostGuard?: {beforeClaim():Promise<{sql:string;values:(string|number|null)[]}>},
 ) {
   let a = await actionRow(env, id);
   if (confirmation !== undefined) {
@@ -694,8 +695,9 @@ export async function executeGroupAction(
   validateGroupMutation(dto);
   await connected(env, provider);
   assertActive(env);
+  const extra=hostGuard?await hostGuard.beforeClaim():{sql:"1",values:[]};
   const claimed = await env.DB.prepare(
-    `UPDATE group_actions SET status='attempting',attempted_at=?,version=version+1 WHERE id=? AND epoch=? AND generation=? AND status='approved' AND version=? AND expires_at>? AND hash=? AND envelope_json=? AND private_json=? AND NOT EXISTS(SELECT 1 FROM json_each(?) b WHERE CASE json_extract(b.value,'$.kind') WHEN 'group' THEN NOT EXISTS(SELECT 1 FROM chats c WHERE c.id=json_extract(b.value,'$.id') AND c.kind='group' AND c.external_id=json_extract(b.value,'$.externalId') AND c.name=json_extract(b.value,'$.name') AND c.epoch=group_actions.epoch AND c.generation=group_actions.generation) WHEN 'contact' THEN NOT EXISTS(SELECT 1 FROM chats c WHERE c.id=json_extract(b.value,'$.id') AND c.kind='individual' AND c.external_id=json_extract(b.value,'$.externalId') AND c.name=json_extract(b.value,'$.name') AND c.epoch=group_actions.epoch AND c.generation=group_actions.generation) WHEN 'member' THEN NOT EXISTS(SELECT 1 FROM group_member_refs r WHERE r.id=json_extract(b.value,'$.id') AND r.chat_id=json_extract(b.value,'$.chatId') AND r.external_id=json_extract(b.value,'$.externalId') AND r.name=json_extract(b.value,'$.name') AND r.epoch=group_actions.epoch AND r.generation=group_actions.generation) WHEN 'community' THEN NOT EXISTS(SELECT 1 FROM group_community_refs r WHERE r.id=json_extract(b.value,'$.id') AND r.external_id=json_extract(b.value,'$.externalId') AND r.name=json_extract(b.value,'$.name') AND r.epoch=group_actions.epoch AND r.generation=group_actions.generation) ELSE 1 END) AND (? IS NULL OR EXISTS(SELECT 1 FROM media m LEFT JOIN messages x ON x.id=m.message_id WHERE m.id=? AND m.epoch=group_actions.epoch AND m.generation=group_actions.generation AND m.sha256=? AND m.version=? AND m.object_key=? AND m.message_id IS ? AND m.mime=? AND m.kind='image' AND m.state='ready' AND m.deleted_at IS NULL AND (m.message_id IS NULL OR (x.deleted_at IS NULL AND x.version=m.message_version AND m.message_version=?))))`,
+    `UPDATE group_actions SET status='attempting',attempted_at=?,version=version+1 WHERE id=? AND epoch=? AND generation=? AND status='approved' AND version=? AND expires_at>? AND hash=? AND envelope_json=? AND private_json=? AND NOT EXISTS(SELECT 1 FROM json_each(?) b WHERE CASE json_extract(b.value,'$.kind') WHEN 'group' THEN NOT EXISTS(SELECT 1 FROM chats c WHERE c.id=json_extract(b.value,'$.id') AND c.kind='group' AND c.external_id=json_extract(b.value,'$.externalId') AND c.name=json_extract(b.value,'$.name') AND c.epoch=group_actions.epoch AND c.generation=group_actions.generation) WHEN 'contact' THEN NOT EXISTS(SELECT 1 FROM chats c WHERE c.id=json_extract(b.value,'$.id') AND c.kind='individual' AND c.external_id=json_extract(b.value,'$.externalId') AND c.name=json_extract(b.value,'$.name') AND c.epoch=group_actions.epoch AND c.generation=group_actions.generation) WHEN 'member' THEN NOT EXISTS(SELECT 1 FROM group_member_refs r WHERE r.id=json_extract(b.value,'$.id') AND r.chat_id=json_extract(b.value,'$.chatId') AND r.external_id=json_extract(b.value,'$.externalId') AND r.name=json_extract(b.value,'$.name') AND r.epoch=group_actions.epoch AND r.generation=group_actions.generation) WHEN 'community' THEN NOT EXISTS(SELECT 1 FROM group_community_refs r WHERE r.id=json_extract(b.value,'$.id') AND r.external_id=json_extract(b.value,'$.externalId') AND r.name=json_extract(b.value,'$.name') AND r.epoch=group_actions.epoch AND r.generation=group_actions.generation) ELSE 1 END) AND (? IS NULL OR EXISTS(SELECT 1 FROM media m LEFT JOIN messages x ON x.id=m.message_id WHERE m.id=? AND m.epoch=group_actions.epoch AND m.generation=group_actions.generation AND m.sha256=? AND m.version=? AND m.object_key=? AND m.message_id IS ? AND m.mime=? AND m.kind='image' AND m.state='ready' AND m.deleted_at IS NULL AND (m.message_id IS NULL OR (x.deleted_at IS NULL AND x.version=m.message_version AND m.message_version=?)))) AND (${extra.sql})`,
   )
     .bind(
       Date.now(),
@@ -716,6 +718,7 @@ export async function executeGroupAction(
       p.media?.messageId ?? null,
       p.media?.mime ?? null,
       p.media?.messageVersion ?? null,
+      ...extra.values,
     )
     .run();
   if (claimed.meta.changes !== 1) {

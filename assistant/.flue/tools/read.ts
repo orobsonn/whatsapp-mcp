@@ -5,6 +5,7 @@ import {SourceAccess,type SourceFence} from '../../access';
 import type {AssistantEnv} from '../../env';
 import {configuredGitHub} from '../../connectors/configured-github';
 import {configuredCalendar} from '../../connectors/configured-calendar';
+import {calendarQuery} from '../../connectors/calendar';
 import {ConnectorAccess,type ConnectorAuthority,type ReadFetch} from '../../connectors/read-only';
 import {ConversationArchive,type ReadPublicationBoundary,type ContextOriginReader,type ReadExposure} from '../../knowledge/archive';
 import {assertReadExposureCurrent} from '../../knowledge/read-exposure';
@@ -69,12 +70,18 @@ export function createConversationReadCapabilities(options:ConversationReadOptio
   const entry=configured.repositories.find(item=>item.id===id)!;fences=await admit([entry]);
   const output=await configured.reader.execute(owner,{kind,...input,repository:id});await configured.check();return release(fences,output);
  }
- const calendar={async availability(raw:unknown){
-  const input=calendarWindow.parse(raw);await assertCurrent();let fences:SourceFence[]=[];const configured=configuredCalendar(env,scope,boundary(()=>fences),true);
+ async function calendarRead(raw:unknown){
+  const input=calendarQuery.parse(raw);await assertCurrent();let fences:SourceFence[]=[];const configured=configuredCalendar(env,scope,boundary(()=>fences),true);
   if(configured.state!=='ready')return release([],configured);
-  fences=await admit(configured.calendars);const output=await configured.reader.execute(owner,{kind:'calendar.availability',...input});
+  fences=await admit(configured.calendars);const output=await configured.reader.execute(owner,input);
   await configured.check();return release(fences,output);
- }};
+ }
+ const calendar={
+  async availability(raw:unknown){return calendarRead({kind:'calendar.availability',...calendarWindow.parse(raw)});},
+  // Existing MCP proposal is read-only: it suggests a window, never creates an
+  // event or invitation. Its provider reads need the same grant exposure.
+  async propose(raw:unknown){const input=calendarQuery.parse(raw);if(input.kind!=='calendar.propose')throw Error('calendar_query_denied');return calendarRead(input);},
+ };
  return {archive,github,calendar};
 }
 export type ConversationReadCapabilities=ReturnType<typeof createConversationReadCapabilities>;

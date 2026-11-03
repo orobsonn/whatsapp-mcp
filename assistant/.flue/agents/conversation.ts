@@ -10,6 +10,7 @@ import type {ConversationReadCapabilities} from '../tools/read';
 import type {TaskContext} from '../../agent-runtime/conversation';
 import {curatorInstructions,isCuratorPrincipal,type KnowledgeCurator} from '../../knowledge/curator';
 import type {NativeTaskCapabilities} from '../tools/tasks';
+import type {NativeOwnerToolCapabilities} from '../../agent-runtime/native-owner-tools';
 import {useConversationActionTools} from '../tools/actions';
 import {conversationInstructions} from '../instructions/conversation';
 import {nativeModelSelection} from '../providers/model-selection';
@@ -19,6 +20,7 @@ const seedSchema=v.strictObject({version:v.literal(1),installationId:v.string(),
 export type ConversationApplicationFrame={reads:ConversationReadCapabilities;
  media:{read(ref:unknown):Promise<unknown>};
  tasks?:NativeTaskCapabilities;
+ ownerTools?:NativeOwnerToolCapabilities;
  curator?:{curator:KnowledgeCurator;runId:string;finish(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal):Promise<unknown>};
  effects:{reply(input:unknown):Promise<unknown>;respondOwner(text:string):Promise<unknown>;askOwner(question:string):Promise<unknown>;calendarChange(mutation:unknown):Promise<unknown>;reassessWhatsApp?(ref:unknown):Promise<unknown>}};
 export type ConversationResolver=(env:Record<string,unknown>,sessionId:string,delivery:DeliveredMessage)=>Promise<{

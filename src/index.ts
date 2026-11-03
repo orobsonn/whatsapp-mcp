@@ -1,3 +1,4 @@
+import {assistantExportDownload} from "./assistant-export";
 import { metricStatement } from "./capture-policy";
 import type { Env } from "./env";
 import {
@@ -148,6 +149,7 @@ async function browserRoute(request: Request, env: Env): Promise<Response> {
       ),
     });
   if (parts[1] === "webhook") return webhook(request, env, parts);
+  if(u.pathname === "/assistant/export")return assistantExportDownload(request,env);
   if (
     parts[1] === "audio" &&
     (parts.length === 3 || (parts.length === 4 && parts[3] === "file"))
@@ -461,6 +463,8 @@ export default {
     }));
     await processMediaJobs(env);
     await cleanupAudioGenerations(env);
+    // Keep replay claims, discard their short-lived operational result metadata.
+    await env.DB.prepare("UPDATE owner_tool_receipts SET result_json=NULL WHERE expires_at<=? AND result_json IS NOT NULL").bind(Date.now()).run();
     await cleanup(env);
     await processTranscriptions(env);
   },

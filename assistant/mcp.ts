@@ -52,6 +52,7 @@ export const ownerQuerySchema = z.union([
 export type OwnerQuery = z.input<typeof ownerQuerySchema>;
 /** A named service capability. None of these methods is an agent tool. */
 export interface OwnerAssistantRPC {
+  ownerToolAuthorization?(expected:OwnerAffinity,input:{secret:string;sessionId:string;taskRef:string;tool:string;inputHash:string}):Promise<{authorized:false}|{authorized:true;expiresAt:number}>;
   nativeReplyAuthorization?(expected:OwnerAffinity,input:import('../src/native-reply-contract').NativeReplyAuthorizationRequest):Promise<import('../src/native-reply-contract').NativeReplyAuthorization>;
   approvedSendAuthorization(expected: OwnerAffinity, input: {secret:string;approvalId:string;actionId:string;hash:string}): Promise<import('../src/approved-send-contract').ApprovedSendAuthorization>;
   installation(expected: InstallationAffinity, command: InstallationCommand): Promise<unknown>;
@@ -187,6 +188,12 @@ export class OwnerAssistant extends WorkerEntrypoint<AssistantEnv> implements Ow
     this.#affinity(expected);
     const {NativeApplicationHost}=await import('./agent-runtime/native-host'),host=new NativeApplicationHost(this.env);
     return input.authority.kind==='human_approval'?(await host.review()).authorize(input):host.actions().authorize(input);
+  }
+  async ownerToolAuthorization(expected:OwnerAffinity,input:{secret:string;sessionId:string;taskRef:string;tool:string;inputHash:string}){
+    this.#affinity(expected);
+    const {NativeApplicationHost}=await import('./agent-runtime/native-host');
+    const {authorizeNativeOwnerTool}=await import('./agent-runtime/native-owner-tools');
+    return authorizeNativeOwnerTool(new NativeApplicationHost(this.env),this.env,input);
   }
   async ownerOnce(expected: OwnerAffinity, command: unknown) {
     const scope = this.#affinity(expected);

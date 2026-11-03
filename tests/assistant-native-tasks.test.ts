@@ -24,11 +24,11 @@ const secret='native-tasks-synthetic-only-more-than32',bot='native_tasks_bot';
 const localISO=(at:number)=>new Date(at-10800000).toISOString().replace('Z','-03:00');
 beforeEach(()=>{vi.clearAllMocks();transport.deliveries.clear();transport.accepted.clear();transport.lostAck=false;});
 afterEach(()=>vi.restoreAllMocks());
-async function fixture(){
+async function fixture(extra:Partial<AssistantEnv>={}){
  const scope={installationId:crypto.randomUUID(),generation:'own-tasks-g1',sourceEpoch:'tasks-source-e1',sourceGeneration:'tasks-source-g1'};
  const settings:AssistantEnv={DB:env.DB,INSTALLATION_ID:scope.installationId,OPERATIONAL_GENERATION:scope.generation,BRIDGE_SOURCE_EPOCH:scope.sourceEpoch,BRIDGE_SOURCE_GENERATION:scope.sourceGeneration,BRIDGE_SECRET:secret,
   NATIVE_CONVERSATIONS_MODE:'approval',NATIVE_CAPTURE_START_AFTER_SEQUENCE:'0',NATIVE_BUDGET_EXTERNAL_CARRY_MICROUSD:'0',NATIVE_CONTEXT_ADMIN_SECRET:secret,OPENAI_API_KEY:'synthetic-not-a-credential',
-  TELEGRAM_BOT_INSTANCE:bot,TELEGRAM_BOT_TOKEN:'123456789:syntheticabcdefghijklmnopqrstuvwxyz',TELEGRAM_WEBHOOK_SECRET:'native_task_synthetic_webhook_more_than32',CAPTURE_READER:{readSnapshot:async()=>{throw Error('no_whatsapp_reads');}}};
+  TELEGRAM_BOT_INSTANCE:bot,TELEGRAM_BOT_TOKEN:'123456789:syntheticabcdefghijklmnopqrstuvwxyz',TELEGRAM_WEBHOOK_SECRET:'native_task_synthetic_webhook_more_than32',CAPTURE_READER:{readSnapshot:async()=>{throw Error('no_whatsapp_reads');}},...extra};
  await env.DB.prepare(`INSERT INTO assistant_telegram_links(installation_id,generation,bot_instance,source_epoch,source_generation,revision,state,user_id,chat_id,activation_cut) VALUES(?,?,?,?,?,1,'active','101','101',0)`)
   .bind(scope.installationId,scope.generation,bot,scope.sourceEpoch,scope.sourceGeneration).run();
  const activation={version:1,...{sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration},botInstance:bot,linkRevision:1,userId:'101',chatId:'101',activatedAt:1};
@@ -266,4 +266,37 @@ it('checks every due in a large consumed cohort at provider and private-notice b
  const first=task.cohort[0].workRef!;
  await f.control.execute({kind:'mission.set_state',operationId:'cancel-first-in-large-cohort',id:first.id,expectedRevision:1,state:'cancelled'});
  await expect(model.assertAuthority()).rejects.toThrow('native_task_changed');
+});
+
+// The new WhatsApp tools require the latest real Telegram owner command even
+// though the agent session also processes scheduled work in the same history.
+it('binds MCP execution to the authenticated owner task and rechecks it at the Source callback',async()=>{
+ const rpc={ownerToolCatalog:vi.fn(async()=>({tools:[]})),ownerToolExecute:vi.fn(async()=>({result:{content:[{type:'text',text:'accepted'}]},provenance:{origins:[],canonicalRefs:[]}}))};
+ const f=await fixture({WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:rpc as unknown as AssistantEnv['WHATSAPP_APPROVED_SEND']});
+ const task=await f.ownerInput('Envie a mensagem que pedi para a pessoa confirmada'),tools=(await f.host.frame(task)).ownerTools!;
+ expect(await tools.catalog({name:'preparar_envio'})).toEqual({tools:[]});
+ expect(await tools.execute({tool:'diagnosticar',input:{}})).toMatchObject({content:[{text:'accepted'}]});
+ expect(rpc.ownerToolExecute).toHaveBeenCalledWith({secret,scope:f.scope,sessionId:task.sessionId,taskRef:task.taskRef,tool:'diagnosticar',input:{}});
+ const own=new OwnerAssistant(createExecutionContext(),f.settings),authorization={secret,sessionId:task.sessionId,taskRef:task.taskRef,tool:'diagnosticar',inputHash:'a'.repeat(64)};
+ expect(await own.ownerToolAuthorization(f.scope,authorization)).toMatchObject({authorized:true});
+ expect(await own.ownerToolAuthorization(f.scope,{...authorization,secret:'wrong-secret-more-than-thirty-two-characters'})).toEqual({authorized:false});
+ // The administrative MCP mirror must use the already exposure-aware native
+ // connector readers, even when the dependency is not configured here.
+ expect(await tools.execute({tool:'assistente_consultar',input:{query:{kind:'github.read',repository:'synthetic/repository',commit:'a'.repeat(40),path:'README.md'}}})).toMatchObject({content:[{type:'text'}]});
+ expect(await tools.execute({tool:'assistente_consultar',input:{query:{kind:'calendar.propose',start:'2030-01-01T09:00:00-03:00',end:'2030-01-01T10:00:00-03:00',timeZone:'America/Fortaleza',recipients:['test@example.invalid'],title:'Reunião sintética'}}})).toMatchObject({content:[{type:'text'}]});
+ expect(rpc.ownerToolExecute).toHaveBeenCalledTimes(1);
+ await f.ownerInput('Cancele esse pedido');
+ expect(await own.ownerToolAuthorization(f.scope,authorization)).toEqual({authorized:false});
+ await expect(tools.execute({tool:'diagnosticar',input:{}})).rejects.toThrow();
+ expect(rpc.ownerToolExecute).toHaveBeenCalledTimes(1);
+});
+it('does not grant MCP tools command authority on a scheduled wake in the owner session',async()=>{
+ const rpc={ownerToolCatalog:vi.fn(async()=>({tools:[]})),ownerToolExecute:vi.fn(async()=>({}))};
+ const f=await fixture({WHATSAPP_APPROVED_SEND_SECRET:secret,WHATSAPP_APPROVED_SEND:rpc as unknown as AssistantEnv['WHATSAPP_APPROVED_SEND']});
+ const owner=await f.ownerInput('Pesquise quando vencer a tarefa');await saved(f,owner);const due=await f.wake(),tools=(await f.host.frame(due)).ownerTools!;
+ await expect(tools.catalog({})).rejects.toThrow('native_task_owner_required');
+ await expect(tools.execute({tool:'executar_envio',input:{id:crypto.randomUUID()}})).rejects.toThrow('native_task_owner_required');
+ const own=new OwnerAssistant(createExecutionContext(),f.settings);
+ expect(await own.ownerToolAuthorization(f.scope,{secret,sessionId:due.sessionId,taskRef:due.taskRef,tool:'executar_envio',inputHash:'b'.repeat(64)})).toEqual({authorized:false});
+ expect(rpc.ownerToolCatalog).not.toHaveBeenCalled();expect(rpc.ownerToolExecute).not.toHaveBeenCalled();
 });
