@@ -19,3 +19,9 @@ O reparo operacional seleciona somente os dois arquivos recuperáveis, com nova 
 ## Verificação
 
 Dois testes novos: uma página parcialmente confirmada não finaliza nem consome aviso e retoma no item abandonado; JPEG com metadados/MIME errado passa na fronteira correta, mantendo upload estrito. O caso do encerramento falhou antes da correção; o caso deJPEG foi repetido com o código antigo e falhou no download. Os207 testes afetados passaram, assim comoTypeScript. A recuperação real depende dos recibos de produção, separadamente desta prova local.
+
+A revisão adversarial adicional exigiu o guard também no UPDATE final: uma leitura concorrente não pode abrir fontes entre a contagem e o commit. O CAS final verifica NOT EXISTS(pending,presented) e seu RETURNING; perda dessa condição devolve continuação. Os126 testes de curadoria/host passaram após o ajuste.
+
+A API HTTP de batch foi verificada na fronteira real com uma tabela isolada: falha de chave primária após CREATE/INSERT/UPDATE desfez o lote inteiro e deixou zero tabelas de prova; nenhum registro do usuário foi alterado. O reparo confere sucessos individuais e duas CAS, além dos recibos novos; ACK incerto requer conciliação, sem repetir apply.
+
+A suíte geral encontrou fixtures antigos de envio/destinatário que eram12bytes marcadosJPEG, sem estrutura de imagem. Foram substituídos pelo JPEG1x1 real já existente, sem acrescentar cenários.

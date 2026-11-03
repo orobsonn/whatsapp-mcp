@@ -394,22 +394,30 @@ export class KnowledgeCurator {
  async finishPassage(runId:string,input:{needsHelp?:boolean;helpRequest?:string}={}){
   const parsed=finishRequest.parse(input);if(parsed.needsHelp&&!parsed.helpRequest)throw Error('curator_help_request');
   const receipt=await this.status(runId),scope=this.scope();
-  if(!parsed.needsHelp&&receipt.counts.pending+receipt.counts.presented>0){
+  const continueRequired=async(current:CuratorReceipt)=>{
    const visible=this.access(scope).ownerRows(),authority=this.host.authorityGuard();
    const first=await this.db.prepare(`SELECT MIN(i.sequence) sequence FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version
     WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.state IN ('pending','presented') AND (${authority.sql})`)
     .bind(...visible.values,...this.keys(scope),runId,...authority.values).first<{sequence:number|null}>();this.current(scope);
    if(first?.sequence==null)throw Error('curator_source_changed');
-   return {...receipt,completion:'continue_required' as const,nextInput:{after:first.sequence-1,limit:20}};
+   return {...current,completion:'continue_required' as const,nextInput:{after:first.sequence-1,limit:20}};
+  };
+  if(!parsed.needsHelp&&receipt.counts.pending+receipt.counts.presented>0)return continueRequired(receipt);
+  try{return {...await this.finish(runId,parsed,!parsed.needsHelp),completion:'finished' as const};}
+  catch(error){
+   if(!(error instanceof Error)||error.message!=='curator_pending_work')throw error;
+   return continueRequired(await this.status(runId));
   }
-  return {...await this.finish(runId,parsed),completion:'finished' as const};
  }
- async finish(runId:string,input:{needsHelp?:boolean;helpRequest?:string}={}){
+ async finish(runId:string,input:{needsHelp?:boolean;helpRequest?:string}={},requireProcessed=false){
   const parsed=finishRequest.parse(input),scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
   if(parsed.needsHelp&&!parsed.helpRequest)throw Error('curator_help_request');
   if(parsed.needsHelp){const guard=this.host.authorityGuard();await this.db.prepare(`UPDATE assistant_curator_runs SET needs_help=1,help_request=? WHERE installation_id=? AND generation=? AND id=? AND (${guard.sql})`).bind(parsed.helpRequest!,...this.keys(scope),runId,...guard.values).run();}
   const receipt=await this.status(runId),authority=this.host.authorityGuard();
-  await this.db.prepare(`UPDATE assistant_curator_runs SET state=?,finished_at=? WHERE installation_id=? AND generation=? AND id=? AND (${authority.sql})`).bind(receipt.state,this.clock(),...this.keys(scope),runId,...authority.values).run();this.current(scope);return receipt;
+  const committed=await this.db.prepare(`UPDATE assistant_curator_runs SET state=?,finished_at=? WHERE installation_id=? AND generation=? AND id=? AND (${authority.sql})
+   ${requireProcessed?"AND NOT EXISTS(SELECT 1 FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND state IN ('pending','presented'))":''} RETURNING id`)
+   .bind(receipt.state,this.clock(),...this.keys(scope),runId,...authority.values,...(requireProcessed?[...this.keys(scope),runId]:[])).first<{id:string}>();
+  this.current(scope);if(requireProcessed&&!committed)throw Error('curator_pending_work');return receipt;
  }
  /** HOST ONLY. This method is intentionally absent from native model tools.
   * The caller has already authenticated an explicit owner preference update. */
