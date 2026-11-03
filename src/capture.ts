@@ -659,7 +659,7 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
         typeof audio.seconds === "number" ? audio.seconds : undefined,
     };
   } else if (str(document.documentUrl)) {
-    kind = "pdf";
+    kind = str(document.mimeType).toLowerCase().startsWith("image/") ? "image" : "pdf";
     media = {
       url: str(document.documentUrl),
       mime: str(document.mimeType) || undefined,

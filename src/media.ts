@@ -1,3 +1,4 @@
+import {jpegStructure} from './jpeg';
 import type { Env } from "./env";
 import {
   AppError,
@@ -192,8 +193,7 @@ function detect(bytes: Uint8Array): {
     bytes[0] === 255 &&
     bytes[1] === 216 &&
     bytes[2] === 255 &&
-    bytes[n - 2] === 255 &&
-    bytes[n - 1] === 217
+    jpegStructure(bytes) !== null
   )
     return { kind: "image", mime: "image/jpeg" };
   if (
@@ -268,6 +268,7 @@ function validate(
   bytes: Uint8Array,
   mime?: string | null,
   kind?: string,
+  received = false,
 ): { kind: "image" | "pdf" | "audio"; mime: string } {
   if (!(bytes instanceof Uint8Array) || bytes.length === 0)
     throw new AppError("invalid_media");
@@ -276,7 +277,7 @@ function validate(
   const detected = detect(bytes);
   if (bytes.length > mediaLimit(detected.kind))
     throw new AppError("body_too_large", 413);
-  if (mime && canonicalMime(mime) !== detected.mime)
+  if (mime && canonicalMime(mime) !== detected.mime && !(received && detected.kind==='image' && ['image/png','image/jpeg','image/webp'].includes(canonicalMime(mime))))
     throw new AppError("media_mime_mismatch", 415);
   if (kind && kind !== detected.kind)
     throw new AppError("media_kind_mismatch", 415);
@@ -587,13 +588,14 @@ async function download(
           controller.signal,
           mediaLimit(m.kind),
         );
-        validate(result, response.headers.get("content-type"), m.kind);
+        validate(result, response.headers.get("content-type"), m.kind, true);
         return result;
       })(),
       deadline,
     ]);
-    const type = validate(bytes, m.mime, m.kind);
-    filename(m.filename, type.mime);
+    const type = validate(bytes, m.mime, m.kind, true);
+    // Incoming filenames are source metadata, not a caller upload declaration.
+    filename(m.filename);
     const hash = await sha256(bytes);
     assertActive(env);
     assertFence(env, fence);

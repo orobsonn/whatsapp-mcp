@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.53.3] - 2026-11-03
+
+### Fixed
+- O host recusa finalizar a passagem de curadoria enquanto houver fontes processáveis pendentes ou apresentadas sem decisão. A continuação aponta ao primeiro item abandonado, não consome aviso nem marca efeito concluído, reutilizando o hook nativo existente.
+- JPEG completo com metadados após o marcador final passa por inspeção estrutural compartilhada; arquivo incompleto continua recusado. Downloads recebidos usam o MIME detectado entre imagens já suportadas e preservam o nome original, mantendo uploads estritos.
+- Documento declarado como imagem é classificado como imagem na captura, em vez de PDF. Sem suporte novo a HEIC/vídeo nem aumento de limites.
+
 ## [0.53.2] - 2026-11-03
 
 ### Fixed

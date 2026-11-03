@@ -25,7 +25,11 @@ export function useConversationActionTools(seed:ConversationIdentity,delivery:De
  const privateCurator=seed.channel==='telegram'&&isCuratorPrincipal(seed.principalOrChatId);
  if(privateCurator){
   useCuratorTools(async()=>{const binding=await application(),curator=binding.curator;if(!curator)throw Error('native_curator_denied');
-   return {...curator,finish:(input:{needsHelp?:boolean},signal?:AbortSignal)=>completeOperation(binding,()=>curator.finish(input,signal))};
+   return {...curator,finish:async(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>{
+    const result=await curator.finish(input,signal);await binding.runtime.assertTaskCurrent(binding.task);
+    if(result&&typeof result==='object'&&'completion' in result&&result.completion==='continue_required')return result;
+    setEffects(previous=>({...previous,contextRef:binding.task.contextRef}));return result;
+   }};
   });
  }else if(seed.channel==='whatsapp'){
   useTool({name:'propose_reply',description:'Decida responder com o texto exato ou ficar em silêncio nesta conversa do WhatsApp. Inclua um resumo curto do contexto quando ajudar a revisão. O servidor escolhe se haverá revisão humana; esta ferramenta não concede autorização para envio autônomo.',
