@@ -1,3 +1,5 @@
+import {curatorMediaReadGuard} from './curator-media-reads';
+import {sourceRef as mediaSourceRef} from '../source-proof-contract';
 import {z} from 'zod';
 import {bridgeHash} from '../ingress';
 import {knowledgeRemember} from './contracts';
@@ -234,7 +236,7 @@ export class KnowledgeCurator {
     .bind(...this.keys(scope),JSON.stringify(ids.slice(at,at+64))).all<KnowledgeReceiptRow>();this.current(scope);signal?.throwIfAborted();for(const row of rows.results)receipts.set(row.id,row);
   }
   const results=new Map<number,AcknowledgementResult>(),prepared:Awaited<ReturnType<KnowledgeCurator['prepareAcknowledgement']>>[]=[];
-  const refusals=new Set(['curator_item_not_presented','curator_item_changed','curator_knowledge_receipt','curator_source_changed','curator_source_unavailable']);
+  const refusals=new Set(['curator_item_not_presented','curator_item_changed','curator_knowledge_receipt','curator_source_changed','curator_source_unavailable','curator_media_read_required']);
   for(const input of inputs){
    signal?.throwIfAborted();try{prepared.push(await this.prepareAcknowledgement(scope,runId,input,receipts,signal));}
    catch(error){signal?.throwIfAborted();const reason=error instanceof Error?error.message:'';if(!refusals.has(reason))throw error;results.set(input.sequence,{sequence:input.sequence,outcome:'refused',reason});}
@@ -255,6 +257,8 @@ export class KnowledgeCurator {
   const row=await this.db.prepare('SELECT * FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND sequence=?').bind(...this.keys(scope),runId,sequence).first<ItemRow>();this.current(scope);
   signal?.throwIfAborted();
   if(!row||!['presented','evaluated','learned','indexing','unavailable'].includes(row.state)||!row.source_hash)throw Error('curator_item_not_presented');
+  const mediaGuard=curatorMediaReadGuard(scope,runId,{id:row.source_id,revision:row.revision,version:row.version,hash:row.source_hash},input.state==='unavailable');
+  if(!await this.db.prepare(`SELECT 1 AS allowed WHERE ${mediaGuard.sql}`).bind(...mediaGuard.values).first())throw Error('curator_media_read_required');this.current(scope);
   if(row.state==='learned'&&input.state==='learned'&&(JSON.parse(row.operation_ids_json) as string[]).some(id=>!input.operationIds.includes(id)))throw Error('curator_item_changed');
   if(row.state==='learned'&&input.state!=='learned'||row.state==='indexing'&&['evaluated','unavailable'].includes(input.state))throw Error('curator_item_changed');
   if((input.state==='learned'||input.state==='indexing')&&!input.operationIds.length)throw Error('curator_knowledge_receipt');
@@ -284,6 +288,7 @@ export class KnowledgeCurator {
      AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.revision')=?
      AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.version')=?
      AND json_extract(CASE WHEN f.type='object' THEN f.value ELSE '{}' END,'$.source.hash')=?)))`,values:[operationIds,...this.keys(scope),row.source_id,row.revision,row.version,row.source_hash]};
+  receiptGuard.sql=`(${receiptGuard.sql}) AND (${mediaGuard.sql})`;receiptGuard.values.push(...mediaGuard.values);
   return {sequence,state:input.state,statements:[
    this.db.prepare(`SELECT CASE WHEN (${receiptGuard.sql}) THEN 1 ELSE 0 END valid`).bind(...receiptGuard.values),
    ...(input.decision?[this.db.prepare(`INSERT INTO assistant_curator_decisions(installation_id,generation,run_id,sequence,source_id,revision,version,source_hash,decision_json,created_at,updated_at)
@@ -359,9 +364,28 @@ export class KnowledgeCurator {
    items:rows.results.slice(0,page.limit).map(row=>({sequence:row.sequence,sourceRef:{id:row.source_id,revision:row.revision,version:row.version,hash:row.source_hash},state:row.state,operationIds:[...new Set([...(JSON.parse(row.operation_ids_json) as string[]),...(JSON.parse(row.intent_operation_ids_json) as string[])])],decision:curatorDecision.parse(JSON.parse(row.decision_json))})),
    ...(rows.results.length>page.limit?{nextAfter:rows.results[page.limit-1].sequence}:{})};
  }
+ /** HOST ONLY: called after a real media capability result, never from model input. */
+ async recordMediaRead(runId:string,requested:unknown,raw:unknown){
+  const ref=mediaSourceRef.parse(requested),scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
+  const result=z.object({state:z.enum(['available','pending','unavailable']),interpretation:z.string().optional(),coverage:z.object({complete:z.boolean()}).passthrough().optional(),coveredSourceRefs:z.array(mediaSourceRef).max(3).optional()}).passthrough().parse(raw);
+  const complete=result.state==='available'&&(result.interpretation==='source_transcription'||result.coverage?.complete===true);
+  const refs=result.state==='available'?[ref,...(result.coveredSourceRefs??[])]:[ref];
+  const unique=[...new Map(refs.map(r=>[JSON.stringify(r),r])).values()];
+  for(const selected of unique){
+   const read=await this.access(scope).read(owner,selected.id,selected.revision);this.current(scope);
+   if(!read||read.fence.source.version!==selected.version||read.fence.source.hash!==selected.hash)throw Error('curator_source_changed');
+   const access=this.access(scope).guard(owner,read.fence,this.clock()),authority=this.host.authorityGuard();
+   await this.db.prepare(`INSERT INTO assistant_curator_media_reads(installation_id,generation,run_id,source_id,revision,version,source_hash,state,complete,reason,updated_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${access.sql}) AND (${authority.sql})
+    ON CONFLICT(installation_id,generation,run_id,source_id,revision,version,source_hash) DO UPDATE SET state=excluded.state,complete=excluded.complete,reason=excluded.reason,updated_at=excluded.updated_at
+    WHERE assistant_curator_media_reads.complete=0`)
+    .bind(...this.keys(scope),runId,selected.id,selected.revision,selected.version,selected.hash,result.state,complete?1:0,complete?null:result.state==='available'?'partial_read':'read_not_available',this.clock(),...access.values,...authority.values).run();this.current(scope);
+  }
+ }
  /** Persist learning intent before the external write; existing receipts reconcile its effect. */
  async recordLearning(runId:string,operationId:string,raw:Omit<z.infer<typeof knowledgeRemember>,'operationId'>){
   const input=knowledgeRemember.parse({...raw,operationId}),scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
+  for(const ref of input.relations.flatMap(r=>r.evidence.map(e=>e.sourceRef))){const guard=curatorMediaReadGuard(scope,runId,ref);if(!await this.db.prepare(`SELECT 1 AS allowed WHERE ${guard.sql}`).bind(...guard.values).first())throw Error('curator_media_read_required');this.current(scope);}
   const names=new Map(input.entities.map(e=>[e.key,'name' in e?e.name:'entidade existente'])),refs=input.relations.flatMap(r=>r.evidence.map(e=>e.sourceRef));
   const summary=input.relations.map(r=>`${names.get(r.subjectId)??r.subjectId} ${r.predicate} ${names.get(r.objectId)??r.objectId}`).join('; ').slice(0,240);
   const decision={category:'learn' as const,summary,reason:'Relação proposta pelo curador; justificativa detalhada ainda não registrada.'};

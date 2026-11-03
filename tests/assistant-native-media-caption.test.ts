@@ -37,3 +37,17 @@ it.each([true,false])('reads caption and file through the same paid image receip
  snapshots.media={...snapshots.media,state:'withdrawn'};
  await expect(capability.read(captionRef)).rejects.toThrow('native_media_source_changed');expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+it('reads an original audio through its exact existing transcript with visual processing disabled and without another inference',async()=>{
+ const scope={installationId:crypto.randomUUID(),generation:'g',sourceEpoch:'e',sourceGeneration:'cg'},attachment={id:'audio-file',version:1,hash:'a'.repeat(64),size:100,mime:'audio/ogg'};
+ const base={observation:'capture_snapshot',state:'available',sourceEpoch:'e',sourceGeneration:'cg',chatId:'audio-chat',sourceVersion:1,watermark:3,conversationKind:'private',access:{captureEnabled:true,captureSince:0,discontinuous:false}};
+ const snapshots:any={message:{...base,sourceKind:'message',sourceId:'audio-message',content:{kind:'audio',messageId:'audio-message',messageVersion:1,media:attachment}},media:{...base,sourceKind:'media',sourceId:'audio-file',content:{kind:'audio',messageId:'audio-message',messageVersion:1,media:attachment}},derivative:{...base,sourceKind:'derivative',sourceId:'audio-transcript',content:{kind:'transcript',messageId:'audio-message',messageVersion:1,media:attachment,text:'Nora participa do projeto Cedar.'}}};
+ const reader={readSnapshot:async(q:any)=>snapshots[q.sourceKind]};
+ await env.DB.prepare('INSERT INTO assistant_capture_streams VALUES(?,?,?,?,3,0)').bind(...Object.values(scope)).run();
+ for(const [sequence,kind,id]of [[1,'message','audio-message'],[2,'media','audio-file'],[3,'derivative','audio-transcript']]as const)await env.DB.prepare("INSERT INTO assistant_capture_inbox(installation_id,generation,source_epoch,source_generation,sequence,previous_sequence,chat_id,source_kind,source_id,operation,recorded_at,metadata_hash,received_at) VALUES(?,?,?,?,?,?,'audio-chat',?,?,'upsert',100,?,100)").bind(...Object.values(scope),sequence,sequence-1,kind,id,'b'.repeat(64)).run();
+ const materializer=new CaptureMaterializer(env.DB,()=>scope,reader,'secret'),message=await materializer.process(1);await materializer.process(2);const transcript=await materializer.process(3);
+ const access=new SourceAccess(env.DB,scope,Date.now,'knowledge'),r=(await access.read({kind:'owner'},message.canonicalId!))!,ref={id:r.id,revision:r.fence.source.revision,version:r.fence.source.version,hash:r.fence.source.hash};
+ const fetch=vi.spyOn(globalThis,'fetch'),expose=vi.fn(),capability=nativeMediaCapability({env:{DB:env.DB,MEDIA_CONTEXT_ENABLED:'false'},task:{identity:{},knowledge:{scope}}as any,runtime:{assertTaskCurrent:async()=>{}}as any,retention:{expose}as any,origin:new OriginGuard(env.DB,()=>scope,reader,'secret'),getScope:()=>scope,authorityGuard:()=>({sql:'1',values:[]}),modelGuard:()=>({sql:'1',values:[]})});
+ expect(await capability.read(ref)).toMatchObject({state:'available',interpretation:'source_transcription',parentSourceRef:{id:transcript.canonicalId},text:'Nora participa do projeto Cedar.'});
+ expect(fetch).not.toHaveBeenCalled();expect(expose).toHaveBeenCalledOnce();expect(expose.mock.calls[0][1].sources).toHaveLength(2);
+});

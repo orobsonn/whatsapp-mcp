@@ -4,6 +4,13 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.53.4] - 2026-11-03
+
+### Fixed
+- A curadoria exige recibo real de leitura completa antes de avaliar ou propor aprendizado com mídia bruta; tentativa pendente, falha ou parcial só autoriza registrar indisponibilidade. O guard também alcança confirmação e reconciliação de gravações.
+- Áudio original resolve sua transcrição existente pelo arquivo/versões/hash e expõe a SourceRef textual autorizada, sem nova ASR e antes dos gates de processamento visual.
+- Recibos de leitura são metadados privados, monotônicos por revisão e fonte, sem conteúdo, removidos na retirada/purga correspondente. Leitura produzida não certifica compreensão semântica.
+
 ## [0.53.3] - 2026-11-03
 
 ### Fixed
