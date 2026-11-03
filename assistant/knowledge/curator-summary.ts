@@ -36,7 +36,7 @@ export async function curatorSummaryText(curator:KnowledgeCurator,receipt:Curato
    const details=receipt.captureDiagnostics??[];
    const kinds:Record<string,string>={message:'mensagem',media:'mídia',derivative:'transcrição/derivado',conversation:'conversa'};
    const reasons:Record<string,string>={message_unavailable:'corpo da mensagem indisponível no arquivo',media_unavailable:'mídia indisponível para o leitor',reader_timeout:'tempo de leitura excedido'};
-   for(const d of details.slice(0,4))lines.push(`  • ${d.events} eventos de ${kinds[d.kind]??'origem'} (${d.references} referência(s)): ${reasons[d.reason??'']??(d.reason?'leitura não concluída':'processamento ainda não concluído')}.`);
+   for(const d of details.slice(0,4))lines.push(`  • ${d.events} eventos de ${kinds[d.kind]??'origem'} (${d.references} referência(s)): ${d.reason?'última leitura: ':''}${reasons[d.reason??'']??(d.reason?'leitura não concluída':'processamento ainda não concluído')}.`);
    if(details.length>4)lines.push(`  • ${details.slice(4).reduce((sum,d)=>sum+d.events,0)} outros eventos com leitura ou processamento pendente.`);
    const retry=details.reduce((sum,d)=>sum+d.retryScheduled,0);
    if(retry)lines.push(`${retry} eventos têm nova tentativa prevista na integração; isso não garante recuperação.`);
