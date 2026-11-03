@@ -342,3 +342,23 @@ it('groups confirmed learning by explicit context and escapes its label',async()
  const text=await curatorSummaryText(curator,await curator.status(setup.run.id));
  expect(text).toContain('Cedar &lt;projeto&gt;');expect(text).toContain('🧠 Gravei na memória');expect(text).not.toContain('Aprendizado proposto');expect(text.length).toBeLessThan(4096);
 });
+
+it('requires actual complete media reading before evaluating or learning and only accepts a failed read as unavailable',async()=>{
+ const ref=await note('unread-image','Metadados da imagem');
+ await sql("UPDATE assistant_sources SET origin='whatsapp',conversation_id='media-chat' WHERE installation_id=? AND generation=? AND id=?",ref.id).run();
+ await sql("INSERT INTO assistant_origin_conversations VALUES(?,?,?,?,'media-chat',1,'private','available')",scope.sourceEpoch,scope.sourceGeneration).run();
+ await sql("INSERT INTO assistant_source_origins VALUES(?,?,?,?,'media','blob','media-chat',?,1,?,0)",scope.sourceEpoch,scope.sourceGeneration,ref.id,'a'.repeat(64)).run();
+ await sql("INSERT INTO assistant_origin_versions VALUES(?,?,?,1,1,1,?,?)",ref.id,'a'.repeat(64),JSON.stringify({kind:'image'})).run();
+ const run=await due(),item=(await curator.next(run.id)).items[0],decision={category:'insufficient_evidence' as const,summary:'Imagem ainda não lida',reason:'Falta leitura.'};
+ expect(await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'unavailable',decision}])).toMatchObject({recorded:0,refused:1,items:[{reason:'curator_media_read_required'}]});
+ const learning={entities:[{key:'p',kind:'person' as const,name:'Nora'},{key:'q',kind:'project' as const,name:'Cedar'}],relations:[{subjectId:'p',predicate:'works_on',objectId:'q',classification:'inferred' as const,evidence:[{sourceRef:item.sourceRef,quote:'Metadados da imagem'}]}]};
+ await expect(curator.recordLearning(run.id,'unread-intent',learning)).rejects.toThrow('curator_media_read_required');
+ await curator.recordMediaRead(run.id,item.sourceRef,{state:'pending',reason:'media_attachment_pending'});
+ await expect(curator.acknowledge(run.id,item.sequence,{state:'evaluated',decision:{category:'not_useful',summary:'Descartar',reason:'Sem utilidade'}})).rejects.toThrow('curator_media_read_required');
+ expect(await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'unavailable',decision}])).toMatchObject({recorded:1,refused:0});
+ await curator.next(run.id);
+ await curator.recordMediaRead(run.id,item.sourceRef,{state:'available',interpretation:'derived_media_observations',coverage:{complete:true},coveredSourceRefs:[item.sourceRef]});
+ await curator.recordMediaRead(run.id,item.sourceRef,{state:'pending',reason:'media_attachment_pending'});
+ await curator.recordLearning(run.id,'read-intent',learning);
+ expect(await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'evaluated',decision:{category:'not_useful',summary:'Imagem avaliada',reason:'Não contém informação duradoura.'}}])).toMatchObject({recorded:1,refused:0});
+});
