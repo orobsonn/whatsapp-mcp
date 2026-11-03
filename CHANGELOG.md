@@ -4,6 +4,12 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.53.2] - 2026-11-03
+
+### Fixed
+- Relatório privado de curadoria aplica o formato aprovado: emojis, gravações confirmadas agrupadas por contexto explícito, descarte separado de falta de evidência e orientação por assunto, sem códigos internos.
+- Pendências da integração são descritas como eventos, com referências distintas por tipo/motivo e previsão de tentativa apenas quando registrada. Revisão parcial continua distinta de execução encerrada; o relatório não promete recuperação de conteúdo ausente.
+
 ## [0.53.1] - 2026-11-02
 
 ### Fixed

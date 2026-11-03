@@ -10,7 +10,8 @@ import {curatorInstructions} from '../.flue/instructions/curator';
 export {curatorInstructions};
 export type CuratorWindow=Readonly<{fromSequence:number;toSequence:number;day:string;timezone:'America/Fortaleza'}>;
 export type CuratorRun=Readonly<{id:string;kind:'daily'|'sample';window:CuratorWindow;coverage:{scope:'daily_incremental_window'|'sample_window';archive:'not_exhaustive'}}>;
-export type CuratorReceipt=CuratorRun&{state:'complete'|'partial';counts:Record<CuratorItemState,number>&{capturePending:number};needsHelp:boolean;helpRequest?:string;shouldNotify:boolean};
+export type CaptureDiagnostic={kind:string;reason:string|null;events:number;references:number;retryScheduled:number};
+export type CuratorReceipt=CuratorRun&{state:'complete'|'partial';counts:Record<CuratorItemState,number>&{capturePending:number};needsHelp:boolean;helpRequest?:string;shouldNotify:boolean;captureDiagnostics?:CaptureDiagnostic[]};
 type CuratorItemState='pending'|'presented'|'evaluated'|'learned'|'indexing'|'unavailable'|'skipped_policy'|'superseded'|'withdrawn';
 type ItemRow={sequence:number;source_id:string;revision:number;version:number;source_hash:string|null;state:CuratorItemState;operation_ids_json:string};
 type RunRow={id:string;day:string;run_kind:'daily'|'sample';civil_day:string|null;created_at:number;native_identity_json:string|null;native_session_id:string|null;source_epoch:string;source_generation:string;from_sequence:number;to_sequence:number;capture_to_sequence:number;state:string;needs_help:number;model_id:string|null;instructions_hash:string|null;help_request:string|null};
@@ -47,7 +48,7 @@ function runCalendar(run:RunRow){
 export const curatorPrincipal=(ownerId:string,runId:string)=>'curator:'+ownerId+':run:'+runId;
 export const ownsCuratorPrincipal=(principal:string,ownerId:string,runId?:string)=>principal==='curator:'+ownerId||(runId!==undefined?principal===curatorPrincipal(ownerId,runId):principal.startsWith('curator:'+ownerId+':run:')&&/^[0-9a-f-]{36}$/.test(principal.slice(('curator:'+ownerId+':run:').length)));
 export const isCuratorPrincipal=(principal:string)=>principal.startsWith('curator:')&&principal.length>8;
-export const curatorDecision=z.object({category:z.enum(['learn','already_known','not_useful','insufficient_evidence','defer']),summary:z.string().trim().min(1).max(240),reason:z.string().trim().min(1).max(400)}).strict();
+export const curatorDecision=z.object({category:z.enum(['learn','already_known','not_useful','insufficient_evidence','defer']),summary:z.string().trim().min(1).max(240),reason:z.string().trim().min(1).max(400),context:z.string().trim().min(1).max(80).optional()}).strict();
 const acknowledgement=z.object({state:z.enum(['evaluated','learned','indexing','unavailable']),operationIds:z.array(z.string().min(1).max(256)).max(100).default([]),decision:curatorDecision.optional()}).strict();
 type AcknowledgementInput=z.input<typeof acknowledgement>&{sequence:number};
 type AcknowledgementResult={sequence:number;outcome:'recorded';state:z.infer<typeof acknowledgement>['state']}|{sequence:number;outcome:'refused';reason:string};
@@ -339,14 +340,14 @@ export class KnowledgeCurator {
   await this.host.assertCurrent();this.current(scope);return {state:pending?'pending' as const:'reflected' as const,learned,pending};
  }
  /** Private read model: descriptions are agent reports; item/operation state is host evidence. */
- async decisions(runId:string,input:{after?:number;limit?:number;group?:'learned'|'other'}={}){
-  const page=z.object({after:z.number().int().nonnegative().default(0),limit:z.number().int().min(1).max(100).default(20),group:z.enum(['learned','other']).optional()}).parse(input);
+ async decisions(runId:string,input:{after?:number;limit?:number;group?:'learned'|'other'|'discarded'|'unconfirmed'}={}){
+  const page=z.object({after:z.number().int().nonnegative().default(0),limit:z.number().int().min(1).max(100).default(20),group:z.enum(['learned','other','discarded','unconfirmed']).optional()}).parse(input);
   const scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
   const visible=this.access(scope).ownerRows(),authority=this.host.authorityGuard();
   const rows=await this.db.prepare(`SELECT d.*,i.state,i.operation_ids_json FROM assistant_curator_decisions d
    JOIN assistant_curator_items i ON i.installation_id=d.installation_id AND i.generation=d.generation AND i.run_id=d.run_id AND i.sequence=d.sequence
    JOIN (${visible.sql}) a ON a.id=d.source_id AND a.revision=d.revision AND a.version=d.version AND a.content_hash=d.source_hash
-   WHERE d.installation_id=? AND d.generation=? AND d.run_id=? AND d.sequence>? AND i.state IN ('evaluated','learned','indexing','presented','unavailable') ${page.group==='learned'?"AND i.state='learned'":page.group==='other'?"AND i.state<>'learned'":''} AND (${authority.sql}) ORDER BY d.sequence LIMIT ?`)
+   WHERE d.installation_id=? AND d.generation=? AND d.run_id=? AND d.sequence>? AND i.state IN ('evaluated','learned','indexing','presented','unavailable') ${page.group==='learned'?"AND i.state='learned'":page.group==='other'?"AND i.state<>'learned'":page.group==='discarded'?"AND i.state='evaluated' AND json_extract(d.decision_json,'$.category') IN ('already_known','not_useful')":page.group==='unconfirmed'?"AND i.state<>'learned' AND (i.state<>'evaluated' OR json_extract(d.decision_json,'$.category') NOT IN ('already_known','not_useful'))":''} AND (${authority.sql}) ORDER BY d.sequence LIMIT ?`)
    .bind(...visible.values,...this.keys(scope),runId,page.after,...authority.values,page.limit+1).all<{sequence:number;source_id:string;revision:number;version:number;source_hash:string;state:CuratorItemState;operation_ids_json:string;decision_json:string;intent_operation_ids_json:string}>();this.current(scope);
   return {runId,sessionId:run.native_session_id,model:run.model_id,instructionsHash:run.instructions_hash,
    items:rows.results.slice(0,page.limit).map(row=>({sequence:row.sequence,sourceRef:{id:row.source_id,revision:row.revision,version:row.version,hash:row.source_hash},state:row.state,operationIds:[...new Set([...(JSON.parse(row.operation_ids_json) as string[]),...(JSON.parse(row.intent_operation_ids_json) as string[])])],decision:curatorDecision.parse(JSON.parse(row.decision_json))})),
@@ -371,10 +372,16 @@ export class KnowledgeCurator {
   const scope=this.scope();await this.host.assertCurrent();const run=await this.run(scope,runId);await this.refresh(scope,run);
   const rows=await this.db.prepare('SELECT state,COUNT(*) count FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? GROUP BY state').bind(...this.keys(scope),runId).all<{state:CuratorItemState;count:number}>();
   const capture=await this.db.prepare("SELECT COUNT(*) count FROM assistant_curator_capture_gaps WHERE installation_id=? AND generation=? AND run_id=? AND state='pending'").bind(...this.keys(scope),runId).first<{count:number}>();
+  const diagnostics=await this.db.prepare(`SELECT g.source_kind kind,r.last_gap_reason reason,COUNT(*) events,COUNT(DISTINCT g.source_id) AS \"references\",
+   SUM(CASE WHEN r.state='blocked' AND r.next_retry_at IS NOT NULL THEN 1 ELSE 0 END) retryScheduled
+   FROM assistant_curator_capture_gaps g JOIN assistant_curator_runs run ON run.installation_id=g.installation_id AND run.generation=g.generation AND run.id=g.run_id
+   LEFT JOIN assistant_materialization_results r ON r.installation_id=g.installation_id AND r.generation=g.generation AND r.source_epoch=run.source_epoch AND r.source_generation=run.source_generation AND r.sequence=g.sequence
+   WHERE g.installation_id=? AND g.generation=? AND g.run_id=? AND g.state='pending' GROUP BY g.source_kind,r.last_gap_reason ORDER BY events DESC,kind,reason`)
+   .bind(...this.keys(scope),runId).all<CaptureDiagnostic>();this.current(scope);
   const preference=await this.db.prepare('SELECT notice_mode FROM assistant_curator_state WHERE installation_id=? AND generation=?').bind(...this.keys(scope)).first<{notice_mode:string}>();this.current(scope);
   const counts:CuratorReceipt['counts']={pending:0,presented:0,evaluated:0,learned:0,indexing:0,unavailable:0,skipped_policy:0,superseded:0,withdrawn:0,capturePending:capture?.count??0};for(const row of rows.results)counts[row.state]=row.count;
   const state=counts.pending+counts.presented+counts.indexing+counts.unavailable+counts.capturePending>0?'partial':'complete';
-  return {...this.public(run),state,counts,needsHelp:run.needs_help===1,...(run.help_request?{helpRequest:run.help_request}:{}),shouldNotify:preference?.notice_mode!=='errors_help'||state==='partial'||run.needs_help===1};
+  return {...this.public(run),state,counts,captureDiagnostics:diagnostics.results,needsHelp:run.needs_help===1,...(run.help_request?{helpRequest:run.help_request}:{}),shouldNotify:preference?.notice_mode!=='errors_help'||state==='partial'||run.needs_help===1};
  }
  async finish(runId:string,input:{needsHelp?:boolean;helpRequest?:string}={}){
   const parsed=z.object({needsHelp:z.boolean().default(false),helpRequest:z.string().trim().min(1).max(500).optional()}).strict().parse(input),scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
