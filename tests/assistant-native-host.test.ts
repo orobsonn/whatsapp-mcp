@@ -1,3 +1,5 @@
+import {administrativeToolReferences} from '../assistant/agent-runtime/native-owner-tool-admin';
+import {releaseOwnerToolResult} from '../assistant/agent-runtime/native-owner-tool-release';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
 import {env} from 'cloudflare:test';
 import type {DeliveredMessage} from '@flue/runtime';
@@ -730,4 +732,30 @@ it('refuses curator finish after a partially acknowledged page and resumes befor
  expect(await c.finish({})).toMatchObject({completion:'finished',state:'complete',counts:{evaluated:3}});
 });
 
+});
+
+async function ownerReadPublication(){
+ const f=await fixture(),incoming=await f.append('Conteúdo privado sintético para teste de exposição'),host=f.host();
+ await host.receiveCapture(incoming.sequence);await f.ownerUpdate(700,'Leia a mensagem que solicitei',43);
+ const receipt=await host.receiveTelegram(700),task=await latestTask(host,receipt.taskRef);
+ const mapped=await env.DB.prepare(`SELECT o.canonical_id,o.observation_hash FROM assistant_source_origins o WHERE installation_id=? AND generation=? AND source_kind='message' AND source_id=?`).bind(f.scope.installationId,f.scope.generation,incoming.sourceId).first<{canonical_id:string;observation_hash:string}>();
+ if(!mapped)throw Error('fixture_missing_canonical');
+ const output={result:{content:[{type:'text',text:incoming.text}]},provenance:{origins:[{sourceKind:'message',sourceId:incoming.sourceId,chatId:incoming.chatId,sourceVersion:1,observationHash:mapped.observation_hash}],canonicalRefs:[]}};
+ const exposures=()=>env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_context_exposures WHERE conversation_id=? AND source_id=?').bind(task.sessionId,mapped.canonical_id).first<number>('n');
+ return {...f,host,task,mapped,output,exposures};
+}
+it('records exact Source read exposure before publishing MCP message content to the owner agent',async()=>{
+ const f=await ownerReadPublication();expect(await f.exposures()).toBe(0);
+ expect(await releaseOwnerToolResult(f.host,f.own,f.task,f.output)).toEqual(f.output.result);
+ expect(await f.exposures()).toBe(1);
+ const metadata={content:[{type:'text',text:JSON.stringify({items:[{id:'mission-synthetic',objective:'Objetivo do dono',source_id:f.mapped.canonical_id,source_revision:1}]})}]};
+ expect(await administrativeToolReferences(f.host,f.own,'assistente_consultar',{query:{kind:'missions'}},metadata)).toEqual([expect.objectContaining({id:f.mapped.canonical_id,revision:1,version:1})]);
+ await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-after-publication',id:f.mapped.canonical_id,expectedRevision:1});
+ await expect(f.host.runtime.assertTaskCurrent(f.task)).rejects.toThrow();
+});
+it('refuses an MCP body whose canonical source was withdrawn before exposure',async()=>{
+ const f=await ownerReadPublication();
+ await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-before-publication',id:f.mapped.canonical_id,expectedRevision:1});
+ await expect(releaseOwnerToolResult(f.host,f.own,f.task,f.output)).rejects.toThrow('owner_tool_source_not_current');
+ expect(await f.exposures()).toBe(0);
 });

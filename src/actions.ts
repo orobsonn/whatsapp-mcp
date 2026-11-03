@@ -155,6 +155,7 @@ export async function executeAction(
   provider: SendProvider,
   confirmation?: ChatConfirmation,
   hostGuard?: ActionExecutionGuard,
+  finalGuard?: Pick<ActionExecutionGuard,"beforeClaim">,
 ) {
   let a = await row(env, id);
   // Telegram proposals cannot fall back to the MCP's client-attested confirmation.
@@ -204,7 +205,9 @@ export async function executeAction(
   )
     throw new AppError("device_changed", 409);
   assertActive(env);
-  const extra = hostGuard ? await hostGuard.beforeClaim({ chat, envelope }) : { sql: "1", values: [] };
+  const approvalGuard = hostGuard ? await hostGuard.beforeClaim({ chat, envelope }) : { sql: "1", values: [] };
+  const commandGuard = finalGuard ? await finalGuard.beforeClaim({ chat, envelope }) : { sql: "1", values: [] };
+  const extra={sql:`(${approvalGuard.sql}) AND (${commandGuard.sql})`,values:[...approvalGuard.values,...commandGuard.values]};
   // The Telegram path records approval only together with its authorized attempt.
   // A failed proof/guard leaves the proposed action's audit trail untouched.
   const autonomous = hostGuard?.authorizationKind === "autonomous_policy";

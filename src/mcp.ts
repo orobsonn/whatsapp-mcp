@@ -117,7 +117,16 @@ function base64(bytes: Uint8Array): string {
   return out;
 }
 
-export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServer {
+export interface McpToolDefinition {
+  name: string; description: string; inputSchema: z.ZodType; readOnly: boolean;
+  invoke(input: unknown): Promise<CallToolResult>;
+}
+export interface McpToolHost {
+  register(tool: McpToolDefinition): void;
+  beforeTool?(): Promise<void>;
+  beforeClaim?: () => Promise<{sql:string;values:(string|number|null)[]}>;
+}
+export function createMcpServer(env: Env, trustedOwnerProps?: unknown, host?: McpToolHost): McpServer {
   const server = new McpServer(
     { name: "whatsapp-mcp", version: pkg.version },
     {
@@ -137,11 +146,13 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
     const callback = async (input: unknown): Promise<CallToolResult> => {
       try {
         assertActive(env);
-        return text(await fn(schema.parse(input)));
+        const parsed=schema.parse(input); await host?.beforeTool?.();
+        return text(await fn(parsed));
       } catch (error) {
         return safeToolError(error);
       }
     };
+    host?.register({name,description,inputSchema:schema,readOnly,invoke:callback});
     server.registerTool(
       name,
       {
@@ -239,16 +250,11 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
       };
     },
   );
-  server.registerTool(
-    "obter_midia",
-    {
-      description:
-        "Entrega conteúdo pequeno ao MCP. Acima de 128 KiB oferece abertura autenticada no navegador; recursos binários dependem do cliente.",
-      inputSchema: z.object({ id }).strict(),
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async (input) => {
+  const mediaSchema=z.object({ id }).strict();
+  const mediaDescription="Entrega conteúdo pequeno ao MCP. Acima de 128 KiB oferece abertura autenticada no navegador; recursos binários dependem do cliente.";
+  const mediaCallback=async (input: {id:string}): Promise<CallToolResult> => {
       try {
+        await host?.beforeTool?.();
         assertActive(env);
         const metadata = await getMedia(env, input.id);
         if (metadata.state !== "ready" || metadata.size === null)
@@ -282,8 +288,9 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
       } catch (error) {
         return safeToolError(error);
       }
-    },
-  );
+  };
+  host?.register({name:'obter_midia',description:mediaDescription,inputSchema:mediaSchema,readOnly:true,invoke:input=>mediaCallback(mediaSchema.parse(input))});
+  server.registerTool('obter_midia',{description:mediaDescription,inputSchema:mediaSchema,annotations:{readOnlyHint:true,openWorldHint:false}},mediaCallback);
   tool(
     "transcrever_audio",
     "Transcreve áudio selecionado via Workers AI se habilitado. Conteúdo vai ao processador; derivado não confiável separado do original.",
@@ -323,7 +330,7 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
     z.object({ id, confirmation: chatConfirmationSchema.optional() }).strict(),
     false,
     (input) =>
-      executeAction(env, input.id, new ZapiClient(env), input.confirmation),
+      executeAction(env, input.id, new ZapiClient(env), input.confirmation, undefined, host?.beforeClaim?{beforeClaim:host.beforeClaim}:undefined),
   );
   tool(
     "consultar_envio",
@@ -459,7 +466,7 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown): McpServe
     "Executa uma tentativa. Se confirmationMode=chat, envie confirmation={confirmed:true,hash:hash_da_proposta} após autorização do dono. Se page, abra confirmationUrl e aguarde aprovação. Nunca classifique o risco por conta própria. Incerto não repete.",
     z.object({ id, confirmation: chatConfirmationSchema.optional() }).strict(),
     false,
-    (input) => executeGroupAction(env, input.id, undefined, input.confirmation),
+    (input) => executeGroupAction(env, input.id, undefined, input.confirmation, host?.beforeClaim?{beforeClaim:host.beforeClaim}:undefined),
   );
   tool(
     "consultar_acao_grupo",

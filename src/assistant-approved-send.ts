@@ -1,3 +1,4 @@
+import {ownerToolCatalog,ownerToolExecute} from "./owner-tools";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { z } from "zod";
 import type { Env } from "./env";
@@ -120,6 +121,8 @@ async function executePreparedSend(raw:Env,q:ExecutionRequest,provider?:SendProv
 }
 /** Named private capability only. The model cannot choose a provider, URL or execution guard. */
 export class ApprovedSendActuator extends WorkerEntrypoint<Env> implements ApprovedSendActuatorRPC, NativeReplyActuatorRPC {
+  ownerToolCatalog(input:unknown){return ownerToolCatalog(this.env,input);}
+  ownerToolExecute(input:unknown){return ownerToolExecute(this.env,input);}
   prepare(input: unknown) { return prepareApprovedSend(this.env, input); }
   execute(input: unknown) { return executeApprovedSend(this.env, input); }
   executeNative(input:unknown){return executeNativeReply(this.env,input);}

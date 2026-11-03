@@ -738,3 +738,19 @@ it("confines OAuth form redirects to the current client's exact origin", () => {
     "form-action 'self';",
   );
 });
+
+it('downloads one export page only behind Access and gives Telegram a link without export bodies',async()=>{
+  jwks();
+  const {assistantExportDownload}=await import('../src/assistant-export');
+  const {ownerToolExecute}=await import('../src/owner-tools');
+  const secret='s'.repeat(48),scope={installationId:'export-own',generation:'export-own-g1',sourceEpoch:'epoch-1',sourceGeneration:'export-source-g1'};
+  let exports=0;
+  const configuration={...settings(),DEVELOPMENT:'true',RUNTIME_CONFIG:'static',CONNECTION_GENERATION:scope.sourceGeneration,ASSISTANT_INSTALLATION_ID:scope.installationId,ASSISTANT_GENERATION:scope.generation,ASSISTANT_APPROVED_SEND_SECRET:secret,
+   ASSISTANT_OWNER:{ownerToolAuthorization:async()=>({authorized:true,expiresAt:Date.now()+5000}),query:async(expected:unknown,query:unknown)=>{expect(expected).toEqual(scope);expect(query).toEqual({kind:'assistant.export',limit:7,cursor:'page-cursor'});exports++;return {items:[{text:'private export body'}],nextCursor:'next-page'};}}} as unknown as Env;
+  const result=await ownerToolExecute(configuration,{secret,scope,sessionId:'owner-session',taskRef:'owner-command',tool:'assistente_consultar',input:{query:{kind:'assistant.export',limit:7,cursor:'page-cursor'}}}) as {result:{content:{text:string}[]}};
+  const link=JSON.parse(result.result.content[0].text);expect(link.state).toBe('private_download');expect(JSON.stringify(result)).not.toContain('private export body');expect(exports).toBe(0);
+  await expect(assistantExportDownload(new Request(link.browserUrl),configuration)).rejects.toThrow();expect(exports).toBe(0);
+  const response=await assistantExportDownload(await ownerRequest(new URL(link.browserUrl).pathname+new URL(link.browserUrl).search),configuration);
+  expect(response.headers.get('cache-control')).toContain('no-store');expect(response.headers.get('content-disposition')).toContain('attachment');expect(await response.json()).toEqual({items:[{text:'private export body'}],nextCursor:'next-page'});expect(exports).toBe(1);
+  await expect(assistantExportDownload(await ownerRequest('/assistant/export?limit=999'),configuration)).rejects.toThrow();expect(exports).toBe(1);
+});

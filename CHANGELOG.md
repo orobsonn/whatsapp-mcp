@@ -4,6 +4,14 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-11-03
+
+### Added
+
+- Ferramentas do MCP WhatsApp disponíveis ao dono pelo Telegram: mensagens, áudios, arquivos, destinatários, grupos, captura e administração, mediante pedido autenticado atual.
+- Recibos de execução e revalidação da autorização antes dos efeitos. Retomadas incertas não repetem operações. Respostas autônomas continuam desligadas.
+
+
 ## [0.53.4] - 2026-11-03
 
 ### Fixed

@@ -35,6 +35,10 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 - [Autenticação e confirmação](docs/13-auth.md), [transporte](docs/14-zapi.md), [mídia/áudio](docs/15-media.md), [ações](docs/16-acoes.md) e [operação](docs/17-operacao.md).
 - [Issues](https://github.com/orobsonn/whatsapp-mcp/issues), [changelog](CHANGELOG.md) e [releases](https://github.com/orobsonn/whatsapp-mcp/releases).
 
+## Comandos pelo Telegram
+
+O dono pode pedir ao assistente privado para executar as ferramentas do MCP, incluindo envio de texto, áudio com sua voz, imagem/PDF e gestão de grupos. Somente o comando atual autenticado autoriza a execução; mensagens de terceiros e despertares automáticos não concedem envio. As respostas autônomas permanecem desligadas. [Capacidades e limites](docs/76-telegram-owner-tools.md).
+
 ## Áudios
 
 Áudios recebidos e enviados, capturados desde a ativação em individuais e grupos, entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).

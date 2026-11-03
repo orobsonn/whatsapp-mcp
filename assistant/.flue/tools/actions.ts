@@ -7,6 +7,7 @@ import {isCuratorPrincipal} from '../../knowledge/curator';
 import {useCuratorTools} from './curator';
 import {nativeCalendarMutationInput} from '../../agent-runtime/native-calendar';
 import {useNativeTaskTools} from './tasks';
+import {useOwnerWhatsAppTools} from './owner-whatsapp';
 
 type Bound={runtime:ConversationRuntime;task:TaskContext;frame?:(task:TaskContext)=>Promise<ConversationApplicationFrame>};
 /** Mount only the actions for the host-authenticated channel and role. */
@@ -42,6 +43,7 @@ export function useConversationActionTools(seed:ConversationIdentity,delivery:De
     return {output:JSON.stringify(output)};
    }});
  }else{
+  useOwnerWhatsAppTools(async()=>{const binding=await application();if(!binding.ownerTools)throw Error('native_owner_tools_unconfigured');return binding.ownerTools;});
   useNativeTaskTools(async()=>{const binding=await application();if(!binding.tasks)throw Error('native_tasks_unconfigured');return binding.tasks;});
   useTool({name:'whatsapp_reassess',description:'Quando o dono pedir para reavaliar uma mensagem recebida no WhatsApp e preparar uma nova sugestão para revisão, use a sourceRef exata encontrada no arquivo. Encaminha o pedido atual e autenticado do dono para a conversa original. Não renova uma aprovação expirada nem autoriza envio: a nova avaliação pode sugerir resposta, perguntar ou ficar em silêncio. admitted só confirma entrada; não comprova que a revisão chegou ao Telegram.',
    input:v.strictObject({sourceRef:v.strictObject({id:v.pipe(v.string(),v.minLength(1),v.maxLength(256)),revision:v.pipe(v.number(),v.integer(),v.minValue(1)),version:v.pipe(v.number(),v.integer(),v.minValue(1)),hash:v.pipe(v.string(),v.regex(/^[a-f0-9]{64}$/))})}),

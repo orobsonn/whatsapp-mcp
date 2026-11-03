@@ -30,6 +30,7 @@ import {nativeMediaCapability} from './native-media';
 import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
 import {NativeTasks,isNativeTaskDue} from './native-tasks';
+import {nativeOwnerTools} from './native-owner-tools';
 import {compactStatement,jsonStatement} from '../d1-statement';
 import {sourceRef} from '../source-proof-contract';
 import {reconcileCuratorOutcomes,observeCuratorSettlement,curatorDispatchReceipt} from './curator-outcomes';
@@ -421,7 +422,7 @@ export class NativeApplicationHost {
   const media=nativeMediaCapability({env:this.env,task,runtime:this.runtime,retention:this.retention,origin:this.origin,getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId),modelGuard:()=>nativeGlobalBudgetGuard(this.env),...(curator?{onReadResult:(ref:unknown,result:unknown)=>curator.curator.recordMediaRead(curator.runId,ref,result)}:{})});
   const calendar=createNativeCalendarCapability({db:this.db!,env:this.env,scope:this.scope,getScope:()=>this.currentScope(),task,assertCurrent:()=>this.runtime.assertTaskCurrent(task),authorityGuard:async()=>joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId)),ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),expose:proof=>this.retention.expose(task.identity,proof)});
   const tasks=this.tasks();
-  return {reads,media,...(curator?{curator}:{}),tasks:{query:(input:unknown)=>tasks.query(task,input),save:(input:unknown)=>tasks.save(task,input),setState:(input:unknown)=>tasks.setState(task,input),adopt:(input:unknown)=>tasks.adopt(task,input)},effects:{reply:async(input:unknown)=>{
+  return {reads,media,...(curator?{curator}:{}),...(task.identity.channel==='telegram'&&!curator?{ownerTools:nativeOwnerTools(this,this.env,task)}:{}),tasks:{query:(input:unknown)=>tasks.query(task,input),save:(input:unknown)=>tasks.save(task,input),setState:(input:unknown)=>tasks.setState(task,input),adopt:(input:unknown)=>tasks.adopt(task,input)},effects:{reply:async(input:unknown)=>{
    if(task.returnChannel.channel!=='whatsapp')throw Error('native_reply_channel_denied');
    const actions=this.actions(),result=await actions.propose(task,input);
    if(result.authority?.kind==='human_approval'&&result.intent)return {...result,review:await(await this.review()).dispatch(result.intent.id,'native-intent:'+result.intent.id)};
