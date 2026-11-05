@@ -538,6 +538,9 @@ describe('native application composition on real D1 and Source reads',()=>{
   const dispatches=transport.dispatch.mock.calls.length;
   expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});
   expect(fetch).toHaveBeenCalledOnce();const body=JSON.parse(String(fetch.mock.calls[0][1]?.body));expect(body.text).toContain('execução foi interrompida');expect(body.text).toContain('1 pendência');expect(body.text).not.toContain('PRIVATE_');
+  // Echoing a keyed admission keeps the same submission and incarnation.
+  // Its deduplication flag must not reset an already delivered failure notice.
+  await env.DB.prepare('UPDATE assistant_native_conversation_events SET receipt_json=? WHERE task_ref=?').bind(JSON.stringify({...first.receipt,deduplicated:true}),first.taskRef).run();
   expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});expect(fetch).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
   const row=await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(runId).first();expect(row).toEqual({outcome:'failed',notice_state:'accepted'});
  });
