@@ -29,10 +29,12 @@ import {KnowledgeCurator,isCuratorPrincipal,curatorPrincipal,ownsCuratorPrincipa
 import {nativeMediaCapability} from './native-media';
 import {NativeOwnerHelp} from './native-owner-help';
 import {createNativeCalendarCapability} from './native-calendar';
+import {CuratorPassages,type CuratorPassage} from './curator-passages';
 import {NativeTasks,isNativeTaskDue} from './native-tasks';
 import {nativeOwnerTools} from './native-owner-tools';
 import {compactStatement,jsonStatement} from '../d1-statement';
 import {sourceRef} from '../source-proof-contract';
+import {reconcileOwnerFailures} from './owner-outcomes';
 import {reconcileCuratorOutcomes,observeCuratorSettlement,curatorDispatchReceipt} from './curator-outcomes';
 
 const owner={kind:'owner'} as const;
@@ -82,7 +84,10 @@ export class NativeApplicationHost {
   if(isNativeTaskDue(event)){await this.tasks().authorizeEvent(event);return;}
   if(isCuratorPrincipal(event.identity.principalOrChatId)){
    const {authority}=await this.authority(event.identity);
-   if(event.revision!==1){const selected=await this.curatorResumeSelection();if(event.revision!==selected.event.revision||event.eventId!==selected.event.eventId||JSON.stringify(event.identity)!==JSON.stringify(selected.event.identity))throw Error('native_curator_resume_denied');await selected.curator.authorizeEvent(event,authority.ownerId,selected.event.revision);}
+   const runId=event.eventId.startsWith('curator-run:')?event.eventId.slice(12):'';
+   const ticket=runId?await this.curatorPassages(event.identity).ticket(runId,event.revision):null;
+   if(ticket){if(ticket.conversation_id!==await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch))throw Error('native_curator_denied');await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId,ticket.revision);}
+   else if(event.revision!==1){const selected=await this.curatorResumeSelection();if(event.revision!==selected.event.revision||event.eventId!==selected.event.eventId||JSON.stringify(event.identity)!==JSON.stringify(selected.event.identity))throw Error('native_curator_resume_denied');await selected.curator.authorizeEvent(event,authority.ownerId,selected.event.revision);}
    else await(await this.curator(event.identity)).authorizeEvent(event,authority.ownerId);return;
   }
   const sessionId=await conversationAddress(event.identity,event.identity.channel,event.identity.principalOrChatId,event.identity.contextEpoch);
@@ -307,6 +312,7 @@ export class NativeApplicationHost {
   }
   await this.db!.prepare(`UPDATE assistant_native_host_state SET purge_cursor=? WHERE installation_id=? AND generation=? AND purge_cursor=?`).bind(rows.results.at(-1)?.id??'',...keys,cursor).run();
  }
+ async reconcileOwnerFailures(){return reconcileOwnerFailures(this,this.env);}
  async tick(){
   this.currentScope();await assertRestoredGeneration(this.env);
   // Settlement/failure notices contain operational metadata only. They must
@@ -317,6 +323,7 @@ export class NativeApplicationHost {
    read:(sessionId,receipt,signal)=>openNativeConversation(sessionId).read(receipt,{signal}),
    instance:nativeConversationInstance,
    api:check=>new TelegramBotApi(this.env.TELEGRAM_BOT_TOKEN,this.env.TELEGRAM_BOT_INSTANCE!,globalThis.fetch.bind(globalThis),check,'HTML')}):{checked:0,notified:0};
+  const ownerFailures=await this.reconcileOwnerFailures();
   const cut=this.env.NATIVE_CAPTURE_START_AFTER_SEQUENCE;if(typeof cut!=='string'||!/^\d+$/.test(cut)||!Number.isSafeInteger(Number(cut)))throw Error('native_capture_cut_unconfigured');
   // Persistent per-item gaps and least-recently-attempted ordering keep an
   // unavailable media item from blocking unrelated conversations forever.
@@ -336,9 +343,9 @@ export class NativeApplicationHost {
   for(const row of ownerUpdates.results)try{outcomes.push(await this.receiveTelegram(row.update_id));}catch{outcomes.push({state:'unavailable'});}
   await this.sweepRetiredContexts();
   const tasks=await this.tasks().dispatchDue((event,guard,activationKey,fence)=>this.admit(verifiedConversationEvent(event),null,fence,guard,activationKey));
-  const curator=await this.dispatchCurator();return {state:'ticked',outcomes,tasks,curator,curatorOutcomes};
+  const curator=await this.dispatchCurator();return {state:'ticked',outcomes,tasks,curator,curatorOutcomes,ownerFailures};
  }
- async modelHost(sessionId:string,turnId:string,submissionId?:string):Promise<ConversationProviderHost>{
+ async modelHost(sessionId:string,turnId:string,submissionId?:string,modelPurpose?:import('@flue/runtime').LlmTurnPurpose):Promise<ConversationProviderHost>{
   const identity=await this.registered(sessionId),period=new Date().toISOString().slice(0,10),scope={installationId:this.scope.installationId,generation:this.scope.generation,period};
   const budget=new InferenceBudget(this.db!,scope,inferenceBudgetMode(this.env.INFERENCE_BUDGET_MODE));await budget.status(); // no implicit configuration/reset
   nativeGlobalBudgetGuard(this.env);
@@ -358,6 +365,7 @@ export class NativeApplicationHost {
   const authorityGuard=()=>joinGuards(guard,this.retention.authorityGuard(sessionId),sessionGrant,workGuard);
   return {scope,sessionId,contextEpoch:identity.contextEpoch,turnId,budget,globalBudgetGuard:()=>nativeGlobalBudgetGuard(this.env),authorityGuard,
    assertAuthority:async()=>{await this.registered(sessionId);if(JSON.stringify((await this.authority(identity)).authority)!==JSON.stringify(authority))throw Error('native_authority_changed');if(observedTask)await this.runtime.assertTaskCurrent(observedTask);},
+   ...(identity.channel==='telegram'?{inputContextTarget:isCuratorPrincipal(identity.principalOrChatId)?96000:48000,modelPurpose}:{}),
    maxOutputTokens:16384,maxRequestBytes:8*1024*1024,maxResponseBytes:16*1024*1024,timeoutMs:90000};
  }
  async resolve(sessionId:string,delivery:DeliveredMessage,submissionId?:string){const identity=await this.registered(sessionId);await this.runtime.resolveTask(identity,delivery);return {runtime:this.runtime,frame:(task:TaskContext)=>this.frame(task),consumed:(task:TaskContext)=>this.recordConsumed(task,submissionId)};}
@@ -419,7 +427,8 @@ export class NativeApplicationHost {
   await this.runtime.assertTaskCurrent(task);
   const reads=createConversationReadCapabilities({env:this.env,task,origin:this.origin,assertCurrent:()=>this.runtime.assertTaskCurrent(task),expose:proof=>this.retention.expose(task.identity,proof),getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId)});
   const curator=isCuratorPrincipal(task.identity.principalOrChatId)?await this.curatorFrame(task):undefined;
-  const media=nativeMediaCapability({env:this.env,task,runtime:this.runtime,retention:this.retention,origin:this.origin,getScope:()=>this.currentScope(),authorityGuard:()=>this.retention.authorityGuard(task.sessionId),modelGuard:()=>nativeGlobalBudgetGuard(this.env),...(curator?{onReadResult:(ref:unknown,result:unknown)=>curator.curator.recordMediaRead(curator.runId,ref,result)}:{})});
+  if(curator){const guard=curator.toolGuard();if(!await jsonStatement(this.db,`SELECT 1 WHERE (${guard.sql})`,guard.values).first())throw Error('curator_passage_inactive');}
+  const media=nativeMediaCapability({env:this.env,task,runtime:this.runtime,retention:this.retention,origin:this.origin,getScope:()=>this.currentScope(),authorityGuard:()=>joinGuards(this.retention.authorityGuard(task.sessionId),curator?.toolGuard()??{sql:'1',values:[]}),modelGuard:()=>nativeGlobalBudgetGuard(this.env),...(curator?{onReadResult:(ref:unknown,result:unknown)=>curator.curator.recordMediaRead(curator.runId,ref,result)}:{})});
   const calendar=createNativeCalendarCapability({db:this.db!,env:this.env,scope:this.scope,getScope:()=>this.currentScope(),task,assertCurrent:()=>this.runtime.assertTaskCurrent(task),authorityGuard:async()=>joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId)),ownerFence:()=>nativeOwnerFence(this.env,this.currentScope()),expose:proof=>this.retention.expose(task.identity,proof)});
   const tasks=this.tasks();
   return {reads,media,...(curator?{curator}:{}),...(task.identity.channel==='telegram'&&!curator?{ownerTools:nativeOwnerTools(this,this.env,task)}:{}),tasks:{query:(input:unknown)=>tasks.query(task,input),save:(input:unknown)=>tasks.save(task,input),setState:(input:unknown)=>tasks.setState(task,input),adopt:(input:unknown)=>tasks.adopt(task,input)},effects:{reply:async(input:unknown)=>{
@@ -440,12 +449,15 @@ export class NativeApplicationHost {
    resume:async input=>this.admit(verifiedConversationEvent({identity:input.task.identity,eventId:input.eventId,revision:1,kind:'clarification',author:{kind:'owner',id:input.ownerFence.userId},occurredAt:input.occurredAt,body:input.text,sourceRef:input.sourceRef,replyTo:input.anchor}),input.originalSequence,input.ownerFence),
   });
  }
- async curator(identity:ConversationIdentity){
+ private curatorPassages(identity:ConversationIdentity){return new CuratorPassages(this.db,this.currentScope(),async()=>{const {guard}=await this.authority(identity),sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch);return joinGuards(guard,this.retention.authorityGuard(sessionId));});}
+ async curator(identity:ConversationIdentity,ticket?:CuratorPassage){
   if(!isCuratorPrincipal(identity.principalOrChatId))throw Error('native_curator_denied');
-  const sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch),{guard}=await this.authority(identity);
+  const sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch),{guard}=await this.authority(identity),passages=this.curatorPassages(identity);
+  if(ticket&&ticket.conversation_id!==sessionId)throw Error('native_curator_denied');
+  const toolGuard=()=>ticket?passages.toolGuard(ticket):{sql:'1',values:[]};
   return new KnowledgeCurator(this.db!,()=>this.currentScope(),{
-   assertCurrent:async()=>{await this.registered(sessionId);},
-   authorityGuard:()=>joinGuards(guard,this.retention.authorityGuard(sessionId)),
+   assertCurrent:async()=>{await this.registered(sessionId);const current=toolGuard();if(!await jsonStatement(this.db,`SELECT 1 WHERE (${current.sql})`,current.values).first())throw Error('curator_passage_inactive');},
+   authorityGuard:()=>joinGuards(guard,this.retention.authorityGuard(sessionId),toolGuard()),
    verifySource:async read=>{
     if(read.fence.source.origin!=='whatsapp')return {state:'current',guard:{sql:'1',values:[]}};
     const fence=await this.origin.fence(read.id);if(!fence)return {state:'changed'};
@@ -456,15 +468,17 @@ export class NativeApplicationHost {
     for(const read of reads){signal?.throwIfAborted();if(read.fence.source.origin!=='whatsapp')continue;const fence=await this.origin.fence(read.id);signal?.throwIfAborted();if(!fence)throw Error('conversation_exposure_proof');origins.push(fence);}
     await this.retention.expose(identity,{sources,origins},signal);
    },
-  });
+  },Date.now,ticket?{revision:ticket.revision,after:ticket.after_sequence,through:ticket.through_sequence,yield:()=>passages.yield(ticket)}:undefined);
  }
  private async curatorFrame(task:TaskContext){
   const latest=task.cohort.at(-1);if(!latest||latest.author.kind!=='system'||!latest.eventId.startsWith('curator-run:'))throw Error('native_curator_denied');
-  const curator=await this.curator(task.identity),runId=latest.eventId.slice(12);
-  return {curator,runId,finish:async(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>{
-   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();const receipt=await curator.finishPassage(runId,input);signal?.throwIfAborted();
-   if(receipt.completion==='continue_required')return receipt;
-   const notice=await this.curatorSummary(task,curator,receipt,signal);return {...receipt,notice};
+  const runId=latest.eventId.slice(12),passages=this.curatorPassages(task.identity),ticket=await passages.ticket(runId,latest.revision),curator=await this.curator(task.identity,ticket??undefined);
+  return {curator,runId,toolGuard:()=>ticket?passages.toolGuard(ticket):{sql:'1',values:[]},finish:async(input:{needsHelp?:boolean;helpRequest?:string},signal?:AbortSignal)=>{
+   signal?.throwIfAborted();await this.runtime.assertTaskCurrent(task);signal?.throwIfAborted();
+   if(ticket){const recorded=await passages.ticket(runId,ticket.revision);if(recorded?.state==='yielded'||recorded?.state==='finished'){const status=await(await this.curator(task.identity)).status(runId);return {...status,completion:recorded.state==='yielded'?'passage_yielded' as const:'finished' as const,notice:{state:'already_claimed'}};}}
+   const receipt=await curator.finishPassage(runId,input);signal?.throwIfAborted();
+   if(receipt.completion==='continue_required'||receipt.completion==='passage_yielded')return receipt;
+   const notice=await this.curatorSummary(task,curator,receipt,signal);if(ticket)try{await passages.finish(ticket);}catch{/* Global finalization and the notice receipt already own this outcome. */}return {...receipt,notice};
   }};
  }
  private async curatorSummary(task:TaskContext,curator:KnowledgeCurator,receipt:CuratorReceipt,signal?:AbortSignal){
@@ -523,6 +537,9 @@ export class NativeApplicationHost {
   const request=nativeCuratorDispatchRequest(this.env);if(request.kind==='disabled')return {state:'disabled' as const};
   const scope=this.currentScope(),fence=await nativeOwnerFence(this.env,scope);
   if(request.kind==='resume'){
+   const bound=await this.db.prepare('SELECT native_identity_json FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=?').bind(scope.installationId,scope.generation,request.request.runId).first<{native_identity_json:string|null}>();
+   const resumeHash=await bridgeHash(request.request);
+   if(bound?.native_identity_json){const identity=conversationIdentity.parse(JSON.parse(bound.native_identity_json)),latest=await this.curatorPassages(identity).latest(request.request.runId);if(latest?.resume_request_hash===resumeHash)return this.dispatchCuratorPassage(request.request.runId,identity,fence.userId,latest.revision,resumeHash);}
    const selected=await this.curatorResumeSelection();
    if(selected.runState==='complete')return {state:'complete' as const,runId:selected.runId};
    const existing=await this.db.prepare("SELECT state FROM assistant_native_conversation_events WHERE conversation_id=? AND event_id=? AND revision=?").bind(selected.sessionId,selected.event.eventId,selected.event.revision).first<{state:string}>();this.currentScope();
@@ -536,7 +553,8 @@ export class NativeApplicationHost {
     // alone never authorize another paid passage.
     if(outcome==='completed'&&status.counts.pending+status.counts.presented+status.counts.indexing===0)throw Error('native_curator_resume_no_pending_work');
    }
-   return this.runtime.deliverConversation(verifiedConversationEvent(selected.event));
+   const current=await this.curatorResumeSelection();if(JSON.stringify(current.event)!==JSON.stringify(selected.event))throw Error('native_curator_resume_denied');
+   return this.dispatchCuratorPassage(selected.runId,selected.identity,fence.userId,selected.event.revision,resumeHash);
   }
   // Admission needs current owner authority, not an already registered context.
   // Constructing this candidate does not create a session or release originals.
@@ -560,15 +578,38 @@ export class NativeApplicationHost {
   if(prior&&(prior.tombstoned_at!==null||prior.state==='withdrawn'))return {state:'retired' as const,runId:run.id,sessionId:bound.sessionId,...(prior.task_ref?{taskRef:prior.task_ref}:{})};
   await this.authority(bound.identity);await this.retention.register(bound.identity);
   const curator=await this.curator(bound.identity);
-  if(request.kind==='sample'&&prior?.task_ref){await this.registered(bound.sessionId);await curator.reconcileReady(run.id);await curator.finish(run.id);}
+  if(request.kind==='sample'&&prior?.task_ref&&!await this.curatorPassages(bound.identity).latest(run.id)){await this.registered(bound.sessionId);await curator.reconcileReady(run.id);await curator.finish(run.id);}
   if(request.kind==='daily'){
    const completed=await this.db.prepare("SELECT 1 FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=? AND state='complete'").bind(scope.installationId,scope.generation,run.id).first();this.currentScope();
    if(completed)return {state:'complete' as const,runId:run.id};
   }
-  return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
+  const ticket=await this.curatorPassages(bound.identity).latest(run.id);
+  if(prior?.task_ref&&!ticket)return this.runtime.deliverConversation(verifiedConversationEvent(await curator.event(run.id,bound.identity,fence.userId)));
+  return this.dispatchCuratorPassage(run.id,bound.identity,fence.userId,1,null);
  }
 
- async respondOwner(task:TaskContext,text:string){
+
+ private async dispatchCuratorPassage(runId:string,identity:ConversationIdentity,ownerId:string,firstRevision:number,resumeHash:string|null){
+  const sessionId=await conversationAddress(identity,identity.channel,identity.principalOrChatId,identity.contextEpoch),passages=this.curatorPassages(identity),curator=await this.curator(identity);
+  await this.registered(sessionId);await this.retention.assertCurrent(identity);let ticket=await passages.latest(runId);
+  const event=async(revision:number)=>verifiedConversationEvent({...await curator.event(runId,identity,ownerId),revision});
+  if(ticket&&ticket.revision>=firstRevision){
+   if(ticket.state==='finished'){await curator.reconcileReady(runId);return {state:'complete' as const,runId};}
+   if(ticket.state==='prepared')return this.runtime.deliverConversation(await event(ticket.revision));
+   const prior=await this.db.prepare(`SELECT state,receipt_json,authority_json FROM assistant_native_conversation_events WHERE conversation_id=? AND event_id=? AND revision=?`).bind(sessionId,'curator-run:'+runId,ticket.revision).first<{state:string;receipt_json:string|null;authority_json:string}>();
+   if(prior&&prior.authority_json!==JSON.stringify((await this.authority(identity)).authority))throw Error('native_authority_changed');
+   if(!prior?.receipt_json||prior.state!=='admitted')return {state:'waiting' as const,runId};
+   const receipt=curatorDispatchReceipt.parse(JSON.parse(prior.receipt_json)),outcome=await observeCuratorSettlement({instance:nativeConversationInstance,read:(id,r,signal)=>openNativeConversation(id).read(r,{signal})},sessionId,receipt);
+   this.currentScope();if(outcome!=='completed')return {state:outcome==='failed'||outcome==='aborted'?'interrupted' as const:'waiting' as const,runId};
+   const currentAuthority=(await this.authority(identity)).authority;if(JSON.stringify(currentAuthority)!==prior.authority_json)throw Error('native_authority_changed');await this.retention.assertCurrent(identity);
+  }
+  await curator.reconcileReady(runId);const range=await curator.passageRange(runId),previous=ticket;
+  const revision=previous&&previous.revision>=firstRevision?previous.revision+1:firstRevision;
+  ticket=await passages.reserve(runId,revision,sessionId,range,previous?.revision??null,resumeHash??previous?.resume_request_hash??null);
+  return this.runtime.deliverConversation(await event(ticket.revision));
+ }
+
+ async respondOwner(task:TaskContext,text:string,publicationGuard?:AccessGuard){
   if(task.identity.channel!=='telegram'||typeof text!=='string'||!text.trim()||text.length>4096)throw Error('native_owner_response_denied');
   const fence=await nativeOwnerFence(this.env,this.scope);if(task.returnChannel.id!==fence.userId)throw Error('native_owner_response_denied');
   const thread=task.returnChannel.threadId?Number(task.returnChannel.threadId):null;
@@ -578,7 +619,7 @@ export class NativeApplicationHost {
   const prior=await this.db!.prepare(`SELECT request_hash,state,message_id FROM assistant_native_owner_responses WHERE context_ref=?`).bind(task.contextRef).first<{request_hash:string;state:string;message_id:number|null}>();
   if(prior){if(prior.request_hash!==hash)throw Error('native_owner_response_conflict');return {state:prior.state,messageId:prior.message_id};}
   const workGuard=await this.tasks().guardForTask(task);
-  const guard=joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId),telegramLinkGuard(fence),workGuard);
+  const guard=joinGuards(await this.actionAuthority(task),this.retention.authorityGuard(task.sessionId),telegramLinkGuard(fence),workGuard,...(publicationGuard?[publicationGuard]:[]));
   const claim=await jsonStatement(this.db,`INSERT INTO assistant_native_owner_responses(installation_id,generation,context_ref,conversation_id,request_hash,link_json,thread_id,state,created_at)
    SELECT ?,?,?,?,?,?,?,'attempting',? WHERE (${guard.sql}) ON CONFLICT DO NOTHING RETURNING state`,
    [this.scope.installationId,this.scope.generation,task.contextRef,task.sessionId,hash,JSON.stringify(fence),thread,Date.now(),...guard.values]).first();

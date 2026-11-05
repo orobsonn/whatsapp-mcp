@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.54.1] - 2026-11-05
+
+### Fixed
+- Sugestões para aprovação humana podem aguardar a decisão do dono sem expirar por tempo. Contexto, destinatário, identidade, autorização curta de execução e tentativa única continuam obrigatórios.
+- Botões de sugestões antigas ou desatualizadas explicam por que nada foi enviado.
+- O chat privado compacta contexto excessivo antes da inferência comum; falhas da solicitação atual geram aviso privado deduplicado e diagnósticos sem conteúdo pessoal.
+- A curadoria diária processa até vinte fontes por passagem, salva o progresso e continua pelo cron após a conclusão confirmada do SDK, sem estender o limite de execução nem refazer decisões anteriores.
+
+
 ## [0.54.0] - 2026-11-03
 
 ### Added

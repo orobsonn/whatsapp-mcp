@@ -35,15 +35,15 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
  host.assertCurrent();const s=host.scope,keys=[s.installationId,s.generation];
  const owner=await host.ownerFence();
  // Least recently checked first: ten is a work page, never a corpus cutoff.
- const rows=await host.db.prepare(`SELECT r.id,r.day,r.source_epoch,r.source_generation,e.task_ref,e.conversation_id,c.identity_json,e.authority_json,e.receipt_json,o.outcome,o.notice_state
-  FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=1
+ const rows=await host.db.prepare(`SELECT r.id,r.day,r.source_epoch,r.source_generation,e.task_ref,e.conversation_id,c.identity_json,e.authority_json,e.receipt_json,CASE WHEN o.receipt_json=e.receipt_json THEN o.outcome ELSE NULL END outcome,CASE WHEN o.receipt_json=e.receipt_json THEN o.notice_state ELSE NULL END notice_state
+  FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=(SELECT MAX(latest.revision) FROM assistant_native_conversation_events latest WHERE latest.conversation_id=e.conversation_id AND latest.event_id=e.event_id)
   JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
   LEFT JOIN assistant_curator_outcomes o ON o.installation_id=r.installation_id AND o.generation=r.generation AND o.run_id=r.id
   WHERE r.installation_id=? AND r.generation=? AND r.source_epoch=? AND r.source_generation=? AND r.run_kind='daily'
    AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND json_extract(e.authority_json,'$.ownerId')=? AND json_extract(e.authority_json,'$.policyRevision')=?
    AND json_extract(e.authority_json,'$.sourceEpoch')=? AND json_extract(e.authority_json,'$.sourceGeneration')=?
    AND json_extract(CASE WHEN json_valid(c.identity_json) THEN c.identity_json ELSE '{}' END,'$.principalOrChatId') IN (?, 'curator:'||?||':run:'||r.id)
-   AND (o.outcome IS NULL OR o.notice_state='prepared')
+   AND (o.receipt_json IS NOT e.receipt_json OR o.outcome IS NULL OR o.notice_state='prepared')
   ORDER BY COALESCE(o.last_checked_at,0),r.created_at,r.id LIMIT 10`).bind(...keys,s.sourceEpoch,s.sourceGeneration,owner.userId,owner.linkRevision,s.sourceEpoch,s.sourceGeneration,'curator:'+owner.userId,owner.userId).all<Candidate>();
  let checked=0,notified=0;
  for(const row of rows.results){
@@ -56,7 +56,7 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
    return join(current.guard,telegramLinkGuard(fence),{sql:`EXISTS(SELECT 1 FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id
     JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.tombstoned_at IS NULL
     WHERE r.installation_id=? AND r.generation=? AND r.id=? AND r.run_kind='daily' AND r.source_epoch=? AND r.source_generation=?
-     AND e.task_ref=? AND e.conversation_id=? AND c.identity_json=? AND e.state='admitted' AND e.receipt_json=? AND e.authority_json=?)`,
+     AND e.revision=(SELECT MAX(latest.revision) FROM assistant_native_conversation_events latest WHERE latest.conversation_id=e.conversation_id AND latest.event_id=e.event_id) AND e.task_ref=? AND e.conversation_id=? AND c.identity_json=? AND e.state='admitted' AND e.receipt_json=? AND e.authority_json=?)`,
     values:[...keys,row.id,s.sourceEpoch,s.sourceGeneration,row.task_ref,row.conversation_id,row.identity_json,row.receipt_json,row.authority_json]});
   };
   let guard:AccessGuard;try{guard=await gate();}catch{continue;}
@@ -64,8 +64,11 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
   const state=result===null?'pending':result==='completed'?'not_required':'prepared';
   await jsonStatement(host.db,`INSERT INTO assistant_curator_outcomes(installation_id,generation,run_id,submission_id,receipt_json,outcome,notice_state,created_at,last_checked_at)
    SELECT ?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT(installation_id,generation,run_id) DO UPDATE SET
-    outcome=COALESCE(assistant_curator_outcomes.outcome,excluded.outcome),notice_state=CASE WHEN assistant_curator_outcomes.outcome IS NULL THEN excluded.notice_state ELSE assistant_curator_outcomes.notice_state END,last_checked_at=excluded.last_checked_at
-   WHERE assistant_curator_outcomes.receipt_json=excluded.receipt_json AND (assistant_curator_outcomes.outcome IS NULL OR assistant_curator_outcomes.notice_state='prepared')`,
+    outcome=CASE WHEN assistant_curator_outcomes.receipt_json IS NOT excluded.receipt_json THEN excluded.outcome ELSE COALESCE(assistant_curator_outcomes.outcome,excluded.outcome) END,
+    notice_state=CASE WHEN assistant_curator_outcomes.receipt_json IS NOT excluded.receipt_json OR assistant_curator_outcomes.outcome IS NULL THEN excluded.notice_state ELSE assistant_curator_outcomes.notice_state END,
+    message_id=CASE WHEN assistant_curator_outcomes.receipt_json IS NOT excluded.receipt_json THEN NULL ELSE assistant_curator_outcomes.message_id END,
+    submission_id=excluded.submission_id,receipt_json=excluded.receipt_json,last_checked_at=excluded.last_checked_at
+   WHERE assistant_curator_outcomes.receipt_json IS NOT excluded.receipt_json OR assistant_curator_outcomes.outcome IS NULL OR assistant_curator_outcomes.notice_state='prepared'`,
    [...keys,row.id,receipt.submissionId,row.receipt_json,result,state,clock(),clock(),...guard.values]).run();
   if(result!=='failed'&&result!=='aborted')continue;
   const link=telegramLinkGuard(fence),topic=await host.db.prepare(`SELECT thread_id FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND link_revision=? AND slot='summaries' AND state='ready' AND fence_json=? AND (${link.sql})`)

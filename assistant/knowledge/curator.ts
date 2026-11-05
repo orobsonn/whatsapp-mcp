@@ -18,6 +18,7 @@ type CuratorItemState='pending'|'presented'|'evaluated'|'learned'|'indexing'|'un
 type ItemRow={sequence:number;source_id:string;revision:number;version:number;source_hash:string|null;state:CuratorItemState;operation_ids_json:string};
 type RunRow={id:string;day:string;run_kind:'daily'|'sample';civil_day:string|null;created_at:number;native_identity_json:string|null;native_session_id:string|null;source_epoch:string;source_generation:string;from_sequence:number;to_sequence:number;capture_to_sequence:number;state:string;needs_help:number;model_id:string|null;instructions_hash:string|null;help_request:string|null};
 export type CuratorItem={sequence:number;sourceRef:SourceSelectionRef;text:string;authorId:string|null;authorLabel:string|null;occurredAt:number;late:boolean;carried:boolean;state:'presented'|'indexing';operationIds:string[]};
+export type CuratorPassageBound={revision:number;after:number;through:number;yield():Promise<void>};
 export type CuratorHost={
  /** Checks installation/runtime authority; the curator never grants itself effects. */
  assertCurrent():Promise<void>;
@@ -59,7 +60,7 @@ type KnowledgeReceiptRow={id:string;state:string;response_json:string|null;sourc
 /** A durable scan/receipt adapter, not an extractor. Native agent judgment and
  * the shared KnowledgeService decide which relationships are worth learning. */
 export class KnowledgeCurator {
- constructor(private readonly db:D1Database,private readonly getScope:()=>OriginScope,private readonly host:CuratorHost,private readonly clock=Date.now){}
+ constructor(private readonly db:D1Database,private readonly getScope:()=>OriginScope,private readonly host:CuratorHost,private readonly clock=Date.now,private readonly passage?:CuratorPassageBound){}
  private scope(){const scope={...this.getScope()};if(Object.values(scope).some(v=>typeof v!=='string'||!v))throw Error('curator_scope');return scope;}
  private current(scope:OriginScope){if(scopeKey(scope)!==scopeKey(this.getScope()))throw Error('curator_scope_changed');}
  private keys(scope:OriginScope){return [scope.installationId,scope.generation];}
@@ -166,14 +167,20 @@ export class KnowledgeCurator {
     .bind(...keys,run.id,...keys,scope.sourceEpoch,scope.sourceGeneration)]:[]),
   ]);this.current(scope);
  }
+ async passageRange(runId:string){
+  const scope=this.scope();await this.status(runId);const visible=this.access(scope).ownerRows();
+  const rows=await this.db.prepare(`SELECT i.sequence FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.state IN('pending','presented') ORDER BY i.sequence LIMIT 20`).bind(...visible.values,...this.keys(scope),runId).all<{sequence:number}>();this.current(scope);
+  return {after:rows.results.length?rows.results[0].sequence-1:0,through:rows.results.at(-1)?.sequence??0};
+ }
  async next(runId:string,input:{after?:number;limit?:number}={},signal?:AbortSignal){
   signal?.throwIfAborted();
   const page=z.object({after:z.number().int().nonnegative().safe().default(0),limit:z.number().int().min(1).max(100).default(20)}).strict().parse(input),scope=this.scope();await this.host.assertCurrent();signal?.throwIfAborted();const run=await this.run(scope,runId);signal?.throwIfAborted();await this.refresh(scope,run);signal?.throwIfAborted();
   const visible=this.access(scope).ownerRows(),calendar=runCalendar(run);
+  if(this.passage){page.after=Math.max(page.after,this.passage.after);page.limit=Math.min(page.limit,20);}
   // The policy relation is inside the query before LIMIT. Excluded source IDs
   // and bodies cannot consume a visible page or escape to the native model.
-  const rows=await this.db.prepare(`SELECT i.* FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.sequence>? AND i.state IN ('pending','presented','unavailable','indexing') ORDER BY i.sequence LIMIT ?`)
-   .bind(...visible.values,...this.keys(scope),runId,page.after,page.limit+1).all<ItemRow>();this.current(scope);signal?.throwIfAborted();
+  const rows=await this.db.prepare(`SELECT i.* FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.sequence>? ${this.passage?"AND i.sequence<=? AND i.state IN ('pending','presented')":"AND i.state IN ('pending','presented','unavailable','indexing')"} ORDER BY i.sequence LIMIT ?`)
+   .bind(...visible.values,...this.keys(scope),runId,page.after,...(this.passage?[this.passage.through]:[]),page.limit+1).all<ItemRow>();this.current(scope);signal?.throwIfAborted();
   const proofs:{read:SourceRead;guard:AccessGuard;row:ItemRow}[]=[];
   for(const row of rows.results.slice(0,page.limit)){
    signal?.throwIfAborted();const read=await this.access(scope).read(owner,row.source_id,row.revision);this.current(scope);signal?.throwIfAborted();if(!read||read.fence.source.version!==row.version||read.text===null){
@@ -209,7 +216,7 @@ export class KnowledgeCurator {
   this.current(scope);signal?.throwIfAborted();if(snapshot.slice(updates.length).some(check=>check.results[0]?.valid!==1))throw Error('curator_source_changed');
   const items:CuratorItem[]=[];
   for(let i=0;i<proofs.length;i++)if(snapshot[i].results.length){const {read,row}=proofs[i];items.push({sequence:row.sequence,sourceRef:{id:read.id,revision:read.fence.source.revision,version:read.fence.source.version,hash:read.fence.source.hash},text:read.text!,authorId:read.authorId,authorLabel:read.authorLabel,occurredAt:read.occurredAt,late:read.occurredAt<dayStart(calendar.day),carried:calendar.kind==='daily'&&row.sequence<=run.from_sequence,state:row.state==='indexing'?'indexing':'presented',operationIds:JSON.parse(row.operation_ids_json)});}
-  return {items,...(rows.results.length>page.limit?{nextAfter:rows.results[page.limit-1].sequence}:{}),coverage:{scope:calendar.kind==='sample'?'sample_window' as const:'pinned_incremental_window' as const,state:'partial' as const,archive:'not_exhaustive' as const},window:this.public(run).window};
+  return {items,...(this.passage?{passage:{revision:this.passage.revision,after:this.passage.after,through:this.passage.through,maxSources:20}}:{}),...(rows.results.length>page.limit?{nextAfter:rows.results[page.limit-1].sequence}:{}),coverage:{scope:calendar.kind==='sample'?'sample_window' as const:'pinned_incremental_window' as const,state:'partial' as const,archive:'not_exhaustive' as const},window:this.public(run).window};
  }
  async acknowledge(runId:string,sequence:number,raw:z.input<typeof acknowledgement>){
   if(!Number.isSafeInteger(sequence)||sequence<1)throw Error('curator_item');
@@ -252,7 +259,7 @@ export class KnowledgeCurator {
   const items=inputs.map(input=>results.get(input.sequence)!);return {items,recorded:items.filter(item=>item.outcome==='recorded').length,refused:items.filter(item=>item.outcome==='refused').length};
  }
  private async prepareAcknowledgement(scope:OriginScope,runId:string,input:z.infer<typeof acknowledgement>&{sequence:number},receipts:Map<string,KnowledgeReceiptRow>,signal?:AbortSignal){
-  const {sequence}=input;signal?.throwIfAborted();
+  const {sequence}=input;signal?.throwIfAborted();if(this.passage&&(sequence<=this.passage.after||sequence>this.passage.through))throw Error('curator_item_not_presented');
   if(input.decision&&((['learned','indexing'].includes(input.state))!==(input.decision.category==='learn')||input.state==='unavailable'&&!['defer','insufficient_evidence'].includes(input.decision.category)))throw Error('curator_item_changed');
   const row=await this.db.prepare('SELECT * FROM assistant_curator_items WHERE installation_id=? AND generation=? AND run_id=? AND sequence=?').bind(...this.keys(scope),runId,sequence).first<ItemRow>();this.current(scope);
   signal?.throwIfAborted();
@@ -421,9 +428,9 @@ export class KnowledgeCurator {
   const continueRequired=async(current:CuratorReceipt)=>{
    const visible=this.access(scope).ownerRows(),authority=this.host.authorityGuard();
    const first=await this.db.prepare(`SELECT MIN(i.sequence) sequence FROM assistant_curator_items i JOIN (${visible.sql}) a ON a.id=i.source_id AND a.revision=i.revision AND a.version=i.version
-    WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.state IN ('pending','presented') AND (${authority.sql})`)
-    .bind(...visible.values,...this.keys(scope),runId,...authority.values).first<{sequence:number|null}>();this.current(scope);
-   if(first?.sequence==null)throw Error('curator_source_changed');
+    WHERE i.installation_id=? AND i.generation=? AND i.run_id=? AND i.state IN ('pending','presented') ${this.passage?'AND i.sequence>? AND i.sequence<=?':''} AND (${authority.sql})`)
+    .bind(...visible.values,...this.keys(scope),runId,...(this.passage?[this.passage.after,this.passage.through]:[]),...authority.values).first<{sequence:number|null}>();this.current(scope);
+   if(first?.sequence==null){if(this.passage){await this.passage.yield();return {...current,completion:'passage_yielded' as const};}throw Error('curator_source_changed');}
    return {...current,completion:'continue_required' as const,nextInput:{after:first.sequence-1,limit:20}};
   };
   if(!parsed.needsHelp&&receipt.counts.pending+receipt.counts.presented>0)return continueRequired(receipt);

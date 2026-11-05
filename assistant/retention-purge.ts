@@ -40,8 +40,9 @@ export class RetentionPurge {
     let previous = await read();
     if (previous && (previous.request_hash !== hash || previous.source_id !== command.sourceId)) throw new Error("retention_operation_conflict");
     if (previous?.state === "complete") return JSON.parse(previous.report_json!);
-    const catalog = (await this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' LIMIT 129").all<{ name: string }>()).results;
-    if (catalog.length > 128 || catalog.some(row => !supportedTables.has(row.name) && !nativeRetentionTables.has(row.name) && !["assistant_retention_runtime_hold", "assistant_retention_active_generation"].includes(row.name))) return { state: "blocked", reason: "retention_schema_adapter_required", d1: "pending" };
+    const catalogLimit=supportedTables.size+nativeRetentionTables.size+2;
+    const catalog = (await this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'assistant_*' LIMIT ${catalogLimit+1}`).all<{ name: string }>()).results;
+    if (catalog.length > catalogLimit || catalog.some(row => !supportedTables.has(row.name) && !nativeRetentionTables.has(row.name) && !["assistant_retention_runtime_hold", "assistant_retention_active_generation"].includes(row.name))) return { state: "blocked", reason: "retention_schema_adapter_required", d1: "pending" };
     let nativeAdapter: ReturnType<typeof nativeRetentionAdapter>;
     try { nativeAdapter = nativeRetentionAdapter(new Set(catalog.map(row => row.name))); }
     catch { return { state: "blocked", reason: "native_context_schema_incomplete", d1: "pending" }; }

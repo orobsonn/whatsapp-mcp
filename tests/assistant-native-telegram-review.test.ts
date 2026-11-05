@@ -113,6 +113,28 @@ describe('native owner Telegram review, real D1/Source action and fake providers
   if(kind==='user')c.callback_query.from.id=102;if(kind==='chat')c.callback_query.message.chat.id=102;if(kind==='thread')c.callback_query.message.message_thread_id=41;if(kind==='message')c.callback_query.message.message_id=999;if(kind==='forged')c.callback_query.data='n_'+'a'.repeat(43);if(kind==='bot')c.callback_query.from.is_bot=true;if(kind==='forwarded')Object.assign(c.callback_query.message,{via_bot:{id:1}});if(kind==='legacy')c.callback_query.data='w_'+'a'.repeat(43);
   expect(await f.review.receiveCallback(c)).toBe(kind==='legacy'?'unsupported':'denied');expect(f.attempts()).toBe(0);
  });
+ it('keeps a human suggestion pending for days and sends only once after the owner click',async()=>{
+  const base=Date.now(),clock=vi.spyOn(Date,'now').mockReturnValue(base);
+  try{const f=await fixture();await f.dispatch();expect(f.messages[0].text).toContain('Pendente até sua decisão');clock.mockReturnValue(base+3*86400000);
+   expect(await f.review.receiveCallback(f.callback())).toBe('approved');expect(f.attempts()).toBe(1);
+   expect(await f.review.receiveCallback(f.callback(0,101))).toBe('duplicate');expect(f.attempts()).toBe(1);
+  }finally{clock.mockRestore();}
+ });
+ it('explains an expired owner button without approving or attempting WhatsApp',async()=>{
+  const f=await fixture();await env.DB.prepare("UPDATE assistant_native_reply_actions SET prepared_json=json_remove(prepared_json,'$.ownerPendingReview') WHERE intent_id=?").bind(f.intentId).run();
+  const notice=await f.dispatch();
+  const expired=new NativeTelegramReplyReview(f.host,()=>Date.now()+600001);
+  expect(await expired.receiveCallback(f.callback())).toBe('denied');
+  expect(f.api.answer).toHaveBeenCalledWith('query-100',expect.stringContaining('venceu'),true);
+  expect(f.attempts()).toBe(0);expect((await f.review.status(notice.id)).approvalState).toBe('pending');
+ });
+ it('explains stale context to the authenticated owner without accepting a forged click',async()=>{
+  const f=await fixture();await f.dispatch();await f.incoming('new-question');
+  const forged=f.callback();forged.callback_query.from.id=102;
+  expect(await f.review.receiveCallback(forged)).toBe('denied');expect(f.api.answer).not.toHaveBeenCalled();
+  expect(await f.review.receiveCallback(f.callback())).toBe('denied');
+  expect(f.api.answer).toHaveBeenCalledWith('query-100',expect.stringContaining('reavaliar'),true);expect(f.attempts()).toBe(0);
+ });
  it('rejects changed update/query payload and the opposite button after approval',async()=>{
   const f=await fixture();await f.dispatch();const c=f.callback();expect(await f.review.receiveCallback(c)).toBe('approved');
   const opposite=f.callback(1,101);expect(await f.review.receiveCallback(opposite)).toBe('denied');const changed=f.callback();changed.callback_query.chat_instance='changed';expect(await f.review.receiveCallback(changed)).toBe('conflict');expect(f.attempts()).toBe(1);

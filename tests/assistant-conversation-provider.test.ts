@@ -174,6 +174,28 @@ it('native context headroom exhaustion requests compaction before any paid trans
  expect(calls).toBe(0);expect((await budget.status()).committed).toBe(0);expect(await conversationModelReceipt(env.DB,host)).toBeNull();
 });
 
+it('requests early owner compaction before paying but permits the SDK summary and preserves prior uncertain custody',async()=>{
+ host.inputContextTarget=48000;host.modelPurpose='agent';
+ const c=context();c.messages.push({role:'assistant',content:[{type:'text',text:'Synthetic large retained history'}],stopReason:'stop',timestamp:3,usage:{input:60000,output:0,cacheRead:0,cacheWrite:0,totalTokens:60000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}} as any);
+ c.messages.push({role:'user',content:'Continue the task',timestamp:4});
+ const refused=await run(provider(),c);expect(refused.result.errorMessage).toContain('context_length_exceeded');expect(calls).toBe(0);expect(await conversationModelReceipt(env.DB,host)).toBeNull();
+ host.inputContextTarget=96000;const aboveCurator=context();aboveCurator.messages.push({role:'assistant',content:[{type:'text',text:'Synthetic retained curation'}],stopReason:'stop',timestamp:3,usage:{input:100000,output:0,cacheRead:0,cacheWrite:0,totalTokens:100000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}} as any);aboveCurator.messages.push({role:'user',content:'Continue this passage',timestamp:4});
+ expect((await run(provider(),aboveCurator)).result.errorMessage).toContain('context_length_exceeded');expect(calls).toBe(0);
+ host.modelPurpose='compaction';expect((await run(provider(),c)).result.stopReason).toBe('stop');expect(calls).toBe(1);
+ host.turnId='uncertain-owner';mode='timeout';await run();expect((await conversationModelReceipt(env.DB,host))?.state).toBe('uncertain');
+ host.modelPurpose='agent';const prior=await run(provider(),c);expect(prior.result.errorMessage).toContain('native_model_request_conflict');expect(calls).toBe(2);
+});
+it('persists a closed timeout diagnosis without exposing provider content or retrying the paid attempt',async()=>{
+ host.timeoutMs=20;let requests=0;
+ const p=createConversationProvider({db:env.DB,apiKey:key,resolveHost:()=>host,fetch:async(_input,options)=>{
+  requests++;const signal=options!.signal!;
+  return new Promise<Response>((_resolve,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});
+ }});
+ const failed=await run(p);expect(failed.result.errorMessage).toContain('native_model_uncertain');
+ const diagnostic=await env.DB.prepare('SELECT state,failure_stage,failure_code,timed_out,elapsed_ms,http_status FROM assistant_native_model_receipts WHERE installation_id=? AND generation=? AND session_id=? AND turn_id=?').bind(host.scope.installationId,host.scope.generation,host.sessionId,host.turnId).first<any>();
+ expect(diagnostic).toMatchObject({state:'uncertain',failure_stage:'transport',failure_code:'timeout',timed_out:1,http_status:null});expect(diagnostic.elapsed_ms).toBeGreaterThanOrEqual(0);expect(JSON.stringify(diagnostic)).not.toContain(key);
+ await run(p);expect(requests).toBe(1);
+});
 it('provider prose cannot impersonate the structured overflow signal',async()=>{
  mode='spoofOverflow';const result=await run();expect(result.result.stopReason).toBe('error');
  expect(result.result.errorMessage).toContain('native_model_uncertain');expect(result.result.errorMessage).not.toContain('context_length_exceeded');expect(result.result.errorMessage).not.toContain(key);

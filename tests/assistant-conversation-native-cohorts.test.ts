@@ -25,6 +25,8 @@ import {ConversationRuntimeAgent} from './agents';
 import {configureConversationResolver} from ${JSON.stringify(join(root,'assistant/.flue/agents/conversation.ts'))};
 import {ConversationRuntime,verifiedConversationEvent} from ${JSON.stringify(join(root,'assistant/agent-runtime/conversation.ts'))};
 import {KnowledgeService} from ${JSON.stringify(join(root,'assistant/knowledge/service.ts'))};
+import {installEpisodeRuntime} from ${JSON.stringify(join(root,'assistant/agent-runtime/install.ts'))};
+let trustedContext;installEpisodeRuntime(async()=>{throw Error('unexpected_legacy_model');},{install:get=>{trustedContext=get;}});
 const identityFor=env=>({version:1,installationId:'synthetic-cohort-proof',generation:'g1',channel:env.PROOF_CHANNEL||'telegram',principalOrChatId:'synthetic-owner',contextEpoch:'e1'});
 function hostRuntime(env){const identity=identityFor(env);return new ConversationRuntime(env.DB,{
  authority:async seed=>{if(JSON.stringify(seed)!==JSON.stringify(identity))throw Error('synthetic_scope_denied');return {ownerId:'synthetic-owner',sourceEpoch:'s1',sourceGeneration:'sg1',policyRevision:1,grantRef:'synthetic-host-only',mode:'shadow'};},
@@ -40,14 +42,17 @@ configureConversationResolver(async env=>({runtime:hostRuntime(env),...(await en
   respondOwner:async text=>{await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('effect',?)").bind(JSON.stringify({text,taskRef:task.taskRef,cohort:task.cohort.map(e=>e.taskRef)})).run();return {state:'sent'};},
   reply:async data=>{if(identityFor(env).channel!=='whatsapp')throw Error('unexpected_reply');await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('reply',?)").bind(JSON.stringify(data)).run();return {state:'proposed'};},askOwner:async()=>{throw Error('unexpected_question');},calendarChange:async()=>{throw Error('unexpected_calendar');}}})}: {})}));
 const native=openaiProvider(),base=native.getModels().find(m=>m.id==='gpt-6-luna');if(!base)throw Error('model_missing');
-const model={...base,contextWindow:32768,maxTokens:512};
+const model={...base,maxTokens:512};
 function options(original){return {...original,apiKey:'synthetic-no-credential',maxRetries:0,transport:'sse',fetch:async(_url,request)=>{
  const {env}=getCloudflareContext(),p=JSON.parse(request.body),raw=JSON.stringify(p.input);
+ const purpose=trustedContext()?.nativeModelPurpose;
+ if(!purpose)throw Error('native_purpose_missing');
+ const compact=purpose!=='agent';
  const sequence=Math.max(...[...raw.matchAll(/synthetic-event-([0-9]+)/g)].map(m=>Number(m[1])));
  const whatsapp=env.PROOF_CHANNEL==='whatsapp',writing=whatsapp||sequence===40,finishing=sequence>=10;
  const activated=p.input.some(item=>item.type==='function_call'&&item.name==='activate_skill');
  const called=p.input.some(item=>item.type==='function_call'&&(finishing?item.name===(whatsapp?'propose_reply':'respond_owner')&&JSON.parse(item.arguments).text==='Synthetic completed delivery '+sequence:item.name==='knowledge_query'&&JSON.parse(item.arguments).predicate==='delivery-'+sequence));
- await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('transport',?)").bind(JSON.stringify({sequence,called,input:p.input,tools:(p.tools||[]).map(t=>t.name)})).run();
+ await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('transport',?)").bind(JSON.stringify({purpose,sequence,called,input:p.input,tools:(p.tools||[]).map(t=>t.name)})).run();
  if(sequence===1&&!called){
   const deadline=Date.now()+15000;while(!await env.DB.prepare("SELECT name FROM proof_flags WHERE name='release'").first()){
    if(Date.now()>deadline)throw Error('gate_timeout');await new Promise(resolve=>setTimeout(resolve,10));
@@ -57,16 +62,16 @@ function options(original){return {...original,apiKey:'synthetic-no-credential',
   const first=await env.DB.prepare("INSERT INTO proof_flags(name) VALUES('retried') ON CONFLICT DO NOTHING RETURNING name").first();
   if(first){await env.DB.prepare("INSERT INTO proof_events(kind,detail) VALUES('retry','synthetic-429')").run();return Response.json({error:{message:'synthetic transient throttle',type:'rate_limit_error',code:'rate_limit_exceeded'}},{status:429});}
  }
- const id='resp_'+crypto.randomUUID().replaceAll('-',''),text='Synthetic completed delivery '+sequence;
+ const id='resp_'+crypto.randomUUID().replaceAll('-',''),text=compact?'Synthetic retained context summary':'Synthetic completed delivery '+sequence;
  const firstFinish=finishing?await env.DB.prepare("INSERT INTO proof_flags(name) VALUES(?) ON CONFLICT DO NOTHING RETURNING name").bind('first-finish-'+sequence).first():false;
- const final=writing?called:called||finishing&&(!!firstFinish||sequence===11);
+ const final=compact|| (writing?called:called||finishing&&(!!firstFinish||sequence===11));
  const item=final?{type:'message',id:'msg_'+id,role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text,annotations:[]}]}:{type:'function_call',id:'fc_'+id,call_id:'call_'+id,name:writing?activated?whatsapp?'propose_reply':'respond_owner':'activate_skill':finishing?'respond_owner':'knowledge_query',arguments:JSON.stringify(writing?activated?whatsapp?{decision:'respond',text}:{text}:{name:'escrever-como-robson'}:finishing?{text}:{predicate:'delivery-'+sequence}),status:'completed'};
- const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(final?{content:[]}:{arguments:''})}},...(final?[{type:'response.output_text.delta',output_index:0,content_index:0,delta:text}]:[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}}];
+ const events=[{type:'response.created',response:{id}},{type:'response.output_item.added',output_index:0,item:{...item,...(final?{content:[]}:{arguments:''})}},...(final?[{type:'response.output_text.delta',output_index:0,content_index:0,delta:text}]:[{type:'response.function_call_arguments.done',output_index:0,arguments:item.arguments}]),{type:'response.output_item.done',output_index:0,item},{type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:Math.ceil(raw.length/4),output_tokens:20,total_tokens:Math.ceil(raw.length/4)+20}}}];
  return new Response(events.map(e=>'data: '+JSON.stringify(e)+String.fromCharCode(10,10)).join(''),{headers:{'Content-Type':'text/event-stream'}});
  }};}
 setProvider({...native,auth:{apiKey:{name:'Synthetic only',resolve:async()=>({auth:{apiKey:'synthetic-no-credential'}})}},getModels:()=>[model],stream:(m,c,o)=>native.stream(m,c,options(o)),streamSimple:(m,c,o)=>native.streamSimple(m,c,options(o))});
-export default {async fetch(request,env){try{const {action,sequence,taskRef}=await request.json(),runtime=hostRuntime(env);
- if(action==='deliver')return Response.json(await runtime.deliverConversation(verifiedConversationEvent({identity:identityFor(env),eventId:'synthetic-event-'+sequence,revision:1,kind:'incoming',author:{kind:'owner',id:'synthetic-author-'+sequence},occurredAt:sequence,body:'Synthetic question '+sequence,threadId:'topic-'+sequence})));
+export default {async fetch(request,env){try{const {action,sequence,taskRef,background}=await request.json(),runtime=hostRuntime(env);
+ if(action==='deliver')return Response.json(await runtime.deliverConversation(verifiedConversationEvent({identity:identityFor(env),eventId:'synthetic-event-'+sequence,revision:1,kind:'incoming',author:{kind:'owner',id:'synthetic-author-'+sequence},occurredAt:sequence,body:'Synthetic question '+sequence+(background?' '+background:''),threadId:'topic-'+sequence})));
  if(action==='read')return Response.json(await runtime.read(taskRef,{signal:AbortSignal.timeout(30000)}));
  throw Error('unknown_action');
  }catch(error){return Response.json({error:String(error),cause:error.cause,outcome:error.outcome,submissionId:error.submissionId},{status:409});}}};
@@ -129,7 +134,7 @@ test('real profile observes two joined deliveries, excludes pending input, retri
  expect(transport.detail).toContain('synthetic-event-1');expect(transport.detail).toContain('synthetic-event-2');expect(transport.detail).toContain('synthetic-event-3');
 });
 test('finish continuation preserves the authenticated cursor and still rejects a second incomplete finish',async()=>{
- const db=await start();await initialize(db);await db.prepare("INSERT INTO proof_flags(name) VALUES('finish-proof')").run();
+ const db=await start();await initialize(db);await db.prepare("INSERT OR IGNORE INTO proof_flags(name) VALUES('finish-proof')").run();
  const first=await call({action:'deliver',sequence:10}),completed=await call({action:'read',taskRef:first.taskRef});
  expect(completed.reply.metadata.conversationCohort.taskRefs).toEqual([first.taskRef]);
  const effects=(await db.prepare("SELECT detail FROM proof_events WHERE kind='effect'").all<{detail:string}>()).results.map(row=>JSON.parse(row.detail));
@@ -178,4 +183,14 @@ test('Telegram activates writing for a draft and returns to owner answers in the
  expect(last.tools).toContain('respond_owner');expect(last.tools).not.toContain('propose_reply');
  const calls=last.input.filter((item:any)=>item.type==='function_call');expect(calls.filter((item:any)=>item.name==='activate_skill')).toHaveLength(1);
  expect(await db.prepare("SELECT count(*) n FROM proof_events WHERE kind='reply'").first<number>('n')).toBe(beforeReplies);
+});
+
+// Existing production instrumentation must distinguish concurrent SDK summary
+// calls from ordinary agent calls without treating user/tool content as purpose.
+test('native owner compaction propagates trusted agent and summary purposes through the invocation scope',async()=>{
+ const db=await start();await initialize(db);await db.prepare("INSERT OR IGNORE INTO proof_flags(name) VALUES('finish-proof')").run();
+ const first=await call({action:'deliver',sequence:49,background:'Synthetic retained background. '.repeat(4500)});await call({action:'read',taskRef:first.taskRef});
+ const second=await call({action:'deliver',sequence:50,background:'Synthetic additional research. '.repeat(3500)});await call({action:'read',taskRef:second.taskRef});
+ const purposes=(await db.prepare("SELECT detail FROM proof_events WHERE kind='transport'").all<{detail:string}>()).results.map(row=>JSON.parse(row.detail).purpose);
+ expect(purposes).toContain('agent');expect(purposes.some(p=>p==='compaction'||p==='compaction_prefix')).toBe(true);expect(purposes).not.toContain(undefined);
 });

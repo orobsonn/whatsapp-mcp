@@ -223,6 +223,7 @@ async function browserRoute(request: Request, env: Env): Promise<Response> {
     if (
       action.redacted ||
       action.status !== "proposed" ||
+      action.expiresAt === null ||
       action.expiresAt <= Date.now()
     )
       throw new AppError("action_not_proposed", 409);
@@ -250,6 +251,7 @@ async function browserRoute(request: Request, env: Env): Promise<Response> {
     if (
       action.redacted ||
       action.status !== "proposed" ||
+      action.expiresAt === null ||
       action.expiresAt <= Date.now()
     )
       throw new AppError("action_not_proposed", 409);

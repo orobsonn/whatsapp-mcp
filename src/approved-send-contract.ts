@@ -8,17 +8,18 @@ export const approvedSendActivityFence = z.object({ triggerSequence: z.number().
 export type ApprovedSendActivityFence = z.infer<typeof approvedSendActivityFence>;
 export const captureConversationActivity = z.discriminatedUnion("state", [z.object({ observation:z.literal("capture_conversation_activity"),state:z.literal("available"),sourceEpoch:id,sourceGeneration:id,chatId:id,relationshipRevision:z.number().int().nonnegative().safe(),relationshipProof:z.string().regex(/^[a-f0-9]{64}$/),members:z.array(z.object({chatId:id,captureEnabled:z.boolean(),watermark:z.number().int().nonnegative().safe()}).strict()).min(1).max(2),watermark:z.number().int().nonnegative().safe(),lastOwnerOriginalSequence:z.number().int().nonnegative().safe(),latestIncomingOriginalSequence:z.number().int().nonnegative().safe() }).strict(),z.object({observation:z.literal("capture_conversation_activity"),state:z.literal("blocked"),reason:id}).strict()]);
 export type ConversationActivity = z.infer<typeof captureConversationActivity>;
-export const approvedSendPrepareInput = authenticated.extend({ operationId: id, envelope: approvedSendEnvelope, activity: approvedSendActivityFence }).strict();
+export const approvedSendPrepareInput = authenticated.extend({ operationId: id, envelope: approvedSendEnvelope, activity: approvedSendActivityFence, ownerPendingReview:z.boolean().optional() }).strict();
 export const approvedSendExecuteInput = authenticated.extend({ actionId: z.string().uuid(), approvalId: id }).strict();
 export const approvedSendStatusInput = authenticated.extend({ actionId: z.string().uuid() }).strict();
 export interface ApprovedSendPrepared {
   actionId: string; hash: string; envelope: z.infer<typeof approvedSendEnvelope>;
   target: { chatId: string; name: string; address: string; kind: "individual" | "group" }; expiresAt: number;
   activity: ApprovedSendActivityFence;
+  ownerPendingReview?: boolean;
 }
 export interface ApprovedSendReceipt {
   actionId: string; hash: string; status: string; providerMessageId: string | null;
-  providerZaapId: string | null; error: string | null; expiresAt: number;
+  providerZaapId: string | null; error: string | null; expiresAt: number; ownerPendingReview?: boolean;
 }
 export type ApprovedSendAuthorization = { authorized: false } | {
   authorized: true; actionId: string; hash: string; approvalId: string; expiresAt: number;

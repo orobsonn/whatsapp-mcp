@@ -574,9 +574,9 @@ export async function cleanup(env: Env): Promise<{
   }
   if (budget) {
     const r = await env.DB.prepare(
-      "UPDATE actions SET status=CASE WHEN status IN('proposed','approved') THEN 'expired' ELSE status END,envelope_json='{}',last_error=NULL WHERE id IN(SELECT id FROM actions WHERE expires_at<? AND envelope_json<>'{}' ORDER BY expires_at LIMIT ?)",
+      "UPDATE actions SET status=CASE WHEN status IN('proposed','approved') THEN 'expired' ELSE status END,envelope_json='{}',last_error=NULL WHERE id IN(SELECT id FROM actions WHERE expires_at<? AND envelope_json<>'{}' AND NOT (status IN('proposed','approved') AND epoch=? AND generation=? AND EXISTS(SELECT 1 FROM approved_sends s WHERE s.action_id=actions.id AND s.source_epoch=actions.epoch AND s.source_generation=actions.generation AND s.installation_id=? AND s.generation=? AND s.owner_pending_review=1)) ORDER BY expires_at LIMIT ?)",
     )
-      .bind(time, Math.min(budget, 2))
+      .bind(time, fence.epoch, fence.generation, env.ASSISTANT_INSTALLATION_ID??null, env.ASSISTANT_GENERATION??null, Math.min(budget, 2))
       .run();
     actionPayloadsCleared = r.meta.changes;
     budget -= actionPayloadsCleared;
