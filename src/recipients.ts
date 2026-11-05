@@ -6,12 +6,12 @@ import {runtimeConnectionGuard} from './connection';
 import {getChatExternal,type ChatRow} from './store';
 import type {CaptureMode} from './capture-policy';
 export const recipientInput=z.object({
- phone:z.string().regex(/^\+[1-9][0-9]{7,14}$/).describe('Telefone internacional explícito: + e8–15dígitos, primeiro1–9. Sem espaços, inferência de DDI ou nono dígito.'),
+ phone:z.string().regex(/^\+[1-9][0-9]{7,14}$/).describe('Telefone internacional explícito do pedido ou do cartão indicado pelo dono: + e8–15dígitos, primeiro1–9. Sem espaços, inferência de DDI ou nono dígito.'),
  alias:z.string().max(128).refine(s=>!/[\x00-\x1f\x7f]/.test(s)).transform(s=>s.trim()).refine(s=>s.length>0).optional(),
 }).strict();
 type ResolvedRow=ChatRow&{capture_mode:CaptureMode};
 export type RecipientResolution={chatId:string;kind:'individual';name:string;created:boolean;captureEnabled:boolean;captureMode:CaptureMode;captureSince:number|null;capturePolicy:'current_default_inherited'|'existing_preserved';validated_format:true;registeredOnWhatsApp:'unknown';messageAttempted:false;contactSavedOnDevice:false;historicalImport:false};
-/** Explicit owner address only. This creates/reuses a local reference; it does
+/** Explicit owner-selected address only (including a shared card they identify). This creates/reuses a local reference; it does
  * not contact the destination, change capture controls or verify registration. */
 export async function resolveRecipient(env:Env,raw:unknown,provider:Pick<ZapiClient,'status'>=new ZapiClient(env)):Promise<RecipientResolution>{
  assertActive(env);const input=recipientInput.parse(raw),fence=Object.freeze(currentFence(env)),address=input.phone.slice(1);

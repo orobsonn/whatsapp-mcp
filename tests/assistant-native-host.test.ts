@@ -1,3 +1,6 @@
+import {ownerToolProvenance} from '../src/owner-tool-provenance';
+import {queryMessages} from '../src/capture';
+import {CaptureMaterializer} from '../assistant/materialize';
 import {administrativeToolReferences} from '../assistant/agent-runtime/native-owner-tool-admin';
 import {releaseOwnerToolResult} from '../assistant/agent-runtime/native-owner-tool-release';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
@@ -826,4 +829,20 @@ it('continues a bounded curator page after a deduplicated SDK receipt settles, w
  expect(await next.finish({})).toMatchObject({completion:'finished'});expect(sends).toHaveBeenCalledTimes(1);expect(await host.dispatchCurator(at)).toMatchObject({state:'complete'});
  if(!second.receipt)throw Error('fixture_page2_receipt');transport.read.mockResolvedValue({submissionId:second.receipt.submissionId,uid:second.receipt.uid});await host.tick();
  expect(await env.DB.prepare('SELECT submission_id FROM assistant_curator_outcomes WHERE run_id=?').bind(c.runId).first('submission_id')).toBe(second.receipt.submissionId);expect(sends).toHaveBeenCalledTimes(1);
+});
+
+it('publishes an owner message page with a real archived transcript through exact canonical exposure',async()=>{
+ const f=await fixture(),incoming=await f.append('Legenda sintética'),mediaId=crypto.randomUUID(),derivativeId=crypto.randomUUID();
+ await env.DB.prepare("UPDATE messages SET kind='audio' WHERE id=?").bind(incoming.sourceId).run();
+ await env.DB.prepare(`INSERT INTO media(id,chat_id,message_id,message_version,epoch,generation,kind,mime,size,sha256,object_key,state,created_at) VALUES(?,?,?,1,'e1','g1','audio','audio/ogg',100,?,'synthetic/audio','ready',?)`).bind(mediaId,incoming.chatId,incoming.sourceId,'a'.repeat(64),Date.now()).run();
+ await env.DB.prepare(`INSERT INTO media_derivatives(id,media_id,media_version,epoch,generation,kind,text,state,created_at) VALUES(?,?,1,'e1','g1','transcript','Transcrição sintética','ready',?)`).bind(derivativeId,mediaId,Date.now()).run();
+ const host=f.host();await host.receiveCapture(incoming.sequence);
+ const throughSequence=await env.DB.prepare('SELECT MAX(sequence) n FROM assistant_capture_changes').first<number>('n');
+ expect(await new CaptureMaterializer(env.DB,()=>f.scope,f.own.CAPTURE_READER!,secret).importArchived({sourceKind:'derivative',sourceId:derivativeId,chatId:incoming.chatId,throughSequence})).toMatchObject({state:'applied'});
+ await f.ownerUpdate(701,'Consulte a conversa indicada',43);const receipt=await host.receiveTelegram(701),task=await latestTask(host,receipt.taskRef);
+ const page=await queryMessages(f.source,{chatId:incoming.chatId}),result={content:[{type:'text',text:JSON.stringify(page)}]};
+ const provenance=await ownerToolProvenance(f.source,f.scope,'consultar_mensagens',result);
+ expect(provenance.origins.map(r=>r.sourceKind)).toEqual(['message','derivative']);
+ expect(await releaseOwnerToolResult(host,f.own,task,{result,provenance})).toEqual(result);
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM assistant_native_context_exposures e JOIN assistant_source_origins o ON o.canonical_id=e.source_id AND o.installation_id=e.installation_id AND o.generation=e.generation WHERE e.conversation_id=?').bind(task.sessionId).first('n')).toBe(2);
 });

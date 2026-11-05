@@ -1,5 +1,6 @@
 import type {Env} from './env';
-import {AppError,sha256} from './core';
+import {AppError} from './core';
+import {observeSnapshot} from './capture-snapshot-contract';
 import {readCaptureSnapshot} from './assistant-source-reader';
 import {sourceRef} from '../assistant/source-proof-contract';
 import type {ApprovedSendScope} from './approved-send-contract';
@@ -16,7 +17,11 @@ export async function ownerToolProvenance(env:Env,scope:ApprovedSendScope,tool:s
   const snapshot=await readCaptureSnapshot(env,{secret:env.ASSISTANT_READER_SECRET,sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:kind,sourceId:id,chatId});
   if(snapshot.state!=='available'||snapshot.sourceVersion!==version||!snapshot.access||!snapshot.content)fail();
   if(text!==undefined&&(typeof snapshot.content!.text!=='string'||(truncated?!snapshot.content!.text.startsWith(text):snapshot.content!.text!==text)))fail();
-  const observationHash=await sha256(JSON.stringify([snapshot.sourceVersion??null,snapshot.access,snapshot.content]));
+  // Use the same schema normalization and digest as canonical materialization.
+  // Raw object insertion order differs for transcripts containing media metadata.
+  const observed=await observeSnapshot(snapshot,{sourceEpoch:scope.sourceEpoch,sourceGeneration:scope.sourceGeneration,sourceKind:kind,sourceId:id,chatId});
+  if(observed.state!=='available'||!observed.hash)fail();
+  const observationHash=observed.hash!;
   provenance.origins.push({sourceKind:kind,sourceId:id,chatId,sourceVersion:version,observationHash});
  }
  async function media(id:string){

@@ -1,4 +1,5 @@
 import type { Env } from "./env";
+import {sharedContactText} from './shared-contact';
 import {
   AppError,
   assertActive,
@@ -640,9 +641,16 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
     video = record(p.video);
   let kind: MessageKind = "unavailable";
   let media: NormalizedEvent["media"];
+  let contactReason: string | undefined;
   let content = str(text.message) || undefined;
   const ignoredVideo = Object.keys(video).length > 0 || str(document.mimeType).toLowerCase().startsWith("video/") || (!str(document.mimeType) && /\.(mov|mp4|m4v|webm|mkv|avi)$/i.test(str(document.fileName)));
   if (ignoredVideo) content = undefined;
+  else if (p.contact !== undefined && p.contact !== null) {
+    const contact = sharedContactText(p.contact);
+    content = contact.text;
+    contactReason = contact.reason;
+    if (content !== undefined) kind = "text";
+  }
   else if (content !== undefined) kind = "text";
   else if (Object.keys(image).length) {
     kind = "image";
@@ -705,7 +713,7 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
       typeof p.messageExpirationSeconds === "number" &&
       p.messageExpirationSeconds > 0,
     unavailableReason:
-      ignoredVideo ? "video_ignored" : kind === "unavailable" ? "unsupported_or_missing_content" : undefined,
+      ignoredVideo ? "video_ignored" : kind === "unavailable" ? contactReason ?? "unsupported_or_missing_content" : undefined,
     media,
   };
 }

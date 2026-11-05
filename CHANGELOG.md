@@ -4,6 +4,14 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.54.3] - 2026-11-05
+
+### Fixed
+- Consulta de mensagens pelo Telegram usa a mesma identificação canônica das transcrições, evitando recusa incorreta com `owner_tool_source_not_current` em conversas com áudio transcrito.
+- Cartões de contato recebidos da Z-API preservam nome e números internacionais no arquivo e nas consultas do MCP. O dono pode indicar esse cartão para resolver o destinatário, sem confundir o remetente ou escolher um homônimo.
+- Telefones múltiplos e extração incompleta ficam explícitos. Cartões não autorizam envio, não salvam contatos no aparelho e não recuperam conteúdo antigo descartado como não suportado.
+
+
 ## [0.54.2] - 2026-11-05
 
 ### Fixed
