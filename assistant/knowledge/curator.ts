@@ -375,6 +375,8 @@ export class KnowledgeCurator {
  async recordMediaRead(runId:string,requested:unknown,raw:unknown){
   const ref=mediaSourceRef.parse(requested),scope=this.scope();await this.host.assertCurrent();await this.run(scope,runId);
   const result=z.object({state:z.enum(['available','pending','unavailable']),interpretation:z.string().optional(),coverage:z.object({complete:z.boolean()}).passthrough().optional(),coveredSourceRefs:z.array(mediaSourceRef).max(3).optional()}).passthrough().parse(raw);
+  const mediaReasons=new Set(['media_reader_timeout','media_reader_exception','media_reader_unavailable','media_attachment_pending','media_file_projection_pending','media_context_unconfigured','audio_transcription_pending','media_reference_changed','media_snapshot_changed','media_type_or_size','media_unavailable','image_rendition_pending','image_rendition_unavailable','media_parse_failed','media_pixels_limit','media_pages_limit','media_pdf_parser_failed','media_uncertain','media_prior_attempt_unresolved']);
+  const reason=typeof result.reason==='string'&&mediaReasons.has(result.reason)?result.reason:'read_not_available';
   const complete=result.state==='available'&&(result.interpretation==='source_transcription'||result.coverage?.complete===true);
   const refs=result.state==='available'?[ref,...(result.coveredSourceRefs??[])]:[ref];
   const unique=[...new Map(refs.map(r=>[JSON.stringify(r),r])).values()];
@@ -386,7 +388,7 @@ export class KnowledgeCurator {
     SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${access.sql}) AND (${authority.sql})
     ON CONFLICT(installation_id,generation,run_id,source_id,revision,version,source_hash) DO UPDATE SET state=excluded.state,complete=excluded.complete,reason=excluded.reason,updated_at=excluded.updated_at
     WHERE assistant_curator_media_reads.complete=0`)
-    .bind(...this.keys(scope),runId,selected.id,selected.revision,selected.version,selected.hash,result.state,complete?1:0,complete?null:result.state==='available'?'partial_read':'read_not_available',this.clock(),...access.values,...authority.values).run();this.current(scope);
+    .bind(...this.keys(scope),runId,selected.id,selected.revision,selected.version,selected.hash,result.state,complete?1:0,complete?null:result.state==='available'?'partial_read':reason,this.clock(),...access.values,...authority.values).run();this.current(scope);
   }
  }
  /** Persist learning intent before the external write; existing receipts reconcile its effect. */

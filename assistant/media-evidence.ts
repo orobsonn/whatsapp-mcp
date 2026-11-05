@@ -1,15 +1,17 @@
+import {PDF_MAX_PAGES} from './media-limits';
 import { z } from "zod";
 import { sourceTextHash } from "./sources";
 const hash = z.string().regex(/^[a-f0-9]{64}$/), version = z.number().int().positive().safe();
 export const mediaEvidenceSchema = z.object({ id: hash, kind: z.enum(["image_context", "pdf_context"]),
   parent: z.object({ id: z.string().min(1).max(256), revision: version, version, hash }).strict(),
+  normalization:z.object({version:z.literal('image-readable-v1'),originalHash:hash,originalMime:z.string(),originalSize:version,hash,mime:z.literal('image/jpeg'),size:version,parameters:z.object({width:z.literal(2048),height:z.literal(2048),fit:z.literal('scale-down'),quality:z.literal(85)}).strict()}).strict().optional(),
   blobHash: hash, configHash: hash, text: z.string().max(32768), textHash: hash, receiptKey: z.string().regex(/^media:[a-f0-9]{64}$/),
-  pages: z.array(z.object({ page: version.max(4), state: z.enum(["readable", "unreadable"]) }).strict()).min(1).max(4),
+  pages: z.array(z.object({ page: version.max(PDF_MAX_PAGES), state: z.enum(["readable", "unreadable"]) }).strict()).min(1).max(PDF_MAX_PAGES),
 }).strict();
 export type MediaEvidence = z.infer<typeof mediaEvidenceSchema>;
 export function ownMediaEvidence(input: unknown): MediaEvidence {
   const raw = input as Partial<MediaEvidence> | null;
-  if (!raw || typeof raw.text !== "string" || raw.text.length > 32768 || !Array.isArray(raw.pages) || raw.pages.length < 1 || raw.pages.length > 4) throw new Error("media_evidence_limit");
+  if (!raw || typeof raw.text !== "string" || raw.text.length > 32768 || !Array.isArray(raw.pages) || raw.pages.length < 1 || raw.pages.length > PDF_MAX_PAGES) throw new Error("media_evidence_limit");
   return mediaEvidenceSchema.parse(input);
 }
 export async function validateMediaEvidence(input: unknown, parent: { id: string; revision: number; version: number; hash: string }) {

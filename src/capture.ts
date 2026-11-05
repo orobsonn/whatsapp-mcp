@@ -636,11 +636,14 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
   const text = record(p.text),
     image = record(p.image),
     audio = record(p.audio),
-    document = record(p.document);
+    document = record(p.document),
+    video = record(p.video);
   let kind: MessageKind = "unavailable";
   let media: NormalizedEvent["media"];
   let content = str(text.message) || undefined;
-  if (content !== undefined) kind = "text";
+  const ignoredVideo = Object.keys(video).length > 0 || str(document.mimeType).toLowerCase().startsWith("video/") || (!str(document.mimeType) && /\.(mov|mp4|m4v|webm|mkv|avi)$/i.test(str(document.fileName)));
+  if (ignoredVideo) content = undefined;
+  else if (content !== undefined) kind = "text";
   else if (Object.keys(image).length) {
     kind = "image";
     if (str(image.imageUrl))
@@ -702,7 +705,7 @@ export function normalizeZapiEvent(payload: unknown): NormalizedEvent {
       typeof p.messageExpirationSeconds === "number" &&
       p.messageExpirationSeconds > 0,
     unavailableReason:
-      kind === "unavailable" ? "unsupported_or_missing_content" : undefined,
+      ignoredVideo ? "video_ignored" : kind === "unavailable" ? "unsupported_or_missing_content" : undefined,
     media,
   };
 }

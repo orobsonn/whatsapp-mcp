@@ -7,9 +7,9 @@ import { admitMedia } from "../assistant/media-admission";
 const png = () => Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='), c => c.charCodeAt(0));
 it('admits a structural image and real PDF page count before any network', async () => {
   expect(await admitMedia(png(), 'image/png')).toMatchObject({ kind: 'image_context', width: 1, height: 1, pages: 1 });
-  const pdf = await PDFDocument.create(); for (let n = 0; n < 4; n++) pdf.addPage();
-  expect(await admitMedia(await pdf.save(), 'application/pdf', pdfParser)).toMatchObject({ kind: 'pdf_context', pages: 4 });
-  pdf.addPage(); await expect(admitMedia(await pdf.save(), 'application/pdf', pdfParser)).rejects.toThrow('media_pages_limit');
+  const pdf = await PDFDocument.create(); for (let n = 0; n < 17; n++) pdf.addPage();
+  expect(await admitMedia(await pdf.save(), 'application/pdf', pdfParser)).toMatchObject({ kind: 'pdf_context', pages: 17 });
+  for(let n=0;n<4;n++)pdf.addPage(); await expect(admitMedia(await pdf.save(), 'application/pdf', pdfParser)).rejects.toThrow('media_pages_limit');
 });
 it('rejects spoofed MIME, malformed PDF, oversized files and pixel bombs', async () => {
   await expect(admitMedia(png(), 'application/pdf')).rejects.toThrow();
@@ -285,7 +285,7 @@ it('rejects incomplete output, unknown control fields and missing pages while re
 });
 it('sends fixed Responses inline file payload without URLs, tools or server persistence and bounds responses', async () => {
   const payload = JSON.parse(mediaPayload(png(), 'image/png', { kind:'image_context', pages:1, width:1, height:1 }));
-  expect(payload).toMatchObject({ model:'gpt-6-luna', store:false, max_output_tokens:2048 });
+  expect(payload).toMatchObject({ model:'gpt-6-luna', store:false, max_output_tokens:8192 });
   expect(JSON.stringify(payload)).not.toMatch(/file_url|previous_response_id|conversation|"tools"/); expect(JSON.stringify(payload)).toContain('data:image/png;base64,');
   const calls: string[] = [];
   const fetcher: typeof fetch = async (url, init) => { calls.push(String(url)); expect(init?.redirect).toBe('manual'); return new Response('x'.repeat(262145)); };

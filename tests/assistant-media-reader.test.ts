@@ -65,10 +65,10 @@ it("cancels an oversized stream at the host cap instead of consuming the audio l
   expect(cancelled).toBe(true); expect(produced).toBeLessThanOrEqual(256);
 });
 
-it("does not let a larger host cap increase the existing image limit", async () => {
-  await run("UPDATE media SET size=2097153 WHERE id='binary-media'");
+it("does not let a host cap exceed the captured image limit", async () => {
+  await run("UPDATE media SET size=20971521 WHERE id='binary-media'");
   const get = vi.spyOn(env.MEDIA, "get");
-  await expect(boundedRead(settings(), "binary-media", 2097154)).rejects.toHaveProperty("code", "media_not_ready");
+  await expect(boundedRead(settings(), "binary-media", 20971522)).rejects.toHaveProperty("code", "media_not_ready");
   expect(get).not.toHaveBeenCalled();
 });
 
@@ -102,7 +102,7 @@ it("rejects wrong references, versions and type before touching R2", async () =>
     const result = await reader().readBoundedMedia({ ...input, ...changed });
     expect(result.state).not.toBe("available"); expect(result.bytes).toBeUndefined();
   }
-  for (const sql of ["UPDATE media SET size=2097153", "UPDATE media SET size=0", "UPDATE media SET size=NULL",
+  for (const sql of ["UPDATE media SET size=20971521", "UPDATE media SET size=0", "UPDATE media SET size=NULL",
     "UPDATE media SET size=1.5", "UPDATE media SET mime='audio/wav'", "UPDATE media SET kind='audio'"]) {
     await env.DB.prepare("UPDATE media SET kind='image',mime='image/png',size=?").bind(png.length).run();
     await run(sql); const result = await reader().readBoundedMedia(input);

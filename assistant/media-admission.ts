@@ -1,6 +1,8 @@
+import type {ImageRendition} from '../src/image-rendition';
+import {PDF_MAX_PAGES} from './media-limits';
 import {jpegStructure} from '../src/jpeg';
 export interface PdfAdmissionReader { admitPdf(input: { bytes: Uint8Array }): Promise<unknown> }
-export type MediaAdmission = { kind: "image_context" | "pdf_context"; pages: number; width?: number; height?: number };
+export type MediaAdmission = { kind: "image_context" | "pdf_context"; pages: number; width?: number; height?: number; normalization?:ImageRendition };
 /** Structural admission only. This is not a full image decoder or a PDF sandbox.
  * Parsing precedes every financial/network effect. Runtime failure leaves no paid attempt. */
 export async function admitMedia(input: Uint8Array, mime: string, pdfParser?: PdfAdmissionReader): Promise<MediaAdmission> {
@@ -17,7 +19,7 @@ export async function admitMedia(input: Uint8Array, mime: string, pdfParser?: Pd
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("media_pdf_parser_failed");
       const result = raw as { state?: unknown; pages?: unknown; reason?: unknown };
       if (result.state === "blocked" && Object.keys(raw).length === 2 && ["pdf_invalid_input", "pdf_invalid", "pdf_pages_limit"].includes(String(result.reason))) throw new Error(result.reason === "pdf_pages_limit" ? "media_pages_limit" : "media_pdf_parser_failed");
-      if (Object.keys(raw).length !== 2 || result.state !== "available" || !Number.isSafeInteger(result.pages) || Number(result.pages) < 1 || Number(result.pages) > 4) throw new Error("media_pdf_parser_failed");
+      if (Object.keys(raw).length !== 2 || result.state !== "available" || !Number.isSafeInteger(result.pages) || Number(result.pages) < 1 || Number(result.pages) > PDF_MAX_PAGES) throw new Error("media_pdf_parser_failed");
       return { kind: "pdf_context", pages: Number(result.pages) };
     } catch (error) { if (error instanceof Error && error.message === "media_pages_limit") throw error; throw new Error("media_pdf_parser_failed"); }
     finally { clearTimeout(timer); }
