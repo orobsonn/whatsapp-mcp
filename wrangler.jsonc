@@ -37,6 +37,7 @@
     { "binding": "OAUTH_KV", "id": "93907348ac84473c949f9400b0c796ba" },
   ],
   "ai": { "binding": "AI" },
+  "images": { "binding": "IMAGES" },
   "vars": {
     "RUNTIME_CONFIG": "database",
     // Non-secret affinity and discovery settings must survive normal deploys.

@@ -84,7 +84,7 @@ async function chat() {
 }
 async function captured(
   url = "https://media.example/original",
-  kind: "image" | "audio" = "image",
+  kind: "image" | "audio" | "pdf" = "image",
   mime = kind === "image" ? "image/png" : "audio/wav",
   filename = "file",
 ) {
@@ -645,4 +645,48 @@ it('downloads complete JPEG with trailing metadata and canonicalizes a mislabele
  const second=await env.DB.prepare("SELECT a.id FROM media a JOIN messages m ON m.id=a.message_id WHERE m.external_id='document-image'").first<{id:string}>();
  expect(await getMedia(e,second!.id)).toMatchObject({state:'ready',kind:'image',mime:'image/jpeg',filename:'original.png'});
  await expect(uploadMedia(e,(await chat()).id,{bytes:jpeg,mime:'image/png',filename:'original.png'})).rejects.toHaveProperty('code','media_mime_mismatch');
+});
+
+it('ignores video callbacks and MOV documents without enqueueing media',async()=>{
+ await chat();
+ for(const [i,body] of [{video:{videoUrl:'https://media.example/movie'}},{document:{documentUrl:'https://media.example/movie',mimeType:'video/quicktime',fileName:'IMG_1.MOV'}}].entries()){
+  const event=normalizeZapiEvent({phone:'group-a',messageId:'ignored-video-'+i,fromMe:false,momment:1,isGroup:true,...body});
+  expect(event).toMatchObject({kind:'unavailable',unavailableReason:'video_ignored'});expect(event.media).toBeUndefined();
+  await ingestEvent(e,currentFence(e),event);
+ }
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM media').first('n')).toBe(0);
+ expect(await env.DB.prepare('SELECT COUNT(*) n FROM media_jobs').first('n')).toBe(0);
+});
+
+it('captures a complete received PDF with trailing metadata while keeping upload validation strict',async()=>{
+ const {PDFDocument}=await import('pdf-lib'),doc=await PDFDocument.create();for(let i=0;i<17;i++)doc.addPage();
+ const original=await doc.save(),bytes=new Uint8Array(original.length+64000);bytes.set(original);bytes.fill(32,original.length);
+ const item=await captured('https://media.example/pdf-trailing','pdf','application/pdf','report.pdf');
+ await processMediaJobs(e,async()=>new Response(bytes,{headers:{'content-type':'application/pdf'}}));
+ expect(await getMedia(e,item.id)).toMatchObject({state:'ready',kind:'pdf',size:bytes.length});
+ await expect(uploadMedia(e,(await chat()).id,{bytes,mime:'application/pdf',filename:'report.pdf'})).rejects.toHaveProperty('code','unsupported_media');
+});
+
+it('keeps a captured HEIC original and publishes its readable rendition through the existing download job',async()=>{
+ const {heic}=await import('./fixtures/synthetic-heic'),jpeg=Uint8Array.from(atob(encodedFixtures[0].base64),c=>c.charCodeAt(0));
+ const output=vi.fn(async()=>({image:()=>new Response(jpeg).body!,contentType:()=> 'image/jpeg'}));const input=vi.fn(()=>({transform:()=>({output})}));
+ const own={...e,IMAGES:{input} as unknown as ImagesBinding};
+ const item=await captured('https://media.example/camera','image','image/heic','camera.HEIC');
+ await processMediaJobs(own,async()=>new Response(heic,{headers:{'content-type':'image/heic'}}));
+ expect(await getMedia(own,item.id)).toMatchObject({state:'ready',mime:'image/heic',sha256:await sha256(heic),size:heic.length});
+ expect((await readMedia(own,item.id)).bytes).toEqual(heic);expect(input).toHaveBeenCalledOnce();expect(output).toHaveBeenCalledOnce();
+ const d=await env.DB.prepare("SELECT id,text,object_key FROM media_derivatives WHERE media_id=? AND kind='image_rendition' AND state='ready'").bind(item.id).first<{id:string;text:string;object_key:string}>();
+ const {readCaptureSnapshot}=await import('../src/assistant-source-reader');
+ expect(d).not.toBeNull();expect(JSON.parse(d!.text)).toMatchObject({originalHash:await sha256(heic),hash:await sha256(jpeg),version:'image-readable-v1'});
+ expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_capture_changes WHERE source_kind='derivative'").first('n')).toBe(0);
+ const {CaptureMediaReader}=await import('../src/assistant-media-reader'),secret='synthetic-image-render-reader-secret';
+ const reader=new CaptureMediaReader({} as ExecutionContext,{...own,ASSISTANT_READER_SECRET:secret});
+ const m=await env.DB.prepare('SELECT chat_id,message_version,version FROM media WHERE id=?').bind(item.id).first<{chat_id:string;message_version:number;version:number}>();
+ const r=await reader.readBoundedMedia({secret,sourceEpoch:'e1',sourceGeneration:'g1',chatId:m!.chat_id,mediaId:item.id,expectedMessageVersion:m!.message_version,expectedMediaVersion:m!.version,expectedBlobHash:await sha256(heic)});
+ expect(await readCaptureSnapshot({...own,ASSISTANT_READER_SECRET:secret},{secret,sourceEpoch:'e1',sourceGeneration:'g1',chatId:m!.chat_id,sourceId:d!.id,sourceKind:'derivative'})).toMatchObject({state:'withdrawn',reason:'internal_rendition'});
+ expect(r).toMatchObject({state:'available',blobHash:await sha256(heic),mime:'image/jpeg',normalization:{hash:await sha256(jpeg),version:'image-readable-v1'}});
+ if(r.state==='available')expect(r.bytes).toEqual(jpeg);
+ const withdrawn=await captured('https://media.example/withdrawn-heic','image','image/heic','withdrawn.HEIC');
+ await processMediaJobs(own,async()=>{await env.DB.prepare('UPDATE messages SET deleted_at=2 WHERE id=(SELECT message_id FROM media WHERE id=?)').bind(withdrawn.id).run();return new Response(heic,{headers:{'content-type':'image/heic'}});});
+ expect(input).toHaveBeenCalledOnce();
 });

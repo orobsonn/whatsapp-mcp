@@ -1,3 +1,4 @@
+import {parseImageRendition} from '../src/image-rendition';
 import { SourceAccess, type TrustedActor,type AccessGuard } from "./access";
 import { InferenceBudget, type BudgetScope,type BudgetMode } from "./budget";
 import { bridgeHash } from "./ingress";
@@ -82,17 +83,18 @@ export class MediaContext {
     if (receipt?.actual_units !== null && receipt?.actual_units !== undefined) return this.finish(actor, parent, origin, key, configHash, media.hash, receipt);
     if (receipt && ["parsing", "attempting", "uncertain", "blocked"].includes(receipt.state)) return pending(receipt.reason ?? (receipt.state === "parsing" ? "media_parse_interrupted" : "media_uncertain"), key);
     let binary: CaptureMediaResult;
-    let readTimer: ReturnType<typeof setTimeout> | undefined;
+    let readTimer: ReturnType<typeof setTimeout> | undefined,readTimedOut=false;
     try { binary = await Promise.race([this.options.reader.readBoundedMedia({ secret: this.options.secret, sourceEpoch: origin.sourceEpoch, sourceGeneration: origin.sourceGeneration,
-      chatId: origin.chatId, mediaId: media.id, expectedMessageVersion: content.messageVersion, expectedMediaVersion: media.version, expectedBlobHash: media.hash }), new Promise<never>((_, reject) => { readTimer = setTimeout(() => reject(new Error("media_read_timeout")), 2000); })]); }
-    catch { return pending("media_reader_unavailable", key); }
+      chatId: origin.chatId, mediaId: media.id, expectedMessageVersion: content.messageVersion, expectedMediaVersion: media.version, expectedBlobHash: media.hash }), new Promise<never>((_, reject) => { readTimer = setTimeout(() => {readTimedOut=true;reject(new Error("media_read_timeout"));}, 10000); })]); }
+    catch { return pending(readTimedOut?"media_reader_timeout":"media_reader_exception", key); }
     finally { clearTimeout(readTimer); }
-    if (binary.state !== "available") return pending("media_reader_unavailable", key);
+    if (binary.state !== 'available'){const reasons=new Set(['media_reference_changed','media_snapshot_changed','media_type_or_size','media_unavailable','image_rendition_pending','image_rendition_unavailable','source_withdrawn','capture_disabled','privacy_protected','version_mismatch']);return pending(reasons.has(binary.reason)?binary.reason:'media_reader_unavailable',key);}
+    if(binary.normalization){try{binary.normalization=parseImageRendition(JSON.stringify(binary.normalization));}catch{return pending('media_normalization_contract',key);}}
     // Own the bytes before hashing/await; nominal RPC is still checked locally.
     if (!(binary.bytes instanceof Uint8Array) || binary.bytes.length < 1 || binary.bytes.length > 2097152) return pending("media_bytes_limit", key);
     const bytes = binary.bytes.slice();
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
-    if (binary.observation !== "capture_media" || binary.sourceEpoch !== origin.sourceEpoch || binary.sourceGeneration !== origin.sourceGeneration || binary.chatId !== origin.chatId || binary.mediaId !== media.id || binary.messageVersion !== content.messageVersion || binary.mediaVersion !== media.version || binary.mime !== media.mime || binary.blobHash !== media.hash || digest !== media.hash || binary.size !== bytes.length || media.size !== bytes.length || binary.watermark !== origin.watermark || !await this.fresh(actor, parent, origin)) return pending("media_reference_changed", key);
+    if (binary.observation !== "capture_media" || binary.sourceEpoch !== origin.sourceEpoch || binary.sourceGeneration !== origin.sourceGeneration || binary.chatId !== origin.chatId || binary.mediaId !== media.id || binary.messageVersion !== content.messageVersion || binary.mediaVersion !== media.version || binary.blobHash !== media.hash || binary.size !== bytes.length || (binary.normalization ? binary.normalization.originalHash!==media.hash || binary.normalization.originalMime!==media.mime || binary.normalization.originalSize!==media.size || binary.normalization.hash!==digest || binary.normalization.mime!==binary.mime || binary.normalization.size!==bytes.length : binary.mime!==media.mime || digest!==media.hash || media.size!==bytes.length) || binary.watermark !== origin.watermark || !await this.fresh(actor, parent, origin)) return pending("media_reference_changed", key);
     let admission: MediaAdmission;
     if (!receipt) {
       const guard = this.access.guard(actor, parent.fence, this.clock());
@@ -102,7 +104,8 @@ export class MediaContext {
       catch { return pending("media_parse_claim_uncertain", key); }
       if (claimed.results.length !== 1) return pending("media_busy", key);
       try {
-        admission = await admitMedia(bytes, media.mime, this.options.pdfParser);
+        admission = await admitMedia(bytes, binary.mime, this.options.pdfParser);
+        if(binary.normalization)admission.normalization=binary.normalization;
         await this.sql(`UPDATE assistant_media_receipts SET state='prepared',admission_json=? WHERE ${ns} AND operation_key=? AND state='parsing'`, JSON.stringify(admission), ...this.keys(), key).run();
       } catch {
         await this.sql(`UPDATE assistant_media_receipts SET state='blocked',reason='media_parse_failed' WHERE ${ns} AND operation_key=? AND state='parsing'`, ...this.keys(), key).run();
@@ -112,7 +115,7 @@ export class MediaContext {
     }
     if (receipt?.state !== "prepared" || !receipt.admission_json) return pending("media_busy", key);
     admission = JSON.parse(receipt.admission_json) as MediaAdmission;
-    const body = mediaPayload(bytes, media.mime, admission,this.options.modelProvider), requestHash = await bridgeHash(body);
+    const body = mediaPayload(bytes, binary.mime, admission,this.options.modelProvider), requestHash = await bridgeHash(body);
     if (!await this.fresh(actor, parent, origin)) return pending("media_origin_changed", key);
     try { const reserved = await this.budget.reserve(key, requestHash, config.ceilingUnits); if (!reserved.created) return pending("media_reservation_uncertain", key); }
     catch { return pending("media_budget_unavailable", key); }
@@ -156,7 +159,7 @@ export class MediaContext {
     if (!receipt.response_json || !receipt.admission_json || !["response_ready", "complete"].includes(receipt.state)) return pending("media_uncertain", key);
     const admission = JSON.parse(receipt.admission_json) as MediaAdmission, output = mediaOutput(JSON.parse(receipt.response_json), admission.pages,this.options.modelProvider);
     const ref = { id: parent.id, revision: parent.fence.source.revision, version: parent.fence.source.version, hash: parent.fence.source.hash };
-    const evidence: MediaEvidence = { id: await bridgeHash(key), kind: admission.kind, parent: ref, blobHash, configHash, text: output.text, textHash: await sourceTextHash(output.text), receiptKey: key, pages: output.pages };
+    const evidence: MediaEvidence = { id: await bridgeHash(key), kind: admission.kind, parent: ref, blobHash, configHash, text: output.text, textHash: await sourceTextHash(output.text), receiptKey: key, pages: output.pages,...(admission.normalization?{normalization:admission.normalization}:{}) };
     if (!await this.fresh(actor, parent, origin)) return pending("media_origin_changed", key);
     const guard = this.access.guard(actor, parent.fence, this.clock());
     try {

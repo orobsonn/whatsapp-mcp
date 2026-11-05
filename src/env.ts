@@ -3,6 +3,7 @@ import type { AuthorityEnv } from "./oauth-storage";
 export interface Env extends AuthorityEnv {
   DB: D1Database;
   MEDIA: R2Bucket;
+  IMAGES?: ImagesBinding;
   OAUTH_KV: KVNamespace;
   AI: Ai;
   ENCRYPTION_KEY?: string;

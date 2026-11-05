@@ -117,6 +117,8 @@ function projectSnapshot(base:CaptureSnapshot,query:CaptureReference,row:Snapsho
   if (query.sourceKind !== "conversation") {
     if (row.message_deleted !== null || row.source_state === "deleted") return withdrawn("source_withdrawn");
     if (row.privacy_locked) return withdrawn("privacy_protected");
+    if(row.unavailable_reason==='video_ignored')return withdrawn('video_ignored');
+    if(query.sourceKind==='derivative'&&row.derivative_kind==='image_rendition')return withdrawn('internal_rendition');
     if (!row.message_id || row.unavailable_reason !== null) return blocked("message_unavailable");
   }
   if (query.sourceKind === "media" || query.sourceKind === "derivative") {

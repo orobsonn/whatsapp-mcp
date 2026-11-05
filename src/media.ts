@@ -1,3 +1,4 @@
+import {createImageRendition,needsImageRendition,IMAGE_CAPTURE_BYTES,IMAGE_RENDITION_VERSION} from './image-rendition';
 import {jpegStructure} from './jpeg';
 import type { Env } from "./env";
 import {
@@ -72,8 +73,8 @@ export interface TranscriptView {
 }
 const DOWNLOAD_MS = 15000;
 const TRANSCRIBE_MS = 90000;
-const mediaLimit = (kind?: string) =>
-  kind === "audio" ? LIMITS.audioBytes : LIMITS.mediaBytes;
+const mediaLimit = (kind?: string,captured=false) =>
+  kind === "audio" ? LIMITS.audioBytes : kind === "image" && captured ? IMAGE_CAPTURE_BYTES : LIMITS.mediaBytes;
 function base64(bytes: Uint8Array): string {
   // Avoid a numeric JSON array (several times the input size) and giant spread calls.
   const chunks: string[] = [];
@@ -171,7 +172,7 @@ function canonicalMime(mime: string): string {
 function ascii(bytes: Uint8Array, offset: number, n: number): string {
   return String.fromCharCode(...bytes.subarray(offset, offset + n));
 }
-function detect(bytes: Uint8Array): {
+function detect(bytes: Uint8Array, received = false): {
   kind: "image" | "pdf" | "audio";
   mime: string;
 } {
@@ -208,7 +209,7 @@ function detect(bytes: Uint8Array): {
     n >= 14 &&
     /^%PDF-[12]\.[0-9]/.test(ascii(bytes, 0, 8)) &&
     new TextDecoder()
-      .decode(bytes.subarray(Math.max(0, n - 1024)))
+      .decode(bytes.subarray(Math.max(0, n - (received ? LIMITS.mediaBytes : 1024))))
       .includes("%%EOF")
   )
     return { kind: "pdf", mime: "application/pdf" };
@@ -262,6 +263,10 @@ function detect(bytes: Uint8Array): {
     ["M4A ", "M4B "].includes(ascii(bytes, 8, 4))
   )
     return { kind: "audio", mime: "audio/mp4" };
+  if(received && n>=24 && ascii(bytes,4,4)==="ftyp" && d.getUint32(0)>=20 && d.getUint32(0)<=n){
+    const brands=Array.from({length:Math.min(16,Math.floor(d.getUint32(0)/4)-2)},(_,i)=>ascii(bytes,8+i*4,4));
+    if(brands.some(b=>["heic","heix","hevc","hevx"].includes(b)))return {kind:"image",mime:"image/heic"};
+  }
   throw new AppError("unsupported_media", 415);
 }
 function validate(
@@ -274,10 +279,10 @@ function validate(
     throw new AppError("invalid_media");
   if (bytes.length > LIMITS.audioBytes)
     throw new AppError("body_too_large", 413);
-  const detected = detect(bytes);
-  if (bytes.length > mediaLimit(detected.kind))
+  const detected = detect(bytes, received);
+  if (bytes.length > mediaLimit(detected.kind,received))
     throw new AppError("body_too_large", 413);
-  if (mime && canonicalMime(mime) !== detected.mime && !(received && detected.kind==='image' && ['image/png','image/jpeg','image/webp'].includes(canonicalMime(mime))))
+  if (mime && canonicalMime(mime) !== detected.mime && !(received && detected.kind==='image' && canonicalMime(mime).startsWith('image/')))
     throw new AppError("media_mime_mismatch", 415);
   if (kind && kind !== detected.kind)
     throw new AppError("media_kind_mismatch", 415);
@@ -296,7 +301,7 @@ export async function readMedia(
     throw new AppError("invalid_media_limit");
   const fence = currentFence(env);
   const m = await row(env, id, fence);
-  const cap = Math.min(mediaLimit(m.kind), maxBytes ?? mediaLimit(m.kind));
+  const cap = Math.min(mediaLimit(m.kind,m.message_id!==null), maxBytes ?? mediaLimit(m.kind,m.message_id!==null));
   if (
     m.state !== "ready" ||
     !m.object_key ||
@@ -554,7 +559,7 @@ async function download(
       reject(new AppError("media_deadline", 504));
     }, DOWNLOAD_MS);
   });
-  let key: string | undefined;
+  let key: string | undefined,renditionKey:string|undefined;
   try {
     const bytes = await Promise.race([
       (async () => {
@@ -578,7 +583,7 @@ async function download(
         const length = response.headers.get("content-length");
         if (
           length &&
-          (!/^\d+$/.test(length) || Number(length) > mediaLimit(m.kind))
+          (!/^\d+$/.test(length) || Number(length) > mediaLimit(m.kind,m.message_id!==null))
         ) {
           await response.body?.cancel();
           throw new AppError("body_too_large", 413);
@@ -586,17 +591,26 @@ async function download(
         const result = await readDownload(
           response,
           controller.signal,
-          mediaLimit(m.kind),
+          mediaLimit(m.kind,m.message_id!==null),
         );
         validate(result, response.headers.get("content-type"), m.kind, true);
         return result;
       })(),
       deadline,
     ]);
+    clearTimeout(timer);timer=undefined;
     const type = validate(bytes, m.mime, m.kind, true);
     // Incoming filenames are source metadata, not a caller upload declaration.
     filename(m.filename);
     const hash = await sha256(bytes);
+    let rendition:Awaited<ReturnType<typeof createImageRendition>>=null;
+    if(m.kind==='image'&&m.message_id&&needsImageRendition(bytes,type.mime)){
+      const current=await row(env,m.id,fence);
+      if(controller.signal.aborted||current.state!=='pending'||current.version!==m.version||current.message_version!==m.message_version||current.source_url!==m.source_url||!await env.DB.prepare(`SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?`).bind(...liveJob(job),Date.now()).first())throw new AppError('stale_media',409);
+      rendition=await createImageRendition(env,bytes,type.mime);
+    }
+    const renditionId=await sha256(JSON.stringify([m.id,m.version,hash,IMAGE_RENDITION_VERSION]));
+    if(rendition){renditionKey=`rendition/${m.id}/${crypto.randomUUID()}`;await env.MEDIA.put(renditionKey,rendition.bytes,{httpMetadata:{contentType:rendition.metadata.mime}});}
     assertActive(env);
     assertFence(env, fence);
     key = `original/${m.id}/${crypto.randomUUID()}`;
@@ -605,9 +619,11 @@ async function download(
     });
     assertActive(env);
     assertFence(env, fence);
+    const publicationNow=Date.now();
     const results = await env.DB.batch([
+      env.DB.prepare(`INSERT INTO media_derivatives(id,media_id,media_version,epoch,generation,kind,text,object_key,state,created_at) SELECT ?,id,version,epoch,generation,'image_rendition',?,?,'ready',? FROM media WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='pending' AND ${visible()} AND ?=1 AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) ON CONFLICT DO NOTHING`).bind(renditionId,JSON.stringify(rendition?.metadata??null),renditionKey??null,publicationNow,m.id,m.version,job.message_version,fence.epoch,fence.generation,rendition?1:0,...liveJob(job),publicationNow),
       env.DB.prepare(
-        `UPDATE media SET mime=?,size=?,sha256=?,object_key=?,state='ready',source_url=NULL WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='pending' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) RETURNING id`,
+        `UPDATE media SET mime=?,size=?,sha256=?,object_key=?,state='ready',source_url=NULL WHERE id=? AND version=? AND message_version=? AND epoch=? AND generation=? AND state='pending' AND ${visible()} AND EXISTS(SELECT 1 FROM media_jobs WHERE ${ownsLease} AND lease_until>?) AND (?=0 OR EXISTS(SELECT 1 FROM media_derivatives d WHERE d.id=? AND d.media_id=media.id AND d.media_version=media.version AND d.epoch=media.epoch AND d.generation=media.generation AND d.state='ready' AND d.object_key=?)) RETURNING id`,
       ).bind(
         type.mime,
         bytes.length,
@@ -619,16 +635,17 @@ async function download(
         fence.epoch,
         fence.generation,
         ...liveJob(job),
-        Date.now(),
+        publicationNow,rendition?1:0,renditionId,renditionKey??null,
       ),
       env.DB.prepare(
         `UPDATE media_jobs SET status='ready',lease_until=NULL,error=NULL WHERE ${ownsLease} AND EXISTS(SELECT 1 FROM media WHERE id=? AND object_key=? AND state='ready' AND ${visible()})`,
       ).bind(...liveJob(job), m.id, key),
     ]);
-    if (results[0]!.results.length !== 1 || results[1]!.meta.changes !== 1)
+    if (results[1]!.results.length !== 1 || results[2]!.meta.changes !== 1)
       throw new AppError("stale_media", 409);
   } catch (error) {
     if (key) await discardUnpublishedObject(env, key);
+    if(renditionKey)await discardUnpublishedObject(env,renditionKey);
     throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -651,7 +668,7 @@ export async function processMediaJobs(
       AND (status IN ('pending','retry') OR (status='processing' AND lease_until<=?))
       AND EXISTS(SELECT 1 FROM media m WHERE m.id=media_jobs.media_id
        AND m.message_version=media_jobs.message_version AND m.epoch=media_jobs.epoch AND m.generation=media_jobs.generation
-       AND m.state='ready' AND length(m.object_key)>0 AND length(m.sha256)=64 AND m.sha256 NOT GLOB '*[^0-9a-f]*'
+       AND m.state='ready' AND (m.kind<>'image' OR (m.mime NOT IN('image/heic','image/heif') AND m.size<=2097152) OR EXISTS(SELECT 1 FROM media_derivatives d WHERE d.media_id=m.id AND d.media_version=m.version AND d.epoch=m.epoch AND d.generation=m.generation AND d.kind='image_rendition' AND d.state='ready' AND length(d.object_key)>0 AND json_extract(d.text,'$.originalHash')=m.sha256)) AND length(m.object_key)>0 AND length(m.sha256)=64 AND m.sha256 NOT GLOB '*[^0-9a-f]*'
        AND ${visible("m")})`,
   ).bind(fence.epoch,fence.generation,now).run();
   // An expired final lease is terminal, including process death after the last attempt.

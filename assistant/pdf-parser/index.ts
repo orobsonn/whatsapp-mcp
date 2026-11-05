@@ -1,3 +1,4 @@
+import {PDF_MAX_PAGES} from '../media-limits';
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { PDFDocument } from "pdf-lib";
 export type PdfAdmissionResult = { state: "available"; pages: number } | { state: "blocked"; reason: "pdf_invalid_input" | "pdf_invalid" | "pdf_pages_limit" };
@@ -11,7 +12,7 @@ export class MediaPdfParser extends WorkerEntrypoint<Record<string, never>> {
     try {
       const document = await PDFDocument.load(bytes, { ignoreEncryption: false, throwOnInvalidObject: true, updateMetadata: false });
       const pages = document.getPageCount();
-      if (document.isEncrypted || pages < 1 || pages > 4) return { state: "blocked", reason: "pdf_pages_limit" };
+      if (document.isEncrypted || pages < 1 || pages > PDF_MAX_PAGES) return { state: "blocked", reason: "pdf_pages_limit" };
       return { state: "available", pages };
     } catch { return { state: "blocked", reason: "pdf_invalid" }; }
   }

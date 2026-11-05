@@ -4,6 +4,15 @@ Todas as mudanças relevantes são registradas aqui, no formato Keep a Changelog
 
 ## [Unreleased]
 
+## [0.54.2] - 2026-11-05
+
+### Fixed
+- Vídeos recebidos ou enviados como documento são ignorados, sem download nem inferência; deixam de ser classificados como PDF.
+- Fotos capturadas em HEIC ou acima de 2 MiB preservam o original, com teto de 20 MiB e cópia JPEG privada de até 2 MiB para leitura. A conversão usa a fila existente e não publica metadados internos como memória. Uploads continuam com seus limites anteriores.
+- PDFs recebidos completos com metadados após o marcador final podem ser arquivados. A leitura admite até vinte páginas com contratos e saída compatíveis, mantendo a confirmação de cobertura integral.
+- O leitor aceita a revisão temporal já usada em mensagens editadas, com correspondência exata de versão e hash.
+- Falhas do leitor preservam motivos fechados, distinguindo timeout, exceção e recusa de acesso. A leitura binária tem prazo próprio de dez segundos, sem nova tentativa de inferência incerta.
+
 ## [0.54.1] - 2026-11-05
 
 ### Fixed

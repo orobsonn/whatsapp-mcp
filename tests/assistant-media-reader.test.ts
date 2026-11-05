@@ -65,10 +65,10 @@ it("cancels an oversized stream at the host cap instead of consuming the audio l
   expect(cancelled).toBe(true); expect(produced).toBeLessThanOrEqual(256);
 });
 
-it("does not let a larger host cap increase the existing image limit", async () => {
-  await run("UPDATE media SET size=2097153 WHERE id='binary-media'");
+it("does not let a host cap exceed the captured image limit", async () => {
+  await run("UPDATE media SET size=20971521 WHERE id='binary-media'");
   const get = vi.spyOn(env.MEDIA, "get");
-  await expect(boundedRead(settings(), "binary-media", 2097154)).rejects.toHaveProperty("code", "media_not_ready");
+  await expect(boundedRead(settings(), "binary-media", 20971522)).rejects.toHaveProperty("code", "media_not_ready");
   expect(get).not.toHaveBeenCalled();
 });
 
@@ -88,7 +88,7 @@ it("denies invalid authentication and strict input before touching R2", async ()
     await expect(reader().readBoundedMedia(invalid)).rejects.toThrow("reader_denied");
   }
   for (const invalid of [{ ...input, url: "https://provider.invalid" }, { ...input, objectKey }, { ...input, sql: "SELECT *" },
-    { ...input, mediaId: "x".repeat(257) }, { ...input, expectedMessageVersion: 0 }, { ...input, expectedMediaVersion: 2147483648 },
+    { ...input, mediaId: "x".repeat(257) }, { ...input, expectedMessageVersion: 0 }, { ...input, expectedMediaVersion: Number.MAX_SAFE_INTEGER + 1 },
     { ...input, expectedBlobHash: "invalid" }]) await expect(reader().readBoundedMedia(invalid)).rejects.toThrow("reader_invalid_input");
   for (const configured of [{ ...settings(), ASSISTANT_READER_SECRET: undefined }, { ...settings(), ASSISTANT_READER_SECRET: "short" }]) {
     await expect(reader(configured).readBoundedMedia(input)).rejects.toThrow("reader_denied");
@@ -102,7 +102,7 @@ it("rejects wrong references, versions and type before touching R2", async () =>
     const result = await reader().readBoundedMedia({ ...input, ...changed });
     expect(result.state).not.toBe("available"); expect(result.bytes).toBeUndefined();
   }
-  for (const sql of ["UPDATE media SET size=2097153", "UPDATE media SET size=0", "UPDATE media SET size=NULL",
+  for (const sql of ["UPDATE media SET size=20971521", "UPDATE media SET size=0", "UPDATE media SET size=NULL",
     "UPDATE media SET size=1.5", "UPDATE media SET mime='audio/wav'", "UPDATE media SET kind='audio'"]) {
     await env.DB.prepare("UPDATE media SET kind='image',mime='image/png',size=?").bind(png.length).run();
     await run(sql); const result = await reader().readBoundedMedia(input);
@@ -205,4 +205,11 @@ it("uses the live database generation and suppresses bytes when connection disap
   const result = await reader(configured).readBoundedMedia(input);
   expect(result.state).toBe("blocked"); expect(result.bytes).toBeUndefined();
   expect(JSON.stringify(result)).not.toMatch(/synthetic-token|synthetic-client|5511000000000/);
+});
+
+it('reads captured edited messages whose existing revision is a millisecond timestamp',async()=>{
+ const revision=1793410415000;
+ await env.DB.prepare("UPDATE messages SET version=? WHERE id='binary-message'").bind(revision).run();
+ await env.DB.prepare("UPDATE media SET message_version=? WHERE id='binary-media'").bind(revision).run();
+ expect(await reader().readBoundedMedia({...await request(),expectedMessageVersion:revision})).toMatchObject({state:'available',messageVersion:revision,bytes:png});
 });
