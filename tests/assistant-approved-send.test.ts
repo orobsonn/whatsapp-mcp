@@ -5,6 +5,7 @@ import { ingestEvent } from "../src/capture";
 import { registerProviderRelationship, conversationActivity } from "../src/conversation-activity";
 import { upsertDirectoryPage } from "../src/directory";
 import { prepareApprovedSend, executeApprovedSend, executeNativeReply, approvedSendStatus } from "../src/assistant-approved-send";
+import {cleanup} from "../src/operations";
 import { executeAction, type SendProvider } from "../src/actions";
 const scope={installationId:"own",generation:"own-g1",sourceEpoch:"e1",sourceGeneration:"g1"};
 const secret="s".repeat(48);
@@ -39,6 +40,29 @@ describe("private Source approved send",()=>{
    if(validity==='fresh'){expect((await result).status).toBe('accepted');expect(p.count()).toBe(1);}
    else{await expect(result).rejects.toThrow(kind==='native'?'native_reply_denied':'approved_send_denied');expect(p.count()).toBe(0);}
   }finally{clock.mockRestore();}
+ });
+ it("keeps a human review pending across days and cleanup, then sends once with a fresh human proof",async()=>{
+  const a=await prepareApprovedSend(e,{...input(),ownerPendingReview:true});
+  const originalNow=Date.now(),clock=vi.spyOn(Date,'now').mockReturnValue(originalNow+3*86400000);
+  const authority={kind:'human_approval' as const,intentId:'native-held',approvalId:'human-held'};
+  const configured={...e,ASSISTANT_OWNER:{nativeReplyAuthorization:async()=>({authorized:true,actionId:a.actionId,hash:a.hash,authority,expiresAt:Date.now()+5000})} as unknown as Env['ASSISTANT_OWNER']},p=provider();
+  try{
+   await cleanup(e);expect(await env.DB.prepare('SELECT status FROM actions WHERE id=?').bind(a.actionId).first('status')).toBe('proposed');
+   expect(await approvedSendStatus(e,{secret,scope,actionId:a.actionId})).toMatchObject({status:'proposed',ownerPendingReview:true});
+   expect((await prepareApprovedSend(e,{...input(),ownerPendingReview:true})).actionId).toBe(a.actionId);
+   expect((await executeNativeReply(configured,{secret,scope,actionId:a.actionId,authority},p.port)).status).toBe('accepted');
+   await executeNativeReply(configured,{secret,scope,actionId:a.actionId,authority},p.port);expect(p.count()).toBe(1);
+   await cleanup(e);expect(await env.DB.prepare('SELECT envelope_json FROM actions WHERE id=?').bind(a.actionId).first('envelope_json')).toBe('{}');
+  }finally{clock.mockRestore();}
+ });
+ it("never grants a held review to legacy or autonomous execution and leaves normal sends expiring",async()=>{
+  const a=await prepareApprovedSend(e,{...input(),ownerPendingReview:true}),normal=await prepareApprovedSend(e,{...input(),operationId:'bounded'}),p=provider();
+  await expect(prepareApprovedSend(e,input())).rejects.toThrow('approved_send_conflict');
+  await expect(executeApprovedSend(e,{secret,scope,actionId:a.actionId,approvalId:'legacy'},p.port)).rejects.toThrow('native_human_review_required');
+  await expect(executeNativeReply({...e,ASSISTANT_NATIVE_AUTONOMOUS_ENABLED:'true'},{secret,scope,actionId:a.actionId,authority:{kind:'autonomous_policy',intentId:'autonomous',policyRevision:1,grantRef:'grant'}},p.port)).rejects.toThrow('native_human_review_required');
+  const base=Date.now(),clock=vi.spyOn(Date,'now').mockReturnValue(base+86400000);
+  try{await cleanup(e);expect((await approvedSendStatus(e,{secret,scope,actionId:normal.actionId})).status).toBe('expired');expect((await approvedSendStatus(e,{secret,scope,actionId:a.actionId})).status).toBe('proposed');}finally{clock.mockRestore();}
+  expect(p.count()).toBe(0);
  });
  it("prepares one atomic action under concurrent retries and rejects conflicting text",async()=>{
   const [a,b]=await Promise.all([prepareApprovedSend(e,input()),prepareApprovedSend(e,input())]);expect(a).toEqual(b);

@@ -90,6 +90,7 @@ export async function getAction(env: Env, id: string) {
     a.envelope_json === "{}"
       ? null
       : (JSON.parse(a.envelope_json) as SendEnvelope);
+  const ownerPendingReview=!!await env.DB.prepare("SELECT 1 FROM approved_sends WHERE action_id=? AND source_epoch=? AND source_generation=? AND owner_pending_review=1").bind(a.id,a.epoch,a.generation).first();
   const generated =
     envelope?.kind === "audio"
       ? await env.DB.prepare(
@@ -105,7 +106,8 @@ export async function getAction(env: Env, id: string) {
     envelope,
     redacted: a.envelope_json === "{}",
     hash: a.hash,
-    expiresAt: a.expires_at,
+    expiresAt: ownerPendingReview&&["proposed","approved"].includes(a.status)?null:a.expires_at,
+    ...(ownerPendingReview?{ownerPendingReview:true}:{}),
     error: a.last_error,
     confirmationMode: "chat" as const,
     confirmationUrl: undefined,
@@ -173,7 +175,13 @@ export async function executeAction(
     a = await row(env, id);
   }
   if (!["proposed", "approved"].includes(a.status)) return getAction(env, id);
-  if (a.expires_at <= Date.now()) throw new AppError("action_expired", 409);
+  // Only the native human actuator may consume a non-expiring owner review.
+  // The mapping and current installation are checked again in the attempt SQL.
+  const heldSql=hostGuard?.authorizationKind==='native_human_approval'
+    ? "EXISTS(SELECT 1 FROM approved_sends s WHERE s.action_id=actions.id AND s.source_epoch=actions.epoch AND s.source_generation=actions.generation AND s.installation_id=? AND s.generation=? AND s.owner_pending_review=1)" : "0";
+  const heldValues=hostGuard?.authorizationKind==='native_human_approval'?[env.ASSISTANT_INSTALLATION_ID??null,env.ASSISTANT_GENERATION??null]:[];
+  const held=!!await env.DB.prepare(`SELECT 1 FROM actions WHERE id=? AND (${heldSql})`).bind(id,...heldValues).first();
+  if (a.expires_at <= Date.now()&&!held) throw new AppError("action_expired", 409);
   if (a.status !== "approved" && !hostGuard) throw new AppError("action_not_approved", 403);
   const envelope = sendEnvelopeSchema.parse(JSON.parse(a.envelope_json));
   const chat = await getChat(env, a.chat_id),
@@ -217,7 +225,7 @@ export async function executeAction(
   const attemptedAt = Date.now();
   // A single conditional write owns the sole external attempt. A crash after it is uncertain.
   const claimed = await env.DB.prepare(
-    `UPDATE actions SET status='attempting',attempted_at=?${approvedFields} WHERE id=? AND epoch=? AND generation=? AND ${approvedState} AND expires_at>? AND hash=? AND (? IS NULL OR EXISTS (SELECT 1 FROM media WHERE id=? AND deleted_at IS NULL AND state='ready' AND sha256=?)) AND (${extra.sql})`,
+    `UPDATE actions SET status='attempting',attempted_at=?${approvedFields} WHERE id=? AND epoch=? AND generation=? AND ${approvedState} AND (expires_at>? OR (${heldSql})) AND hash=? AND (? IS NULL OR EXISTS (SELECT 1 FROM media WHERE id=? AND deleted_at IS NULL AND state='ready' AND sha256=?)) AND (${extra.sql})`,
   )
     .bind(
       attemptedAt,
@@ -226,6 +234,7 @@ export async function executeAction(
       a.epoch,
       a.generation,
       Date.now(),
+      ...heldValues,
       a.hash,
       media?.id ?? null,
       media?.id ?? null,

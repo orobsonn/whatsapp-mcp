@@ -23,6 +23,8 @@ export type ConversationProviderHost=ConversationModelIdentity&{
  /** Current session/epoch/turn authority, also repeated in claim SQL. */
  authorityGuard:()=>AccessGuard;
  maxOutputTokens:number;maxRequestBytes:number;maxResponseBytes:number;timeoutMs:number;
+ /** Host latency target, not a modified model/pricing window. */
+ inputContextTarget?:number;modelPurpose?:import('@flue/runtime').LlmTurnPurpose;
 };
 export type ConversationProviderOptions={db:D1Database;apiKey:string;provider?:NativeModelProvider;openaiModel?:NativeOpenAIModel;resolveHost:()=>Promise<ConversationProviderHost>|ConversationProviderHost;
  /** Host transport injection for synthetic tests. Never supplied by the model. */
@@ -176,6 +178,13 @@ export function createConversationProvider(config:ConversationProviderOptions):P
     const prior=await config.db.prepare('SELECT state,request_hash,ceiling_units FROM assistant_budget_reservations WHERE installation_id=? AND generation=? AND operation_key=?')
      .bind(host.scope.installationId,host.scope.generation,operationKey).first<{state:string;request_hash:string;ceiling_units:number}>();
     if(prior){if(prior.request_hash!==requestHash||prior.ceiling_units!==ceiling)throw Error('native_model_request_conflict');if(prior.state!=='reserved')throw Error('native_model_'+prior.state);}
+    if(host.inputContextTarget!==undefined){
+     positive(host.inputContextTarget);
+     if(!host.modelPurpose||!['agent','compaction','compaction_prefix'].includes(host.modelPurpose))throw Error('native_model_purpose_unobserved');
+     // The SDK's own estimator and 4096 safety allowance. The role limit is
+     // an input target; declared output room is additional. Summaries use the real window.
+     if(host.modelPurpose==='agent'&&clampMaxTokensToContext({...model,contextWindow:host.inputContextTarget+desired+4096},context,desired)<desired)throw Error('context_length_exceeded (request_too_large)');
+    }
     if(clampMaxTokensToContext(model,context,desired)<desired)throw Error('context_length_exceeded (request_too_large)');
     const reservation=await host.budget.reserve(operationKey,requestHash,ceiling);
     if(reservation.state!=='reserved')throw Error('native_model_'+reservation.state);
@@ -184,7 +193,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
    async fetch(input:RequestInfo|URL,init?:RequestInit){
     const a=admitted;admitted=undefined;if(!a)return rejection();
     const {host,requestHash,operationKey,ceiling}=a;let claimed=false;
-    let overflow=false,httpStatus:number|undefined,stage='admission';const failure:FailureDetails={};
+    let overflow=false,httpStatus:number|undefined,stage='admission';const failure:FailureDetails={};const startedAt=Date.now();let requestSignal:AbortSignal|undefined;
     try{
      const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
      const method=init?.method??(input instanceof Request?input.method:'GET');
@@ -200,7 +209,7 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      // SQL claim also closes owner restore/hold and global-budget races.
      await current(config.db,host);
      const signal=AbortSignal.any([AbortSignal.timeout(host.timeoutMs),...(original?.signal?[original.signal]:[]),...(init?.signal?[init.signal]:[])]);
-     signal.throwIfAborted();
+     requestSignal=signal;signal.throwIfAborted();
      stage='transport';
      const response=await (config.fetch??globalThis.fetch)(ENDPOINT,{method:'POST',body,headers:{'Content-Type':'application/json',Accept:'text/event-stream',Authorization:'Bearer '+config.apiKey},redirect:'manual',signal});
      httpStatus=response.status;stage='response';
@@ -216,28 +225,33 @@ export function createConversationProvider(config:ConversationProviderOptions):P
      if(response.redirected||!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'))throw Error('native_model_response_invalid');
      const text=await buffered(response,host.maxResponseBytes,signal);
      if(text.includes(config.apiKey))throw Error('native_model_response_denied');
-     const u=vendor==='deepseek'?deepseekUsage(text,failure):usage(text,failure);
+     stage='usage';const u=vendor==='deepseek'?deepseekUsage(text,failure):usage(text,failure);
      // Peak, noncached rates conservatively bound every native DeepSeek call.
      // Discounts need no guessed clock/cache attribution in the pilot ledger.
      // The SDK estimates context before transport; settle observed tokens at
      // the pinned upper tier if actual usage crosses its short-context limit.
      const rate=longContextPrice&&u.input>longContextPrice.inputTokensAbove?longContextPrice:{inputMicroUSD,outputMicroUSD};
      const actual=Math.ceil(u.input*rate.inputMicroUSD+u.output*rate.outputMicroUSD);
-     await host.budget.settle(operationKey,requestHash,actual);
+     stage='settlement';await host.budget.settle(operationKey,requestHash,actual);
      await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='complete',input_tokens=?,output_tokens=?,actual_units=? WHERE ${ns} AND state='attempting' AND request_hash=?`)
       .bind(u.input,u.output,actual,...keys(host),requestHash).run();
      if((host.budget.mode==='capped'&&actual>ceiling)||u.output>host.maxOutputTokens)throw Error('native_model_ceiling_exceeded');
-     await current(config.db,host);signal.throwIfAborted();
+     stage='authority';await current(config.db,host);signal.throwIfAborted();
      return new Response(text,{status:200,headers:{'Content-Type':'text/event-stream'}});
     }catch{
      let pending=false;
+     const timedOut=requestSignal?.aborted===true&&requestSignal.reason?.name==='TimeoutError';
+     const code=timedOut?'timeout':requestSignal?.aborted?'aborted':stage==='transport'?'transport_error':httpStatus!==undefined&&httpStatus!==200?'http_rejected':['response','usage'].includes(stage)?'invalid_response':'authority_or_ledger';
+     const elapsed=Math.max(0,Date.now()-startedAt);
+     if(claimed)try{await config.db.prepare(`UPDATE assistant_native_model_receipts SET failure_stage=?,failure_code=?,http_status=?,elapsed_ms=?,timed_out=?,response_state=?,incomplete_reason=? WHERE ${ns} AND request_hash=?`)
+      .bind(stage,code,httpStatus??null,elapsed,timedOut?1:0,failure.responseState??null,failure.incompleteReason??null,...keys(host),requestHash).run();}catch{pending=true;}
      try{await host.budget.uncertain(operationKey);}catch{pending=true;}
      if(claimed)try{await config.db.prepare(`UPDATE assistant_native_model_receipts SET state='uncertain' WHERE ${ns} AND state='attempting' AND request_hash=?`).bind(...keys(host),requestHash).run();}catch{pending=true;}
      // A fetch throw is wrapped by the OpenAI client as "Connection error",
      // which Flue retries with NEW turn IDs. A fixed nonretryable response
      // keeps this paid attempt's custody, including when bookkeeping is down.
      // Logs carry only host metadata, never provider bodies or raw errors.
-     console.warn('assistant_native_model_failure',{stage,httpStatus,...failure,overflow,ledgerPending:pending,turnId:host.turnId});
+     console.warn('assistant_native_model_failure',{stage,httpStatus,...failure,elapsedMs:elapsed,timedOut,overflow,ledgerPending:pending,turnId:host.turnId});
      return rejection(overflow);
     }
    },

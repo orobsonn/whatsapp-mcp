@@ -87,6 +87,47 @@ async function outcomeFixture(){
  return {...f,host,first:{...first,receipt:first.receipt!},runId,failure,fetch};
 }
 describe('native application composition on real D1 and Source reads',()=>{
+ it('observes a failed owner receipt beyond five seconds and notifies once without another model call',async()=>{
+  const f=await fixture(),host=f.host();await f.ownerUpdate(800,'Research this private task',42);const admitted=await host.receiveTelegram(800);
+  const task=await latestTask(host,admitted.taskRef);await host.recordConsumed(task,admitted.receipt!.submissionId);
+  let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+  transport.read.mockImplementation(()=>{entered();return new Promise((_resolve,reject)=>{setTimeout(()=>reject(Object.assign(Error('PRIVATE_PROVIDER_DETAILS'),{name:'AgentRunError',outcome:'failed',submissionId:admitted.receipt!.submissionId})),6000);});});
+  const send=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:900,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+  try{const pending=host.reconcileOwnerFailures();await started;await vi.advanceTimersByTimeAsync(5001);expect(send).not.toHaveBeenCalled();
+   await vi.advanceTimersByTimeAsync(1000);expect(await pending).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});
+   expect(send).toHaveBeenCalledTimes(1);const body=JSON.parse(String(send.mock.calls[0][1]?.body));expect(body.text).toContain('interrompido');expect(body.text).not.toContain('PRIVATE_PROVIDER_DETAILS');
+  }finally{vi.useRealTimers();}
+  expect(transport.dispatch).toHaveBeenCalledTimes(1);
+ });
+ it('notifies a joined latest input using the active submission actual consumed cohort',async()=>{
+  const f=await fixture(),host=f.host();await f.ownerUpdate(820,'First direction',42);const first=await host.receiveTelegram(820);const a=await latestTask(host,first.taskRef);
+  await host.recordConsumed(a,first.receipt!.submissionId);
+  await f.ownerUpdate(821,'Additional direction',42);const second=await host.receiveTelegram(821);const identity=a.identity;
+  const joined=await host.runtime.resolveStoredTask(identity,second.taskRef,[first.taskRef,second.taskRef]);await host.recordConsumed(joined,first.receipt!.submissionId);
+  transport.read.mockRejectedValue(Object.assign(Error('private fanout failure'),{name:'AgentRunError',outcome:'failed',submissionId:second.receipt!.submissionId}));
+  const send=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:901,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  expect(await host.reconcileOwnerFailures()).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});expect(send).toHaveBeenCalledOnce();
+  expect(await env.DB.prepare('SELECT context_ref FROM assistant_native_owner_responses WHERE conversation_id=?').bind(joined.sessionId).first('context_ref')).toBe(joined.contextRef);
+ });
+ it('keeps a failed owner request visible after an automatic mission wake, without granting administrative writes',async()=>{
+  const f=await fixture(),host=f.host();await f.ownerUpdate(830,'Original request and a scheduled reminder',42);const first=await host.receiveTelegram(830);const task=await latestTask(host,first.taskRef);
+  await host.recordConsumed(task,first.receipt!.submissionId);
+  const at=new Date(Date.now()-60000-3*3600000).toISOString().replace('Z','-03:00');
+  await host.tasks().save(task,{objective:'Synthetic private reminder',at});await host.tick();
+  expect(await env.DB.prepare("SELECT json_extract(event_json,'$.kind') FROM assistant_native_conversation_events WHERE conversation_id=? ORDER BY sequence DESC LIMIT 1").bind(task.sessionId).first("json_extract(event_json,'$.kind')")).toBe('mission_due');
+  await expect(host.tasks().ownerRequest(task)).rejects.toThrow('native_task_changed');
+  transport.read.mockRejectedValue(Object.assign(Error('private failure'),{name:'AgentRunError',outcome:'failed',submissionId:first.receipt!.submissionId}));
+  const send=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:902,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  expect(await host.reconcileOwnerFailures()).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});expect(send).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(2);
+ });
+ it('does not publish a failure after a newer owner input arrives while observing the old SDK run',async()=>{
+  const f=await fixture(),host=f.host();await f.ownerUpdate(810,'Old task',42);const admitted=await host.receiveTelegram(810);
+  const task=await latestTask(host,admitted.taskRef);await host.recordConsumed(task,admitted.receipt!.submissionId);
+  transport.read.mockImplementationOnce(async()=>{await f.ownerUpdate(811,'New direction',42);await host.receiveTelegram(811);throw Object.assign(Error('private error'),{name:'AgentRunError',outcome:'failed',submissionId:admitted.receipt!.submissionId});});
+  const send=vi.spyOn(globalThis,'fetch');expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});expect(send).not.toHaveBeenCalled();
+ });
+
  it('recovers a real caption whose file became ready during admission and delivers the exact caption plus image hint',async()=>{
   const f=await lateImageCaption();expect(transport.dispatch).not.toHaveBeenCalled();
   const receipt=await f.host.receiveCapture(f.incoming.sequence);expect(receipt.state).toBe('admitted');
@@ -497,6 +538,9 @@ describe('native application composition on real D1 and Source reads',()=>{
   const dispatches=transport.dispatch.mock.calls.length;
   expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});
   expect(fetch).toHaveBeenCalledOnce();const body=JSON.parse(String(fetch.mock.calls[0][1]?.body));expect(body.text).toContain('execução foi interrompida');expect(body.text).toContain('1 pendência');expect(body.text).not.toContain('PRIVATE_');
+  // Echoing a keyed admission keeps the same submission and incarnation.
+  // Its deduplication flag must not reset an already delivered failure notice.
+  await env.DB.prepare('UPDATE assistant_native_conversation_events SET receipt_json=? WHERE task_ref=?').bind(JSON.stringify({...first.receipt,deduplicated:true}),first.taskRef).run();
   expect(await host.tick()).toMatchObject({curator:{state:'not_due'}});expect(fetch).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(dispatches);
   const row=await env.DB.prepare('SELECT outcome,notice_state FROM assistant_curator_outcomes WHERE run_id=?').bind(runId).first();expect(row).toEqual({outcome:'failed',notice_state:'accepted'});
  });
@@ -690,7 +734,7 @@ describe('native application composition on real D1 and Source reads',()=>{
   await new SourceController(env.DB,f.scope,{kind:'owner'},Date.now,retirement).withdraw(ref.id,ref.revision);
   const purge=new RetentionPurge(env.DB,f.scope,{kind:'owner'},Date.now,retirement);let result:{state:string}={state:'pending'};
   for(let page=0;page<25&&result.state==='pending';page++)result=await purge.advance({kind:'source.purge',operationId:'purge-pending-quoted-help',sourceId:ref.id});
-  expect(result.state).toBe('complete');const count=transport.dispatch.mock.calls.length;
+  expect(result).toMatchObject({state:'complete'});const count=transport.dispatch.mock.calls.length;
   expect((await(await f.host().help()).recordPersistedReply(24)).state).not.toBe('recorded');
   expect(await env.DB.prepare('SELECT state FROM assistant_native_help_questions WHERE conversation_id=?').bind(originalTask.sessionId).first('state')).toBe('cancelled');
   expect(transport.dispatch).toHaveBeenCalledTimes(count);
@@ -758,4 +802,28 @@ it('refuses an MCP body whose canonical source was withdrawn before exposure',as
  await new SourceController(env.DB,f.scope,{kind:'owner'}).execute({kind:'source.withdraw',operationId:'withdraw-before-publication',id:f.mapped.canonical_id,expectedRevision:1});
  await expect(releaseOwnerToolResult(f.host,f.own,f.task,f.output)).rejects.toThrow('owner_tool_source_not_current');
  expect(await f.exposures()).toBe(0);
+});
+
+it('continues a bounded curator page after a deduplicated SDK receipt settles, with one final summary',async()=>{
+ const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
+ for(let n=0;n<21;n++)await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'sdk-page-'+n,text:'Fonte sintética '+n,occurredAt:1});
+ const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
+ await env.DB.prepare(`INSERT INTO assistant_telegram_topics(installation_id,generation,bot_instance,link_revision,slot,fence_json,state,thread_id) VALUES(?,?,?,1,'summaries',?,'ready',42)`).bind(f.scope.installationId,f.scope.generation,bot,JSON.stringify(fence)).run();
+ const host=f.host(),at=Date.parse('2031-01-01T06:00:00Z'),first=await host.dispatchCurator(at);if(first.state!=='admitted'||!first.receipt)throw Error('fixture_curator');
+ const task=await latestTask(host,first.taskRef),c=(await host.frame(task)).curator!,page=await c.curator.next(c.runId,{limit:100});expect(page.items).toHaveLength(20);
+ await c.curator.acknowledgePage(c.runId,page.items.map(item=>({sequence:item.sequence,state:'evaluated' as const})));expect(await c.finish({})).toMatchObject({completion:'passage_yielded'});
+ const sends=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:899,message_thread_id:42,chat:{id:101,type:'private'}}}));
+ expect(await host.dispatchCurator(at)).toMatchObject({state:'waiting'});expect(transport.dispatch).toHaveBeenCalledTimes(1);
+ // An acknowledged keyed admission may echo its original receipt with this
+ // SDK flag. Keep it through settlement and the next-page admission checks.
+ const deduplicatedReceipt={...first.receipt,deduplicated:true};
+ await env.DB.prepare('UPDATE assistant_native_conversation_events SET receipt_json=? WHERE task_ref=?').bind(JSON.stringify(deduplicatedReceipt),first.taskRef).run();
+ transport.read.mockResolvedValue({submissionId:first.receipt.submissionId,uid:first.receipt.uid});
+ await host.tick();expect(await env.DB.prepare('SELECT submission_id FROM assistant_curator_outcomes WHERE run_id=?').bind(c.runId).first('submission_id')).toBe(first.receipt.submissionId);
+ const [second,concurrent]=await Promise.all([host.dispatchCurator(at),host.dispatchCurator(at)]);if(second.state!=='admitted'||concurrent.state!=='admitted')throw Error('fixture_page2');expect(second.taskRef).toBe(concurrent.taskRef);expect(new Set(transport.dispatch.mock.calls.map(([,request])=>request.idempotencyKey)).size).toBe(2);
+ const nextTask=await latestTask(host,second.taskRef);expect(nextTask.cohort.at(-1)?.revision).toBe(2);const next=(await host.frame(nextTask)).curator!,remaining=await next.curator.next(next.runId,{limit:100});expect(remaining.items).toHaveLength(1);expect(sends).not.toHaveBeenCalled();
+ await next.curator.acknowledge(next.runId,remaining.items[0].sequence,{state:'evaluated'});expect(await next.finish({})).toMatchObject({completion:'finished',counts:{evaluated:21}});expect(sends).toHaveBeenCalledTimes(1);
+ expect(await next.finish({})).toMatchObject({completion:'finished'});expect(sends).toHaveBeenCalledTimes(1);expect(await host.dispatchCurator(at)).toMatchObject({state:'complete'});
+ if(!second.receipt)throw Error('fixture_page2_receipt');transport.read.mockResolvedValue({submissionId:second.receipt.submissionId,uid:second.receipt.uid});await host.tick();
+ expect(await env.DB.prepare('SELECT submission_id FROM assistant_curator_outcomes WHERE run_id=?').bind(c.runId).first('submission_id')).toBe(second.receipt.submissionId);expect(sends).toHaveBeenCalledTimes(1);
 });

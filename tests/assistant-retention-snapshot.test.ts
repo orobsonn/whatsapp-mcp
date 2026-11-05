@@ -62,7 +62,7 @@ async function sealed(operationId = "snapshot") {
 }
 test("real producer creates a sealed canonical artifact accepted offline, excluding operational latches and preserving all financial generations", async () => {
   await note(); const old = new InferenceBudget(env.DB, { ...scope, generation: "old", period: "old-period" }); await old.configure(100); await old.reserve("uncertain-old", "a".repeat(64), 40); await old.uncertain("uncertain-old");
-  await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'old','session','epoch','turn','uncertain-old','old-period',?,'synthetic-price',40,'uncertain',NULL,NULL,NULL)")
+  await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,'old','session','epoch','turn','uncertain-old','old-period',?,'synthetic-price',40,'uncertain',NULL,NULL,NULL)")
     .bind(scope.installationId, "a".repeat(64)).run();
   const { packets, manifest } = await sealed(), verifier = new SnapshotVerifier(manifest), records = [];
   for (const packet of packets) records.push(...await verifier.accept(packet));

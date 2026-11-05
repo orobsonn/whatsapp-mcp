@@ -41,7 +41,7 @@ test("native export joins conversation scope and retains receipts across every h
   const scope = namespace(), old = { ...scope, generation: "old" }, other = namespace();
   const own = await conversation(scope), historic = await conversation(old), foreign = await conversation(other);
   await children(own); await children(historic); await children(foreign);
-  for (const [i, recordScope] of [scope, old, other].entries()) await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,?,?,'epoch','turn',?,?,'hash','price',10,'uncertain',NULL,NULL,NULL)").bind(recordScope.installationId, recordScope.generation, String(i), `operation-${i}`, `period-${i}`).run();
+  for (const [i, recordScope] of [scope, old, other].entries()) await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,?,?,'epoch','turn',?,?,'hash','price',10,'uncertain',NULL,NULL,NULL)").bind(recordScope.installationId, recordScope.generation, String(i), `operation-${i}`, `period-${i}`).run();
   const archive = new AssistantExport(env.DB, scope, owner), records: { table: string; value: Record<string, unknown> }[] = [];
   let cursor: string | undefined;
   do {
@@ -57,7 +57,7 @@ test("native receipt insert, settlement and deletion advance only its installati
   const scope = namespace(), other = namespace();
   for (const recordScope of [scope, other]) await env.DB.prepare("INSERT INTO assistant_retention_installation_gate(installation_id,generation,operation_id,request_hash,token,state,started_at) VALUES(?,?,'operation','hash',?,'idle',1)").bind(recordScope.installationId, recordScope.generation, crypto.randomUUID()).run();
   const revision = (installationId: string) => env.DB.prepare("SELECT financial_revision FROM assistant_retention_installation_gate WHERE installation_id=?").bind(installationId).first<number>("financial_revision");
-  await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,?,'session','epoch','turn','operation','old-period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId, scope.generation).run();
+  await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,?,'session','epoch','turn','operation','old-period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId, scope.generation).run();
   expect(await revision(scope.installationId)).toBe(1);
   await env.DB.prepare("UPDATE assistant_native_model_receipts SET state='complete',input_tokens=1,output_tokens=2,actual_units=3 WHERE installation_id=?").bind(scope.installationId).run();
   expect(await revision(scope.installationId)).toBe(2);
@@ -67,7 +67,7 @@ test("native receipt insert, settlement and deletion advance only its installati
 });
 test("native receipt settlement invalidates a snapshot while keeping its paid custody writable", async () => {
   const scope = namespace();
-  await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,?,'session','epoch','turn','operation','period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId, scope.generation).run();
+  await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,?,'session','epoch','turn','operation','period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId, scope.generation).run();
   const authority: SnapshotAuthorityPort = {
     observe: async () => ({ state: "sealed", revision: 1 }),
     recordSnapshot: async () => { throw Error("unexpected seal"); },

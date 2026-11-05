@@ -91,7 +91,7 @@ export class NativeReplyActions {
   if(authority.kind==='shadow'||authority.kind==='blocked')throw Error('native_reply_not_authorized');
   if(row.prepared_json)return JSON.parse(row.prepared_json) as ApprovedSendPrepared;
   const activity=approvedSendActivityFence.parse(await this.host.activity(task));
-  const prepared=await this.host.source.prepare({secret:this.host.secret,scope:this.host.scope,operationId:intentId,envelope:{kind:'text',chatId:task.returnChannel.id,text:row.text},activity});
+  const prepared=await this.host.source.prepare({secret:this.host.secret,scope:this.host.scope,operationId:intentId,envelope:{kind:'text',chatId:task.returnChannel.id,text:row.text},activity,...(authority.kind==='human_approval'?{ownerPendingReview:true}:{})});
   if(prepared.target.chatId!==task.returnChannel.id||prepared.envelope.chatId!==task.returnChannel.id||prepared.envelope.text!==row.text)throw Error('native_reply_target_changed');
   const checked=await this.current(row);
   await this.host.db.prepare(`UPDATE assistant_native_reply_actions SET action_id=?,prepared_json=? WHERE intent_id=? AND (action_id IS NULL OR action_id=?) AND (${checked.guard.sql})`)
@@ -126,7 +126,7 @@ export class NativeReplyActions {
    const row=await this.row(q.authority.intentId),{task,guard}=await this.current(row);
    if(row.action_id!==q.actionId||!row.prepared_json||row.authority_json!==JSON.stringify(q.authority))return {authorized:false};
    const prepared=JSON.parse(row.prepared_json) as ApprovedSendPrepared;
-   if(prepared.hash!==q.hash||prepared.expiresAt<=this.clock())return {authorized:false};
+   if(prepared.hash!==q.hash||(!prepared.ownerPendingReview&&prepared.expiresAt<=this.clock()))return {authorized:false};
    let human:AccessGuard={sql:'1',values:[]};
    if(q.authority.kind==='autonomous_policy'){
     const current=authorizeReply(task,{id:row.intent_id},this.host.autonomousEnabled?.()===true);

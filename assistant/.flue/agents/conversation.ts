@@ -13,7 +13,7 @@ import type {NativeTaskCapabilities} from '../tools/tasks';
 import type {NativeOwnerToolCapabilities} from '../../agent-runtime/native-owner-tools';
 import {useConversationActionTools} from '../tools/actions';
 import {conversationInstructions} from '../instructions/conversation';
-import {nativeModelSelection} from '../providers/model-selection';
+import {nativeModelSelection,nativeModelCatalog} from '../providers/model-selection';
 
 const seedSchema=v.strictObject({version:v.literal(1),installationId:v.string(),generation:v.string(),
  channel:v.picklist(['whatsapp','telegram']),principalOrChatId:v.string(),contextEpoch:v.string()});
@@ -44,10 +44,12 @@ export function ConversationRuntimeAgent(){
  const cohort=useConversationCohort();
  // Provider registration and its pre-transport budget authorization remain the
  // host's responsibility. This is the real native Pi model/tool loop from P0.
- // Use Flue's model-aware compaction defaults. The provider still owns the
+ // Compact Telegram histories early using Flue; WhatsApp keeps defaults. The provider still owns the
  // effective output/spend ceiling, including its summarization turns.
  const selectedModel=nativeModelSelection(getCloudflareContext().env);
- useModel(selectedModel.model,{thinkingLevel:selectedModel.thinkingLevel});
+ const inputTarget=seed.channel==='telegram'?(privateCurator?96000:48000):undefined;
+ const telegramCompaction=inputTarget?{reserveTokens:Math.max(1,nativeModelCatalog(selectedModel.provider,selectedModel.openaiModel).model.contextWindow-inputTarget),keepRecentTokens:8000}:undefined;
+ useModel(selectedModel.model,{thinkingLevel:selectedModel.thinkingLevel,...(telegramCompaction?{compaction:telegramCompaction}:{})});
  async function host(){
   const resolver=configuredResolver;if(!resolver)throw Error('conversation_resolver_unconfigured');
   const {env}=getCloudflareContext(),identity=getDurableObjectIdentity();

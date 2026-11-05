@@ -18,7 +18,7 @@ export type NativeTelegramReplyReviewHost={db:D1Database;scope:OriginScope;getSc
  /** Install/credential/restore latch supplied by the registry. */
  authorityGuard:()=>Promise<AccessGuard>|AccessGuard;
 };
-type Row={id:string;intent_id:string;conversation_id:string;operation_id:string;fence_json:string;credential_hash:string;thread_id:number;action_id:string;action_hash:string;review_hash:string;context_source_id:string|null;context_ref_json:string;context_guard_json:string|null;expires_at:number;state:string;message_id:number|null;approval_state:string;receipt_json:string|null;result_status:string|null;result_state:string};
+type Row={id:string;intent_id:string;conversation_id:string;operation_id:string;fence_json:string;credential_hash:string;thread_id:number;action_id:string;action_hash:string;review_hash:string;context_source_id:string|null;context_ref_json:string;context_guard_json:string|null;expires_at:number;owner_pending_review:number;state:string;message_id:number|null;approval_state:string;receipt_json:string|null;result_status:string|null;result_state:string};
 const combine=(...guards:AccessGuard[]):AccessGuard=>({sql:guards.map(g=>`(${g.sql})`).join(' AND '),values:guards.flatMap(g=>g.values)});
 const escape=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 const html=(s:string)=>escape(s).replace(/^\*_([^\r\n_*]{1,160}:)_\*(?=\r?\n)/u,'<b><i>$1</i></b>');
@@ -49,9 +49,9 @@ export async function readNativeReplyReviewContext(db:D1Database,scope:OriginSco
 }
 /** Entire response and summary are shown, or there is no approve button.
  * Only the received message may have an explicitly labelled excerpt. */
-export function nativeReplyPreview(target:{name:string;address:string;kind:string},text:string,received:{text:string;authorLabel:string|null;media?:ReceivedMedia},summary:string):string|null{
+export function nativeReplyPreview(target:{name:string;address:string;kind:string},text:string,received:{text:string;authorLabel:string|null;media?:ReceivedMedia},summary:string,ownerPendingReview=false):string|null{
  const prefix=`💬 <b>Sugestão de resposta</b>\n\n<b>Conversa:</b> ${escape(target.name)}\n${escape(target.address)}${target.kind==='group'?' · Grupo':''}\n\n`;
- const suffix=`${summary?`\n\n🧭 <b>Resumo da IA</b>\n${escape(summary)}`:''}\n\n✍️ <b>Resposta sugerida</b>\n${html(text)}\n\n<i>Aprovar envia esta resposta ao WhatsApp.</i>`;
+ const suffix=`${summary?`\n\n🧭 <b>Resumo da IA</b>\n${escape(summary)}`:''}\n\n✍️ <b>Resposta sugerida</b>\n${html(text)}\n\n<i>Aprovar envia esta resposta ao WhatsApp.</i>${ownerPendingReview?'\n\n⏳ <i>Pendente até sua decisão.</i>':''}`;
  const author=received.authorLabel?`<b>Autor informado:</b> ${escape(received.authorLabel)}\n`:'';
  if(received.media){
   const attachment=received.media.kind==='image'?'🖼️ <b>Imagem recebida</b>':'📄 <b>PDF recebido</b>';
@@ -99,7 +99,7 @@ export class NativeTelegramReplyReview {
  private async snapshot(intentId:string){
   const review=await this.host.actions.review(intentId);if(review.task.authority.mode!=='approval'||!review.prepared)throw Error('native_review_not_approval');
   const prepared=review.prepared;
-  if(prepared.envelope.text!==review.text||prepared.envelope.chatId!==review.task.returnChannel.id||prepared.target.chatId!==review.task.returnChannel.id||prepared.hash!==await actionDigest(prepared.envelope)||prepared.expiresAt<=this.clock())throw Error('native_review_changed');
+  if(prepared.envelope.text!==review.text||prepared.envelope.chatId!==review.task.returnChannel.id||prepared.target.chatId!==review.task.returnChannel.id||prepared.hash!==await actionDigest(prepared.envelope)||(!prepared.ownerPendingReview&&prepared.expiresAt<=this.clock()))throw Error('native_review_changed');
   const context=await this.context(review.task),ref=context.received.sourceRef;
   // Native retention already embeds current SourceAccess + Origin guards for
   // every exposed source. Bind this exact preview to that retained dependency
@@ -114,7 +114,7 @@ export class NativeTelegramReplyReview {
   return {review,body:{received:context.received,text:review.text,summary:review.summary,target:prepared.target},guard:combine(review.guard,exposure),contextGuard:exposure};
  }
  private async current(row:Row){
-  if(row.expires_at<=this.clock()||row.context_ref_json==='{}')throw Error('native_review_expired');
+  if((!row.owner_pending_review&&row.expires_at<=this.clock())||row.context_ref_json==='{}')throw Error('native_review_expired');
   const snapshot=await this.snapshot(row.intent_id),prepared=snapshot.review.prepared!;
   if(row.review_hash!==await bridgeHash(snapshot.body)||prepared.actionId!==row.action_id||prepared.hash!==row.action_hash)throw Error('native_review_changed');
   return combine(await this.transportGuard(row),snapshot.guard,{sql:`EXISTS(SELECT 1 FROM assistant_native_reply_intents WHERE id=? AND state IN ('proposed','approved'))`,values:[row.intent_id]});
@@ -130,19 +130,19 @@ export class NativeTelegramReplyReview {
    const snapshot=await this.snapshot(intentId),prepared=snapshot.review.prepared!,fence=await this.fence();
    const topic=await this.sql(`SELECT thread_id FROM assistant_telegram_topics WHERE ${ns} AND link_revision=? AND slot='pending' AND state='ready' AND fence_json=?`,...this.keys(),fence.linkRevision,JSON.stringify(fence)).first<{thread_id:number}>();
    if(!topic)return {id:reviewId,state:'topic_unavailable'};
-   if(!nativeReplyPreview(prepared.target,snapshot.body.text,snapshot.body.received,snapshot.body.summary))return {id:reviewId,state:'preview_too_large'};
-   row={id:reviewId,intent_id:intentId,conversation_id:snapshot.review.task.sessionId,operation_id:operationId,fence_json:JSON.stringify(fence),credential_hash:await bridgeHash(this.host.key),thread_id:topic.thread_id,action_id:prepared.actionId,action_hash:prepared.hash,review_hash:await bridgeHash(snapshot.body),context_source_id:snapshot.body.received.sourceRef.id,context_ref_json:JSON.stringify(snapshot.body.received.sourceRef),context_guard_json:JSON.stringify(snapshot.contextGuard),expires_at:prepared.expiresAt,state:'prepared',message_id:null,approval_state:'pending',receipt_json:null,result_status:null,result_state:'pending'};
+   if(!nativeReplyPreview(prepared.target,snapshot.body.text,snapshot.body.received,snapshot.body.summary,prepared.ownerPendingReview))return {id:reviewId,state:'preview_too_large'};
+   row={id:reviewId,intent_id:intentId,conversation_id:snapshot.review.task.sessionId,operation_id:operationId,fence_json:JSON.stringify(fence),credential_hash:await bridgeHash(this.host.key),thread_id:topic.thread_id,action_id:prepared.actionId,action_hash:prepared.hash,review_hash:await bridgeHash(snapshot.body),context_source_id:snapshot.body.received.sourceRef.id,context_ref_json:JSON.stringify(snapshot.body.received.sourceRef),context_guard_json:JSON.stringify(snapshot.contextGuard),expires_at:prepared.expiresAt,owner_pending_review:prepared.ownerPendingReview?1:0,state:'prepared',message_id:null,approval_state:'pending',receipt_json:null,result_status:null,result_state:'pending'};
    const gate=await this.current(row);
-   await this.sql(`INSERT INTO assistant_native_telegram_reviews(installation_id,generation,bot_instance,id,intent_id,conversation_id,operation_id,fence_json,credential_hash,thread_id,action_id,action_hash,review_hash,context_source_id,context_ref_json,context_guard_json,expires_at,state,created_at)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',? WHERE ${gate.sql} ON CONFLICT DO NOTHING`,...this.keys(),row.id,row.intent_id,row.conversation_id,row.operation_id,row.fence_json,row.credential_hash,row.thread_id,row.action_id,row.action_hash,row.review_hash,row.context_source_id,row.context_ref_json,row.context_guard_json,row.expires_at,this.clock(),...gate.values).run();
+   await this.sql(`INSERT INTO assistant_native_telegram_reviews(installation_id,generation,bot_instance,id,intent_id,conversation_id,operation_id,fence_json,credential_hash,thread_id,action_id,action_hash,review_hash,context_source_id,context_ref_json,context_guard_json,expires_at,owner_pending_review,state,created_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',? WHERE ${gate.sql} ON CONFLICT DO NOTHING`,...this.keys(),row.id,row.intent_id,row.conversation_id,row.operation_id,row.fence_json,row.credential_hash,row.thread_id,row.action_id,row.action_hash,row.review_hash,row.context_source_id,row.context_ref_json,row.context_guard_json,row.expires_at,row.owner_pending_review,this.clock(),...gate.values).run();
    row=await this.row(reviewId);if(!row)return {id:reviewId,state:'blocked'};
   }
   if(row.intent_id!==intentId||row.operation_id!==operationId)throw Error('native_review_conflict');
   if(row.state!=='prepared')return {id:row.id,state:row.state==='attempting'?'uncertain':row.state};
   if(!await this.host.api.inspect())return {id:row.id,state:'blocked'};
-  const gate=await this.current(row),{body}=await this.snapshot(row.intent_id),preview=nativeReplyPreview(body.target,body.text,body.received,body.summary);
+  const gate=await this.current(row),{body}=await this.snapshot(row.intent_id),preview=nativeReplyPreview(body.target,body.text,body.received,body.summary,row.owner_pending_review===1);
   if(!preview)return {id:row.id,state:'preview_too_large'};
-  const claim=await this.sql(`UPDATE assistant_native_telegram_reviews SET state='attempting' WHERE ${ns} AND id=? AND state='prepared' AND expires_at>? AND ${gate.sql} RETURNING id`,...this.keys(),row.id,this.clock(),...gate.values).first();
+  const claim=await this.sql(`UPDATE assistant_native_telegram_reviews SET state='attempting' WHERE ${ns} AND id=? AND state='prepared' AND (owner_pending_review=1 OR expires_at>?) AND ${gate.sql} RETURNING id`,...this.keys(),row.id,this.clock(),...gate.values).first();
   if(!claim)return {id:row.id,state:'blocked'};
   try{
    const final=await this.current(row);if(!await this.sql(`SELECT 1 WHERE ${final.sql}`,...final.values).first())throw Error('native_review_changed');
@@ -154,7 +154,7 @@ export class NativeTelegramReplyReview {
  private approvalGuard(row:Row,transport:AccessGuard){
   const context:AccessGuard=row.context_guard_json?JSON.parse(row.context_guard_json):{sql:'0',values:[]};
   return combine(transport,context,{sql:`EXISTS(SELECT 1 FROM assistant_native_telegram_reviews r JOIN assistant_native_telegram_callbacks c ON c.installation_id=r.installation_id AND c.generation=r.generation AND c.bot_instance=r.bot_instance AND c.review_id=r.id
-   WHERE r.installation_id=? AND r.generation=? AND r.bot_instance=? AND r.id=? AND r.intent_id=? AND r.action_id=? AND r.action_hash=? AND r.review_hash=? AND r.credential_hash=? AND r.message_id=? AND r.thread_id=? AND r.approval_state='approved' AND c.action='approved' AND r.expires_at>?)`,values:[...this.keys(),row.id,row.intent_id,row.action_id,row.action_hash,row.review_hash,row.credential_hash,row.message_id,row.thread_id,this.clock()]});
+   WHERE r.installation_id=? AND r.generation=? AND r.bot_instance=? AND r.id=? AND r.intent_id=? AND r.action_id=? AND r.action_hash=? AND r.review_hash=? AND r.credential_hash=? AND r.message_id=? AND r.thread_id=? AND r.approval_state='approved' AND c.action='approved' AND (r.owner_pending_review=1 OR r.expires_at>?))`,values:[...this.keys(),row.id,row.intent_id,row.action_id,row.action_hash,row.review_hash,row.credential_hash,row.message_id,row.thread_id,this.clock()]});
  }
  /** Real approval proof delegate for Own RPC factories. Core also revalidates
   * this persisted review/link/source SQL guard before its short-lived proof. */
@@ -180,7 +180,10 @@ export class NativeTelegramReplyReview {
    if(row.approval_state!==action)return 'denied';if(action==='approved')try{await this.reconcile(row.id);}catch{}
    try{await this.host.api.answer(c.id,'Decisão já registrada. Nenhum novo envio foi feito.');}catch{}return 'duplicate';
   }
-  let gate:AccessGuard;try{gate=await this.current(row);}catch{return 'denied';}
+  let gate:AccessGuard;try{gate=await this.current(row);}catch{
+   const message=!row.owner_pending_review&&row.expires_at<=this.clock()?'Esta sugestão antiga venceu. Nada foi enviado. Peça para reavaliar a conversa.':'Não foi possível validar esta sugestão. Nada foi enviado. Peça para reavaliar a conversa.';
+   try{await this.active();await this.host.api.answer(c.id,message,true);}catch{}return 'denied';
+  }
   const receipt=`EXISTS(SELECT 1 FROM assistant_native_telegram_callbacks WHERE ${ns} AND review_id=? AND update_id=? AND payload_hash=? AND action=?)`;
   const results=await this.host.db.batch([
    this.sql(`INSERT INTO assistant_native_telegram_callbacks(installation_id,generation,bot_instance,update_id,query_id,payload_hash,review_id,action,created_at)

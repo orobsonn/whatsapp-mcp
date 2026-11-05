@@ -14,36 +14,44 @@ type Host={db:D1Database;scope:OriginScope;assertCurrent():void;ownerFence():Pro
  read(sessionId:string,receipt:DispatchReceipt,signal:AbortSignal):Promise<AgentReply>;
  instance(sessionId:string):Promise<AgentInstanceInfo|null>;
  api(check:()=>Promise<void>):TelegramApi};
-export const curatorDispatchReceipt=z.object({submissionId:z.string().min(1).max(256),uid:z.string().min(1).max(256),acceptedAt:z.string().min(1).max(64)}).strict();
+export const curatorDispatchReceipt=z.object({submissionId:z.string().min(1).max(256),uid:z.string().min(1).max(256),acceptedAt:z.string().min(1).max(64),deduplicated:z.literal(true).optional()}).strict();
 const join=(...g:AccessGuard[]):AccessGuard=>({sql:g.map(x=>`(${x.sql})`).join(' AND '),values:g.flatMap(x=>x.values)});
 /** Read only the original SDK receipt. A timed-out observation does not stop,
  * restart or change the native submission. No source body is consulted. */
-export async function observeCuratorSettlement(host:Pick<Host,'instance'|'read'>,sessionId:string,receipt:DispatchReceipt){
- const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,expired=false;
+export type SettlementObservationDiagnostic={reason:'before_uid_mismatch'|'after_uid_mismatch'|'read_unclassified'|'read_timeout'|'instance_unavailable';instancePresent?:boolean;idMatches?:boolean;uidMatches?:boolean;errorName?:'AgentRunError'|'AbortError'|'Error'|'other';outcome?:'completed'|'failed'|'aborted'|'other';submissionMatches?:boolean;phase?:'before'|'read'|'after'};
+export async function observeCuratorSettlement(host:Pick<Host,'instance'|'read'>,sessionId:string,receipt:DispatchReceipt,diagnostic?:(event:SettlementObservationDiagnostic)=>void,budgetMs:5000|30000=5000){
+ const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,expired=false,phase:'before'|'read'|'after'='before';
+ const report=(event:SettlementObservationDiagnostic)=>{try{diagnostic?.(event);}catch{/* Diagnostics never change settlement authority. */}};
  const read=(async()=>{
-  const before=await host.instance(sessionId);if(controller.signal.aborted||before?.id!==sessionId||before.uid!==receipt.uid)return null;
-  let outcome:'completed'|'failed'|'aborted'|null=null;
+  const before=await host.instance(sessionId);if(controller.signal.aborted||before?.id!==sessionId||before.uid!==receipt.uid){if(!controller.signal.aborted)report({reason:'before_uid_mismatch',instancePresent:before!==null,idMatches:before?.id===sessionId,uidMatches:before?.uid===receipt.uid});return null;}
+  phase='read';let outcome:'completed'|'failed'|'aborted'|null=null;
   try{const reply=await host.read(sessionId,receipt,controller.signal);if(reply.submissionId===receipt.submissionId&&(!reply.uid||reply.uid===receipt.uid))outcome='completed';}
-  catch(error){const e=error as {name?:string;outcome?:string;submissionId?:string};if(e.name==='AgentRunError'&&e.submissionId===receipt.submissionId&&(e.outcome==='failed'||e.outcome==='aborted'))outcome=e.outcome;}
-  if(controller.signal.aborted)return null;const after=await host.instance(sessionId);
-  return !controller.signal.aborted&&after?.id===sessionId&&after.uid===receipt.uid?outcome:null;
- })().catch(()=>null);
- try{return await Promise.race([read,new Promise<null>(resolve=>{timer=setTimeout(()=>{expired=true;controller.abort();resolve(null);},5000);})]).then(value=>expired?null:value);}
+  catch(error){const e=error as {name?:string;outcome?:string;submissionId?:string};if(e.name==='AgentRunError'&&e.submissionId===receipt.submissionId&&(e.outcome==='failed'||e.outcome==='aborted'))outcome=e.outcome;
+   else if(!controller.signal.aborted)report({reason:'read_unclassified',errorName:e.name==='AgentRunError'||e.name==='AbortError'||e.name==='Error'?e.name:'other',outcome:e.outcome==='completed'||e.outcome==='failed'||e.outcome==='aborted'?e.outcome:'other',submissionMatches:e.submissionId===receipt.submissionId});}
+  if(controller.signal.aborted)return null;phase='after';const after=await host.instance(sessionId);
+  if(!controller.signal.aborted&&after?.id===sessionId&&after.uid===receipt.uid)return outcome;
+  if(!controller.signal.aborted)report({reason:'after_uid_mismatch',instancePresent:after!==null,idMatches:after?.id===sessionId,uidMatches:after?.uid===receipt.uid});return null;
+ })().catch(()=>{if(!controller.signal.aborted)report({reason:'instance_unavailable',phase});return null;});
+ try{return await Promise.race([read,new Promise<null>(resolve=>{timer=setTimeout(()=>{expired=true;report({reason:'read_timeout',phase});controller.abort();resolve(null);},budgetMs);})]).then(value=>expired?null:value);}
  finally{clearTimeout(timer);controller.abort();}
 }
+
 export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
  host.assertCurrent();const s=host.scope,keys=[s.installationId,s.generation];
  const owner=await host.ownerFence();
+ // A keyed replay may add deduplicated:true without creating a new run.
+ const sameReceipt="(o.submission_id IS json_extract(e.receipt_json,'$.submissionId') AND json_extract(o.receipt_json,'$.uid') IS json_extract(e.receipt_json,'$.uid'))";
+ const changedReceipt="(assistant_curator_outcomes.submission_id IS NOT excluded.submission_id OR json_extract(assistant_curator_outcomes.receipt_json,'$.uid') IS NOT json_extract(excluded.receipt_json,'$.uid'))";
  // Least recently checked first: ten is a work page, never a corpus cutoff.
- const rows=await host.db.prepare(`SELECT r.id,r.day,r.source_epoch,r.source_generation,e.task_ref,e.conversation_id,c.identity_json,e.authority_json,e.receipt_json,o.outcome,o.notice_state
-  FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=1
+ const rows=await host.db.prepare(`SELECT r.id,r.day,r.source_epoch,r.source_generation,e.task_ref,e.conversation_id,c.identity_json,e.authority_json,e.receipt_json,CASE WHEN ${sameReceipt} THEN o.outcome ELSE NULL END outcome,CASE WHEN ${sameReceipt} THEN o.notice_state ELSE NULL END notice_state
+  FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id AND e.revision=(SELECT MAX(latest.revision) FROM assistant_native_conversation_events latest WHERE latest.conversation_id=e.conversation_id AND latest.event_id=e.event_id)
   JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.installation_id=r.installation_id AND c.generation=r.generation
   LEFT JOIN assistant_curator_outcomes o ON o.installation_id=r.installation_id AND o.generation=r.generation AND o.run_id=r.id
   WHERE r.installation_id=? AND r.generation=? AND r.source_epoch=? AND r.source_generation=? AND r.run_kind='daily'
    AND c.tombstoned_at IS NULL AND e.state='admitted' AND e.receipt_json IS NOT NULL AND json_extract(e.authority_json,'$.ownerId')=? AND json_extract(e.authority_json,'$.policyRevision')=?
    AND json_extract(e.authority_json,'$.sourceEpoch')=? AND json_extract(e.authority_json,'$.sourceGeneration')=?
    AND json_extract(CASE WHEN json_valid(c.identity_json) THEN c.identity_json ELSE '{}' END,'$.principalOrChatId') IN (?, 'curator:'||?||':run:'||r.id)
-   AND (o.outcome IS NULL OR o.notice_state='prepared')
+   AND (NOT ${sameReceipt} OR o.outcome IS NULL OR o.notice_state='prepared')
   ORDER BY COALESCE(o.last_checked_at,0),r.created_at,r.id LIMIT 10`).bind(...keys,s.sourceEpoch,s.sourceGeneration,owner.userId,owner.linkRevision,s.sourceEpoch,s.sourceGeneration,'curator:'+owner.userId,owner.userId).all<Candidate>();
  let checked=0,notified=0;
  for(const row of rows.results){
@@ -56,7 +64,7 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
    return join(current.guard,telegramLinkGuard(fence),{sql:`EXISTS(SELECT 1 FROM assistant_curator_runs r JOIN assistant_native_conversation_events e ON e.event_id='curator-run:'||r.id
     JOIN assistant_native_conversations c ON c.id=e.conversation_id AND c.tombstoned_at IS NULL
     WHERE r.installation_id=? AND r.generation=? AND r.id=? AND r.run_kind='daily' AND r.source_epoch=? AND r.source_generation=?
-     AND e.task_ref=? AND e.conversation_id=? AND c.identity_json=? AND e.state='admitted' AND e.receipt_json=? AND e.authority_json=?)`,
+     AND e.revision=(SELECT MAX(latest.revision) FROM assistant_native_conversation_events latest WHERE latest.conversation_id=e.conversation_id AND latest.event_id=e.event_id) AND e.task_ref=? AND e.conversation_id=? AND c.identity_json=? AND e.state='admitted' AND e.receipt_json=? AND e.authority_json=?)`,
     values:[...keys,row.id,s.sourceEpoch,s.sourceGeneration,row.task_ref,row.conversation_id,row.identity_json,row.receipt_json,row.authority_json]});
   };
   let guard:AccessGuard;try{guard=await gate();}catch{continue;}
@@ -64,8 +72,11 @@ export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
   const state=result===null?'pending':result==='completed'?'not_required':'prepared';
   await jsonStatement(host.db,`INSERT INTO assistant_curator_outcomes(installation_id,generation,run_id,submission_id,receipt_json,outcome,notice_state,created_at,last_checked_at)
    SELECT ?,?,?,?,?,?,?,?,? WHERE (${guard.sql}) ON CONFLICT(installation_id,generation,run_id) DO UPDATE SET
-    outcome=COALESCE(assistant_curator_outcomes.outcome,excluded.outcome),notice_state=CASE WHEN assistant_curator_outcomes.outcome IS NULL THEN excluded.notice_state ELSE assistant_curator_outcomes.notice_state END,last_checked_at=excluded.last_checked_at
-   WHERE assistant_curator_outcomes.receipt_json=excluded.receipt_json AND (assistant_curator_outcomes.outcome IS NULL OR assistant_curator_outcomes.notice_state='prepared')`,
+    outcome=CASE WHEN ${changedReceipt} THEN excluded.outcome ELSE COALESCE(assistant_curator_outcomes.outcome,excluded.outcome) END,
+    notice_state=CASE WHEN ${changedReceipt} OR assistant_curator_outcomes.outcome IS NULL THEN excluded.notice_state ELSE assistant_curator_outcomes.notice_state END,
+    message_id=CASE WHEN ${changedReceipt} THEN NULL ELSE assistant_curator_outcomes.message_id END,
+    submission_id=excluded.submission_id,receipt_json=excluded.receipt_json,last_checked_at=excluded.last_checked_at
+   WHERE ${changedReceipt} OR assistant_curator_outcomes.outcome IS NULL OR assistant_curator_outcomes.notice_state='prepared'`,
    [...keys,row.id,receipt.submissionId,row.receipt_json,result,state,clock(),clock(),...guard.values]).run();
   if(result!=='failed'&&result!=='aborted')continue;
   const link=telegramLinkGuard(fence),topic=await host.db.prepare(`SELECT thread_id FROM assistant_telegram_topics WHERE installation_id=? AND generation=? AND bot_instance=? AND link_revision=? AND slot='summaries' AND state='ready' AND fence_json=? AND (${link.sql})`)

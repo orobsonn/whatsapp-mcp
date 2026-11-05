@@ -224,7 +224,7 @@ test('MCP reported context survives restore with its origin and historical shari
  expect(await env.DB.prepare("SELECT COUNT(*) n FROM assistant_knowledge_operations WHERE installation_id=? AND generation=?").bind(target.installationId,target.generation).first('n')).toBe(0);
 });
 test.each([false,true])('native financial custody preserves historical receipts and blocks missing live receipts (%s)',async(missing)=>{
- await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId).run();
+ await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'uncertain',NULL,NULL,NULL)").bind(scope.installationId).run();
  const plan=await bundle();expect(plan.steps.filter(step=>step.record.table==='assistant_native_model_receipts').map(step=>step.record.value.generation)).toEqual(['historic']);
  if(!missing) await env.DB.prepare("UPDATE assistant_native_model_receipts SET state='complete',input_tokens=2,output_tokens=3,actual_units=4 WHERE installation_id=?").bind(scope.installationId).run();
  await restore(plan);
@@ -234,7 +234,7 @@ test.each([false,true])('native financial custody preserves historical receipts 
  if(!missing) expect(await env.DB.prepare("SELECT generation,period,state,actual_units FROM assistant_native_model_receipts WHERE installation_id=?").bind(scope.installationId).first()).toMatchObject({generation:'historic',period:'historic-period',state:'complete',actual_units:4});
 });
 test('native financial custody rejects changed completed usage instead of importing snapshot money',async()=>{
- await env.DB.prepare("INSERT INTO assistant_native_model_receipts VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'complete',2,3,4)").bind(scope.installationId).run();
+ await env.DB.prepare("INSERT INTO assistant_native_model_receipts(installation_id,generation,session_id,context_epoch,turn_id,operation_key,period,request_hash,price_version,ceiling_units,state,input_tokens,output_tokens,actual_units) VALUES(?,'historic','session','epoch','turn','native-operation','historic-period','hash','price',10,'complete',2,3,4)").bind(scope.installationId).run();
  const plan=await bundle();
  await env.DB.prepare("UPDATE assistant_native_model_receipts SET actual_units=3 WHERE installation_id=?").bind(scope.installationId).run();
  await restore(plan);expect(await finish()).toMatchObject({state:'budget_blocked',financial:'missing_live_history'});

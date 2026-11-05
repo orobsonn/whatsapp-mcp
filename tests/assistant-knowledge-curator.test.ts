@@ -363,3 +363,18 @@ it('requires actual complete media reading before evaluating or learning and onl
  await curator.recordLearning(run.id,'read-intent',learning);
  expect(await curator.acknowledgePage(run.id,[{sequence:item.sequence,state:'evaluated',decision:{category:'not_useful',summary:'Imagem avaliada',reason:'Não contém informação duradoura.'}}])).toMatchObject({recorded:1,refused:0});
 });
+
+it('bounds a durable passage to twenty sources and yields without finishing the daily journal',async()=>{
+ for(let i=0;i<21;i++)await note('bounded-page-'+i);const run=await due();
+ const identity={version:1 as const,installationId:scope.installationId,generation:scope.generation,channel:'telegram' as const,principalOrChatId:'curator:owner',contextEpoch:'bounded'};
+ const bound=await curator.bindIdentity(run.id,identity),{CuratorPassages}=await import('../assistant/agent-runtime/curator-passages'),passages=new CuratorPassages(env.DB,scope,()=>({sql:'1',values:[]}));
+ const range=await curator.passageRange(run.id),ticket=await passages.reserve(run.id,1,bound.sessionId,range,null,null),live=()=>passages.toolGuard(ticket);
+ const limited=new KnowledgeCurator(env.DB,()=>scope,{...host,assertCurrent:async()=>{const g=live();if(!await env.DB.prepare(`SELECT 1 WHERE ${g.sql}`).bind(...g.values).first())throw Error('inactive');},authorityGuard:live},()=>now,{revision:1,after:range.after,through:range.through,yield:()=>passages.yield(ticket)});
+ const page=await limited.next(run.id,{limit:100});expect(page.items).toHaveLength(20);expect((await limited.next(run.id,{after:range.through})).items).toHaveLength(0);
+ const other=(await curator.next(run.id,{after:range.through,limit:1})).items[0];expect((await limited.acknowledgePage(run.id,[{sequence:other.sequence,state:'evaluated'}])).items[0]).toMatchObject({outcome:'refused',reason:'curator_item_not_presented'});
+ await limited.acknowledgePage(run.id,page.items.slice(0,19).map(item=>({sequence:item.sequence,state:'evaluated' as const})));
+ expect(await limited.finishPassage(run.id)).toMatchObject({completion:'continue_required'});expect((await passages.latest(run.id))?.state).toBe('prepared');
+ await limited.acknowledge(run.id,page.items[19].sequence,{state:'evaluated'});expect(await limited.finishPassage(run.id)).toMatchObject({completion:'passage_yielded',counts:{evaluated:20,presented:1}});
+ expect((await passages.latest(run.id))?.state).toBe('yielded');expect(await sql('SELECT finished_at FROM assistant_curator_runs WHERE installation_id=? AND generation=? AND id=?',run.id).first('finished_at')).toBeNull();
+ expect(await sql('SELECT COUNT(*) n FROM assistant_curator_notices WHERE installation_id=? AND generation=? AND run_id=?',run.id).first('n')).toBe(0);await expect(limited.next(run.id)).rejects.toThrow('inactive');
+});
