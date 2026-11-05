@@ -106,6 +106,17 @@ describe('native application composition on real D1 and Source reads',()=>{
   expect(await host.reconcileOwnerFailures()).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});expect(send).toHaveBeenCalledOnce();
   expect(await env.DB.prepare('SELECT context_ref FROM assistant_native_owner_responses WHERE conversation_id=?').bind(joined.sessionId).first('context_ref')).toBe(joined.contextRef);
  });
+ it('keeps a failed owner request visible after an automatic mission wake, without granting administrative writes',async()=>{
+  const f=await fixture(),host=f.host();await f.ownerUpdate(830,'Original request and a scheduled reminder',42);const first=await host.receiveTelegram(830);const task=await latestTask(host,first.taskRef);
+  await host.recordConsumed(task,first.receipt!.submissionId);
+  const at=new Date(Date.now()-60000-3*3600000).toISOString().replace('Z','-03:00');
+  await host.tasks().save(task,{objective:'Synthetic private reminder',at});await host.tick();
+  expect(await env.DB.prepare("SELECT json_extract(event_json,'$.kind') FROM assistant_native_conversation_events WHERE conversation_id=? ORDER BY sequence DESC LIMIT 1").bind(task.sessionId).first("json_extract(event_json,'$.kind')")).toBe('mission_due');
+  await expect(host.tasks().ownerRequest(task)).rejects.toThrow('native_task_changed');
+  transport.read.mockRejectedValue(Object.assign(Error('private failure'),{name:'AgentRunError',outcome:'failed',submissionId:first.receipt!.submissionId}));
+  const send=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:902,message_thread_id:42,chat:{id:101,type:'private'}}}));
+  expect(await host.reconcileOwnerFailures()).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});expect(send).toHaveBeenCalledOnce();expect(transport.dispatch).toHaveBeenCalledTimes(2);
+ });
  it('does not publish a failure after a newer owner input arrives while observing the old SDK run',async()=>{
   const f=await fixture(),host=f.host();await f.ownerUpdate(810,'Old task',42);const admitted=await host.receiveTelegram(810);
   const task=await latestTask(host,admitted.taskRef);await host.recordConsumed(task,admitted.receipt!.submissionId);

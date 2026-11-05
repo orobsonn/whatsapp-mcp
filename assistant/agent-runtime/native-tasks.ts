@@ -73,7 +73,7 @@ export class NativeTasks {
   return {sql:expressions[0]??'1',values:unique.flatMap(guard=>guard.values)};
  }
  private async check(guard:AccessGuard){if(!await jsonStatement(this.h.db,`SELECT 1 WHERE (${guard.sql})`,guard.values).first())throw Error('native_task_changed');}
- private async ownerContext(task:TaskContext,write=false){
+ private async ownerContext(task:TaskContext,write=false,noticeOnly=false){
   await this.h.runtime.assertTaskCurrent(task);const fence=await nativeOwnerFence(this.h.env,this.h.scope),activation=await nativeTelegramActivation(this.h.env,this.h.scope,fence);
   if(task.identity.channel!=='telegram'||task.identity.principalOrChatId!==fence.userId||task.ownerId!==fence.userId)throw Error('native_task_owner_required');
   const base=joinGuards(await this.h.authorityGuard(task),telegramLinkGuard(fence),activation.guard,this.h.retention.authorityGuard(task.sessionId));
@@ -87,7 +87,10 @@ export class NativeTasks {
   const proof=await this.source(ref);
   if(proof.read.fence.source.origin!=='owner_report'||proof.read.text!==JSON.parse(row.event_json).body)throw Error('native_task_owner_required');
   await this.h.retention.exposeSource(task.identity,ref);
-  const guard=joinGuards(base,proof.guard,{sql:`EXISTS(SELECT 1 FROM assistant_native_conversation_events WHERE task_ref=? AND conversation_id=? AND sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?) AND state<>'withdrawn')`,values:[last.taskRef,task.sessionId,task.sessionId]});
+  // Status notices follow the latest human request, even if a scheduled
+  // system event has since arrived. Administrative commands keep MAX(all).
+  const headFilter=noticeOnly?" AND json_extract(event_json,'$.kind')='incoming' AND json_extract(event_json,'$.author.kind')='owner' AND json_extract(event_json,'$.author.id')=?":'';
+  const guard=joinGuards(base,proof.guard,{sql:`EXISTS(SELECT 1 FROM assistant_native_conversation_events WHERE task_ref=? AND conversation_id=? AND sequence=(SELECT MAX(sequence) FROM assistant_native_conversation_events WHERE conversation_id=?${headFilter}) AND state<>'withdrawn')`,values:[last.taskRef,task.sessionId,task.sessionId,...(noticeOnly?[fence.userId]:[])]});
   await this.check(guard);return {fence,activation,guard,ref,text:proof.read.text,occurredAt:proof.read.occurredAt};
  }
  /** Reuse the authenticated current owner input for a cross-channel request;
@@ -97,6 +100,9 @@ export class NativeTasks {
   if(!context.ref||typeof context.text!=='string'||context.occurredAt===undefined)throw Error('native_task_owner_required');
   return {...context,ref:context.ref,text:context.text,occurredAt:context.occurredAt};
  }
+ /** Host-only failure status path; not mounted as an administrative tool.
+  * It preserves current link/source/cohort proofs and returns no user body. */
+ async ownerNoticeContext(task:TaskContext){const context=await this.ownerContext(task,true,true);return {guard:context.guard};}
  private async binding(type:z.infer<typeof kind>,key:string,v:number){return this.sql('SELECT * FROM assistant_native_task_bindings WHERE installation_id=? AND generation=? AND kind=? AND resource_id=? AND resource_version=?',...this.keys(),type,key,v).first<Binding>();}
  private async enrollment(task:TaskContext,type:z.infer<typeof kind>,key:string,v:number,work:Ref,context:Awaited<ReturnType<NativeTasks['ownerContext']>>):Promise<NativeTaskEnrollment>{
   if(!context.ref)throw Error('native_task_owner_required');
