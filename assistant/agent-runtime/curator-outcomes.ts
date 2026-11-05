@@ -14,23 +14,28 @@ type Host={db:D1Database;scope:OriginScope;assertCurrent():void;ownerFence():Pro
  read(sessionId:string,receipt:DispatchReceipt,signal:AbortSignal):Promise<AgentReply>;
  instance(sessionId:string):Promise<AgentInstanceInfo|null>;
  api(check:()=>Promise<void>):TelegramApi};
-export const curatorDispatchReceipt=z.object({submissionId:z.string().min(1).max(256),uid:z.string().min(1).max(256),acceptedAt:z.string().min(1).max(64)}).strict();
+export const curatorDispatchReceipt=z.object({submissionId:z.string().min(1).max(256),uid:z.string().min(1).max(256),acceptedAt:z.string().min(1).max(64),deduplicated:z.literal(true).optional()}).strict();
 const join=(...g:AccessGuard[]):AccessGuard=>({sql:g.map(x=>`(${x.sql})`).join(' AND '),values:g.flatMap(x=>x.values)});
 /** Read only the original SDK receipt. A timed-out observation does not stop,
  * restart or change the native submission. No source body is consulted. */
-export async function observeCuratorSettlement(host:Pick<Host,'instance'|'read'>,sessionId:string,receipt:DispatchReceipt){
- const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,expired=false;
+export type SettlementObservationDiagnostic={reason:'before_uid_mismatch'|'after_uid_mismatch'|'read_unclassified'|'read_timeout'|'instance_unavailable';instancePresent?:boolean;idMatches?:boolean;uidMatches?:boolean;errorName?:'AgentRunError'|'AbortError'|'Error'|'other';outcome?:'completed'|'failed'|'aborted'|'other';submissionMatches?:boolean;phase?:'before'|'read'|'after'};
+export async function observeCuratorSettlement(host:Pick<Host,'instance'|'read'>,sessionId:string,receipt:DispatchReceipt,diagnostic?:(event:SettlementObservationDiagnostic)=>void,budgetMs:5000|30000=5000){
+ const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,expired=false,phase:'before'|'read'|'after'='before';
+ const report=(event:SettlementObservationDiagnostic)=>{try{diagnostic?.(event);}catch{/* Diagnostics never change settlement authority. */}};
  const read=(async()=>{
-  const before=await host.instance(sessionId);if(controller.signal.aborted||before?.id!==sessionId||before.uid!==receipt.uid)return null;
-  let outcome:'completed'|'failed'|'aborted'|null=null;
+  const before=await host.instance(sessionId);if(controller.signal.aborted||before?.id!==sessionId||before.uid!==receipt.uid){if(!controller.signal.aborted)report({reason:'before_uid_mismatch',instancePresent:before!==null,idMatches:before?.id===sessionId,uidMatches:before?.uid===receipt.uid});return null;}
+  phase='read';let outcome:'completed'|'failed'|'aborted'|null=null;
   try{const reply=await host.read(sessionId,receipt,controller.signal);if(reply.submissionId===receipt.submissionId&&(!reply.uid||reply.uid===receipt.uid))outcome='completed';}
-  catch(error){const e=error as {name?:string;outcome?:string;submissionId?:string};if(e.name==='AgentRunError'&&e.submissionId===receipt.submissionId&&(e.outcome==='failed'||e.outcome==='aborted'))outcome=e.outcome;}
-  if(controller.signal.aborted)return null;const after=await host.instance(sessionId);
-  return !controller.signal.aborted&&after?.id===sessionId&&after.uid===receipt.uid?outcome:null;
- })().catch(()=>null);
- try{return await Promise.race([read,new Promise<null>(resolve=>{timer=setTimeout(()=>{expired=true;controller.abort();resolve(null);},5000);})]).then(value=>expired?null:value);}
+  catch(error){const e=error as {name?:string;outcome?:string;submissionId?:string};if(e.name==='AgentRunError'&&e.submissionId===receipt.submissionId&&(e.outcome==='failed'||e.outcome==='aborted'))outcome=e.outcome;
+   else if(!controller.signal.aborted)report({reason:'read_unclassified',errorName:e.name==='AgentRunError'||e.name==='AbortError'||e.name==='Error'?e.name:'other',outcome:e.outcome==='completed'||e.outcome==='failed'||e.outcome==='aborted'?e.outcome:'other',submissionMatches:e.submissionId===receipt.submissionId});}
+  if(controller.signal.aborted)return null;phase='after';const after=await host.instance(sessionId);
+  if(!controller.signal.aborted&&after?.id===sessionId&&after.uid===receipt.uid)return outcome;
+  if(!controller.signal.aborted)report({reason:'after_uid_mismatch',instancePresent:after!==null,idMatches:after?.id===sessionId,uidMatches:after?.uid===receipt.uid});return null;
+ })().catch(()=>{if(!controller.signal.aborted)report({reason:'instance_unavailable',phase});return null;});
+ try{return await Promise.race([read,new Promise<null>(resolve=>{timer=setTimeout(()=>{expired=true;report({reason:'read_timeout',phase});controller.abort();resolve(null);},budgetMs);})]).then(value=>expired?null:value);}
  finally{clearTimeout(timer);controller.abort();}
 }
+
 export async function reconcileCuratorOutcomes(host:Host,clock=Date.now){
  host.assertCurrent();const s=host.scope,keys=[s.installationId,s.generation];
  const owner=await host.ownerFence();

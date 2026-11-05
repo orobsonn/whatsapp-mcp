@@ -87,13 +87,17 @@ async function outcomeFixture(){
  return {...f,host,first:{...first,receipt:first.receipt!},runId,failure,fetch};
 }
 describe('native application composition on real D1 and Source reads',()=>{
- it('notifies one failed latest owner request using its consumed cohort, without another model call',async()=>{
+ it('observes a failed owner receipt beyond five seconds and notifies once without another model call',async()=>{
   const f=await fixture(),host=f.host();await f.ownerUpdate(800,'Research this private task',42);const admitted=await host.receiveTelegram(800);
   const task=await latestTask(host,admitted.taskRef);await host.recordConsumed(task,admitted.receipt!.submissionId);
-  transport.read.mockRejectedValue(Object.assign(Error('PRIVATE_PROVIDER_DETAILS'),{name:'AgentRunError',outcome:'failed',submissionId:admitted.receipt!.submissionId}));
+  let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+  transport.read.mockImplementation(()=>{entered();return new Promise((_resolve,reject)=>{setTimeout(()=>reject(Object.assign(Error('PRIVATE_PROVIDER_DETAILS'),{name:'AgentRunError',outcome:'failed',submissionId:admitted.receipt!.submissionId})),6000);});});
   const send=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:900,message_thread_id:42,chat:{id:101,type:'private'}}}));
-  expect(await host.reconcileOwnerFailures()).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});
-  expect(send).toHaveBeenCalledTimes(1);const body=JSON.parse(String(send.mock.calls[0][1]?.body));expect(body.text).toContain('interrompido');expect(body.text).not.toContain('PRIVATE_PROVIDER_DETAILS');
+  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+  try{const pending=host.reconcileOwnerFailures();await started;await vi.advanceTimersByTimeAsync(5001);expect(send).not.toHaveBeenCalled();
+   await vi.advanceTimersByTimeAsync(1000);expect(await pending).toMatchObject({notified:1});expect(await host.reconcileOwnerFailures()).toMatchObject({notified:0});
+   expect(send).toHaveBeenCalledTimes(1);const body=JSON.parse(String(send.mock.calls[0][1]?.body));expect(body.text).toContain('interrompido');expect(body.text).not.toContain('PRIVATE_PROVIDER_DETAILS');
+  }finally{vi.useRealTimers();}
   expect(transport.dispatch).toHaveBeenCalledTimes(1);
  });
  it('notifies a joined latest input using the active submission actual consumed cohort',async()=>{
@@ -797,7 +801,7 @@ it('refuses an MCP body whose canonical source was withdrawn before exposure',as
  expect(await f.exposures()).toBe(0);
 });
 
-it('dispatches a new bounded curator page only after the previous SDK settles, with one final summary',async()=>{
+it('continues a bounded curator page after a deduplicated SDK receipt settles, with one final summary',async()=>{
  const f=await fixture();f.own.NATIVE_CURATOR_ENABLED='true';f.own.NATIVE_CURATOR_SCHEDULE_ENABLED='true';
  for(let n=0;n<21;n++)await new SourceController(env.DB,f.scope,{kind:'owner'}).createReport({originKey:'sdk-page-'+n,text:'Fonte sintética '+n,occurredAt:1});
  const fence={...f.scope,botInstance:bot,linkRevision:1,userId:'101',chatId:'101'};
@@ -807,6 +811,10 @@ it('dispatches a new bounded curator page only after the previous SDK settles, w
  await c.curator.acknowledgePage(c.runId,page.items.map(item=>({sequence:item.sequence,state:'evaluated' as const})));expect(await c.finish({})).toMatchObject({completion:'passage_yielded'});
  const sends=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ok:true,result:{message_id:899,message_thread_id:42,chat:{id:101,type:'private'}}}));
  expect(await host.dispatchCurator(at)).toMatchObject({state:'waiting'});expect(transport.dispatch).toHaveBeenCalledTimes(1);
+ // An acknowledged keyed admission may echo its original receipt with this
+ // SDK flag. Keep it through settlement and the next-page admission checks.
+ const deduplicatedReceipt={...first.receipt,deduplicated:true};
+ await env.DB.prepare('UPDATE assistant_native_conversation_events SET receipt_json=? WHERE task_ref=?').bind(JSON.stringify(deduplicatedReceipt),first.taskRef).run();
  transport.read.mockResolvedValue({submissionId:first.receipt.submissionId,uid:first.receipt.uid});
  await host.tick();expect(await env.DB.prepare('SELECT submission_id FROM assistant_curator_outcomes WHERE run_id=?').bind(c.runId).first('submission_id')).toBe(first.receipt.submissionId);
  const [second,concurrent]=await Promise.all([host.dispatchCurator(at),host.dispatchCurator(at)]);if(second.state!=='admitted'||concurrent.state!=='admitted')throw Error('fixture_page2');expect(second.taskRef).toBe(concurrent.taskRef);expect(new Set(transport.dispatch.mock.calls.map(([,request])=>request.idempotencyKey)).size).toBe(2);
