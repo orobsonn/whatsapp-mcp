@@ -206,3 +206,10 @@ it("uses the live database generation and suppresses bytes when connection disap
   expect(result.state).toBe("blocked"); expect(result.bytes).toBeUndefined();
   expect(JSON.stringify(result)).not.toMatch(/synthetic-token|synthetic-client|5511000000000/);
 });
+
+it('reads captured edited messages whose existing revision is a millisecond timestamp',async()=>{
+ const revision=1793410415000;
+ await env.DB.prepare("UPDATE messages SET version=? WHERE id='binary-message'").bind(revision).run();
+ await env.DB.prepare("UPDATE media SET message_version=? WHERE id='binary-media'").bind(revision).run();
+ expect(await reader().readBoundedMedia({...await request(),expectedMessageVersion:revision})).toMatchObject({state:'available',messageVersion:revision,bytes:png});
+});

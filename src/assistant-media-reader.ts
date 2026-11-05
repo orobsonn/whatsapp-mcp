@@ -8,7 +8,7 @@ import { resolveRuntimeEnv } from "./connection";
 import { readCaptureSnapshot } from "./assistant-source-reader";
 import { readMedia } from "./media";
 
-const id = z.string().min(1).max(256), version = z.number().int().positive().max(2147483647);
+const id = z.string().min(1).max(256), version = z.number().int().positive().safe();
 const inputSchema = z.object({ secret: z.string().max(256), sourceEpoch: id, sourceGeneration: id, chatId: id, mediaId: id,
   expectedMessageVersion: version, expectedMediaVersion: version, expectedBlobHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
