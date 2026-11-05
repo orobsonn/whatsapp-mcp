@@ -39,6 +39,12 @@ Smoke local: `node scripts/smoke.mjs http://localhost:8787`. O padrão é manute
 
 O dono pode pedir ao assistente privado para executar as ferramentas do MCP, incluindo envio de texto, áudio com sua voz, imagem/PDF e gestão de grupos. Somente o comando atual autenticado autoriza a execução; mensagens de terceiros e despertares automáticos não concedem envio. As respostas autônomas permanecem desligadas. [Capacidades e limites](docs/76-telegram-owner-tools.md).
 
+## Cartões de contato
+
+Cartões recebidos pelo webhook da Z-API aparecem nas consultas como texto JSON `type=shared_contact`, com `displayName`, `phones` e `phoneExtractionComplete`. O remetente continua sendo o autor da mensagem, separado do contato compartilhado. O número literal do cartão indicado pelo dono pode ser usado em `resolver_destinatario`, inclusive sem conversa anterior. Mais de um número ou extração incompleta exige esclarecer o destino; nenhum envio é autorizado pelo cartão sozinho.
+
+A projeção guarda apenas nome e números, sem fotos, endereços, notas ou vCard bruto. Cartões antigos capturados como não suportados não são reconstruídos por esta atualização.
+
 ## Áudios
 
 Áudios recebidos e enviados, capturados desde a ativação em individuais e grupos, entram automaticamente na transcrição por Whisper Turbo. O texto fica vinculado à mensagem e aparece nas consultas e buscas, sem substituir o original. Até 10 minutos e 20 MiB por áudio recebido; fila com tentativas limitadas e cota inicial de 500 inferências/dia UTC. Histórico anterior não é transcrito em massa. [Política e operação](docs/34-transcricao-automatica.md).

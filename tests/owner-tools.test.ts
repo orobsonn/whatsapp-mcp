@@ -3,6 +3,8 @@ import {env} from 'cloudflare:test';
 import type {Env} from '../src/env';
 import {ownerToolCatalog,ownerToolExecute} from '../src/owner-tools';
 import {ownerToolProvenance} from '../src/owner-tool-provenance';
+import {readCaptureSnapshot} from '../src/assistant-source-reader';
+import {observeSnapshot} from '../src/capture-snapshot-contract';
 import {OWNER_TOOL_NAMES} from '../src/owner-tool-contract';
 import {prepareAction,executeAction} from '../src/actions';
 import {upsertDirectoryPage} from '../src/directory';
@@ -65,6 +67,14 @@ describe('owner Telegram Source tools',()=>{
   const response=await ownerToolExecute(e,{...context,tool:'consultar_mensagens',input:{chatId:'provenance-chat'}}) as {result:unknown;provenance:{origins:{sourceKind:string;sourceId:string;observationHash:string}[]}};
   expect(response.provenance.origins.map(r=>r.sourceKind)).toEqual(['message','derivative']);
   expect(response.provenance.origins.every(r=>/^[a-f0-9]{64}$/.test(r.observationHash))).toBe(true);
+  // Independent reader/canonical boundary must agree, including transcripts
+  // whose mediaVersion and media fields arrive in a different property order.
+  for(const origin of response.provenance.origins){
+   const identity={sourceEpoch:'e1',sourceGeneration:'g1',sourceKind:origin.sourceKind as 'message'|'derivative',sourceId:origin.sourceId,chatId:'provenance-chat'};
+   const snapshot=await readCaptureSnapshot(e,{...identity,secret:e.ASSISTANT_READER_SECRET});
+   const canonical=await observeSnapshot(snapshot,identity);
+   expect(origin.observationHash).toBe(canonical.hash);
+  }
   await env.DB.prepare("UPDATE messages SET text='Legenda alterada',version=2 WHERE id='provenance-message'").run();
   await expect(ownerToolProvenance(e,scope,'consultar_mensagens',response.result)).rejects.toThrow('owner_tool_provenance_unavailable');
  });
