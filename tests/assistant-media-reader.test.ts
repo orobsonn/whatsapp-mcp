@@ -88,7 +88,7 @@ it("denies invalid authentication and strict input before touching R2", async ()
     await expect(reader().readBoundedMedia(invalid)).rejects.toThrow("reader_denied");
   }
   for (const invalid of [{ ...input, url: "https://provider.invalid" }, { ...input, objectKey }, { ...input, sql: "SELECT *" },
-    { ...input, mediaId: "x".repeat(257) }, { ...input, expectedMessageVersion: 0 }, { ...input, expectedMediaVersion: 2147483648 },
+    { ...input, mediaId: "x".repeat(257) }, { ...input, expectedMessageVersion: 0 }, { ...input, expectedMediaVersion: Number.MAX_SAFE_INTEGER + 1 },
     { ...input, expectedBlobHash: "invalid" }]) await expect(reader().readBoundedMedia(invalid)).rejects.toThrow("reader_invalid_input");
   for (const configured of [{ ...settings(), ASSISTANT_READER_SECRET: undefined }, { ...settings(), ASSISTANT_READER_SECRET: "short" }]) {
     await expect(reader(configured).readBoundedMedia(input)).rejects.toThrow("reader_denied");
