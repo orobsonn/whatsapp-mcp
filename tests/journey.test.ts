@@ -4,6 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import app from "../src/index";
+import { ingestEvent } from "../src/capture";
+import { currentFence, sha256 } from "../src/core";
 import { upsertDirectoryPage, setCapture } from "../src/directory";
 import type { Env } from "../src/env";
 
@@ -415,6 +417,32 @@ describe("jornada HTTP e SDK MCP reais em runtime local", () => {
         (c) => c.type === "resource",
       ),
     ).toBe(true);
+    const imageBytes = new Uint8Array(5 * 1024 * 1024);
+    imageBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    const capturedImage = await ingestEvent(e, currentFence(e), {
+      chatExternalId: "group-j",
+      externalId: "inline-image",
+      fromMe: false,
+      kind: "image",
+      timestamp: Date.now(),
+      media: { url: "https://media.example/inline.png", mime: "image/png", filename: "inline.png" },
+    });
+    const imageId = (await e.DB.prepare("SELECT id FROM media WHERE message_id=?")
+      .bind(capturedImage.messageId).first<{ id: string }>())!.id;
+    const objectKey = `synthetic/${imageId}`;
+    await e.MEDIA.put(objectKey, imageBytes);
+    await e.DB.prepare("UPDATE media SET state='ready', size=?, sha256=?, object_key=? WHERE id=?")
+      .bind(imageBytes.length, await sha256(imageBytes), objectKey, imageId).run();
+
+    const image = await client.callTool({
+      name: "obter_midia",
+      arguments: { id: imageId },
+    });
+    const content = (image.content as Array<{ type: string; mimeType?: string; data?: string }>);
+    const inline = content.find((item) => item.type === "image");
+    expect(inline?.mimeType).toBe("image/png");
+    expect(atob(inline!.data!).length).toBe(imageBytes.length);
+    expect(result(image)).not.toHaveProperty("browserUrl");
     await client.close();
   });
   it("administração exige confirmação Access exata; convite só aparece na página privada", async () => {

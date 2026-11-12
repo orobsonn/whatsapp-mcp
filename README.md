@@ -61,7 +61,7 @@ Para telefone internacional explícito sem conversa anterior, `resolver_destinat
 
 ## Limites explícitos
 
-Arquivo desde ativação, sem promessa de importação retroativa. Áudio recebido até 20 MiB/10 minutos; fotos capturadas até 20 MiB, com cópia privada compatível de até 2 MiB; PDFs e uploads até 2 MiB; PDF para leitura até vinte páginas; vídeos ignorados; até 128 KiB no conteúdo MCP, maiores via navegador autenticado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
+Arquivo desde ativação, sem promessa de importação retroativa. Áudio recebido até 20 MiB/10 minutos; fotos capturadas até 20 MiB, com cópia privada compatível de até 2 MiB; PDFs e uploads até 2 MiB; PDF para leitura até vinte páginas; vídeos ignorados; imagens de até 5 MiB direto no MCP, demais arquivos até 128 KiB e arquivos maiores por link privado. Áudio sob demanda, com opt-in do processador. Envios incertos não repetem automaticamente. Estado de grupo é agregado. Nomes/conteúdo necessários podem aparecer na IA; tokens e URLs de transporte ficam no backend. Excluir aqui não apaga cópias de terceiros.
 
 Gestão de grupos na v0.2.0: [escopo e critérios](docs/20-grupos-prd.md), [contratos oficiais mapeados](docs/21-grupos-contratos.md), [manual de uso](docs/23-usar-grupos.md) e [matriz das 35 operações](docs/24-grupos-cobertura.md). Inclui participantes/admins, convites, permissões, menções, organização dos chats e associações com comunidades. OCR, campanhas e busca semântica continuam fora do escopo. Nenhuma ferramenta genérica de API/SQL é exposta.
 

@@ -250,8 +250,10 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown, host?: Mc
       };
     },
   );
+  const inlineImageBytes = 5 * 1024 * 1024;
+  const inlineFileBytes = 128 * 1024;
   const mediaSchema=z.object({ id }).strict();
-  const mediaDescription="Entrega conteúdo pequeno ao MCP. Acima de 128 KiB oferece abertura autenticada no navegador; recursos binários dependem do cliente.";
+  const mediaDescription="Retorna imagens de até 5 MiB diretamente no chat. Para outros arquivos, retorna conteúdo de até 128 KiB. Acima desses limites, ofereça o link privado ao dono para abertura manual; não abra automaticamente no navegador.";
   const mediaCallback=async (input: {id:string}): Promise<CallToolResult> => {
       try {
         await host?.beforeTool?.();
@@ -259,27 +261,28 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown, host?: Mc
         const metadata = await getMedia(env, input.id);
         if (metadata.state !== "ready" || metadata.size === null)
           throw new AppError("media_not_ready", 409);
-        if (metadata.size > 131072)
+        const inlineLimit = metadata.kind === "image" ? inlineImageBytes : inlineFileBytes;
+        if (metadata.size > inlineLimit)
           return text({
             metadata,
             browserUrl: `${env.PUBLIC_ORIGIN}/media/${encodeURIComponent(input.id)}`,
             limitation:
               "Arquivo maior que o limite MCP; abra autenticado no navegador.",
           });
-        const { bytes } = await readMedia(env, input.id);
+        const { metadata: verifiedMedia, bytes } = await readMedia(env, input.id, inlineLimit);
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ metadata, untrusted: true }),
+              text: JSON.stringify({ metadata: verifiedMedia, untrusted: true }),
             },
-            metadata.kind === "image"
-              ? { type: "image", mimeType: metadata.mime!, data: base64(bytes) }
+            verifiedMedia.kind === "image"
+              ? { type: "image", mimeType: verifiedMedia.mime!, data: base64(bytes) }
               : {
                   type: "resource",
                   resource: {
-                    uri: `whatsapp://media/${metadata.id}`,
-                    mimeType: metadata.mime!,
+                    uri: `whatsapp://media/${verifiedMedia.id}`,
+                    mimeType: verifiedMedia.mime!,
                     blob: base64(bytes),
                   },
                 },
@@ -290,7 +293,7 @@ export function createMcpServer(env: Env, trustedOwnerProps?: unknown, host?: Mc
       }
   };
   host?.register({name:'obter_midia',description:mediaDescription,inputSchema:mediaSchema,readOnly:true,invoke:input=>mediaCallback(mediaSchema.parse(input))});
-  server.registerTool('obter_midia',{description:mediaDescription,inputSchema:mediaSchema,annotations:{readOnlyHint:true,openWorldHint:false}},mediaCallback);
+  server.registerTool('obter_midia',{description:mediaDescription,inputSchema:mediaSchema,annotations:{readOnlyHint:true,openWorldHint:false,destructiveHint:false}},mediaCallback);
   tool(
     "transcrever_audio",
     "Transcreve áudio selecionado via Workers AI se habilitado. Conteúdo vai ao processador; derivado não confiável separado do original.",
